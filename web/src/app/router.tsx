@@ -1,6 +1,7 @@
 import { createBrowserRouter, redirect, Navigate } from 'react-router-dom';
 import { Layout } from '@/features/layout/Layout';
 import { LoginPage } from '@/features/auth/LoginPage';
+import { ChangePasswordPage } from '@/features/auth/ChangePasswordPage';
 import { WizardPage } from '@/features/wizard/WizardPage';
 import { ChatPage } from '@/features/chat/ChatPage';
 import { CallsPage } from '@/features/calls/CallsPage';
@@ -45,6 +46,12 @@ export const router = createBrowserRouter([
     path: '/login',
     element: <LoginPage />,
     errorElement: <ErrorPage />,
+  },
+  {
+    path: '/change-password',
+    element: <ChangePasswordPage />,
+    errorElement: <ErrorPage />,
+    loader: requireSetupThenAuth,
   },
   {
     path: '/wizard',

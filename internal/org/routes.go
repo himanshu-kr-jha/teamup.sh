@@ -26,6 +26,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.PATCH("/org", h.requireAdmin, h.UpdateOrganization)
 
 	rg.GET("/users", h.ListUsers)
+	rg.POST("/users", h.requireAdmin, h.AddMember)
 	rg.GET("/users/:id", h.GetUser)
 	rg.PATCH("/users/:id", h.UpdateUser)
 	rg.DELETE("/users/:id", h.requireAdmin, h.DeleteUser)
@@ -127,6 +128,37 @@ func (h *Handler) ListUsers(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"users": users})
+}
+
+// AddMember creates an account for a colleague and returns the generated
+// password once. There was previously no way to add anybody at all.
+func (h *Handler) AddMember(c *gin.Context) {
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Name  string `json:"name" binding:"required"`
+		Email string `json:"email" binding:"required,email"`
+		Role  string `json:"role" binding:"omitempty"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	member, temporaryPassword, err := h.service.AddMember(c.Request.Context(), orgID, req.Name, req.Email, req.Role)
+	if err != nil {
+		httpx.Error(c, err, "failed to add member")
+		return
+	}
+
+	// The only time this password is ever visible: it is stored hashed and
+	// cannot be recovered.
+	c.JSON(http.StatusCreated, gin.H{
+		"user":              member,
+		"temporaryPassword": temporaryPassword,
+	})
 }
 
 func (h *Handler) GetUser(c *gin.Context) {

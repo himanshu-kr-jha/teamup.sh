@@ -293,15 +293,24 @@ func (h *Handler) BackchannelLogout(c *gin.Context) {
 	c.Status(http.StatusOK)
 }
 
+// GetCurrentUser answers with the same user object login does. It used to
+// return a snake_case subset with no id and no name, so reloading the page
+// replaced the signed-in user with a half-empty object and anything keyed on
+// user.id silently stopped matching.
 func (h *Handler) GetCurrentUser(c *gin.Context) {
 	userCtx := GetUserFromContext(c)
-	c.JSON(http.StatusOK, gin.H{
-		"user_id":       userCtx.UserID,
-		"org_id":        userCtx.OrgID,
-		"email":         userCtx.Email,
-		"roles":         userCtx.Roles,
-		"auth_provider": userCtx.AuthProvider,
-	})
+	userID, err := uuid.Parse(userCtx.UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+
+	user, err := h.service.getUser(c.Request.Context(), userID)
+	if err != nil {
+		httpx.Error(c, err, "failed to load current user")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"user": user})
 }
 
 func (h *Handler) LinkAccount(c *gin.Context) {
@@ -485,4 +494,6 @@ type User struct {
 	IsActive     bool      `json:"-"`
 	// Never serialized: this is the bcrypt hash used by VerifyPassword.
 	PasswordHash string `json:"-"`
+	// True while the user is still on a password an administrator generated.
+	MustChangePassword bool `json:"mustChangePassword"`
 }

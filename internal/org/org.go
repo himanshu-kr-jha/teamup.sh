@@ -2,14 +2,20 @@ package org
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"math/big"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
+	"golang.org/x/crypto/bcrypt"
 
 	apperrors "github.com/teamup/teamup/pkg/errors"
 )
@@ -42,6 +48,10 @@ type User struct {
 	IsActive  bool      `json:"isActive"`
 	CreatedAt time.Time `json:"createdAt"`
 	UpdatedAt time.Time `json:"updatedAt"`
+
+	// True while the member is still on the password an administrator
+	// generated for them.
+	MustChangePassword bool `json:"mustChangePassword"`
 }
 
 type Role struct {
@@ -147,7 +157,7 @@ func (s *Service) UpdateOrganization(ctx context.Context, id uuid.UUID, name, lo
 const userColumns = `
 	SELECT u.id, u.org_id, u.name, u.email, u.avatar_url, u.role,
 	       COALESCE(u.is_admin, false), COALESCE(u.is_active, true),
-	       u.created_at, u.updated_at,
+	       u.created_at, u.updated_at, COALESCE(u.must_change_password, false),
 	       COALESCE(ARRAY_REMOVE(ARRAY_AGG(r.name), NULL), '{}')
 	FROM users u
 	LEFT JOIN user_roles ur ON ur.user_id = u.id
@@ -158,7 +168,7 @@ const userColumns = `
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
 	err := row.Scan(&u.ID, &u.OrgID, &u.Name, &u.Email, &u.AvatarURL, &u.Role,
-		&u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.UpdatedAt, &u.Roles)
+		&u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.UpdatedAt, &u.MustChangePassword, &u.Roles)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, apperrors.ErrNotFound
@@ -203,7 +213,7 @@ func (s *Service) ListUsers(ctx context.Context, orgID uuid.UUID) ([]User, error
 	for rows.Next() {
 		var u User
 		if err := rows.Scan(&u.ID, &u.OrgID, &u.Name, &u.Email, &u.AvatarURL, &u.Role,
-			&u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.UpdatedAt, &u.Roles); err != nil {
+			&u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.UpdatedAt, &u.MustChangePassword, &u.Roles); err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
 		users = append(users, u)
@@ -691,4 +701,104 @@ func (s *Service) FirstOrganizationID(ctx context.Context) (uuid.UUID, error) {
 		return uuid.Nil, fmt.Errorf("resolve organization: %w", err)
 	}
 	return id, nil
+}
+
+// ── Adding members ────────────────────────────────────────────────────────
+
+// temporaryPasswordLength comfortably clears the 12-character minimum that
+// applies everywhere else.
+const temporaryPasswordLength = 16
+
+// AddMember creates an account an administrator can hand to a colleague, and
+// returns the generated password once — it is never stored in the clear and
+// cannot be shown again.
+//
+// No email is sent: SMTP is optional in v1 and usually unconfigured, so an
+// emailed invitation would fail silently on most installs. The administrator
+// passes the password on however they already communicate.
+func (s *Service) AddMember(ctx context.Context, orgID uuid.UUID, name, email, roleName string) (*User, string, error) {
+	name = strings.TrimSpace(name)
+	email = strings.TrimSpace(email)
+	if name == "" || email == "" {
+		return nil, "", apperrors.New(apperrors.CodeBadRequest, "a name and email are required")
+	}
+	if roleName == "" {
+		roleName = "member"
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	defer tx.Rollback(ctx)
+
+	// The role has to exist in this organization, or the member signs in and
+	// can do nothing — the trap of creating a user by hand.
+	var roleID uuid.UUID
+	err = tx.QueryRow(ctx,
+		`SELECT id FROM roles WHERE org_id = $1 AND name = $2`, orgID, roleName).Scan(&roleID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, "", apperrors.New(apperrors.CodeBadRequest, "that role does not exist in this organization")
+		}
+		return nil, "", fmt.Errorf("look up role: %w", err)
+	}
+
+	password, err := generateTemporaryPassword()
+	if err != nil {
+		return nil, "", fmt.Errorf("generate temporary password: %w", err)
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, "", fmt.Errorf("hash temporary password: %w", err)
+	}
+
+	userID := uuid.New()
+	_, err = tx.Exec(ctx, `
+		INSERT INTO users (id, org_id, name, email, password_hash, role, is_admin,
+		                   must_change_password, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, NOW(), NOW())
+	`, userID, orgID, name, email, hash, roleName, roleName == "owner" || roleName == "admin")
+	if err != nil {
+		// (org_id, email) is unique; report it as a conflict rather than a
+		// server error so the form can say something useful.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return nil, "", apperrors.New(apperrors.CodeConflict, "somebody with that email is already in this organization")
+		}
+		return nil, "", fmt.Errorf("create member: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO user_roles (user_id, role_id, assigned_at) VALUES ($1, $2, NOW())
+		ON CONFLICT (user_id, role_id) DO NOTHING
+	`, userID, roleID); err != nil {
+		return nil, "", fmt.Errorf("assign role: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, "", err
+	}
+
+	member, err := s.GetUser(ctx, userID)
+	if err != nil {
+		return nil, "", err
+	}
+	return member, password, nil
+}
+
+// generateTemporaryPassword builds a readable, unambiguous password. The
+// alphabet omits characters that are easily confused when a password is read
+// out or copied by hand.
+func generateTemporaryPassword() (string, error) {
+	const alphabet = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+	out := make([]byte, temporaryPasswordLength)
+	for i := range out {
+		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))
+		if err != nil {
+			return "", err
+		}
+		out[i] = alphabet[n.Int64()]
+	}
+	return string(out), nil
 }

@@ -8,6 +8,7 @@ interface User {
   avatarUrl?: string;
   roles: string[];
   orgId: string;
+  mustChangePassword?: boolean;
 }
 
 interface AuthState {

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Users, Shield, UsersRound, Trash2, Plus } from 'lucide-react';
+import { Users, Shield, UsersRound, Trash2, Plus, Copy, UserPlus } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
@@ -8,6 +8,14 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui
 import { Badge } from '@/shared/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/shared/components/ui/dialog';
 import { FormDialog } from '@/shared/components/FormDialog';
 import { orgApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
@@ -62,6 +70,8 @@ function MembersTab({ isAdmin, currentUserId }: { isAdmin: boolean; currentUserI
   const toast = useToast();
   const queryClient = useQueryClient();
   const [assignFor, setAssignFor] = useState<any | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [newCredentials, setNewCredentials] = useState<{ email: string; password: string } | null>(null);
   const { statusOf } = usePresence();
 
   const { data: usersData, isLoading } = useQuery({ queryKey: ['users'], queryFn: () => orgApi.listUsers() });
@@ -96,7 +106,15 @@ function MembersTab({ isAdmin, currentUserId }: { isAdmin: boolean; currentUserI
   return (
     <>
       <Card>
-        <CardHeader><CardTitle>Members</CardTitle></CardHeader>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <CardTitle>Members</CardTitle>
+          {isAdmin && (
+            <Button size="sm" onClick={() => setAdding(true)}>
+              <UserPlus className="mr-2 h-4 w-4" />
+              Add member
+            </Button>
+          )}
+        </CardHeader>
         <CardContent className="space-y-2">
           {users.length === 0 && <p className="text-sm text-muted-foreground">No members yet.</p>}
           {users.map((u: any) => (
@@ -145,6 +163,21 @@ function MembersTab({ isAdmin, currentUserId }: { isAdmin: boolean; currentUserI
         </CardContent>
       </Card>
 
+      <AddMemberDialog
+        open={adding}
+        roles={roles}
+        onOpenChange={setAdding}
+        onAdded={(credentials) => {
+          refresh();
+          setNewCredentials(credentials);
+        }}
+      />
+
+      <TemporaryPasswordDialog
+        credentials={newCredentials}
+        onClose={() => setNewCredentials(null)}
+      />
+
       <AssignRoleDialog
         member={assignFor}
         roles={roles}
@@ -152,6 +185,145 @@ function MembersTab({ isAdmin, currentUserId }: { isAdmin: boolean; currentUserI
         onAssigned={refresh}
       />
     </>
+  );
+}
+
+/**
+ * Adding somebody is the one thing the Organization screen could not do, which
+ * left every installation a single-user demo. No email is sent: SMTP is
+ * optional in v1, so the administrator passes the password on themselves.
+ */
+function AddMemberDialog({
+  open,
+  roles,
+  onOpenChange,
+  onAdded,
+}: {
+  open: boolean;
+  roles: any[];
+  onOpenChange: (open: boolean) => void;
+  onAdded: (credentials: { email: string; password: string }) => void;
+}) {
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [role, setRole] = useState('');
+
+  const reset = () => {
+    setName('');
+    setEmail('');
+    setRole('');
+  };
+
+  return (
+    <FormDialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) reset();
+        onOpenChange(o);
+      }}
+      title="Add member"
+      description="Creates an account they can sign in with straight away."
+      submitLabel="Add member"
+      disabledReason={!name.trim() || !email.trim() ? 'Enter a name and an email address.' : undefined}
+      onSubmit={async () => {
+        const res = await orgApi.addMember({
+          name: name.trim(),
+          email: email.trim(),
+          role: role || undefined,
+        });
+        const created = { email: email.trim(), password: res.data.temporaryPassword };
+        reset();
+        onAdded(created);
+      }}
+    >
+      <div className="space-y-2">
+        <Label htmlFor="memberName">Name</Label>
+        <Input
+          id="memberName"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="Ada Lovelace"
+        />
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="memberEmail">Email</Label>
+        <Input
+          id="memberEmail"
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="ada@example.com"
+        />
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="memberRole">Role</Label>
+        <Select value={role} onValueChange={setRole}>
+          <SelectTrigger id="memberRole"><SelectValue placeholder="member" /></SelectTrigger>
+          <SelectContent>
+            {roles.map((r: any) => (
+              <SelectItem key={r.id} value={r.name}>{r.name}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+    </FormDialog>
+  );
+}
+
+/**
+ * The password is stored hashed and cannot be recovered, so this is the only
+ * time anybody will ever see it. Says so plainly rather than letting an
+ * administrator close the dialog and find out later.
+ */
+function TemporaryPasswordDialog({
+  credentials,
+  onClose,
+}: {
+  credentials: { email: string; password: string } | null;
+  onClose: () => void;
+}) {
+  const toast = useToast();
+
+  return (
+    <Dialog open={!!credentials} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Member added</DialogTitle>
+          <DialogDescription>
+            Pass these on to {credentials?.email}. They will be asked to choose their
+            own password the first time they sign in.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2">
+          <Label htmlFor="temporaryPassword">Temporary password</Label>
+          <div className="flex gap-2">
+            <Input id="temporaryPassword" readOnly value={credentials?.password ?? ''} className="font-mono" />
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              aria-label="Copy password"
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(credentials?.password ?? '');
+                  toast.success('Password copied.');
+                } catch {
+                  toast.error('Could not copy — select it and copy by hand.');
+                }
+              }}
+            >
+              <Copy className="h-4 w-4" />
+            </Button>
+          </div>
+          <p className="text-sm text-destructive">
+            This will not be shown again. Copy it before closing this dialog.
+          </p>
+        </div>
+        <DialogFooter>
+          <Button onClick={onClose}>Done</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

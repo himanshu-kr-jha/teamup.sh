@@ -84,6 +84,8 @@ type Claims struct {
 	SessionID    string   `json:"sid"`
 	AuthProvider string   `json:"auth_provider,omitempty"`
 	IDToken      string   `json:"id_token,omitempty"`
+	// Carried in the token so enforcement costs no extra query per request.
+	MustChangePassword bool `json:"must_change_password,omitempty"`
 }
 
 type RefreshToken struct {
@@ -163,12 +165,13 @@ func (s *Service) GenerateAccessToken(ctx context.Context, user *User, sessionID
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
 			ID:        uuid.New().String(),
 		},
-		UserID:       user.ID.String(),
-		OrgID:        user.OrgID.String(),
-		Email:        user.Email,
-		Roles:        user.Roles,
-		SessionID:    sessionID,
-		AuthProvider: user.AuthProvider,
+		UserID:             user.ID.String(),
+		OrgID:              user.OrgID.String(),
+		Email:              user.Email,
+		Roles:              user.Roles,
+		SessionID:          sessionID,
+		AuthProvider:       user.AuthProvider,
+		MustChangePassword: user.MustChangePassword,
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
@@ -286,13 +289,14 @@ func (s *Service) ValidateAccessToken(ctx context.Context, tokenString string) (
 
 	// Convert to websocket.Claims
 	return &websocket.Claims{
-		UserID:       claims.UserID,
-		OrgID:        claims.OrgID,
-		Email:        claims.Email,
-		Roles:        claims.Roles,
-		SessionID:    claims.SessionID,
-		AuthProvider: claims.AuthProvider,
-		IDToken:      claims.IDToken,
+		UserID:             claims.UserID,
+		OrgID:              claims.OrgID,
+		Email:              claims.Email,
+		Roles:              claims.Roles,
+		SessionID:          claims.SessionID,
+		AuthProvider:       claims.AuthProvider,
+		IDToken:            claims.IDToken,
+		MustChangePassword: claims.MustChangePassword,
 	}, nil
 }
 
@@ -387,32 +391,56 @@ func (s *Service) AuthMiddleware() gin.HandlerFunc {
 		c.Set("session_id", claims.SessionID)
 		c.Set("auth_provider", claims.AuthProvider)
 		c.Set("id_token", claims.IDToken)
+		c.Set("must_change_password", claims.MustChangePassword)
+
+		// Somebody still on an administrator-generated password may only look
+		// at themselves, change it, or sign out. Enforced here rather than in
+		// the interface so calling the API directly does not get around it.
+		if claims.MustChangePassword && !isPasswordChangePath(c.Request.Method, c.FullPath()) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error":              "set your own password before continuing",
+				"mustChangePassword": true,
+			})
+			return
+		}
 
 		c.Next()
 	}
 }
 
+// isPasswordChangePath lists what remains reachable while a password change is
+// outstanding: enough to sign in, see who you are, change it, and leave.
+func isPasswordChangePath(method, path string) bool {
+	switch path {
+	case "/api/auth/me", "/api/auth/password", "/api/auth/logout", "/api/auth/refresh":
+		return true
+	}
+	return false
+}
+
 // GetUserFromContext extracts user info from Gin context
 func GetUserFromContext(c *gin.Context) *UserContext {
 	return &UserContext{
-		UserID:       c.GetString("user_id"),
-		OrgID:        c.GetString("org_id"),
-		Roles:        c.GetStringSlice("user_roles"),
-		Email:        c.GetString("user_email"),
-		SessionID:    c.GetString("session_id"),
-		AuthProvider: c.GetString("auth_provider"),
-		IDToken:      c.GetString("id_token"),
+		UserID:             c.GetString("user_id"),
+		OrgID:              c.GetString("org_id"),
+		Roles:              c.GetStringSlice("user_roles"),
+		Email:              c.GetString("user_email"),
+		SessionID:          c.GetString("session_id"),
+		AuthProvider:       c.GetString("auth_provider"),
+		IDToken:            c.GetString("id_token"),
+		MustChangePassword: c.GetBool("must_change_password"),
 	}
 }
 
 type UserContext struct {
-	UserID       string
-	OrgID        string
-	Roles        []string
-	Email        string
-	SessionID    string
-	AuthProvider string
-	IDToken      string
+	UserID             string
+	OrgID              string
+	Roles              []string
+	Email              string
+	SessionID          string
+	AuthProvider       string
+	IDToken            string
+	MustChangePassword bool
 }
 
 func (u *UserContext) HasRole(role string) bool {
@@ -491,6 +519,7 @@ func GetAndClearPKCECookie(w http.ResponseWriter, r *http.Request) (string, erro
 const userColumns = `
 	SELECT u.id, u.org_id, u.email, u.name, COALESCE(u.avatar_url, ''),
 	       COALESCE(u.password_hash, ''), COALESCE(u.is_active, true),
+	       COALESCE(u.must_change_password, false),
 	       COALESCE(ARRAY_REMOVE(ARRAY_AGG(r.name), NULL), '{}') AS roles
 	FROM users u
 	LEFT JOIN user_roles ur ON ur.user_id = u.id
@@ -501,7 +530,7 @@ const userColumns = `
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
 	err := row.Scan(&u.ID, &u.OrgID, &u.Email, &u.Name, &u.AvatarURL,
-		&u.PasswordHash, &u.IsActive, &u.Roles)
+		&u.PasswordHash, &u.IsActive, &u.MustChangePassword, &u.Roles)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, apperrors.ErrNotFound
@@ -692,8 +721,10 @@ func (s *Service) ChangePassword(ctx context.Context, userID uuid.UUID, currentP
 	if err != nil {
 		return fmt.Errorf("hash new password: %w", err)
 	}
-	if _, err := s.db.Exec(ctx,
-		`UPDATE users SET password_hash = $2, updated_at = NOW() WHERE id = $1`, userID, hash); err != nil {
+	if _, err := s.db.Exec(ctx, `
+		UPDATE users SET password_hash = $2, must_change_password = FALSE, updated_at = NOW()
+		WHERE id = $1
+	`, userID, hash); err != nil {
 		return fmt.Errorf("store new password: %w", err)
 	}
 

@@ -9,6 +9,7 @@ interface User {
   avatarUrl?: string;
   roles: string[];
   orgId: string;
+  mustChangePassword?: boolean;
 }
 
 interface AuthContextType {
@@ -28,8 +29,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refreshUser = useCallback(async () => {
     try {
+      // /auth/me answers in the same envelope login does.
       const res = await api.get('/auth/me');
-      setUser(res.data);
+      setUser(res.data.user);
     } catch {
       setUser(null);
     } finally {

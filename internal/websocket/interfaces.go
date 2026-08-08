@@ -47,13 +47,14 @@ type AuthServiceInterface interface {
 
 // Claims represents the JWT claims
 type Claims struct {
-	UserID       string
-	OrgID        string
-	Email        string
-	Roles        []string
-	SessionID    string
-	AuthProvider string
-	IDToken      string
+	UserID             string
+	OrgID              string
+	Email              string
+	Roles              []string
+	SessionID          string
+	MustChangePassword bool
+	AuthProvider       string
+	IDToken            string
 }
 
 // Presence represents user presence

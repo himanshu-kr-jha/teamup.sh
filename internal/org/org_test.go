@@ -2,12 +2,14 @@ package org
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/teamup/teamup/internal/testsupport"
+	apperrors "github.com/teamup/teamup/pkg/errors"
 )
 
 func newService(t *testing.T) (*Service, *pgxpool.Pool) {
@@ -532,5 +534,111 @@ func TestGetConfigIntoDecodesTypedValues(t *testing.T) {
 	}
 	if got.PublicKey != "pub" || got.PrivateKey != "priv" {
 		t.Errorf("typed decode lost data: %+v", got)
+	}
+}
+
+// ── Adding members (ticket 15) ────────────────────────────────────────────
+//
+// There was no way to create a user at all: no endpoint, no invitation table,
+// and the sign-up link pointed at a route that does not exist. The product was
+// a single-user demo.
+
+func TestAddMemberCreatesALoginableAccountWithARole(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	member, temporaryPassword, err := svc.AddMember(ctx, org.ID, "Priya Sharma", "priya@acme.test", "member")
+	if err != nil {
+		t.Fatalf("add member: %v", err)
+	}
+	if member.Email != "priya@acme.test" || member.Name != "Priya Sharma" {
+		t.Errorf("wrong member: %+v", member)
+	}
+	if len(temporaryPassword) < 12 {
+		t.Errorf("the temporary password must satisfy the minimum length, got %d chars", len(temporaryPassword))
+	}
+
+	// A member with no role can sign in and then do nothing, which is the
+	// trap I hit adding a user by hand.
+	if !hasRole(member.Roles, "member") {
+		t.Errorf("the requested role should be assigned, got %v", member.Roles)
+	}
+	if !member.MustChangePassword {
+		t.Error("a generated password must be flagged for replacement")
+	}
+
+	listed, err := svc.ListUsers(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var found bool
+	for _, u := range listed {
+		if u.ID == member.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the new member should appear in the members list")
+	}
+}
+
+func TestAddMemberGeneratesADifferentPasswordEachTime(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	_, first, err := svc.AddMember(ctx, org.ID, "One", "one@acme.test", "member")
+	if err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	_, second, err := svc.AddMember(ctx, org.ID, "Two", "two@acme.test", "member")
+	if err != nil {
+		t.Fatalf("second: %v", err)
+	}
+	if first == second {
+		t.Fatal("temporary passwords must not repeat")
+	}
+}
+
+func TestAddMemberRejectsADuplicateEmail(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	if _, _, err := svc.AddMember(ctx, org.ID, "Priya", "dupe@acme.test", "member"); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	_, _, err := svc.AddMember(ctx, org.ID, "Someone Else", "dupe@acme.test", "member")
+	if err == nil {
+		t.Fatal("a duplicate email must be refused")
+	}
+	// It has to read as a conflict, not a server error.
+	if apperrors.HTTPStatus(err) != http.StatusConflict {
+		t.Errorf("expected a conflict, got status %d for %v", apperrors.HTTPStatus(err), err)
+	}
+}
+
+// The same address may legitimately exist in another tenant.
+func TestAddMemberAllowsTheSameEmailInAnotherOrganization(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	a := testsupport.SeedOrg(t, pool)
+	b := testsupport.SeedOrg(t, pool)
+
+	if _, _, err := svc.AddMember(ctx, a.ID, "In A", "shared@acme.test", "member"); err != nil {
+		t.Fatalf("in a: %v", err)
+	}
+	if _, _, err := svc.AddMember(ctx, b.ID, "In B", "shared@acme.test", "member"); err != nil {
+		t.Fatalf("the same address in another organization should be allowed: %v", err)
+	}
+}
+
+func TestAddMemberRejectsAnUnknownRole(t *testing.T) {
+	svc, pool := newService(t)
+	org := testsupport.SeedOrg(t, pool)
+
+	if _, _, err := svc.AddMember(context.Background(), org.ID, "Nobody", "nobody@acme.test", "sysadmin"); err == nil {
+		t.Fatal("a role that does not exist in this organization must be refused")
 	}
 }

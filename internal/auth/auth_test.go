@@ -2,8 +2,13 @@ package auth
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/gin-gonic/gin"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -478,5 +483,161 @@ func TestListSessionsReturnsActiveOnes(t *testing.T) {
 	sessions, _ = svc.ListSessions(ctx, userID)
 	if len(sessions) != 0 {
 		t.Errorf("a revoked session should not be listed, got %d", len(sessions))
+	}
+}
+
+// ── Forced password change ────────────────────────────────────────────────
+
+// mustChangeRouter wires the real middleware in front of two routes: one that
+// stands for the rest of the API, and the password endpoint that has to stay
+// reachable.
+func mustChangeRouter(svc *Service) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	api := r.Group("/api")
+	api.Use(svc.AuthMiddleware())
+	api.GET("/tasks", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+	api.GET("/auth/me", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+	api.POST("/auth/password", func(c *gin.Context) { c.JSON(http.StatusOK, gin.H{"ok": true}) })
+	return r
+}
+
+// signIn mints a live session — an access token whose session has a refresh
+// token behind it, which is what ValidateAccessToken insists on.
+func signIn(t *testing.T, svc *Service, user *User) string {
+	t.Helper()
+	ctx := context.Background()
+	sessionID := uuid.New().String()
+	if _, _, err := svc.GenerateRefreshToken(ctx, user, sessionID, "test", "127.0.0.1"); err != nil {
+		t.Fatalf("refresh token: %v", err)
+	}
+	token, err := svc.GenerateAccessToken(ctx, user, sessionID)
+	if err != nil {
+		t.Fatalf("access token: %v", err)
+	}
+	return token
+}
+
+func getAs(r *gin.Engine, method, path, token string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// The ticket is explicit that this has to hold against the API and not only
+// the screen, so the check lives in the middleware rather than the frontend.
+func TestATemporaryPasswordLocksTheAPIUntilItIsChanged(t *testing.T) {
+	pool := testDB(t)
+	svc := testService(pool)
+	ctx := context.Background()
+
+	email := "temp-" + uuid.New().String()[:8] + "@acme.test"
+	_, userID := seedUser(t, pool, email, "generated-for-them")
+	if _, err := pool.Exec(ctx, `UPDATE users SET must_change_password = TRUE WHERE id = $1`, userID); err != nil {
+		t.Fatalf("flag user: %v", err)
+	}
+
+	user, err := svc.GetUserByEmail(ctx, email)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if !user.MustChangePassword {
+		t.Fatal("the flag did not survive being read back")
+	}
+	token := signIn(t, svc, user)
+
+	r := mustChangeRouter(svc)
+
+	if w := getAs(r, http.MethodGet, "/api/tasks", token); w.Code != http.StatusForbidden {
+		t.Errorf("the rest of the API should be shut: want 403, got %d", w.Code)
+	}
+	if w := getAs(r, http.MethodGet, "/api/auth/me", token); w.Code != http.StatusOK {
+		t.Errorf("/auth/me has to stay reachable: got %d", w.Code)
+	}
+	if w := getAs(r, http.MethodPost, "/api/auth/password", token); w.Code != http.StatusOK {
+		t.Errorf("the password endpoint has to stay reachable: got %d", w.Code)
+	}
+}
+
+// Once changed, the requirement must not come back.
+func TestChangingThePasswordClearsTheRequirement(t *testing.T) {
+	pool := testDB(t)
+	svc := testService(pool)
+	ctx := context.Background()
+
+	email := "cleared-" + uuid.New().String()[:8] + "@acme.test"
+	_, userID := seedUser(t, pool, email, "generated-for-them")
+	if _, err := pool.Exec(ctx, `UPDATE users SET must_change_password = TRUE WHERE id = $1`, userID); err != nil {
+		t.Fatalf("flag user: %v", err)
+	}
+
+	if err := svc.ChangePassword(ctx, userID, "generated-for-them", "one-they-chose-themselves"); err != nil {
+		t.Fatalf("change password: %v", err)
+	}
+
+	user, err := svc.GetUserByEmail(ctx, email)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	if user.MustChangePassword {
+		t.Error("still being asked to change a password they have already changed")
+	}
+
+	token := signIn(t, svc, user)
+	if w := getAs(mustChangeRouter(svc), http.MethodGet, "/api/tasks", token); w.Code != http.StatusOK {
+		t.Errorf("the API should be open again: got %d — %s", w.Code, w.Body.String())
+	}
+}
+
+// The screen keys off user.id and user.name; /auth/me used to return neither,
+// so a page reload quietly replaced the signed-in user with a stub.
+func TestCurrentUserAnswersWithTheWholeUser(t *testing.T) {
+	pool := testDB(t)
+	svc := testService(pool)
+	ctx := context.Background()
+
+	email := "whole-" + uuid.New().String()[:8] + "@acme.test"
+	orgID, userID := seedUser(t, pool, email, "their-password")
+
+	user, err := svc.GetUserByEmail(ctx, email)
+	if err != nil {
+		t.Fatalf("get user: %v", err)
+	}
+	token := signIn(t, svc, user)
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	RegisterRoutes(r.Group("/api/auth"), svc)
+
+	w := getAs(r, http.MethodGet, "/api/auth/me", token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var got struct {
+		User struct {
+			ID                 string `json:"id"`
+			OrgID              string `json:"orgId"`
+			Name               string `json:"name"`
+			Email              string `json:"email"`
+			MustChangePassword bool   `json:"mustChangePassword"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.User.ID != userID.String() {
+		t.Errorf("id missing or wrong: %q", got.User.ID)
+	}
+	if got.User.OrgID != orgID.String() {
+		t.Errorf("orgId missing or wrong: %q", got.User.OrgID)
+	}
+	if got.User.Name == "" {
+		t.Error("name missing")
+	}
+	if got.User.Email != email {
+		t.Errorf("email: got %q want %q", got.User.Email, email)
 	}
 }
