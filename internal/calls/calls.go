@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"time"
 
+	"strings"
+
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/livekit/protocol/auth"
 	"github.com/livekit/protocol/livekit"
@@ -14,6 +17,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/teamup/teamup/internal/websocket"
+	apperrors "github.com/teamup/teamup/pkg/errors"
 	"github.com/teamup/teamup/pkg/protocol"
 )
 
@@ -21,6 +25,15 @@ type Config struct {
 	LiveKitURL       string
 	LiveKitAPIKey    string
 	LiveKitAPISecret string
+
+	// Recording destination. LiveKit's Egress service writes the finished file
+	// straight to S3-compatible storage, so the media never passes through
+	// this application.
+	StorageEndpoint  string
+	StorageAccessKey string
+	StorageSecretKey string
+	StorageBucket    string
+	StorageSecure    bool
 }
 
 type Broadcaster interface {
@@ -29,11 +42,12 @@ type Broadcaster interface {
 }
 
 type Service struct {
-	db          *pgxpool.Pool
-	cfg         Config
-	logger      zerolog.Logger
-	broadcaster Broadcaster
-	roomService *lksdk.RoomServiceClient
+	db            *pgxpool.Pool
+	cfg           Config
+	logger        zerolog.Logger
+	broadcaster   Broadcaster
+	roomService   *lksdk.RoomServiceClient
+	egressService *lksdk.EgressClient
 }
 
 type Call struct {
@@ -74,6 +88,7 @@ func NewService(db *pgxpool.Pool, cfg Config) *Service {
 	// Initialize LiveKit room service client
 	if cfg.LiveKitURL != "" && cfg.LiveKitAPIKey != "" && cfg.LiveKitAPISecret != "" {
 		s.roomService = lksdk.NewRoomServiceClient(cfg.LiveKitURL, cfg.LiveKitAPIKey, cfg.LiveKitAPISecret)
+		s.egressService = lksdk.NewEgressClient(cfg.LiveKitURL, cfg.LiveKitAPIKey, cfg.LiveKitAPISecret)
 	}
 
 	return s
@@ -139,9 +154,38 @@ func (s *Service) CreateCall(ctx context.Context, orgID, createdBy uuid.UUID, ti
 		UpdatedAt:      time.Now(),
 	}
 
-	for _, invitee := range invitees {
-		_, _ = uuid.Parse(invitee)
-		// INSERT INTO call_participants ...
+	// Persist the call: creating the LiveKit room alone left no record, so a
+	// call could never be listed, joined by id, or seen in history.
+	now := time.Now()
+	call.StartedAt = &now
+	if _, err := s.db.Exec(ctx, `
+		INSERT INTO calls (id, org_id, channel_id, room_name, livekit_room_sid, title,
+		                   call_type, status, started_at, created_by, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())
+	`, call.ID, call.OrgID, call.ChannelID, call.RoomName, call.LiveKitRoomSID, call.Title,
+		call.CallType, call.Status, call.StartedAt, call.CreatedBy); err != nil {
+		return nil, fmt.Errorf("persist call: %w", err)
+	}
+
+	// The creator hosts; invitees are recorded so the call can be shown to
+	// them and so history knows who was asked.
+	participants := append([]string{createdBy.String()}, invitees...)
+	for i, invitee := range participants {
+		userID, err := uuid.Parse(invitee)
+		if err != nil {
+			continue
+		}
+		role := "participant"
+		if i == 0 {
+			role = "host"
+		}
+		if _, err := s.db.Exec(ctx, `
+			INSERT INTO call_participants (call_id, user_id, role)
+			SELECT $1, u.id, $3 FROM users u WHERE u.id = $2 AND u.org_id = $4
+			ON CONFLICT (call_id, user_id) DO NOTHING
+		`, call.ID, userID, role, orgID); err != nil {
+			return nil, fmt.Errorf("add call participant: %w", err)
+		}
 	}
 
 	return call, nil
@@ -151,10 +195,117 @@ func (s *Service) GetToken(ctx context.Context, callID, userID, userName string)
 	return s.GenerateToken(ctx, callID, userID, userName, true, true)
 }
 
-func (s *Service) StartRecording(ctx context.Context, callID string) error {
-	// Recording is handled via EgressClient in LiveKit, not RoomServiceClient
-	// For now, return not implemented
-	return fmt.Errorf("recording not implemented - use EgressClient")
+// StartRecording asks LiveKit's Egress service to composite the room and write
+// the result into the organization's object storage. The file lands under the
+// same org-scoped prefix as every other attachment, so the existing access
+// checks apply to it unchanged.
+//
+// Retention is deliberately not implemented: the platform spec parks it as
+// undecided, so recordings are kept until someone removes them.
+func (s *Service) StartRecording(ctx context.Context, orgID, callID uuid.UUID) (*CallModel, error) {
+	call, err := s.GetCall(ctx, orgID, callID)
+	if err != nil {
+		return nil, err
+	}
+	if call.Status == "ended" {
+		return nil, apperrors.New(apperrors.CodeBadRequest, "the call has already ended")
+	}
+	if call.RecordingStatus != nil && *call.RecordingStatus == "recording" {
+		return nil, apperrors.New(apperrors.CodeConflict, "this call is already being recorded")
+	}
+	if s.egressService == nil {
+		return nil, apperrors.New(apperrors.CodeUnavailable, "recording is not configured on this instance")
+	}
+	if s.cfg.StorageBucket == "" {
+		return nil, apperrors.New(apperrors.CodeUnavailable, "recording storage is not configured")
+	}
+
+	objectKey := fmt.Sprintf("org-%s/recordings/%s/%s.mp4", orgID, callID, callID)
+	res, err := s.egressService.StartRoomCompositeEgress(ctx, &livekit.RoomCompositeEgressRequest{
+		RoomName: call.RoomName,
+		Layout:   "grid",
+		Output: &livekit.RoomCompositeEgressRequest_File{
+			File: &livekit.EncodedFileOutput{
+				FileType: livekit.EncodedFileType_MP4,
+				Filepath: objectKey,
+				Output: &livekit.EncodedFileOutput_S3{
+					S3: &livekit.S3Upload{
+						AccessKey:      s.cfg.StorageAccessKey,
+						Secret:         s.cfg.StorageSecretKey,
+						Endpoint:       s.storageEndpointURL(),
+						Bucket:         s.cfg.StorageBucket,
+						ForcePathStyle: true,
+						Region:         "us-east-1",
+					},
+				},
+			},
+		},
+	})
+	if err != nil {
+		// Leave the call untouched: a failed start must surface a real error
+		// rather than a silent success.
+		return nil, fmt.Errorf("start recording: %w", err)
+	}
+
+	if _, err := s.db.Exec(ctx, `
+		UPDATE calls SET recording_status = 'recording', recording_url = $3, updated_at = NOW()
+		WHERE id = $1 AND org_id = $2
+	`, callID, orgID, objectKey); err != nil {
+		return nil, fmt.Errorf("record recording state: %w", err)
+	}
+	s.logger.Info().Str("call", callID.String()).Str("egress", res.EgressId).Msg("recording started")
+
+	if s.broadcaster != nil {
+		s.broadcaster.BroadcastToChannel(callID.String(), protocol.NewMessage(
+			protocol.TypeCallSignalingRelay, map[string]any{"callId": callID.String(), "recording": true}), "")
+	}
+	return s.GetCall(ctx, orgID, callID)
+}
+
+// StopRecording finalises the file. Ending the call does this too, so a
+// recording is never left dangling.
+func (s *Service) StopRecording(ctx context.Context, orgID, callID uuid.UUID) error {
+	call, err := s.GetCall(ctx, orgID, callID)
+	if err != nil {
+		return err
+	}
+	if call.RecordingStatus == nil || *call.RecordingStatus != "recording" {
+		return nil
+	}
+	if s.egressService != nil {
+		list, err := s.egressService.ListEgress(ctx, &livekit.ListEgressRequest{RoomName: call.RoomName})
+		if err != nil {
+			s.logger.Warn().Err(err).Msg("could not list egress to stop recording")
+		} else {
+			for _, info := range list.Items {
+				if _, err := s.egressService.StopEgress(ctx, &livekit.StopEgressRequest{EgressId: info.EgressId}); err != nil {
+					s.logger.Warn().Err(err).Str("egress", info.EgressId).Msg("stop egress failed")
+				}
+			}
+		}
+	}
+	if _, err := s.db.Exec(ctx, `
+		UPDATE calls SET recording_status = 'completed', updated_at = NOW()
+		WHERE id = $1 AND org_id = $2
+	`, callID, orgID); err != nil {
+		return fmt.Errorf("finalise recording: %w", err)
+	}
+	return nil
+}
+
+// storageEndpointURL gives Egress a scheme-qualified endpoint; the rest of the
+// application stores it as a bare host:port for the MinIO client.
+func (s *Service) storageEndpointURL() string {
+	if s.cfg.StorageEndpoint == "" {
+		return ""
+	}
+	if strings.HasPrefix(s.cfg.StorageEndpoint, "http://") || strings.HasPrefix(s.cfg.StorageEndpoint, "https://") {
+		return s.cfg.StorageEndpoint
+	}
+	if s.cfg.StorageSecure {
+		return "https://" + s.cfg.StorageEndpoint
+	}
+	return "http://" + s.cfg.StorageEndpoint
 }
 
 func (s *Service) EndCall(ctx context.Context, callID string) error {
@@ -272,29 +423,178 @@ func (s *Service) HandleCallSignaling(ctx context.Context, conn websocket.WSConn
 	_ = payload
 }
 
+type ParticipantModel struct {
+	UserID   uuid.UUID  `json:"userId"`
+	UserName string     `json:"userName"`
+	Role     string     `json:"role"`
+	JoinedAt *time.Time `json:"joinedAt,omitempty"`
+	LeftAt   *time.Time `json:"leftAt,omitempty"`
+}
+
+// Serialised straight onto the wire, so the tags have to match what the
+// frontend reads.
 type CallModel struct {
-	ID              uuid.UUID
-	OrgID           uuid.UUID
-	ChannelID       *uuid.UUID
-	RoomName        string
-	LiveKitRoomSID  *string
-	Title           *string
-	CallType        string
-	Status          string
-	StartedAt       *time.Time
-	EndedAt         *time.Time
-	DurationSeconds *int
-	RecordingURL    *string
-	RecordingStatus *string
-	CreatedBy       uuid.UUID
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID              uuid.UUID  `json:"id"`
+	OrgID           uuid.UUID  `json:"orgId"`
+	ChannelID       *uuid.UUID `json:"channelId,omitempty"`
+	RoomName        string     `json:"roomName"`
+	LiveKitRoomSID  *string    `json:"-"`
+	Title           *string    `json:"title,omitempty"`
+	CallType        string     `json:"callType"`
+	Status          string     `json:"status"`
+	StartedAt       *time.Time `json:"startedAt,omitempty"`
+	EndedAt         *time.Time `json:"endedAt,omitempty"`
+	DurationSeconds *int       `json:"durationSeconds,omitempty"`
+	RecordingURL    *string    `json:"recordingUrl,omitempty"`
+	RecordingStatus *string    `json:"recordingStatus,omitempty"`
+
+	CreatedBy        uuid.UUID          `json:"createdBy"`
+	CreatedByName    string             `json:"createdByName"`
+	ParticipantCount int                `json:"participantCount"`
+	Participants     []ParticipantModel `json:"participants,omitempty"`
+
+	CreatedAt time.Time `json:"createdAt"`
+	UpdatedAt time.Time `json:"updatedAt"`
 }
 
-func (s *Service) ListCalls(ctx context.Context, orgID uuid.UUID, status string) ([]CallModel, error) {
-	return nil, nil
+const callColumns = `
+	SELECT c.id, c.org_id, c.channel_id, c.room_name, c.livekit_room_sid, c.title,
+	       c.call_type, c.status, c.started_at, c.ended_at, c.duration_seconds,
+	       c.recording_url, c.recording_status, c.created_by, u.name,
+	       c.created_at, c.updated_at,
+	       (SELECT COUNT(*) FROM call_participants p WHERE p.call_id = c.id)
+	FROM calls c JOIN users u ON u.id = c.created_by`
+
+func scanCall(row pgx.Row) (*CallModel, error) {
+	var m CallModel
+	err := row.Scan(&m.ID, &m.OrgID, &m.ChannelID, &m.RoomName, &m.LiveKitRoomSID, &m.Title,
+		&m.CallType, &m.Status, &m.StartedAt, &m.EndedAt, &m.DurationSeconds,
+		&m.RecordingURL, &m.RecordingStatus, &m.CreatedBy, &m.CreatedByName,
+		&m.CreatedAt, &m.UpdatedAt, &m.ParticipantCount)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, apperrors.ErrNotFound
+		}
+		return nil, err
+	}
+	return &m, nil
 }
 
-func (s *Service) GetCall(ctx context.Context, id uuid.UUID) (*CallModel, error) {
-	return nil, nil
+// ListCalls returns the organization's calls, most recent first, optionally
+// narrowed by status or the channel the call belongs to.
+func (s *Service) ListCalls(ctx context.Context, orgID uuid.UUID, status string, channelID *uuid.UUID) ([]CallModel, error) {
+	where := []string{"c.org_id = $1"}
+	args := []any{orgID}
+	if status != "" && status != "all" {
+		args = append(args, status)
+		where = append(where, fmt.Sprintf("c.status = $%d", len(args)))
+	}
+	if channelID != nil {
+		args = append(args, *channelID)
+		where = append(where, fmt.Sprintf("c.channel_id = $%d", len(args)))
+	}
+
+	rows, err := s.db.Query(ctx,
+		callColumns+" WHERE "+strings.Join(where, " AND ")+" ORDER BY c.created_at DESC", args...)
+	if err != nil {
+		return nil, fmt.Errorf("list calls: %w", err)
+	}
+	defer rows.Close()
+
+	calls := []CallModel{}
+	for rows.Next() {
+		var m CallModel
+		if err := rows.Scan(&m.ID, &m.OrgID, &m.ChannelID, &m.RoomName, &m.LiveKitRoomSID, &m.Title,
+			&m.CallType, &m.Status, &m.StartedAt, &m.EndedAt, &m.DurationSeconds,
+			&m.RecordingURL, &m.RecordingStatus, &m.CreatedBy, &m.CreatedByName,
+			&m.CreatedAt, &m.UpdatedAt, &m.ParticipantCount); err != nil {
+			return nil, fmt.Errorf("scan call: %w", err)
+		}
+		calls = append(calls, m)
+	}
+	return calls, rows.Err()
+}
+
+// GetCall is organization-scoped and carries its participant list.
+func (s *Service) GetCall(ctx context.Context, orgID, id uuid.UUID) (*CallModel, error) {
+	call, err := scanCall(s.db.QueryRow(ctx,
+		callColumns+" WHERE c.id = $1 AND c.org_id = $2", id, orgID))
+	if err != nil {
+		return nil, err
+	}
+
+	rows, err := s.db.Query(ctx, `
+		SELECT p.user_id, u.name, COALESCE(p.role, 'participant'), p.joined_at, p.left_at
+		FROM call_participants p JOIN users u ON u.id = p.user_id
+		WHERE p.call_id = $1 ORDER BY p.joined_at NULLS LAST, u.name
+	`, id)
+	if err != nil {
+		return nil, fmt.Errorf("list call participants: %w", err)
+	}
+	defer rows.Close()
+
+	call.Participants = []ParticipantModel{}
+	for rows.Next() {
+		var p ParticipantModel
+		if err := rows.Scan(&p.UserID, &p.UserName, &p.Role, &p.JoinedAt, &p.LeftAt); err != nil {
+			return nil, fmt.Errorf("scan participant: %w", err)
+		}
+		call.Participants = append(call.Participants, p)
+	}
+	return call, rows.Err()
+}
+
+// MarkParticipantJoined and MarkParticipantLeft keep the attendance record
+// that the call detail page shows.
+func (s *Service) MarkParticipantJoined(ctx context.Context, callID, userID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO call_participants (call_id, user_id, role, joined_at)
+		VALUES ($1, $2, 'participant', NOW())
+		ON CONFLICT (call_id, user_id) DO UPDATE SET joined_at = COALESCE(call_participants.joined_at, NOW()), left_at = NULL
+	`, callID, userID)
+	if err != nil {
+		return fmt.Errorf("mark joined: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) MarkParticipantLeft(ctx context.Context, callID, userID uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE call_participants SET left_at = NOW() WHERE call_id = $1 AND user_id = $2`,
+		callID, userID)
+	if err != nil {
+		return fmt.Errorf("mark left: %w", err)
+	}
+	return nil
+}
+
+// MarkCallEnded closes the record: without it a call stayed "active" forever
+// and never appeared as history.
+func (s *Service) MarkCallEnded(ctx context.Context, orgID, callID uuid.UUID) error {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE calls
+		SET status = 'ended',
+		    ended_at = NOW(),
+		    duration_seconds = GREATEST(0, EXTRACT(EPOCH FROM (NOW() - COALESCE(started_at, created_at)))::int),
+		    updated_at = NOW()
+		WHERE id = $1 AND org_id = $2 AND status <> 'ended'
+	`, callID, orgID)
+	if err != nil {
+		return fmt.Errorf("mark call ended: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperrors.ErrNotFound
+	}
+	// A recording left running would never be finalised.
+	if err := s.StopRecording(ctx, orgID, callID); err != nil {
+		s.logger.Warn().Err(err).Str("call", callID.String()).Msg("could not finalise recording on call end")
+	}
+
+	// Anyone still marked present has now left.
+	if _, err := s.db.Exec(ctx,
+		`UPDATE call_participants SET left_at = NOW() WHERE call_id = $1 AND joined_at IS NOT NULL AND left_at IS NULL`,
+		callID); err != nil {
+		return fmt.Errorf("close participants: %w", err)
+	}
+	return nil
 }

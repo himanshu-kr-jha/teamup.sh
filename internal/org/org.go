@@ -620,3 +620,18 @@ func (s *Service) IsSetupComplete(ctx context.Context) (bool, error) {
 		`SELECT COUNT(*) FROM organizations WHERE deleted_at IS NULL`).Scan(&count)
 	return count > 0, err
 }
+
+// FirstOrganizationID resolves the instance's organization. TeamUp is
+// single-tenant per deployment, so there is exactly one.
+func (s *Service) FirstOrganizationID(ctx context.Context) (uuid.UUID, error) {
+	var id uuid.UUID
+	err := s.db.QueryRow(ctx,
+		`SELECT id FROM organizations WHERE deleted_at IS NULL ORDER BY created_at LIMIT 1`).Scan(&id)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return uuid.Nil, apperrors.ErrNotFound
+		}
+		return uuid.Nil, fmt.Errorf("resolve organization: %w", err)
+	}
+	return id, nil
+}

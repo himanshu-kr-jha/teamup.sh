@@ -21,6 +21,7 @@ import (
 	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
+	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
 
 	"github.com/teamup/teamup/internal/auth"
@@ -212,6 +213,14 @@ func (c *Config) CallsConfig() calls.Config {
 		LiveKitURL:       c.LiveKitURL,
 		LiveKitAPIKey:    c.LiveKitAPIKey,
 		LiveKitAPISecret: c.LiveKitAPISecret,
+
+		// LiveKit Egress writes recordings straight into the same object
+		// storage the rest of the attachments live in.
+		StorageEndpoint:  c.MinIOEndpoint,
+		StorageAccessKey: c.MinIOAccessKey,
+		StorageSecretKey: c.MinIOSecretKey,
+		StorageBucket:    c.MinIOBucket,
+		StorageSecure:    c.MinIOSecure,
 	}
 }
 
@@ -361,6 +370,12 @@ func runServer(cmd *cobra.Command, args []string) error {
 	chatService.SetBroadcaster(wsHub)
 	callsService.SetBroadcaster(wsHub)
 
+	// Notifications reach the browser over the same socket, and the features
+	// that raise them talk to the service through a narrow Notifier interface.
+	notificationsService.SetBroadcaster(wsHub)
+	chatService.SetNotifier(notificationsService)
+	tasksService.SetNotifier(notificationsService)
+
 	// Auto-setup if configured. It gets its own deadline: ctx above carries the
 	// short database-ping timeout, which bcrypt hashing plus a multi-statement
 	// transaction can outrun, turning a healthy start into a crash loop.
@@ -372,6 +387,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 			logger.Fatal().Err(err).Msg("Auto-setup failed")
 		}
 	}
+
+	// The setup wizard generates and stores a VAPID keypair with the
+	// organization. Prefer it over the environment, otherwise an instance
+	// provisioned through the wizard has no working push keys at all.
+	loadStoredVAPIDKeys(ctx, orgService, notificationsService, logger)
 
 	// Setup Gin router
 	if cfg.Environment == "production" {
@@ -688,4 +708,33 @@ func connectRedis(url string) (*redis.Client, error) {
 		return nil, err
 	}
 	return client, nil
+}
+
+// loadStoredVAPIDKeys reads the keypair the setup wizard persisted with the
+// organization and hands it to the notifications service. Single-tenant, so
+// the first organization is the instance's organization.
+func loadStoredVAPIDKeys(ctx context.Context, orgService *org.Service, notifier *notifications.Service, logger zerolog.Logger) {
+	complete, err := orgService.IsSetupComplete(ctx)
+	if err != nil || !complete {
+		return
+	}
+
+	orgID, err := orgService.FirstOrganizationID(ctx)
+	if err != nil {
+		logger.Warn().Err(err).Msg("Could not resolve organization for VAPID keys")
+		return
+	}
+
+	var keys struct {
+		PublicKey  string `json:"public_key"`
+		PrivateKey string `json:"private_key"`
+	}
+	if err := orgService.GetConfigInto(ctx, orgID, "vapid", &keys); err != nil {
+		logger.Info().Msg("No stored VAPID keys; web push uses environment configuration")
+		return
+	}
+	notifier.SetVAPIDKeys(keys.PublicKey, keys.PrivateKey)
+	if notifier.HasVAPIDKeys() {
+		logger.Info().Msg("Web push enabled using the organization's stored VAPID keys")
+	}
 }

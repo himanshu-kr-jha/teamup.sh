@@ -59,6 +59,8 @@ export function ChatPage() {
   // retrigger the scroll-to-bottom effect below.
   const messages = useMemo(() => messagesResponse?.data || [], [messagesResponse]);
 
+  const activeChannel = channels.find((c) => c.id === channelId);
+
   // Send message mutation
   const sendMessageMutation = useMutation({
     mutationFn: (data: { channelId: string; content: string; tempId: string }) => channelsApi.sendMessage(data.channelId, data),
@@ -206,8 +208,12 @@ export function ChatPage() {
             <div className="flex items-center gap-3">
               <MessageSquare className="h-8 w-8 text-primary" />
               <div>
-                <h2 className="font-semibold">Current Channel</h2>
-                <p className="text-sm text-muted-foreground">{channels.find(c => c.id === channelId)?.type || 'group'} channel</p>
+                <h2 className="font-semibold">
+                  {activeChannel?.name || (channelId ? 'Channel' : 'No channel selected')}
+                </h2>
+                <p className="text-sm text-muted-foreground">
+                  {channelId ? `${activeChannel?.type || 'group'} channel` : 'Pick a channel to start reading'}
+                </p>
               </div>
             </div>
             <div className="flex-1" />

@@ -2,12 +2,14 @@ package notifications
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
 	"github.com/teamup/teamup/internal/auth"
+	"github.com/teamup/teamup/internal/httpx"
 )
 
 type Handler struct {
@@ -27,6 +29,33 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.DELETE("/notifications/:id", h.ArchiveNotification)
 	rg.POST("/notifications/subscribe", h.Subscribe)
 	rg.DELETE("/notifications/subscribe", h.Unsubscribe)
+	rg.GET("/notifications/unread-count", h.UnreadCount)
+	rg.GET("/notifications/vapid-key", h.VAPIDKey)
+}
+
+// VAPIDKey hands the browser the public half it needs to subscribe. The
+// private half never leaves the server.
+func (h *Handler) VAPIDKey(c *gin.Context) {
+	if !h.service.HasVAPIDKeys() {
+		c.JSON(http.StatusOK, gin.H{"publicKey": "", "enabled": false})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"publicKey": h.service.VAPIDPublicKey(), "enabled": true})
+}
+
+func (h *Handler) UnreadCount(c *gin.Context) {
+	user := auth.GetUserFromContext(c)
+	userID, err := uuid.Parse(user.UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+	count, err := h.service.UnreadCount(c.Request.Context(), userID)
+	if err != nil {
+		httpx.Error(c, err, "failed to count notifications")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"count": count})
 }
 
 func (h *Handler) ListNotifications(c *gin.Context) {
@@ -35,21 +64,35 @@ func (h *Handler) ListNotifications(c *gin.Context) {
 	unreadOnly := c.Query("unread_only") == "true"
 	limit := 50
 	if l := c.Query("limit"); l != "" {
-		// parse
+		if parsed, err := strconv.Atoi(l); err == nil {
+			limit = parsed
+		}
 	}
 
 	notifications, err := h.service.ListNotifications(c.Request.Context(), userID, unreadOnly, limit)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list notifications"})
+		httpx.Error(c, err, "failed to list notifications")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"notifications": notifications})
 }
 
 func (h *Handler) MarkRead(c *gin.Context) {
-	id, _ := uuid.Parse(c.Param("id"))
-	if err := h.service.MarkRead(c.Request.Context(), id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to mark read"})
+	user := auth.GetUserFromContext(c)
+	userID, err := uuid.Parse(user.UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	// Scoped to the recipient: a notification id must not be actionable by
+	// anyone else.
+	if err := h.service.MarkRead(c.Request.Context(), userID, id); err != nil {
+		httpx.Error(c, err, "failed to mark read")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "marked as read"})
@@ -67,8 +110,21 @@ func (h *Handler) MarkAllRead(c *gin.Context) {
 }
 
 func (h *Handler) ArchiveNotification(c *gin.Context) {
-	_, _ = uuid.Parse(c.Param("id"))
-	// UPDATE notifications SET archived_at = NOW() WHERE id = ...
+	user := auth.GetUserFromContext(c)
+	userID, err := uuid.Parse(user.UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	if err := h.service.Archive(c.Request.Context(), userID, id); err != nil {
+		httpx.Error(c, err, "failed to archive notification")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "archived"})
 }
 

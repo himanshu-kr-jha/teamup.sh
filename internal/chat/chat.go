@@ -3,6 +3,8 @@ package chat
 import (
 	"context"
 	"encoding/json"
+	"regexp"
+	"strings"
 	"time"
 
 	"fmt"
@@ -23,61 +25,126 @@ type Broadcaster interface {
 	BroadcastToChannel(channelID string, msg *protocol.Message, excludeUserID string)
 }
 
+// Notifier raises a notification for a user. An interface so chat does not
+// depend on the notifications package.
+type Notifier interface {
+	Notify(ctx context.Context, orgID, userID uuid.UUID, kind, title, body string, data map[string]any) error
+}
+
 type Service struct {
 	db          *pgxpool.Pool
 	redis       *redis.Client
 	logger      zerolog.Logger
 	broadcaster Broadcaster
+	notifier    Notifier
 }
 
+func (s *Service) SetNotifier(n Notifier) { s.notifier = n }
+
+// mentionPattern matches @-mentions of a channel member by name.
+var mentionPattern = regexp.MustCompile(`@([A-Za-z0-9._-]+)`)
+
+// notifyMentions raises a notification for each channel member named in the
+// message. Best effort, and never notifies the author about themselves.
+func (s *Service) notifyMentions(ctx context.Context, msg *Message) {
+	if s.notifier == nil {
+		return
+	}
+	names := mentionPattern.FindAllStringSubmatch(msg.Content, -1)
+	if len(names) == 0 {
+		return
+	}
+	handles := make([]string, 0, len(names))
+	for _, m := range names {
+		handles = append(handles, m[1])
+	}
+
+	rows, err := s.db.Query(ctx, `
+		SELECT u.id, c.org_id, COALESCE(c.name, 'a channel')
+		FROM channel_members cm
+		JOIN users u ON u.id = cm.user_id
+		JOIN channels c ON c.id = cm.channel_id
+		WHERE cm.channel_id = $1 AND u.id <> $2
+		  AND REPLACE(LOWER(u.name), ' ', '') = ANY($3)
+	`, msg.ChannelID, msg.UserID, lowerAll(handles))
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("mention lookup failed")
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var userID, orgID uuid.UUID
+		var channelName string
+		if err := rows.Scan(&userID, &orgID, &channelName); err != nil {
+			continue
+		}
+		if err := s.notifier.Notify(ctx, orgID, userID, "chat.mention",
+			"You were mentioned in "+channelName, msg.Content,
+			map[string]any{"channelId": msg.ChannelID.String(), "messageId": msg.ID.String()}); err != nil {
+			s.logger.Warn().Err(err).Msg("mention notification failed")
+		}
+	}
+}
+
+func lowerAll(in []string) []string {
+	out := make([]string, len(in))
+	for i, s := range in {
+		out[i] = strings.ToLower(s)
+	}
+	return out
+}
+
+// JSON tags matter here: these structs are serialised straight onto the wire
+// and the frontend reads camelCase.
 type Message struct {
-	ID          uuid.UUID
-	ChannelID   uuid.UUID
-	UserID      uuid.UUID
-	UserName    string
-	UserAvatar  string
-	Content     string
-	ReplyTo     *uuid.UUID
-	Attachments []Attachment
-	Reactions   map[string][]string
-	CreatedAt   time.Time
-	EditedAt    *time.Time
-	DeletedAt   *time.Time
+	ID          uuid.UUID           `json:"id"`
+	ChannelID   uuid.UUID           `json:"channelId"`
+	UserID      uuid.UUID           `json:"userId"`
+	UserName    string              `json:"userName"`
+	UserAvatar  string              `json:"userAvatar,omitempty"`
+	Content     string              `json:"content"`
+	ReplyTo     *uuid.UUID          `json:"replyTo,omitempty"`
+	Attachments []Attachment        `json:"attachments"`
+	Reactions   map[string][]string `json:"reactions"`
+	CreatedAt   time.Time           `json:"createdAt"`
+	EditedAt    *time.Time          `json:"editedAt,omitempty"`
+	DeletedAt   *time.Time          `json:"deletedAt,omitempty"`
 }
 
 type Attachment struct {
-	ID           string
-	Filename     string
-	ContentType  string
-	SizeBytes    int64
-	ObjectKey    string
-	ThumbnailKey *string
+	ID           string  `json:"id"`
+	Filename     string  `json:"filename"`
+	ContentType  string  `json:"contentType"`
+	SizeBytes    int64   `json:"sizeBytes"`
+	ObjectKey    string  `json:"objectKey"`
+	ThumbnailKey *string `json:"thumbnailKey,omitempty"`
 }
 
 type Channel struct {
-	ID          uuid.UUID
-	OrgID       uuid.UUID
-	TeamID      *uuid.UUID
-	Name        *string
-	Type        string
-	Description *string
-	CreatedBy   uuid.UUID
-	IsArchived  bool
-	IsPrivate   bool
-	MaxMembers  int
-	MemberCount int
-	UnreadCount int
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID          uuid.UUID  `json:"id"`
+	OrgID       uuid.UUID  `json:"orgId"`
+	TeamID      *uuid.UUID `json:"teamId,omitempty"`
+	Name        *string    `json:"name"`
+	Type        string     `json:"type"`
+	Description *string    `json:"description,omitempty"`
+	CreatedBy   uuid.UUID  `json:"createdBy"`
+	IsArchived  bool       `json:"isArchived"`
+	IsPrivate   bool       `json:"isPrivate"`
+	MaxMembers  int        `json:"maxMembers"`
+	MemberCount int        `json:"memberCount"`
+	UnreadCount int        `json:"unreadCount"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	UpdatedAt   time.Time  `json:"updatedAt"`
 }
 
 type ChannelMember struct {
-	ChannelID   uuid.UUID
-	UserID      uuid.UUID
-	Role        string
-	JoinedAt    time.Time
-	LastReadAt  *time.Time
-	NotifyLevel string
+	ChannelID   uuid.UUID  `json:"channelId"`
+	UserID      uuid.UUID  `json:"userId"`
+	Role        string     `json:"role"`
+	JoinedAt    time.Time  `json:"joinedAt"`
+	LastReadAt  *time.Time `json:"lastReadAt,omitempty"`
+	NotifyLevel string     `json:"notifyLevel"`
 }
 
 func NewService(db *pgxpool.Pool, redis *redis.Client) *Service {
@@ -292,6 +359,8 @@ func (s *Service) createMessage(ctx context.Context, msg *Message) error {
 			return fmt.Errorf("link attachment: %w", err)
 		}
 	}
+
+	s.notifyMentions(ctx, msg)
 	return nil
 }
 

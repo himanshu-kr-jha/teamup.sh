@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/teamup/teamup/internal/auth"
+	"github.com/teamup/teamup/internal/httpx"
 )
 
 type Handler struct {
@@ -26,6 +27,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.POST("/calls/:id/token", h.GetCallToken)
 	rg.POST("/calls/:id/record", h.StartRecording)
 	rg.POST("/calls/:id/end", h.EndCall)
+	rg.DELETE("/calls/:id/record", h.StopRecording)
 }
 
 func (h *Handler) ListCalls(c *gin.Context) {
@@ -33,9 +35,16 @@ func (h *Handler) ListCalls(c *gin.Context) {
 	orgID, _ := uuid.Parse(user.OrgID)
 	status := c.Query("status")
 
-	calls, err := h.service.ListCalls(c.Request.Context(), orgID, status)
+	var channelID *uuid.UUID
+	if raw := c.Query("channelId"); raw != "" {
+		if id, err := uuid.Parse(raw); err == nil {
+			channelID = &id
+		}
+	}
+
+	calls, err := h.service.ListCalls(c.Request.Context(), orgID, status, channelID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list calls"})
+		httpx.Error(c, err, "failed to list calls")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"calls": calls})
@@ -73,8 +82,9 @@ func (h *Handler) CreateCall(c *gin.Context) {
 }
 
 func (h *Handler) GetCall(c *gin.Context) {
+	orgID, _ := uuid.Parse(auth.GetUserFromContext(c).OrgID)
 	id, _ := uuid.Parse(c.Param("id"))
-	call, err := h.service.GetCall(c.Request.Context(), id)
+	call, err := h.service.GetCall(c.Request.Context(), orgID, id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "call not found"})
 		return
@@ -96,31 +106,60 @@ func (h *Handler) GetCallToken(c *gin.Context) {
 }
 
 func (h *Handler) StartRecording(c *gin.Context) {
-	id, _ := uuid.Parse(c.Param("id"))
-	call, err := h.service.GetCall(c.Request.Context(), id)
+	user := auth.GetUserFromContext(c)
+	if !user.HasAnyRole("owner", "admin", "manager") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you may not record calls"})
+		return
+	}
+	orgID, _ := uuid.Parse(user.OrgID)
+	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "call not found"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
 
-	if err := h.service.StartRecording(c.Request.Context(), call.RoomName); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start recording"})
+	call, err := h.service.StartRecording(c.Request.Context(), orgID, id)
+	if err != nil {
+		httpx.Error(c, err, "failed to start recording")
 		return
 	}
+	c.JSON(http.StatusOK, call)
+}
 
-	c.JSON(http.StatusOK, gin.H{"message": "recording started"})
+func (h *Handler) StopRecording(c *gin.Context) {
+	user := auth.GetUserFromContext(c)
+	if !user.HasAnyRole("owner", "admin", "manager") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you may not record calls"})
+		return
+	}
+	orgID, _ := uuid.Parse(user.OrgID)
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	if err := h.service.StopRecording(c.Request.Context(), orgID, id); err != nil {
+		httpx.Error(c, err, "failed to stop recording")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "recording stopped"})
 }
 
 func (h *Handler) EndCall(c *gin.Context) {
+	orgID, _ := uuid.Parse(auth.GetUserFromContext(c).OrgID)
 	id, _ := uuid.Parse(c.Param("id"))
-	call, err := h.service.GetCall(c.Request.Context(), id)
+	call, err := h.service.GetCall(c.Request.Context(), orgID, id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "call not found"})
 		return
 	}
 
 	if err := h.service.EndCall(c.Request.Context(), call.RoomName); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to end call"})
+		// The room may already be gone; the record still has to be closed.
+		h.service.logger.Warn().Err(err).Str("room", call.RoomName).Msg("LiveKit room teardown failed")
+	}
+	if err := h.service.MarkCallEnded(c.Request.Context(), orgID, id); err != nil {
+		httpx.Error(c, err, "failed to end call")
 		return
 	}
 
