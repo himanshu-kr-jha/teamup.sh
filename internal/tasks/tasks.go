@@ -233,7 +233,29 @@ func (s *Service) attachLabels(ctx context.Context, tasks []Task) ([]Task, error
 	return tasks, rows.Err()
 }
 
-func (s *Service) CreateTask(ctx context.Context, orgID, reporterID uuid.UUID, title, description, status, priority, taskType string, projectID, assigneeID *uuid.UUID, dueDate, startDate *time.Time, labels []string) (*Task, error) {
+func (s *Service) CreateTask(ctx context.Context, orgID, reporterID uuid.UUID, title, description, status, priority, taskType string, projectID, assigneeID *uuid.UUID, dueDate, startDate *time.Time, labels []string, isOrgAdmin bool) (*Task, error) {
+	if assigneeID != nil {
+		// Only UpdateTask used to confine the assignee to the organization, so
+		// creating a task assigned to another tenant's user went straight
+		// through.
+		var exists bool
+		if err := s.db.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL)`,
+			*assigneeID, orgID).Scan(&exists); err != nil {
+			return nil, fmt.Errorf("check assignee: %w", err)
+		}
+		if !exists {
+			return nil, apperrors.New(apperrors.CodeNotFound, "assignee not found in this organization")
+		}
+		mayAssign, err := s.MayAssign(ctx, orgID, reporterID, *assigneeID, isOrgAdmin)
+		if err != nil {
+			return nil, err
+		}
+		if !mayAssign {
+			return nil, apperrors.New(apperrors.CodeForbidden,
+				"you can only assign work to yourself or to somebody on a team you manage")
+		}
+	}
 	if status == "" {
 		status = "todo"
 	}
@@ -332,7 +354,7 @@ var (
 // validateUpdates checks the values, not just the field names. The whitelist
 // alone let a caller write an assignee or parent task belonging to another
 // organization, which then leaked that user's name back through the board.
-func (s *Service) validateUpdates(ctx context.Context, orgID uuid.UUID, updates map[string]interface{}) error {
+func (s *Service) validateUpdates(ctx context.Context, orgID, actorID uuid.UUID, updates map[string]interface{}, isOrgAdmin bool) error {
 	enum := func(field string, allowed map[string]bool) error {
 		raw, ok := updates[field]
 		if !ok {
@@ -370,6 +392,14 @@ func (s *Service) validateUpdates(ctx context.Context, orgID uuid.UUID, updates 
 		if !exists {
 			return apperrors.New(apperrors.CodeNotFound, "assignee not found in this organization")
 		}
+		mayAssign, err := s.MayAssign(ctx, orgID, actorID, id, isOrgAdmin)
+		if err != nil {
+			return err
+		}
+		if !mayAssign {
+			return apperrors.New(apperrors.CodeForbidden,
+				"you can only assign work to yourself or to somebody on a team you manage")
+		}
 		updates["assigneeId"] = id
 	}
 	if raw, ok := updates["parentTaskId"]; ok && raw != nil {
@@ -391,6 +421,62 @@ func (s *Service) validateUpdates(ctx context.Context, orgID uuid.UUID, updates 
 	return nil
 }
 
+// MayAssign decides whether actor may put assignee on a task.
+//
+// Assignment runs down the org chart, never up or sideways: a team's manager
+// may assign to anybody on that team or on a team beneath it, and anybody may
+// assign work to themselves. Organization owners and admins are not bounded by
+// the chart. Without this, any member could assign work to their manager.
+func (s *Service) MayAssign(ctx context.Context, orgID, actorID, assigneeID uuid.UUID, isOrgAdmin bool) (bool, error) {
+	if isOrgAdmin || actorID == assigneeID {
+		return true, nil
+	}
+
+	// Somebody who administers the organization is above the chart, even if
+	// they happen to sit on a team as an ordinary member. Without this a
+	// manager could assign work to the owner of the organization.
+	var targetAdministers bool
+	if err := s.db.QueryRow(ctx, `
+		SELECT COALESCE(u.is_admin, false)
+		    OR u.role IN ('owner', 'admin')
+		    OR EXISTS (
+		        SELECT 1 FROM user_roles ur
+		        JOIN roles r ON r.id = ur.role_id
+		        WHERE ur.user_id = u.id AND r.name IN ('owner', 'admin'))
+		FROM users u WHERE u.id = $1 AND u.org_id = $2
+	`, assigneeID, orgID).Scan(&targetAdministers); err != nil {
+		return false, fmt.Errorf("check assignee standing: %w", err)
+	}
+	if targetAdministers {
+		return false, nil
+	}
+
+	// Walk down from every team the actor manages, following parent_id, and
+	// ask whether the assignee sits anywhere in that subtree.
+	var ok bool
+	err := s.db.QueryRow(ctx, `
+		WITH RECURSIVE managed AS (
+			SELECT t.id
+			FROM teams t
+			WHERE t.org_id = $1 AND t.manager_id = $2 AND t.deleted_at IS NULL
+			UNION
+			SELECT child.id
+			FROM teams child
+			JOIN managed ON child.parent_id = managed.id
+			WHERE child.org_id = $1 AND child.deleted_at IS NULL
+		)
+		SELECT EXISTS (
+			SELECT 1 FROM team_members tm
+			JOIN managed ON managed.id = tm.team_id
+			WHERE tm.user_id = $3
+		)
+	`, orgID, actorID, assigneeID).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("check assignment authority: %w", err)
+	}
+	return ok, nil
+}
+
 func parseUUIDValue(raw interface{}) (uuid.UUID, error) {
 	switch v := raw.(type) {
 	case string:
@@ -404,12 +490,12 @@ func parseUUIDValue(raw interface{}) (uuid.UUID, error) {
 
 // UpdateTask applies a partial change and records one activity entry per field
 // that actually moved, so the task's history reflects what changed.
-func (s *Service) UpdateTask(ctx context.Context, orgID, id, actorID uuid.UUID, updates map[string]interface{}) (*Task, error) {
+func (s *Service) UpdateTask(ctx context.Context, orgID, id, actorID uuid.UUID, updates map[string]interface{}, isOrgAdmin bool) (*Task, error) {
 	before, err := s.GetTask(ctx, orgID, id)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.validateUpdates(ctx, orgID, updates); err != nil {
+	if err := s.validateUpdates(ctx, orgID, actorID, updates, isOrgAdmin); err != nil {
 		return nil, err
 	}
 
@@ -766,6 +852,29 @@ func (s *Service) ListWatchers(ctx context.Context, orgID, taskID uuid.UUID) ([]
 
 // notifyWatchers tells everyone following a task that it changed. The person
 // who made the change is never notified about their own action.
+// NotifyAddedToTask tells somebody they were put on a task. Being added is not
+// something you would otherwise notice.
+func (s *Service) NotifyAddedToTask(ctx context.Context, orgID, taskID, userID, actorID uuid.UUID) {
+	if s.notifier == nil || userID == actorID {
+		return
+	}
+	var taskTitle, actorName string
+	if err := s.db.QueryRow(ctx, `
+		SELECT t.title, COALESCE(a.name, 'Somebody')
+		FROM tasks t LEFT JOIN users a ON a.id = $2
+		WHERE t.id = $1
+	`, taskID, actorID).Scan(&taskTitle, &actorName); err != nil {
+		s.logger.Warn().Err(err).Msg("task add notification lookup failed")
+		return
+	}
+	if err := s.notifier.Notify(ctx, orgID, userID, "task.added",
+		"You were added to "+taskTitle,
+		actorName+" added you to "+taskTitle,
+		map[string]any{"taskId": taskID.String()}); err != nil {
+		s.logger.Warn().Err(err).Msg("task add notification failed")
+	}
+}
+
 func (s *Service) notifyWatchers(ctx context.Context, orgID, taskID, actorID uuid.UUID, title, body string) {
 	if s.notifier == nil {
 		return

@@ -131,6 +131,7 @@ export const channelsApi = {
   get: (id: string) => api.get(`/channels/${id}`),
   update: (id: string, data: Partial<{ name: string; description: string; isPrivate: boolean }>) => api.patch(`/channels/${id}`, data),
   delete: (id: string) => api.delete(`/channels/${id}`),
+  listMembers: (id: string) => getList(`/channels/${id}/members`, 'members'),
   addMember: (id: string, userId: string, role?: string) => api.post(`/channels/${id}/members`, { userId, role }),
   removeMember: (id: string, userId: string) => api.delete(`/channels/${id}/members/${userId}`),
   markRead: (id: string, messageId: string) => api.post(`/channels/${id}/read`, { messageId }),

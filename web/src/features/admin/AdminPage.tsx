@@ -479,6 +479,8 @@ function TeamsTab({ isAdmin }: { isAdmin: boolean }) {
   const [description, setDescription] = useState('');
   const [addTo, setAddTo] = useState<any | null>(null);
   const [memberId, setMemberId] = useState('');
+  const [managerFor, setManagerFor] = useState<any | null>(null);
+  const [managerId, setManagerId] = useState('');
 
   const { data, isLoading } = useQuery({ queryKey: ['teams'], queryFn: () => orgApi.listTeams() });
   const { data: usersData } = useQuery({ queryKey: ['users'], queryFn: () => orgApi.listUsers() });
@@ -518,9 +520,13 @@ function TeamsTab({ isAdmin }: { isAdmin: boolean }) {
                   {t.memberCount} {t.memberCount === 1 ? 'member' : 'members'}
                   {t.description ? ` · ${t.description}` : ''}
                 </p>
+                <p className="truncate text-sm text-muted-foreground">
+                  Manager: {users.find((u: any) => u.id === t.managerId)?.name ?? 'nobody yet'}
+                </p>
               </div>
               {isAdmin && (
                 <div className="flex gap-2">
+                  <Button variant="outline" size="sm" onClick={() => setManagerFor(t)}>Set manager</Button>
                   <Button variant="outline" size="sm" onClick={() => setAddTo(t)}>Add member</Button>
                   <Button variant="ghost" size="sm" onClick={() => remove(t.id)}>
                     <Trash2 className="h-4 w-4" />
@@ -531,6 +537,39 @@ function TeamsTab({ isAdmin }: { isAdmin: boolean }) {
           ))}
         </CardContent>
       </Card>
+
+      <FormDialog
+        open={!!managerFor}
+        onOpenChange={(o) => {
+          if (!o) {
+            setManagerFor(null);
+            setManagerId('');
+          }
+        }}
+        title={`Manager of ${managerFor?.name ?? 'team'}`}
+        description="The manager can assign work to anybody on this team, or on a team beneath it."
+        submitLabel="Save manager"
+        disabledReason={!managerId ? 'Choose somebody.' : undefined}
+        onSubmit={async () => {
+          await orgApi.updateTeam(managerFor.id, { managerId });
+          queryClient.invalidateQueries({ queryKey: ['teams'] });
+          setManagerFor(null);
+          setManagerId('');
+          toast.success('Manager set.');
+        }}
+      >
+        <div className="space-y-2">
+          <Label htmlFor="teamManager">Manager</Label>
+          <Select value={managerId} onValueChange={setManagerId}>
+            <SelectTrigger id="teamManager"><SelectValue placeholder="Choose somebody" /></SelectTrigger>
+            <SelectContent>
+              {users.map((u: any) => (
+                <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </FormDialog>
 
       <FormDialog
         open={createOpen}

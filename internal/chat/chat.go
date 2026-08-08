@@ -141,6 +141,9 @@ type Channel struct {
 type ChannelMember struct {
 	ChannelID   uuid.UUID  `json:"channelId"`
 	UserID      uuid.UUID  `json:"userId"`
+	Name        string     `json:"name"`
+	Email       string     `json:"email"`
+	AvatarURL   *string    `json:"avatarUrl,omitempty"`
 	Role        string     `json:"role"`
 	JoinedAt    time.Time  `json:"joinedAt"`
 	LastReadAt  *time.Time `json:"lastReadAt,omitempty"`
@@ -190,8 +193,15 @@ func (s *Service) HandleSendMessage(ctx context.Context, conn websocket.WSConnec
 		return
 	}
 
-	if !s.isMember(ctx, channelID, userID) {
-		s.logger.Warn().Str("user", conn.UserID()).Str("channel", payload.ChannelID).Msg("User not member of channel")
+	orgID, err := uuid.Parse(conn.OrgID())
+	if err != nil {
+		s.logger.Error().Err(err).Msg("Invalid org ID")
+		return
+	}
+
+	if err := s.AuthorizePost(ctx, orgID, channelID, userID, false); err != nil {
+		s.logger.Warn().Err(err).Str("user", conn.UserID()).Str("channel", payload.ChannelID).
+			Msg("Refused to post in channel")
 		return
 	}
 
@@ -365,6 +375,19 @@ func (s *Service) createMessage(ctx context.Context, msg *Message) error {
 		return fmt.Errorf("create message: %w", err)
 	}
 
+	// The history query joins the author in, but a freshly sent message was
+	// returned with an empty name, so the bubble the sender saw was unattributed
+	// until the next refetch.
+	if msg.UserName == "" {
+		var avatar *string
+		if err := s.db.QueryRow(ctx,
+			`SELECT name, avatar_url FROM users WHERE id = $1`, msg.UserID).Scan(&msg.UserName, &avatar); err != nil {
+			s.logger.Warn().Err(err).Msg("could not load message author")
+		} else if avatar != nil {
+			msg.UserAvatar = *avatar
+		}
+	}
+
 	// Attachments are filed against the channel, which is what both the upload
 	// URL and the listing use as their parent. Re-pointing them at the message
 	// id used to orphan them: the row no longer matched a channel listing, and
@@ -372,6 +395,9 @@ func (s *Service) createMessage(ctx context.Context, msg *Message) error {
 	// message id can never match.
 
 	s.notifyMentions(ctx, msg)
+	// An announcement is meant to reach people who are not watching the
+	// channel, so everybody in it hears about it — not only those named.
+	s.NotifyAnnouncement(ctx, msg)
 	return nil
 }
 
@@ -543,7 +569,7 @@ func (s *Service) ListChannels(ctx context.Context, orgID, userID uuid.UUID) ([]
 		FROM channels c
 		LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.user_id = $2
 		WHERE c.org_id = $1 AND c.deleted_at IS NULL AND COALESCE(c.is_archived, false) = false
-		  AND (cm.user_id IS NOT NULL OR c.type = 'public')
+		  AND (cm.user_id IS NOT NULL OR c.type IN ('public', 'announcement'))
 		ORDER BY c.created_at
 	`, orgID, userID)
 	if err != nil {
@@ -580,7 +606,7 @@ func (s *Service) CreateChannel(ctx context.Context, orgID, userID uuid.UUID, na
 		RETURNING id, org_id, team_id, name, type, description, created_by,
 		          COALESCE(is_archived, false), COALESCE(is_private, true),
 		          COALESCE(max_members, 1000), created_at, updated_at
-	`, orgID, teamID, name, channelType, description, userID, channelType != "public").Scan(
+	`, orgID, teamID, name, channelType, description, userID, !isOpenToOrg(channelType)).Scan(
 		&c.ID, &c.OrgID, &c.TeamID, &c.Name, &c.Type, &c.Description, &c.CreatedBy,
 		&c.IsArchived, &c.IsPrivate, &c.MaxMembers, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
@@ -594,10 +620,28 @@ func (s *Service) CreateChannel(ctx context.Context, orgID, userID uuid.UUID, na
 		return nil, fmt.Errorf("add creator to channel: %w", err)
 	}
 
+	// An org-wide channel belongs to everybody from the moment it exists.
+	// Enrolling up front rather than on first visit is what lets an
+	// announcement reach somebody who has never opened the channel.
+	if isOpenToOrg(channelType) {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO channel_members (channel_id, user_id, role, joined_at)
+			SELECT $1, u.id, 'member', NOW()
+			FROM users u
+			WHERE u.org_id = $2 AND u.deleted_at IS NULL AND u.id <> $3
+			ON CONFLICT (channel_id, user_id) DO NOTHING
+		`, c.ID, orgID, userID); err != nil {
+			return nil, fmt.Errorf("enrol organization in channel: %w", err)
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	c.MemberCount = 1
+	if err := s.db.QueryRow(ctx,
+		`SELECT COUNT(*) FROM channel_members WHERE channel_id = $1`, c.ID).Scan(&c.MemberCount); err != nil {
+		c.MemberCount = 1
+	}
 	return &c, nil
 }
 
@@ -653,6 +697,95 @@ func (s *Service) ArchiveChannel(ctx context.Context, orgID, channelID uuid.UUID
 	return nil
 }
 
+// isOpenToOrg reports whether every member of the organization belongs in a
+// channel of this type. Public channels are open to all; announcement channels
+// are too, but only their administrators may post.
+func isOpenToOrg(channelType string) bool {
+	return channelType == "public" || channelType == "announcement"
+}
+
+// EnsureMember gives the caller a membership row in an org-wide channel.
+//
+// Public channels were listed to the whole organization but only ever had the
+// creator as a member, so everybody else could see the channel and was refused
+// on every write — posting, attaching a file, even marking it read. Rather than
+// special-casing "public" at each of those checks, anybody who opens an
+// org-wide channel joins it. One row then makes membership, unread markers,
+// member counts and attachment access all agree.
+//
+// Returns whether a row was actually created, so callers can announce a join
+// exactly once.
+func (s *Service) EnsureMember(ctx context.Context, orgID, channelID, userID uuid.UUID) (bool, error) {
+	tag, err := s.db.Exec(ctx, `
+		INSERT INTO channel_members (channel_id, user_id, role, joined_at)
+		SELECT c.id, u.id, 'member', NOW()
+		FROM channels c JOIN users u ON u.org_id = c.org_id
+		WHERE c.id = $1 AND u.id = $2 AND c.org_id = $3
+		  AND c.type IN ('public', 'announcement')
+		  AND c.deleted_at IS NULL AND u.deleted_at IS NULL
+		  AND COALESCE(c.is_archived, false) = false
+		ON CONFLICT (channel_id, user_id) DO NOTHING
+	`, channelID, userID, orgID)
+	if err != nil {
+		return false, fmt.Errorf("join open channel: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// EnrolInOpenChannels puts a user into every public and announcement channel
+// in their organization. Called when somebody is added to the organization, so
+// they arrive already in the channels that belong to everybody.
+func (s *Service) EnrolInOpenChannels(ctx context.Context, orgID, userID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO channel_members (channel_id, user_id, role, joined_at)
+		SELECT c.id, $2, 'member', NOW()
+		FROM channels c
+		WHERE c.org_id = $1 AND c.type IN ('public', 'announcement')
+		  AND c.deleted_at IS NULL AND COALESCE(c.is_archived, false) = false
+		ON CONFLICT (channel_id, user_id) DO NOTHING
+	`, orgID, userID)
+	if err != nil {
+		return fmt.Errorf("enrol in open channels: %w", err)
+	}
+	return nil
+}
+
+// AuthorizePost decides whether someone may post in a channel, joining them to
+// an org-wide channel on the way through. Both the REST handler and the
+// WebSocket handler go through here so the two cannot drift apart.
+//
+// isOrgAdmin comes from the caller's organization roles, which the service
+// cannot see for itself.
+func (s *Service) AuthorizePost(ctx context.Context, orgID, channelID, userID uuid.UUID, isOrgAdmin bool) error {
+	var channelType string
+	err := s.db.QueryRow(ctx, `
+		SELECT type FROM channels
+		WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
+	`, channelID, orgID).Scan(&channelType)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return apperrors.ErrNotFound
+		}
+		return fmt.Errorf("load channel: %w", err)
+	}
+
+	if isOpenToOrg(channelType) {
+		if _, err := s.EnsureMember(ctx, orgID, channelID, userID); err != nil {
+			return err
+		}
+		if channelType == "announcement" && !isOrgAdmin && !s.IsChannelAdmin(ctx, channelID, userID) {
+			return apperrors.New(apperrors.CodeForbidden,
+				"only administrators can post in an announcement channel")
+		}
+		return nil
+	}
+
+	if !s.isMember(ctx, channelID, userID) {
+		return apperrors.New(apperrors.CodeForbidden, "you are not a member of this channel")
+	}
+	return nil
+}
+
 // AddMember is idempotent and refuses users from another organization.
 func (s *Service) AddMember(ctx context.Context, orgID, channelID, userID uuid.UUID, role string) error {
 	if role == "" {
@@ -681,6 +814,91 @@ func (s *Service) AddMember(ctx context.Context, orgID, channelID, userID uuid.U
 		}
 	}
 	return nil
+}
+
+// ListMembers backs the channel settings panel, which had no way to find out
+// who was in a channel — there was no route for it at all.
+func (s *Service) ListMembers(ctx context.Context, orgID, channelID uuid.UUID) ([]ChannelMember, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT cm.channel_id, cm.user_id, u.name, u.email, u.avatar_url,
+		       cm.role, cm.joined_at, cm.last_read_at, COALESCE(cm.notify_level, 'all')
+		FROM channel_members cm
+		JOIN users u ON u.id = cm.user_id
+		JOIN channels c ON c.id = cm.channel_id
+		WHERE cm.channel_id = $1 AND c.org_id = $2 AND u.deleted_at IS NULL
+		ORDER BY CASE cm.role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, u.name
+	`, channelID, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("list channel members: %w", err)
+	}
+	defer rows.Close()
+
+	members := []ChannelMember{}
+	for rows.Next() {
+		var m ChannelMember
+		if err := rows.Scan(&m.ChannelID, &m.UserID, &m.Name, &m.Email, &m.AvatarURL,
+			&m.Role, &m.JoinedAt, &m.LastReadAt, &m.NotifyLevel); err != nil {
+			return nil, fmt.Errorf("scan channel member: %w", err)
+		}
+		members = append(members, m)
+	}
+	return members, rows.Err()
+}
+
+// NotifyAddedToChannel tells somebody they were put in a channel. Best effort:
+// failing to notify must not undo the membership.
+func (s *Service) NotifyAddedToChannel(ctx context.Context, orgID, channelID, userID, actorID uuid.UUID) {
+	if s.notifier == nil || userID == actorID {
+		return
+	}
+	var channelName, actorName string
+	if err := s.db.QueryRow(ctx, `
+		SELECT COALESCE(c.name, 'a channel'), COALESCE(a.name, 'Somebody')
+		FROM channels c LEFT JOIN users a ON a.id = $2
+		WHERE c.id = $1
+	`, channelID, actorID).Scan(&channelName, &actorName); err != nil {
+		s.logger.Warn().Err(err).Msg("channel add notification lookup failed")
+		return
+	}
+	if err := s.notifier.Notify(ctx, orgID, userID, "chat.added",
+		"You were added to "+channelName,
+		actorName+" added you to "+channelName,
+		map[string]any{"channelId": channelID.String()}); err != nil {
+		s.logger.Warn().Err(err).Msg("channel add notification failed")
+	}
+}
+
+// NotifyAnnouncement tells everybody in an announcement channel that something
+// was posted. Announcements are the one kind of message that is meant to reach
+// people who are not looking at the channel.
+func (s *Service) NotifyAnnouncement(ctx context.Context, msg *Message) {
+	if s.notifier == nil {
+		return
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT cm.user_id, c.org_id, COALESCE(c.name, 'Announcements')
+		FROM channel_members cm
+		JOIN channels c ON c.id = cm.channel_id
+		WHERE cm.channel_id = $1 AND cm.user_id <> $2 AND c.type = 'announcement'
+	`, msg.ChannelID, msg.UserID)
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("announcement recipient lookup failed")
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var userID, orgID uuid.UUID
+		var channelName string
+		if err := rows.Scan(&userID, &orgID, &channelName); err != nil {
+			continue
+		}
+		if err := s.notifier.Notify(ctx, orgID, userID, "chat.announcement",
+			channelName, msg.Content,
+			map[string]any{"channelId": msg.ChannelID.String(), "messageId": msg.ID.String()}); err != nil {
+			s.logger.Warn().Err(err).Msg("announcement notification failed")
+		}
+	}
 }
 
 func (s *Service) RemoveMember(ctx context.Context, orgID, channelID, userID uuid.UUID) error {
@@ -796,9 +1014,9 @@ func (s *Service) RemoveReaction(ctx context.Context, messageID, userID uuid.UUI
 
 // SendMessage is the HTTP path onto the same storage the WebSocket uses, so a
 // client without a live socket still gets a persisted, broadcast message.
-func (s *Service) SendMessage(ctx context.Context, channelID, userID uuid.UUID, content string, replyTo *uuid.UUID) (*Message, error) {
-	if !s.isMember(ctx, channelID, userID) {
-		return nil, apperrors.New(apperrors.CodeForbidden, "you are not a member of this channel")
+func (s *Service) SendMessage(ctx context.Context, orgID, channelID, userID uuid.UUID, content string, replyTo *uuid.UUID, isOrgAdmin bool) (*Message, error) {
+	if err := s.AuthorizePost(ctx, orgID, channelID, userID, isOrgAdmin); err != nil {
+		return nil, err
 	}
 	msg := &Message{
 		ID:        uuid.New(),

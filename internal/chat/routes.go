@@ -29,6 +29,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.GET("/channels/:id", h.GetChannel)
 	rg.PATCH("/channels/:id", h.UpdateChannel)
 	rg.DELETE("/channels/:id", h.DeleteChannel)
+	rg.GET("/channels/:id/members", h.ListMembers)
 	rg.POST("/channels/:id/members", h.AddMember)
 	rg.DELETE("/channels/:id/members/:userId", h.RemoveMember)
 	rg.GET("/channels/:id/messages", h.ListMessages)
@@ -127,22 +128,48 @@ func (h *Handler) requireChannelAdmin(c *gin.Context, cl caller, channelID uuid.
 	return false
 }
 
-// requireMembership keeps channel-scoped reads and writes to members. Public
-// channels are readable by anyone in the organization.
+// requireMembership keeps channel-scoped reads and writes to members.
+//
+// Public and announcement channels belong to the whole organization, so
+// touching one joins it. Without that, everybody but the creator saw the
+// channel and was refused on every write.
 func (h *Handler) requireMembership(c *gin.Context, cl caller, channelID uuid.UUID, writing bool) bool {
-	ch, err := h.service.GetChannel(c.Request.Context(), cl.OrgID, channelID)
+	ctx := c.Request.Context()
+	ch, err := h.service.GetChannel(ctx, cl.OrgID, channelID)
 	if err != nil {
 		httpx.Error(c, apperrors.ErrNotFound, "channel not found")
 		return false
 	}
-	if h.service.isMember(c.Request.Context(), channelID, cl.UserID) {
+
+	if isOpenToOrg(ch.Type) {
+		if _, err := h.service.EnsureMember(ctx, cl.OrgID, channelID, cl.UserID); err != nil {
+			httpx.Error(c, err, "failed to join channel")
+			return false
+		}
+		// Announcements are broadcast, not conversation: everyone reads,
+		// only the people running the channel post.
+		if writing && ch.Type == "announcement" && !h.mayAdminister(c, cl, channelID) {
+			httpx.Error(c, apperrors.New(apperrors.CodeForbidden,
+				"only administrators can post in an announcement channel"), "access denied")
+			return false
+		}
 		return true
 	}
-	if !writing && ch.Type == "public" {
+
+	if h.service.isMember(ctx, channelID, cl.UserID) {
 		return true
 	}
 	httpx.Error(c, apperrors.New(apperrors.CodeForbidden, "you are not a member of this channel"), "access denied")
 	return false
+}
+
+// mayAdminister answers the same question as requireChannelAdmin without
+// writing a response, for callers that want to branch on it.
+func (h *Handler) mayAdminister(c *gin.Context, cl caller, channelID uuid.UUID) bool {
+	if h.service.IsChannelAdmin(c.Request.Context(), channelID, cl.UserID) {
+		return true
+	}
+	return auth.GetUserFromContext(c).HasAnyRole("owner", "admin")
 }
 
 func (h *Handler) ListChannels(c *gin.Context) {
@@ -262,6 +289,28 @@ func (h *Handler) DeleteChannel(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "archived"})
 }
 
+// ListMembers backs the channel settings panel. Readable by anyone who can
+// read the channel; joining an org-wide channel happens on the way through.
+func (h *Handler) ListMembers(c *gin.Context) {
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	channelID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	if !h.requireMembership(c, cl, channelID, false) {
+		return
+	}
+	members, err := h.service.ListMembers(c.Request.Context(), cl.OrgID, channelID)
+	if err != nil {
+		httpx.Error(c, err, "failed to list members")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"members": members})
+}
+
 func (h *Handler) AddMember(c *gin.Context) {
 	cl, ok := callerFrom(c)
 	if !ok {
@@ -291,6 +340,8 @@ func (h *Handler) AddMember(c *gin.Context) {
 		httpx.Error(c, err, "failed to add member")
 		return
 	}
+	// Being put in a channel is not something you would otherwise notice.
+	h.service.NotifyAddedToChannel(c.Request.Context(), cl.OrgID, channelID, userID, cl.UserID)
 	c.JSON(http.StatusOK, gin.H{"message": "member added"})
 }
 
@@ -381,7 +432,8 @@ func (h *Handler) SendMessage(c *gin.Context) {
 		replyTo = &id
 	}
 
-	msg, err := h.service.SendMessage(c.Request.Context(), channelID, cl.UserID, req.Content, replyTo)
+	isOrgAdmin := auth.GetUserFromContext(c).HasAnyRole("owner", "admin")
+	msg, err := h.service.SendMessage(c.Request.Context(), cl.OrgID, channelID, cl.UserID, req.Content, replyTo, isOrgAdmin)
 	if err != nil {
 		httpx.Error(c, err, "failed to send message")
 		return

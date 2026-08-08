@@ -107,3 +107,26 @@ func SeedChannel(t *testing.T, p *pgxpool.Pool, org *Org, name string, members .
 	}
 	return id
 }
+
+// SeedTeam creates a team with a manager and members. The org chart is what
+// decides who may assign work to whom, so tests need to build one.
+func SeedTeam(t *testing.T, p *pgxpool.Pool, org *Org, name string, managerID *uuid.UUID, parentID *uuid.UUID, members ...uuid.UUID) uuid.UUID {
+	t.Helper()
+	var teamID uuid.UUID
+	if err := p.QueryRow(context.Background(), `
+		INSERT INTO teams (id, org_id, parent_id, name, manager_id, created_at, updated_at)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, NOW(), NOW())
+		RETURNING id
+	`, org.ID, parentID, name, managerID).Scan(&teamID); err != nil {
+		t.Fatalf("seed team: %v", err)
+	}
+	for _, m := range members {
+		if _, err := p.Exec(context.Background(), `
+			INSERT INTO team_members (team_id, user_id, joined_at) VALUES ($1, $2, NOW())
+			ON CONFLICT DO NOTHING
+		`, teamID, m); err != nil {
+			t.Fatalf("seed team member: %v", err)
+		}
+	}
+	return teamID
+}

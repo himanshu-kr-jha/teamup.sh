@@ -1,6 +1,8 @@
 package tasks
 
 import (
+	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -9,6 +11,7 @@ import (
 
 	"github.com/teamup/teamup/internal/auth"
 	"github.com/teamup/teamup/internal/httpx"
+	apperrors "github.com/teamup/teamup/pkg/errors"
 )
 
 type Handler struct {
@@ -144,7 +147,8 @@ func (h *Handler) CreateTask(c *gin.Context) {
 
 	task, err := h.service.CreateTask(c.Request.Context(), cl.OrgID, cl.UserID,
 		req.Title, req.Description, req.Status, req.Priority, req.TaskType,
-		projectID, assigneeID, dueDate, startDate, req.Labels)
+		projectID, assigneeID, dueDate, startDate, req.Labels,
+		auth.GetUserFromContext(c).HasAnyRole("owner", "admin"))
 	if err != nil {
 		httpx.Error(c, err, "failed to create task")
 		return
@@ -205,7 +209,8 @@ func (h *Handler) UpdateTask(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	task, err := h.service.UpdateTask(c.Request.Context(), cl.OrgID, id, cl.UserID, req)
+	task, err := h.service.UpdateTask(c.Request.Context(), cl.OrgID, id, cl.UserID, req,
+		auth.GetUserFromContext(c).HasAnyRole("owner", "admin"))
 	if err != nil {
 		httpx.Error(c, err, "failed to update task")
 		return
@@ -396,12 +401,46 @@ func (h *Handler) AddWatcher(c *gin.Context) {
 	if !ok {
 		return
 	}
-	// Following is always self-service: honouring an arbitrary userId let one
-	// member sign another up for every change notification on a task.
-	if err := h.service.AddWatcher(c.Request.Context(), cl.OrgID, id, cl.UserID); err != nil {
+	// Following yourself is always allowed. Putting somebody else on a task
+	// follows the org chart, exactly like assigning work to them — otherwise
+	// any member could sign anybody up for every notification on any task.
+	target := cl.UserID
+	var req struct {
+		UserID string `json:"userId" binding:"omitempty,uuid"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.UserID != "" {
+		parsed, err := uuid.Parse(req.UserID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid userId"})
+			return
+		}
+		target = parsed
+	}
+
+	ctx := c.Request.Context()
+	if target != cl.UserID {
+		mayAdd, err := h.service.MayAssign(ctx, cl.OrgID, cl.UserID, target,
+			auth.GetUserFromContext(c).HasAnyRole("owner", "admin"))
+		if err != nil {
+			httpx.Error(c, err, "failed to add watcher")
+			return
+		}
+		if !mayAdd {
+			httpx.Error(c, apperrors.New(apperrors.CodeForbidden,
+				"you can only add yourself or somebody on a team you manage"), "access denied")
+			return
+		}
+	}
+
+	if err := h.service.AddWatcher(ctx, cl.OrgID, id, target); err != nil {
 		httpx.Error(c, err, "failed to add watcher")
 		return
 	}
+	h.service.NotifyAddedToTask(ctx, cl.OrgID, id, target, cl.UserID)
 	c.JSON(http.StatusOK, gin.H{"message": "watching"})
 }
 

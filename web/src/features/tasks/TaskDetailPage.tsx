@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ChevronLeft, Calendar, MessageSquare, MoreVertical } from 'lucide-react';
+import { ChevronLeft, Calendar, MessageSquare, MoreVertical, UserPlus, History } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Textarea } from '@/shared/components/ui/textarea';
@@ -13,6 +13,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { tasksApi, orgApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
+import { Label } from '@/shared/components/ui/label';
+import { FormDialog } from '@/shared/components/FormDialog';
 import { useAuth } from '@/features/auth/AuthProvider';
 
 interface Task {
@@ -59,6 +61,7 @@ export function TaskDetailPage() {
   const members = membersData?.data ?? [];
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const toast = useToast();
   const [editing, setEditing] = useState(false);
   const [showCommentForm, setShowCommentForm] = useState(false);
   const [commentText, setCommentText] = useState('');
@@ -91,10 +94,14 @@ export function TaskDetailPage() {
   const addCommentMutation = useMutation({
     mutationFn: (content: string) => tasksApi.addComment(taskId!, content),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['task', taskId] });
+      // The comment list is its own query; invalidating only the task left the
+      // new comment invisible, so posting looked like it had failed.
+      queryClient.invalidateQueries({ queryKey: ['task-comments', taskId] });
+      queryClient.invalidateQueries({ queryKey: ['task-activities', taskId] });
       setCommentText('');
       setShowCommentForm(false);
     },
+    onError: (err) => toast.error(apiErrorMessage(err, 'Could not post that comment.')),
   });
 
   if (isLoading) {
@@ -344,10 +351,7 @@ export function TaskDetailPage() {
                   </form>
                 )}
 
-                <div className="space-y-4">
-                  {/* Comments would be fetched here */}
-                  <p className="text-muted-foreground text-center py-8">No comments yet. Be the first to comment!</p>
-                </div>
+                <CommentList taskId={taskId!} />
               </CardContent>
             </Card>
 
@@ -357,7 +361,7 @@ export function TaskDetailPage() {
                 <CardTitle>Activity</CardTitle>
               </CardHeader>
               <CardContent>
-                <p className="text-muted-foreground text-center py-8">Activity log coming soon...</p>
+                <ActivityList taskId={taskId!} />
               </CardContent>
             </Card>
           </div>
@@ -427,41 +431,177 @@ function LabelsCard({ taskId, labels }: { taskId: string; labels: any[] }) {
   );
 }
 
+/** Comments were posted but never displayed, so the page always read
+ *  "No comments yet" no matter how many you left. */
+function CommentList({ taskId }: { taskId: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['task-comments', taskId],
+    queryFn: () => tasksApi.listComments(taskId),
+  });
+  const comments = data?.data ?? [];
+
+  if (isLoading) return <p className="py-4 text-sm text-muted-foreground">Loading comments…</p>;
+  if (comments.length === 0) {
+    return <p className="py-8 text-center text-muted-foreground">No comments yet. Be the first to comment!</p>;
+  }
+
+  return (
+    <ul className="space-y-4">
+      {comments.map((comment: any) => (
+        <li key={comment.id} className="flex gap-3">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10">
+            <span className="text-sm font-medium text-primary">
+              {(comment.userName || '?').charAt(0).toUpperCase()}
+            </span>
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm">
+              <span className="font-medium">{comment.userName || 'Someone'}</span>{' '}
+              <span className="text-muted-foreground">{formatRelativeTime(comment.createdAt)}</span>
+            </p>
+            <p className="whitespace-pre-wrap break-words text-sm">{comment.content}</p>
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** The task's history. Every field change is already recorded server-side;
+ *  the page just never asked for it. */
+function ActivityList({ taskId }: { taskId: string }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['task-activities', taskId],
+    queryFn: () => tasksApi.getActivities(taskId),
+  });
+  const activities = data?.data ?? [];
+
+  if (isLoading) return <p className="py-4 text-sm text-muted-foreground">Loading history…</p>;
+  if (activities.length === 0) {
+    return <p className="py-8 text-center text-muted-foreground">Nothing has changed yet.</p>;
+  }
+
+  return (
+    <ul className="space-y-3">
+      {activities.map((a: any) => (
+        <li key={a.id} className="flex items-start gap-3 text-sm">
+          <History className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+          <div className="min-w-0">
+            <p>
+              <span className="font-medium">{a.userName || 'Someone'}</span> changed{' '}
+              <span className="font-medium">{a.field}</span>
+              {a.oldValue ? <> from <span className="text-muted-foreground">{a.oldValue}</span></> : null}
+              {a.newValue ? <> to <span className="text-muted-foreground">{a.newValue}</span></> : null}
+            </p>
+            <p className="text-xs text-muted-foreground">{formatRelativeTime(a.createdAt)}</p>
+          </div>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Who is on this task. Anybody can put themselves on it; putting somebody
+ *  else on it follows the same org chart as assigning them work. */
 function WatchersCard({ taskId }: { taskId: string }) {
   const toast = useToast();
   const queryClient = useQueryClient();
   const { user } = useAuth();
+  const [adding, setAdding] = useState(false);
+  const [pickedId, setPickedId] = useState('');
+
   const { data } = useQuery({
     queryKey: ['task-watchers', taskId],
     queryFn: () => tasksApi.listWatchers(taskId),
   });
+  const { data: usersData } = useQuery({ queryKey: ['users'], queryFn: () => orgApi.listUsers() });
+
   const watchers = data?.data ?? [];
+  const orgUsers = usersData?.data ?? [];
   const following = watchers.some((w: any) => w.userId === user?.id);
+  const candidates = orgUsers.filter((u: any) => !watchers.some((w: any) => w.userId === u.id));
+
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['task-watchers', taskId] });
 
   const toggle = async () => {
     try {
       if (following) await tasksApi.removeWatcher(taskId, user!.id);
       else await tasksApi.addWatcher(taskId, user!.id);
-      queryClient.invalidateQueries({ queryKey: ['task-watchers', taskId] });
+      refresh();
     } catch (err) {
       toast.error(apiErrorMessage(err, 'Could not change what you follow.'));
     }
   };
 
+  const remove = async (userId: string) => {
+    try {
+      await tasksApi.removeWatcher(taskId, userId);
+      refresh();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not remove them.'));
+    }
+  };
+
   return (
-    <Card>
-      <CardHeader><CardTitle>Watchers</CardTitle></CardHeader>
-      <CardContent className="space-y-3">
-        {watchers.length === 0 && <p className="text-sm text-muted-foreground">Nobody is following this.</p>}
-        <ul className="space-y-1">
-          {watchers.map((w: any) => (
-            <li key={w.userId} className="text-sm">{w.name}</li>
-          ))}
-        </ul>
-        <Button variant="outline" size="sm" className="w-full" onClick={toggle}>
-          {following ? 'Stop following' : 'Follow this task'}
-        </Button>
-      </CardContent>
-    </Card>
+    <>
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+          <CardTitle>Members</CardTitle>
+          <Button variant="ghost" size="sm" onClick={() => setAdding(true)}>
+            <UserPlus className="mr-2 h-4 w-4" />
+            Add
+          </Button>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {watchers.length === 0 && <p className="text-sm text-muted-foreground">Nobody is on this task yet.</p>}
+          <ul className="space-y-1">
+            {watchers.map((w: any) => (
+              <li key={w.userId} className="flex items-center justify-between gap-2 text-sm">
+                <span className="truncate">{w.name}</span>
+                <button
+                  onClick={() => remove(w.userId)}
+                  aria-label={`Remove ${w.name}`}
+                  className="shrink-0 text-muted-foreground hover:text-foreground"
+                >
+                  ×
+                </button>
+              </li>
+            ))}
+          </ul>
+          <Button variant="outline" size="sm" className="w-full" onClick={toggle}>
+            {following ? 'Stop following' : 'Follow this task'}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <FormDialog
+        open={adding}
+        onOpenChange={(o) => {
+          if (!o) setPickedId('');
+          setAdding(o);
+        }}
+        title="Add somebody to this task"
+        description="They will see it in their notifications and follow every change."
+        submitLabel="Add"
+        disabledReason={!pickedId ? 'Choose somebody to add.' : undefined}
+        onSubmit={async () => {
+          await tasksApi.addWatcher(taskId, pickedId);
+          setPickedId('');
+          refresh();
+        }}
+      >
+        <div className="space-y-2">
+          <Label htmlFor="taskMember">Person</Label>
+          <Select value={pickedId} onValueChange={setPickedId}>
+            <SelectTrigger id="taskMember"><SelectValue placeholder="Choose somebody" /></SelectTrigger>
+            <SelectContent>
+              {candidates.map((u: any) => (
+                <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </FormDialog>
+    </>
   );
 }

@@ -21,7 +21,7 @@ func newService(t *testing.T) (*Service, *pgxpool.Pool) {
 func createTask(t *testing.T, svc *Service, org *testsupport.Org, title string) *Task {
 	t.Helper()
 	task, err := svc.CreateTask(context.Background(), org.ID, org.OwnerID,
-		title, "", "", "", "", nil, nil, nil, nil, nil)
+		title, "", "", "", "", nil, nil, nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("create task %q: %v", title, err)
 	}
@@ -83,7 +83,7 @@ func TestListTasksFiltersByStatusAndSearch(t *testing.T) {
 	createTask(t, svc, org, "Beta task")
 
 	if _, err := svc.UpdateTask(ctx, org.ID, a.ID, org.OwnerID,
-		map[string]interface{}{"status": "done"}); err != nil {
+		map[string]interface{}{"status": "done"}, true); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 
@@ -110,7 +110,7 @@ func TestTasksDoNotCrossOrganizations(t *testing.T) {
 	mine := testsupport.SeedOrg(t, pool)
 	theirs := testsupport.SeedOrg(t, pool)
 
-	theirTask, err := svc.CreateTask(ctx, theirs.ID, theirs.OwnerID, "Secret", "", "", "", "", nil, nil, nil, nil, nil)
+	theirTask, err := svc.CreateTask(ctx, theirs.ID, theirs.OwnerID, "Secret", "", "", "", "", nil, nil, nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestUpdateTaskAppliesOnlyWhitelistedFields(t *testing.T) {
 		"priority": "high",
 		// Must be ignored: reassigning the tenant would move the row.
 		"orgId": other.ID.String(),
-	})
+	}, true)
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestCompletingATaskStampsAndClearsCompletedAt(t *testing.T) {
 	task := createTask(t, svc, org, "Finish me")
 
 	done, err := svc.UpdateTask(ctx, org.ID, task.ID, org.OwnerID,
-		map[string]interface{}{"status": "done"})
+		map[string]interface{}{"status": "done"}, true)
 	if err != nil {
 		t.Fatalf("complete: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestCompletingATaskStampsAndClearsCompletedAt(t *testing.T) {
 	}
 
 	reopened, err := svc.UpdateTask(ctx, org.ID, task.ID, org.OwnerID,
-		map[string]interface{}{"status": "todo"})
+		map[string]interface{}{"status": "todo"}, true)
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestReassigningATaskPersists(t *testing.T) {
 	task := createTask(t, svc, org, "Assign me")
 
 	updated, err := svc.UpdateTask(ctx, org.ID, task.ID, org.OwnerID,
-		map[string]interface{}{"assigneeId": mate.String()})
+		map[string]interface{}{"assigneeId": mate.String()}, true)
 	if err != nil {
 		t.Fatalf("assign: %v", err)
 	}
@@ -293,7 +293,7 @@ func TestActivityTrailRecordsWhatChanged(t *testing.T) {
 
 	time.Sleep(2 * time.Millisecond)
 	if _, err := svc.UpdateTask(ctx, org.ID, task.ID, mate,
-		map[string]interface{}{"status": "in_progress"}); err != nil {
+		map[string]interface{}{"status": "in_progress"}, true); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	time.Sleep(2 * time.Millisecond)
@@ -339,7 +339,7 @@ func TestUnchangedFieldsDoNotCreateActivity(t *testing.T) {
 
 	before, _ := svc.GetActivities(ctx, org.ID, task.ID)
 	if _, err := svc.UpdateTask(ctx, org.ID, task.ID, org.OwnerID,
-		map[string]interface{}{"title": "Steady"}); err != nil {
+		map[string]interface{}{"title": "Steady"}, true); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	after, _ := svc.GetActivities(ctx, org.ID, task.ID)
@@ -377,7 +377,7 @@ func TestCommentOnAnotherOrganizationsTaskIsRefused(t *testing.T) {
 	mine := testsupport.SeedOrg(t, pool)
 	theirs := testsupport.SeedOrg(t, pool)
 
-	theirTask, _ := svc.CreateTask(ctx, theirs.ID, theirs.OwnerID, "Theirs", "", "", "", "", nil, nil, nil, nil, nil)
+	theirTask, _ := svc.CreateTask(ctx, theirs.ID, theirs.OwnerID, "Theirs", "", "", "", "", nil, nil, nil, nil, nil, false)
 	if _, err := svc.AddComment(ctx, mine.ID, theirTask.ID, mine.OwnerID, "sneaky"); err == nil {
 		t.Fatal("commenting across organizations must be refused")
 	}
@@ -461,7 +461,7 @@ func TestWatchersAreNotifiedOfChangesButNotTheirOwn(t *testing.T) {
 	}
 
 	if _, err := svc.UpdateTask(ctx, org.ID, task.ID, org.OwnerID,
-		map[string]interface{}{"status": "in_progress"}); err != nil {
+		map[string]interface{}{"status": "in_progress"}, true); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 
@@ -492,4 +492,146 @@ func (r *recordingNotifier) count(userID uuid.UUID) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.sent[userID]
+}
+
+// ── Who may assign work to whom ───────────────────────────────────────────
+
+// Assignment runs down the org chart. Before this, anybody could assign work
+// to anybody — including to their own manager.
+func TestAManagerCanAssignToTheirOwnTeam(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	manager := testsupport.SeedUser(t, pool, org, "manager@example.test", "manager")
+	report := testsupport.SeedUser(t, pool, org, "report@example.test", "member")
+	testsupport.SeedTeam(t, pool, org, "photon", &manager, nil, report)
+
+	task, err := svc.CreateTask(ctx, org.ID, manager, "Ship it", "", "", "", "",
+		nil, &report, nil, nil, nil, false)
+	if err != nil {
+		t.Fatalf("a manager could not assign to their own report: %v", err)
+	}
+	if task.AssigneeID == nil || *task.AssigneeID != report {
+		t.Errorf("wrong assignee: %+v", task.AssigneeID)
+	}
+}
+
+func TestAMemberCannotAssignWorkUpwardsOrSideways(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	manager := testsupport.SeedUser(t, pool, org, "boss@example.test", "manager")
+	alice := testsupport.SeedUser(t, pool, org, "alice@example.test", "member")
+	bob := testsupport.SeedUser(t, pool, org, "bob@example.test", "member")
+	testsupport.SeedTeam(t, pool, org, "photon", &manager, nil, alice, bob)
+
+	// Upwards.
+	if _, err := svc.CreateTask(ctx, org.ID, alice, "Do my job", "", "", "", "",
+		nil, &manager, nil, nil, nil, false); err == nil {
+		t.Error("a member assigned work to their manager")
+	}
+	// Sideways.
+	if _, err := svc.CreateTask(ctx, org.ID, alice, "You do it", "", "", "", "",
+		nil, &bob, nil, nil, nil, false); err == nil {
+		t.Error("a member assigned work to a peer")
+	}
+	// But always to themselves.
+	if _, err := svc.CreateTask(ctx, org.ID, alice, "Mine", "", "", "", "",
+		nil, &alice, nil, nil, nil, false); err != nil {
+		t.Errorf("a member could not assign work to themselves: %v", err)
+	}
+}
+
+func TestAManagerReachesSubTeamsButNotOtherTeams(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	head := testsupport.SeedUser(t, pool, org, "head@example.test", "manager")
+	deep := testsupport.SeedUser(t, pool, org, "deep@example.test", "member")
+	elsewhere := testsupport.SeedUser(t, pool, org, "elsewhere@example.test", "member")
+
+	parent := testsupport.SeedTeam(t, pool, org, "engineering", &head, nil)
+	testsupport.SeedTeam(t, pool, org, "platform", nil, &parent, deep)
+	testsupport.SeedTeam(t, pool, org, "sales", nil, nil, elsewhere)
+
+	if _, err := svc.CreateTask(ctx, org.ID, head, "Sub-team work", "", "", "", "",
+		nil, &deep, nil, nil, nil, false); err != nil {
+		t.Errorf("a manager could not reach a team beneath theirs: %v", err)
+	}
+	if _, err := svc.CreateTask(ctx, org.ID, head, "Not yours", "", "", "", "",
+		nil, &elsewhere, nil, nil, nil, false); err == nil {
+		t.Error("a manager assigned work outside their part of the chart")
+	}
+}
+
+func TestAnOrgAdminCanAssignToAnybody(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	stranger := testsupport.SeedUser(t, pool, org, "stranger@example.test", "member")
+
+	if _, err := svc.CreateTask(ctx, org.ID, org.OwnerID, "Top down", "", "", "", "",
+		nil, &stranger, nil, nil, nil, true); err != nil {
+		t.Errorf("an organization admin could not assign work: %v", err)
+	}
+}
+
+func TestReassigningAnExistingTaskObeysTheSameRule(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	alice := testsupport.SeedUser(t, pool, org, "alice2@example.test", "member")
+	bob := testsupport.SeedUser(t, pool, org, "bob2@example.test", "member")
+
+	task, err := svc.CreateTask(ctx, org.ID, alice, "Mine", "", "", "", "",
+		nil, &alice, nil, nil, nil, false)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// The rule cannot be dodged by creating first and reassigning after.
+	if _, err := svc.UpdateTask(ctx, org.ID, task.ID, alice,
+		map[string]interface{}{"assigneeId": bob.String()}, false); err == nil {
+		t.Error("a member reassigned a task to a peer")
+	}
+}
+
+func TestAssigningToSomebodyInAnotherOrganizationIsRefused(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	theirs := testsupport.SeedOrg(t, pool)
+
+	if _, err := svc.CreateTask(ctx, org.ID, org.OwnerID, "Cross tenant", "", "", "", "",
+		nil, &theirs.OwnerID, nil, nil, nil, true); err == nil {
+		t.Error("assigned a task across organizations")
+	}
+}
+
+// An organization's owner or admin sits above the chart even when they are
+// listed on a team, so their own manager cannot hand them work.
+func TestAManagerCannotAssignToAnOrganizationAdminOnTheirTeam(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	manager := testsupport.SeedUser(t, pool, org, "mgr3@example.test", "manager")
+	admin := testsupport.SeedUser(t, pool, org, "admin3@example.test", "admin")
+	ordinary := testsupport.SeedUser(t, pool, org, "plain3@example.test", "member")
+
+	// The owner and an admin both sit on the team the manager runs.
+	testsupport.SeedTeam(t, pool, org, "photon", &manager, nil, org.OwnerID, admin, ordinary)
+
+	if _, err := svc.CreateTask(ctx, org.ID, manager, "For the owner", "", "", "", "",
+		nil, &org.OwnerID, nil, nil, nil, false); err == nil {
+		t.Error("a manager assigned work to the organization owner")
+	}
+	if _, err := svc.CreateTask(ctx, org.ID, manager, "For the admin", "", "", "", "",
+		nil, &admin, nil, nil, nil, false); err == nil {
+		t.Error("a manager assigned work to an organization admin")
+	}
+	// The ordinary team member is still fair game.
+	if _, err := svc.CreateTask(ctx, org.ID, manager, "For a report", "", "", "", "",
+		nil, &ordinary, nil, nil, nil, false); err != nil {
+		t.Errorf("a manager could not assign to an ordinary report: %v", err)
+	}
 }

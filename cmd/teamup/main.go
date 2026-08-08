@@ -383,6 +383,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// that raise them talk to the service through a narrow Notifier interface.
 	notificationsService.SetBroadcaster(wsHub)
 	chatService.SetNotifier(notificationsService)
+	orgService.SetChannelEnroller(chatService)
 	tasksService.SetNotifier(notificationsService)
 
 	// Auto-setup if configured. It gets its own deadline: ctx above carries the

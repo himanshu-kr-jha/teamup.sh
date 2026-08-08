@@ -21,8 +21,9 @@ import (
 )
 
 type Service struct {
-	db     *pgxpool.Pool
-	logger zerolog.Logger
+	db       *pgxpool.Pool
+	logger   zerolog.Logger
+	enroller ChannelEnroller
 }
 
 type Organization struct {
@@ -76,6 +77,14 @@ type Team struct {
 	CreatedAt   time.Time  `json:"createdAt"`
 	UpdatedAt   time.Time  `json:"updatedAt"`
 }
+
+// ChannelEnroller puts a new member into the channels that belong to the whole
+// organization. An interface so org does not depend on the chat package.
+type ChannelEnroller interface {
+	EnrolInOpenChannels(ctx context.Context, orgID, userID uuid.UUID) error
+}
+
+func (s *Service) SetChannelEnroller(e ChannelEnroller) { s.enroller = e }
 
 func NewService(db *pgxpool.Pool) *Service {
 	return &Service{db: db}
@@ -778,6 +787,16 @@ func (s *Service) AddMember(ctx context.Context, orgID uuid.UUID, name, email, r
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, "", err
+	}
+
+	// A new member belongs in the channels that belong to everybody, so the
+	// organization's announcements reach them from their first day rather than
+	// only once they happen to open the channel. Best effort: failing here must
+	// not undo the account.
+	if s.enroller != nil {
+		if err := s.enroller.EnrolInOpenChannels(ctx, orgID, userID); err != nil {
+			s.logger.Warn().Err(err).Msg("could not add new member to the organization's open channels")
+		}
 	}
 
 	member, err := s.GetUser(ctx, userID)

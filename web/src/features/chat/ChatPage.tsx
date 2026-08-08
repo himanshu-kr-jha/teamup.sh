@@ -13,6 +13,7 @@ import { useUpload } from '@/features/files/useUpload';
 import { useToast } from '@/shared/hooks/useToast';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { AttachmentChip } from '@/features/files/AttachmentChip';
+import { ChannelSettingsDialog } from './ChannelSettingsDialog';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { useUIStore } from '@/shared/store';
 import { CreateChannelDialog } from './CreateChannelDialog';
@@ -45,6 +46,7 @@ export function ChatPage() {
   const [message, setMessage] = useState('');
   const [showSidebar, setShowSidebar] = useState(true);
   const [createChannelOpen, setCreateChannelOpen] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const channelId = params.channelId || activeChannelId;
 
@@ -259,8 +261,16 @@ export function ChatPage() {
             <div className="flex-1" />
             <div className="flex items-center gap-2">
               <Button variant="ghost" size="icon"><Video className="h-5 w-5" /></Button>
-              <Button variant="ghost" size="icon"><Bell className="h-5 w-5" /></Button>
-              <Button variant="ghost" size="icon"><Settings className="h-5 w-5" /></Button>
+              <Button variant="ghost" size="icon" aria-label="Notifications"><Bell className="h-5 w-5" /></Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Channel settings"
+                disabled={!activeChannel}
+                onClick={() => setShowSettings(true)}
+              >
+                <Settings className="h-5 w-5" />
+              </Button>
             </div>
           </div>
 
@@ -361,6 +371,11 @@ export function ChatPage() {
           setActiveChannelId(id);
           navigate(`/chat/${id}`);
         }}
+      />
+
+      <ChannelSettingsDialog
+        channel={showSettings ? activeChannel ?? null : null}
+        onOpenChange={(open) => !open && setShowSettings(false)}
       />
     </div>
   );
