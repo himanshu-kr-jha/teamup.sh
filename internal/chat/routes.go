@@ -2,11 +2,15 @@ package chat
 
 import (
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
 	"github.com/teamup/teamup/internal/auth"
+	"github.com/teamup/teamup/internal/httpx"
+	apperrors "github.com/teamup/teamup/pkg/errors"
 )
 
 type Handler struct {
@@ -27,32 +31,80 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.DELETE("/channels/:id", h.DeleteChannel)
 	rg.POST("/channels/:id/members", h.AddMember)
 	rg.DELETE("/channels/:id/members/:userId", h.RemoveMember)
-
 	rg.GET("/channels/:id/messages", h.ListMessages)
 	rg.POST("/channels/:id/messages", h.SendMessage)
 	rg.PATCH("/messages/:id", h.EditMessage)
 	rg.DELETE("/messages/:id", h.DeleteMessage)
 	rg.POST("/messages/:id/reactions", h.AddReaction)
 	rg.DELETE("/messages/:id/reactions/:emoji", h.RemoveReaction)
+	rg.POST("/channels/:id/read", h.MarkRead)
+}
+
+type caller struct {
+	OrgID  uuid.UUID
+	UserID uuid.UUID
+}
+
+func callerFrom(c *gin.Context) (caller, bool) {
+	u := auth.GetUserFromContext(c)
+	orgID, err := uuid.Parse(u.OrgID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return caller{}, false
+	}
+	userID, err := uuid.Parse(u.UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return caller{}, false
+	}
+	return caller{OrgID: orgID, UserID: userID}, true
+}
+
+func pathUUID(c *gin.Context, param string) (uuid.UUID, bool) {
+	id, err := uuid.Parse(c.Param(param))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid " + param})
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+// requireMembership keeps channel-scoped reads and writes to members. Public
+// channels are readable by anyone in the organization.
+func (h *Handler) requireMembership(c *gin.Context, cl caller, channelID uuid.UUID, writing bool) bool {
+	ch, err := h.service.GetChannel(c.Request.Context(), cl.OrgID, channelID)
+	if err != nil {
+		httpx.Error(c, apperrors.ErrNotFound, "channel not found")
+		return false
+	}
+	if h.service.isMember(c.Request.Context(), channelID, cl.UserID) {
+		return true
+	}
+	if !writing && ch.Type == "public" {
+		return true
+	}
+	httpx.Error(c, apperrors.New(apperrors.CodeForbidden, "you are not a member of this channel"), "access denied")
+	return false
 }
 
 func (h *Handler) ListChannels(c *gin.Context) {
-	user := auth.GetUserFromContext(c)
-	orgID, _ := uuid.Parse(user.OrgID)
-
-	channels, err := h.service.ListChannels(c.Request.Context(), orgID)
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	channels, err := h.service.ListChannels(c.Request.Context(), cl.OrgID, cl.UserID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list channels"})
+		httpx.Error(c, err, "failed to list channels")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"channels": channels})
 }
 
 func (h *Handler) CreateChannel(c *gin.Context) {
-	user := auth.GetUserFromContext(c)
-	orgID, _ := uuid.Parse(user.OrgID)
-	userID, _ := uuid.Parse(user.UserID)
-
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
 	var req struct {
 		Name        *string `json:"name"`
 		Type        string  `json:"type" binding:"required,oneof=dm group public announcement"`
@@ -65,32 +117,56 @@ func (h *Handler) CreateChannel(c *gin.Context) {
 	}
 
 	var teamID *uuid.UUID
-	if req.TeamID != nil {
-		id, _ := uuid.Parse(*req.TeamID)
+	if req.TeamID != nil && *req.TeamID != "" {
+		id, err := uuid.Parse(*req.TeamID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid teamId"})
+			return
+		}
 		teamID = &id
 	}
 
-	channel, err := h.service.CreateChannel(c.Request.Context(), orgID, userID, req.Name, req.Type, req.Description, teamID)
+	channel, err := h.service.CreateChannel(c.Request.Context(), cl.OrgID, cl.UserID,
+		req.Name, req.Type, req.Description, teamID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create channel"})
+		httpx.Error(c, err, "failed to create channel")
 		return
 	}
-
 	c.JSON(http.StatusCreated, channel)
 }
 
 func (h *Handler) GetChannel(c *gin.Context) {
-	channelID, _ := uuid.Parse(c.Param("id"))
-	channel, err := h.service.GetChannel(c.Request.Context(), channelID)
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	channelID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	if !h.requireMembership(c, cl, channelID, false) {
+		return
+	}
+	channel, err := h.service.GetChannel(c.Request.Context(), cl.OrgID, channelID)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "channel not found"})
+		httpx.Error(c, err, "channel not found")
 		return
 	}
 	c.JSON(http.StatusOK, channel)
 }
 
 func (h *Handler) UpdateChannel(c *gin.Context) {
-	channelID, _ := uuid.Parse(c.Param("id"))
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	channelID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	if !h.requireMembership(c, cl, channelID, true) {
+		return
+	}
 	var req struct {
 		Name        *string `json:"name"`
 		Description *string `json:"description"`
@@ -100,83 +176,170 @@ func (h *Handler) UpdateChannel(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	// UPDATE channels SET ...
-	_ = channelID
-	c.JSON(http.StatusOK, gin.H{"message": "updated"})
+	channel, err := h.service.UpdateChannel(c.Request.Context(), cl.OrgID, channelID,
+		req.Name, req.Description, req.IsPrivate)
+	if err != nil {
+		httpx.Error(c, err, "failed to update channel")
+		return
+	}
+	c.JSON(http.StatusOK, channel)
 }
 
 func (h *Handler) DeleteChannel(c *gin.Context) {
-	channelID, _ := uuid.Parse(c.Param("id"))
-	// UPDATE channels SET deleted_at = NOW(), is_archived = TRUE WHERE id = ...
-	_ = channelID
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	channelID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	if !h.requireMembership(c, cl, channelID, true) {
+		return
+	}
+	if err := h.service.ArchiveChannel(c.Request.Context(), cl.OrgID, channelID); err != nil {
+		httpx.Error(c, err, "failed to archive channel")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "archived"})
 }
 
 func (h *Handler) AddMember(c *gin.Context) {
-	channelID, _ := uuid.Parse(c.Param("id"))
-	userID, _ := uuid.Parse(c.Param("userId"))
-
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	channelID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	if !h.requireMembership(c, cl, channelID, true) {
+		return
+	}
 	var req struct {
-		Role string `json:"role" binding:"omitempty,oneof=owner admin member"`
+		UserID string `json:"userId" binding:"required,uuid"`
+		Role   string `json:"role" binding:"omitempty,oneof=owner admin member"`
 	}
-	if req.Role == "" {
-		req.Role = "member"
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
-
-	if err := h.service.AddMember(c.Request.Context(), channelID, userID, req.Role); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add member"})
+	userID, err := uuid.Parse(req.UserID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid userId"})
+		return
+	}
+	if err := h.service.AddMember(c.Request.Context(), cl.OrgID, channelID, userID, req.Role); err != nil {
+		httpx.Error(c, err, "failed to add member")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "member added"})
 }
 
 func (h *Handler) RemoveMember(c *gin.Context) {
-	channelID, _ := uuid.Parse(c.Param("id"))
-	userID, _ := uuid.Parse(c.Param("userId"))
-	// DELETE FROM channel_members WHERE channel_id = ... AND user_id = ...
-	_ = channelID
-	_ = userID
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	channelID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	userID, ok := pathUUID(c, "userId")
+	if !ok {
+		return
+	}
+	// Members may always remove themselves; removing anyone else needs
+	// membership of the channel.
+	if userID != cl.UserID && !h.requireMembership(c, cl, channelID, true) {
+		return
+	}
+	if err := h.service.RemoveMember(c.Request.Context(), cl.OrgID, channelID, userID); err != nil {
+		httpx.Error(c, err, "failed to remove member")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "member removed"})
 }
 
 func (h *Handler) ListMessages(c *gin.Context) {
-	channelID, _ := uuid.Parse(c.Param("id"))
-	limit := 50
-	if l := c.Query("limit"); l != "" {
-		// parse limit
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	channelID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	if !h.requireMembership(c, cl, channelID, false) {
+		return
 	}
 
-	messages, err := h.service.GetMessages(c.Request.Context(), channelID, limit, nil)
+	limit := 50
+	if l := c.Query("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil {
+			limit = parsed
+		}
+	}
+	var before *time.Time
+	if b := c.Query("before"); b != "" {
+		if parsed, err := time.Parse(time.RFC3339Nano, b); err == nil {
+			before = &parsed
+		}
+	}
+
+	messages, err := h.service.GetMessages(c.Request.Context(), channelID, limit, before)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get messages"})
+		httpx.Error(c, err, "failed to get messages")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"messages": messages})
 }
 
 func (h *Handler) SendMessage(c *gin.Context) {
-	channelID, _ := uuid.Parse(c.Param("id"))
-	user := auth.GetUserFromContext(c)
-	userID, _ := uuid.Parse(user.UserID)
-
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	channelID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
 	var req struct {
-		Content     string   `json:"content" binding:"required"`
-		ReplyTo     *string  `json:"replyTo"`
-		Attachments []string `json:"attachments"` // object keys
+		Content string  `json:"content" binding:"required"`
+		ReplyTo *string `json:"replyTo"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
-	_ = channelID
-	_ = userID
-	// In real implementation, create message and broadcast via WS
-	c.JSON(http.StatusCreated, gin.H{"message": "sent"})
+	var replyTo *uuid.UUID
+	if req.ReplyTo != nil && *req.ReplyTo != "" {
+		id, err := uuid.Parse(*req.ReplyTo)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid replyTo"})
+			return
+		}
+		replyTo = &id
+	}
+
+	msg, err := h.service.SendMessage(c.Request.Context(), channelID, cl.UserID, req.Content, replyTo)
+	if err != nil {
+		httpx.Error(c, err, "failed to send message")
+		return
+	}
+	c.JSON(http.StatusCreated, msg)
 }
 
 func (h *Handler) EditMessage(c *gin.Context) {
-	messageID, _ := uuid.Parse(c.Param("id"))
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	messageID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
 	var req struct {
 		Content string `json:"content" binding:"required"`
 	}
@@ -184,38 +347,92 @@ func (h *Handler) EditMessage(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	_ = messageID
-	// UPDATE messages SET content = ..., edited_at = NOW() WHERE id = ...
+	if err := h.service.EditMessage(c.Request.Context(), messageID, cl.UserID, req.Content); err != nil {
+		httpx.Error(c, err, "failed to edit message")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "updated"})
 }
 
 func (h *Handler) DeleteMessage(c *gin.Context) {
-	messageID, _ := uuid.Parse(c.Param("id"))
-	// UPDATE messages SET deleted_at = NOW() WHERE id = ...
-	_ = messageID
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	messageID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.service.DeleteMessage(c.Request.Context(), messageID, cl.UserID); err != nil {
+		httpx.Error(c, err, "failed to delete message")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
 }
 
 func (h *Handler) AddReaction(c *gin.Context) {
-	messageID, _ := uuid.Parse(c.Param("id"))
-	emoji := c.Param("emoji")
-	user := auth.GetUserFromContext(c)
-	userID, _ := uuid.Parse(user.UserID)
-	// INSERT INTO message_reactions ...
-	_ = messageID
-	_ = emoji
-	_ = userID
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	messageID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	var req struct {
+		Emoji string `json:"emoji" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.service.AddReaction(c.Request.Context(), messageID, cl.UserID, req.Emoji); err != nil {
+		httpx.Error(c, err, "failed to add reaction")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "reaction added"})
 }
 
 func (h *Handler) RemoveReaction(c *gin.Context) {
-	messageID, _ := uuid.Parse(c.Param("id"))
-	emoji := c.Param("emoji")
-	user := auth.GetUserFromContext(c)
-	userID, _ := uuid.Parse(user.UserID)
-	// DELETE FROM message_reactions WHERE message_id = ... AND user_id = ... AND emoji = ...
-	_ = messageID
-	_ = emoji
-	_ = userID
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	messageID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.service.RemoveReaction(c.Request.Context(), messageID, cl.UserID, c.Param("emoji")); err != nil {
+		httpx.Error(c, err, "failed to remove reaction")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "reaction removed"})
+}
+
+func (h *Handler) MarkRead(c *gin.Context) {
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	channelID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	var req struct {
+		MessageID string `json:"messageId" binding:"required,uuid"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	messageID, err := uuid.Parse(req.MessageID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid messageId"})
+		return
+	}
+	if err := h.service.MarkRead(c.Request.Context(), channelID, cl.UserID, messageID); err != nil {
+		httpx.Error(c, err, "failed to mark read")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "read"})
 }

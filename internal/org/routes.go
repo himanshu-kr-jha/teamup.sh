@@ -7,6 +7,8 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/teamup/teamup/internal/auth"
+	"github.com/teamup/teamup/internal/httpx"
+	apperrors "github.com/teamup/teamup/pkg/errors"
 )
 
 type Handler struct {
@@ -21,41 +23,80 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	h := NewHandler(service)
 
 	rg.GET("/org", h.GetOrganization)
-	rg.PATCH("/org", h.UpdateOrganization)
+	rg.PATCH("/org", h.requireAdmin, h.UpdateOrganization)
+
 	rg.GET("/users", h.ListUsers)
 	rg.GET("/users/:id", h.GetUser)
 	rg.PATCH("/users/:id", h.UpdateUser)
-	rg.DELETE("/users/:id", h.DeleteUser)
+	rg.DELETE("/users/:id", h.requireAdmin, h.DeleteUser)
+
 	rg.GET("/roles", h.ListRoles)
-	rg.POST("/roles", h.CreateRole)
-	rg.PATCH("/roles/:id", h.UpdateRole)
-	rg.DELETE("/roles/:id", h.DeleteRole)
-	rg.POST("/users/:id/roles", h.AssignRole)
-	rg.DELETE("/users/:id/roles/:roleId", h.RemoveRole)
+	rg.POST("/roles", h.requireAdmin, h.CreateRole)
+	rg.PATCH("/roles/:id", h.requireAdmin, h.UpdateRole)
+	rg.DELETE("/roles/:id", h.requireAdmin, h.DeleteRole)
+	rg.POST("/users/:id/roles", h.requireAdmin, h.AssignRole)
+	rg.DELETE("/users/:id/roles/:roleId", h.requireAdmin, h.RemoveRole)
+
 	rg.GET("/teams", h.ListTeams)
-	rg.POST("/teams", h.CreateTeam)
-	rg.PATCH("/teams/:id", h.UpdateTeam)
-	rg.DELETE("/teams/:id", h.DeleteTeam)
-	rg.POST("/teams/:id/members", h.AddTeamMember)
-	rg.DELETE("/teams/:id/members/:userId", h.RemoveTeamMember)
+	rg.POST("/teams", h.requireAdmin, h.CreateTeam)
+	rg.PATCH("/teams/:id", h.requireAdmin, h.UpdateTeam)
+	rg.DELETE("/teams/:id", h.requireAdmin, h.DeleteTeam)
+	rg.GET("/teams/:id/members", h.ListTeamMembers)
+	rg.POST("/teams/:id/members", h.requireAdmin, h.AddTeamMember)
+	rg.DELETE("/teams/:id/members/:userId", h.requireAdmin, h.RemoveTeamMember)
 }
 
-func (h *Handler) GetOrganization(c *gin.Context) {
+// requireAdmin gates the mutations that change who can do what. Without it any
+// member could grant themselves the owner role.
+func (h *Handler) requireAdmin(c *gin.Context) {
 	user := auth.GetUserFromContext(c)
-	orgID, _ := uuid.Parse(user.OrgID)
+	if !user.HasAnyRole("owner", "admin") {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "administrator access required"})
+		return
+	}
+	c.Next()
+}
 
+// callerOrg resolves the organization every request is scoped to.
+func callerOrg(c *gin.Context) (uuid.UUID, bool) {
+	user := auth.GetUserFromContext(c)
+	orgID, err := uuid.Parse(user.OrgID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return uuid.Nil, false
+	}
+	return orgID, true
+}
+
+func pathUUID(c *gin.Context, param string) (uuid.UUID, bool) {
+	id, err := uuid.Parse(c.Param(param))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid " + param})
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+// ── Organization ──────────────────────────────────────────────────────────
+
+func (h *Handler) GetOrganization(c *gin.Context) {
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
 	org, err := h.service.GetOrganization(c.Request.Context(), orgID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to get organization"})
+		httpx.Error(c, err, "failed to load organization")
 		return
 	}
 	c.JSON(http.StatusOK, org)
 }
 
 func (h *Handler) UpdateOrganization(c *gin.Context) {
-	user := auth.GetUserFromContext(c)
-	orgID, _ := uuid.Parse(user.OrgID)
-
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
 	var req struct {
 		Name     *string                `json:"name"`
 		LogoURL  *string                `json:"logoUrl"`
@@ -65,56 +106,121 @@ func (h *Handler) UpdateOrganization(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	_ = orgID
-	// UPDATE organizations SET ...
-	c.JSON(http.StatusOK, gin.H{"message": "updated"})
+	org, err := h.service.UpdateOrganization(c.Request.Context(), orgID, req.Name, req.LogoURL, req.Settings)
+	if err != nil {
+		httpx.Error(c, err, "failed to update organization")
+		return
+	}
+	c.JSON(http.StatusOK, org)
 }
 
+// ── Users ─────────────────────────────────────────────────────────────────
+
 func (h *Handler) ListUsers(c *gin.Context) {
-	user := auth.GetUserFromContext(c)
-	orgID, _ := uuid.Parse(user.OrgID)
-	_ = orgID
-	// SELECT * FROM users WHERE org_id = ...
-	c.JSON(http.StatusOK, gin.H{"users": []interface{}{}})
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
+	users, err := h.service.ListUsers(c.Request.Context(), orgID)
+	if err != nil {
+		httpx.Error(c, err, "failed to list users")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"users": users})
 }
 
 func (h *Handler) GetUser(c *gin.Context) {
-	userID, _ := uuid.Parse(c.Param("id"))
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
+	userID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
 	u, err := h.service.GetUser(c.Request.Context(), userID)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+	// Scoped deliberately: a user from another organization is "not found"
+	// rather than forbidden, so ids cannot be probed.
+	if err != nil || u.OrgID != orgID {
+		httpx.Error(c, apperrors.ErrNotFound, "user not found")
 		return
 	}
 	c.JSON(http.StatusOK, u)
 }
 
 func (h *Handler) UpdateUser(c *gin.Context) {
-	userID, _ := uuid.Parse(c.Param("id"))
-	_ = userID
-	// UPDATE users SET ...
-	c.JSON(http.StatusOK, gin.H{"message": "updated"})
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
+	userID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	caller := auth.GetUserFromContext(c)
+	if caller.UserID != userID.String() && !caller.HasAnyRole("owner", "admin") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you may only edit your own profile"})
+		return
+	}
+
+	var req struct {
+		Name      *string `json:"name"`
+		AvatarURL *string `json:"avatarUrl"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	u, err := h.service.UpdateUser(c.Request.Context(), orgID, userID, req.Name, req.AvatarURL)
+	if err != nil {
+		httpx.Error(c, err, "failed to update user")
+		return
+	}
+	c.JSON(http.StatusOK, u)
 }
 
 func (h *Handler) DeleteUser(c *gin.Context) {
-	userID, _ := uuid.Parse(c.Param("id"))
-	_ = userID
-	// UPDATE users SET deleted_at = NOW(), is_active = FALSE WHERE id = ...
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
+	userID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	caller := auth.GetUserFromContext(c)
+	if caller.UserID == userID.String() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "you cannot deactivate your own account"})
+		return
+	}
+	if err := h.service.DeactivateUser(c.Request.Context(), orgID, userID); err != nil {
+		httpx.Error(c, err, "failed to deactivate user")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "deactivated"})
 }
 
+// ── Roles ─────────────────────────────────────────────────────────────────
+
 func (h *Handler) ListRoles(c *gin.Context) {
-	user := auth.GetUserFromContext(c)
-	orgID, _ := uuid.Parse(user.OrgID)
-	_ = orgID
-	// SELECT * FROM roles WHERE org_id = ...
-	c.JSON(http.StatusOK, gin.H{"roles": []interface{}{}})
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
+	roles, err := h.service.ListRoles(c.Request.Context(), orgID)
+	if err != nil {
+		httpx.Error(c, err, "failed to list roles")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"roles": roles})
 }
 
 func (h *Handler) CreateRole(c *gin.Context) {
-	user := auth.GetUserFromContext(c)
-	orgID, _ := uuid.Parse(user.OrgID)
-	_ = orgID
-
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
 	var req struct {
 		Name        string   `json:"name" binding:"required"`
 		Description string   `json:"description"`
@@ -124,59 +230,124 @@ func (h *Handler) CreateRole(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	// INSERT INTO roles ...
-	c.JSON(http.StatusCreated, gin.H{"message": "role created"})
+	role, err := h.service.CreateRole(c.Request.Context(), orgID, req.Name, req.Description, req.Permissions)
+	if err != nil {
+		httpx.Error(c, err, "failed to create role")
+		return
+	}
+	c.JSON(http.StatusCreated, role)
 }
 
 func (h *Handler) UpdateRole(c *gin.Context) {
-	roleID, _ := uuid.Parse(c.Param("id"))
-	_ = roleID
-	// UPDATE roles SET ...
-	c.JSON(http.StatusOK, gin.H{"message": "updated"})
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
+	roleID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	var req struct {
+		Name        *string  `json:"name"`
+		Description *string  `json:"description"`
+		Permissions []string `json:"permissions"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	role, err := h.service.UpdateRole(c.Request.Context(), orgID, roleID, req.Name, req.Description, req.Permissions)
+	if err != nil {
+		httpx.Error(c, err, "failed to update role")
+		return
+	}
+	c.JSON(http.StatusOK, role)
 }
 
 func (h *Handler) DeleteRole(c *gin.Context) {
-	roleID, _ := uuid.Parse(c.Param("id"))
-	_ = roleID
-	// DELETE FROM roles WHERE id = ... AND is_system = FALSE
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
+	roleID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.service.DeleteRole(c.Request.Context(), orgID, roleID); err != nil {
+		httpx.Error(c, err, "failed to delete role")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
 }
 
 func (h *Handler) AssignRole(c *gin.Context) {
-	userID, _ := uuid.Parse(c.Param("id"))
-	roleID, _ := uuid.Parse(c.Param("roleId"))
-	user := auth.GetUserFromContext(c)
-	_ = user.UserID
-	// assignerID, _ := uuid.Parse(user.UserID)
+	userID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	var req struct {
+		RoleID string `json:"roleId" binding:"required,uuid"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	roleID, err := uuid.Parse(req.RoleID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid roleId"})
+		return
+	}
 
-	if err := h.service.AssignRole(c.Request.Context(), userID, roleID, uuid.Nil); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to assign role"})
+	caller := auth.GetUserFromContext(c)
+	assigner, _ := uuid.Parse(caller.UserID)
+
+	if err := h.service.AssignRole(c.Request.Context(), userID, roleID, assigner); err != nil {
+		httpx.Error(c, err, "failed to assign role")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "role assigned"})
 }
 
 func (h *Handler) RemoveRole(c *gin.Context) {
-	userID, _ := uuid.Parse(c.Param("id"))
-	roleID, _ := uuid.Parse(c.Param("roleId"))
-	// DELETE FROM user_roles WHERE user_id = ... AND role_id = ...
-	_ = userID
-	_ = roleID
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
+	userID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	roleID, ok := pathUUID(c, "roleId")
+	if !ok {
+		return
+	}
+	if err := h.service.RemoveRole(c.Request.Context(), orgID, userID, roleID); err != nil {
+		httpx.Error(c, err, "failed to remove role")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "role removed"})
 }
 
+// ── Teams ─────────────────────────────────────────────────────────────────
+
 func (h *Handler) ListTeams(c *gin.Context) {
-	user := auth.GetUserFromContext(c)
-	orgID, _ := uuid.Parse(user.OrgID)
-	_ = orgID
-	// SELECT * FROM teams WHERE org_id = ...
-	c.JSON(http.StatusOK, gin.H{"teams": []interface{}{}})
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
+	teams, err := h.service.ListTeams(c.Request.Context(), orgID)
+	if err != nil {
+		httpx.Error(c, err, "failed to list teams")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"teams": teams})
 }
 
 func (h *Handler) CreateTeam(c *gin.Context) {
-	user := auth.GetUserFromContext(c)
-	orgID, _ := uuid.Parse(user.OrgID)
-
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
 	var req struct {
 		Name        string  `json:"name" binding:"required"`
 		Description string  `json:"description"`
@@ -188,55 +359,144 @@ func (h *Handler) CreateTeam(c *gin.Context) {
 		return
 	}
 
-	var parentID, managerID *uuid.UUID
-	if req.ParentID != nil {
-		id, _ := uuid.Parse(*req.ParentID)
-		parentID = &id
+	parentID, err := optionalUUID(req.ParentID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid parentId"})
+		return
 	}
-	if req.ManagerID != nil {
-		id, _ := uuid.Parse(*req.ManagerID)
-		managerID = &id
+	managerID, err := optionalUUID(req.ManagerID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid managerId"})
+		return
 	}
-	_ = parentID
-	_ = managerID
 
 	team, err := h.service.CreateTeam(c.Request.Context(), orgID, req.Name, req.Description, parentID, managerID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create team"})
+		httpx.Error(c, err, "failed to create team")
 		return
 	}
 	c.JSON(http.StatusCreated, team)
 }
 
+func optionalUUID(s *string) (*uuid.UUID, error) {
+	if s == nil || *s == "" {
+		return nil, nil
+	}
+	id, err := uuid.Parse(*s)
+	if err != nil {
+		return nil, err
+	}
+	return &id, nil
+}
+
 func (h *Handler) UpdateTeam(c *gin.Context) {
-	teamID, _ := uuid.Parse(c.Param("id"))
-	_ = teamID
-	// UPDATE teams SET ...
-	c.JSON(http.StatusOK, gin.H{"message": "updated"})
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
+	teamID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	var req struct {
+		Name        *string `json:"name"`
+		Description *string `json:"description"`
+		ManagerID   *string `json:"managerId"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	managerID, err := optionalUUID(req.ManagerID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid managerId"})
+		return
+	}
+	team, err := h.service.UpdateTeam(c.Request.Context(), orgID, teamID, req.Name, req.Description, managerID)
+	if err != nil {
+		httpx.Error(c, err, "failed to update team")
+		return
+	}
+	c.JSON(http.StatusOK, team)
 }
 
 func (h *Handler) DeleteTeam(c *gin.Context) {
-	teamID, _ := uuid.Parse(c.Param("id"))
-	_ = teamID
-	// UPDATE teams SET deleted_at = NOW() WHERE id = ...
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
+	teamID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.service.DeleteTeam(c.Request.Context(), orgID, teamID); err != nil {
+		httpx.Error(c, err, "failed to delete team")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
 }
 
+func (h *Handler) ListTeamMembers(c *gin.Context) {
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
+	teamID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	members, err := h.service.ListTeamMembers(c.Request.Context(), orgID, teamID)
+	if err != nil {
+		httpx.Error(c, err, "failed to list team members")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"users": members})
+}
+
 func (h *Handler) AddTeamMember(c *gin.Context) {
-	teamID, _ := uuid.Parse(c.Param("id"))
-	userID, _ := uuid.Parse(c.Param("userId"))
-	if err := h.service.AddTeamMember(c.Request.Context(), teamID, userID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to add member"})
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
+	teamID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	var req struct {
+		UserID string `json:"userId" binding:"required,uuid"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	userID, err := uuid.Parse(req.UserID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid userId"})
+		return
+	}
+	if err := h.service.AddTeamMember(c.Request.Context(), orgID, teamID, userID); err != nil {
+		httpx.Error(c, err, "failed to add member")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "member added"})
 }
 
 func (h *Handler) RemoveTeamMember(c *gin.Context) {
-	teamID, _ := uuid.Parse(c.Param("id"))
-	userID, _ := uuid.Parse(c.Param("userId"))
-	// DELETE FROM team_members WHERE team_id = ... AND user_id = ...
-	_ = teamID
-	_ = userID
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
+	teamID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	userID, ok := pathUUID(c, "userId")
+	if !ok {
+		return
+	}
+	if err := h.service.RemoveTeamMember(c.Request.Context(), orgID, teamID, userID); err != nil {
+		httpx.Error(c, err, "failed to remove member")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "member removed"})
 }
