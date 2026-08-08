@@ -663,3 +663,92 @@ func GenerateVAPIDKeys() (publicKey, privateKey string, err error) {
 
 	return publicKey, privateKey, nil
 }
+
+// MinPasswordLength matches what the setup wizard enforces, so a password
+// cannot be weakened by rotating it.
+const MinPasswordLength = 12
+
+// ChangePassword rotates a user's password after proving they know the current
+// one, and revokes their other sessions so a stolen token does not outlive the
+// rotation.
+func (s *Service) ChangePassword(ctx context.Context, userID uuid.UUID, currentPassword, newPassword string) error {
+	if len(newPassword) < MinPasswordLength {
+		return apperrors.New(apperrors.CodeBadRequest,
+			fmt.Sprintf("the new password must be at least %d characters", MinPasswordLength))
+	}
+	if currentPassword == newPassword {
+		return apperrors.New(apperrors.CodeBadRequest, "the new password must be different")
+	}
+
+	user, err := s.getUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if err := s.VerifyPassword(user, currentPassword); err != nil {
+		return apperrors.New(apperrors.CodeUnauthorized, "your current password is not correct")
+	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return fmt.Errorf("hash new password: %w", err)
+	}
+	if _, err := s.db.Exec(ctx,
+		`UPDATE users SET password_hash = $2, updated_at = NOW() WHERE id = $1`, userID, hash); err != nil {
+		return fmt.Errorf("store new password: %w", err)
+	}
+
+	// Anything issued against the old password stops working.
+	if err := s.revokeAllUserTokens(ctx, userID); err != nil {
+		return fmt.Errorf("revoke sessions after password change: %w", err)
+	}
+	return nil
+}
+
+// Session describes an active sign-in, for the "where am I signed in" screen.
+type Session struct {
+	SessionID string    `json:"sessionId"`
+	UserAgent string    `json:"userAgent"`
+	IPAddress string    `json:"ipAddress"`
+	CreatedAt time.Time `json:"createdAt"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+// ListSessions returns the user's live sessions, newest first.
+func (s *Service) ListSessions(ctx context.Context, userID uuid.UUID) ([]Session, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT session_id, COALESCE(user_agent, ''), COALESCE(host(ip_address), ''), created_at, expires_at
+		FROM refresh_tokens
+		WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > NOW()
+		ORDER BY created_at DESC
+	`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list sessions: %w", err)
+	}
+	defer rows.Close()
+
+	sessions := []Session{}
+	for rows.Next() {
+		var sess Session
+		if err := rows.Scan(&sess.SessionID, &sess.UserAgent, &sess.IPAddress,
+			&sess.CreatedAt, &sess.ExpiresAt); err != nil {
+			return nil, fmt.Errorf("scan session: %w", err)
+		}
+		sessions = append(sessions, sess)
+	}
+	return sessions, rows.Err()
+}
+
+// RevokeUserSession revokes one session, but only if it belongs to the caller.
+func (s *Service) RevokeUserSession(ctx context.Context, userID uuid.UUID, sessionID string) error {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE refresh_tokens SET revoked_at = NOW()
+		WHERE session_id = $1 AND user_id = $2 AND revoked_at IS NULL
+	`, sessionID, userID)
+	if err != nil {
+		return fmt.Errorf("revoke session: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperrors.ErrNotFound
+	}
+	return nil
+}

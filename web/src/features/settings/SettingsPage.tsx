@@ -1,41 +1,42 @@
 import { useState } from 'react';
-import { User, Bell, Shield, Palette, Database, Loader2, Save } from 'lucide-react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { User, Bell, Shield, Palette, Loader2, Save, Monitor } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/card';
 import { Label } from '@/shared/components/ui/label';
-import { Switch } from '@/shared/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs';
 import { Separator } from '@/shared/components/ui/separator';
 import { useAuth } from '@/features/auth/AuthProvider';
-import { api } from '@/shared/api/client';
+import { authApi, orgApi } from '@/shared/api/client';
+import { apiErrorMessage } from '@/shared/api/errors';
+import { useToast } from '@/shared/hooks/useToast';
+import { FormDialog } from '@/shared/components/FormDialog';
+import { formatRelativeTime } from '@/shared/utils/cn';
 
 export function SettingsPage() {
   const { user, refreshUser } = useAuth();
+  const toast = useToast();
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState('profile');
   const [saving, setSaving] = useState(false);
-  const [formData, setFormData] = useState({
-    name: user?.name || '',
-    email: user?.email || '',
-    timezone: 'UTC',
-    locale: 'en',
-    notifications: {
-      email: true,
-      push: true,
-      mentions: true,
-      messages: true,
-    },
-    theme: 'system',
-  });
+  const [name, setName] = useState(user?.name || '');
+  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'system');
+  const [passwordOpen, setPasswordOpen] = useState(false);
 
+  // The save used to PATCH a path that carried the API prefix twice, against a
+  // route that does not exist, and swallow the 404 into the console — so it
+  // always looked like it worked. Address the signed-in user by id.
   const handleSave = async () => {
+    if (!user?.id) return;
     setSaving(true);
     try {
-      await api.patch('/api/users/me', formData);
+      await orgApi.updateUser(user.id, { name });
       await refreshUser();
+      toast.success('Your profile has been saved.');
     } catch (err) {
-      console.error('Save failed:', err);
+      toast.error(apiErrorMessage(err, 'Could not save your profile.'));
     } finally {
       setSaving(false);
     }
@@ -43,69 +44,36 @@ export function SettingsPage() {
 
   return (
     <div className="flex h-screen flex-col bg-background">
-      {/* Header */}
       <div className="flex h-16 items-center justify-between px-4 md:px-6 border-b border-border">
         <h1 className="text-2xl font-bold">Settings</h1>
-        <Button onClick={handleSave} disabled={saving}>
+        <Button onClick={handleSave} disabled={saving || !name.trim()}>
           {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
           Save Changes
         </Button>
       </div>
 
-      {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 overflow-auto">
         <TabsList className="border-b border-border p-4 md:p-6">
           <TabsTrigger value="profile"><User className="mr-2 h-4 w-4" />Profile</TabsTrigger>
           <TabsTrigger value="notifications"><Bell className="mr-2 h-4 w-4" />Notifications</TabsTrigger>
           <TabsTrigger value="security"><Shield className="mr-2 h-4 w-4" />Security</TabsTrigger>
           <TabsTrigger value="appearance"><Palette className="mr-2 h-4 w-4" />Appearance</TabsTrigger>
-          <TabsTrigger value="data"><Database className="mr-2 h-4 w-4" />Data</TabsTrigger>
         </TabsList>
 
         <TabsContent value="profile" className="p-4 md:p-6 space-y-6 max-w-2xl">
           <Card>
-            <CardHeader>
-              <CardTitle>Profile Information</CardTitle>
-            </CardHeader>
+            <CardHeader><CardTitle>Profile</CardTitle></CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="name">Full Name</Label>
-                  <Input id="name" value={formData.name} onChange={(e) => setFormData({...formData, name: e.target.value})} />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="email">Email</Label>
-                  <Input id="email" type="email" value={formData.email} onChange={(e) => setFormData({...formData, email: e.target.value})} />
-                </div>
+              <div className="space-y-2">
+                <Label htmlFor="profileName">Display name</Label>
+                <Input id="profileName" value={name} onChange={(e) => setName(e.target.value)} />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="timezone">Timezone</Label>
-                <Select value={formData.timezone} onValueChange={(v) => setFormData({...formData, timezone: v})}>
-                  <SelectTrigger><SelectValue placeholder="Select timezone" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="UTC">UTC</SelectItem>
-                    <SelectItem value="America/New_York">Eastern Time</SelectItem>
-                    <SelectItem value="America/Chicago">Central Time</SelectItem>
-                    <SelectItem value="America/Denver">Mountain Time</SelectItem>
-                    <SelectItem value="America/Los_Angeles">Pacific Time</SelectItem>
-                    <SelectItem value="Europe/London">London</SelectItem>
-                    <SelectItem value="Europe/Paris">Paris</SelectItem>
-                    <SelectItem value="Asia/Tokyo">Tokyo</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="locale">Language</Label>
-                <Select value={formData.locale} onValueChange={(v) => setFormData({...formData, locale: v})}>
-                  <SelectTrigger><SelectValue placeholder="Select language" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="en">English</SelectItem>
-                    <SelectItem value="es">Spanish</SelectItem>
-                    <SelectItem value="fr">French</SelectItem>
-                    <SelectItem value="de">German</SelectItem>
-                    <SelectItem value="ja">Japanese</SelectItem>
-                  </SelectContent>
-                </Select>
+                <Label htmlFor="profileEmail">Email</Label>
+                <Input id="profileEmail" value={user?.email || ''} disabled />
+                <p className="text-xs text-muted-foreground">
+                  Your email comes from your sign-in account and cannot be changed here.
+                </p>
               </div>
             </CardContent>
           </Card>
@@ -113,65 +81,51 @@ export function SettingsPage() {
 
         <TabsContent value="notifications" className="p-4 md:p-6 space-y-6 max-w-2xl">
           <Card>
-            <CardHeader>
-              <CardTitle>Notification Preferences</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {[
-                { key: 'email', label: 'Email Notifications', desc: 'Receive notifications via email' },
-                { key: 'push', label: 'Push Notifications', desc: 'Receive push notifications in browser' },
-                { key: 'mentions', label: 'Mentions', desc: 'Notify when @mentioned' },
-                { key: 'messages', label: 'Direct Messages', desc: 'Notify for new DMs' },
-              ].map(({ key, label, desc }) => (
-                <div key={key} className="flex items-center justify-between">
-                  <div>
-                    <p className="font-medium">{label}</p>
-                    <p className="text-sm text-muted-foreground">{desc}</p>
-                  </div>
-                  <Switch
-                    checked={formData.notifications[key as keyof typeof formData.notifications]}
-                    onCheckedChange={(checked) => setFormData({...formData, notifications: {...formData.notifications, [key]: checked}})}
-                  />
-                </div>
-              ))}
+            <CardHeader><CardTitle>Notifications</CardTitle></CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">
+                You are notified in the app when someone assigns you a task or mentions you in a
+                channel. Browser notifications can be enabled from the bell menu.
+              </p>
             </CardContent>
           </Card>
         </TabsContent>
 
         <TabsContent value="security" className="p-4 md:p-6 space-y-6 max-w-2xl">
           <Card>
-            <CardHeader>
-              <CardTitle>Security</CardTitle>
-            </CardHeader>
+            <CardHeader><CardTitle>Security</CardTitle></CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
-                <Label>Change Password</Label>
-                <Button variant="outline" onClick={() => {}}>Update Password</Button>
+                <Label>Password</Label>
+                <p className="text-sm text-muted-foreground">
+                  Changing your password signs you out everywhere, including this device.
+                </p>
+                <Button variant="outline" onClick={() => setPasswordOpen(true)}>Change password</Button>
               </div>
               <Separator />
-              <div className="space-y-2">
-                <Label>Two-Factor Authentication</Label>
-                <Button variant="outline" onClick={() => {}}>Enable 2FA</Button>
-              </div>
-              <Separator />
-              <div className="space-y-2">
-                <Label>Active Sessions</Label>
-                <Button variant="outline" onClick={() => {}}>Manage Sessions</Button>
-              </div>
+              <SessionsSection />
             </CardContent>
           </Card>
         </TabsContent>
 
         <TabsContent value="appearance" className="p-4 md:p-6 space-y-6 max-w-2xl">
           <Card>
-            <CardHeader>
-              <CardTitle>Appearance</CardTitle>
-            </CardHeader>
+            <CardHeader><CardTitle>Appearance</CardTitle></CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
-                <Label>Theme</Label>
-                <Select value={formData.theme} onValueChange={(v) => setFormData({...formData, theme: v})}>
-                  <SelectTrigger><SelectValue placeholder="Select theme" /></SelectTrigger>
+                <Label htmlFor="theme">Theme</Label>
+                <Select
+                  value={theme}
+                  onValueChange={(v) => {
+                    setTheme(v);
+                    localStorage.setItem('theme', v);
+                    document.documentElement.classList.toggle(
+                      'dark',
+                      v === 'dark' || (v === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
+                    );
+                  }}
+                >
+                  <SelectTrigger id="theme"><SelectValue placeholder="Select theme" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="system">System</SelectItem>
                     <SelectItem value="light">Light</SelectItem>
@@ -182,26 +136,128 @@ export function SettingsPage() {
             </CardContent>
           </Card>
         </TabsContent>
-
-        <TabsContent value="data" className="p-4 md:p-6 space-y-6 max-w-2xl">
-          <Card>
-            <CardHeader>
-              <CardTitle>Data Management</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label>Export Data</Label>
-                <Button variant="outline" onClick={() => {}}>Download Data</Button>
-              </div>
-              <Separator />
-              <div className="space-y-2">
-                <Label>Delete Account</Label>
-                <Button variant="destructive" onClick={() => {}}>Delete Account</Button>
-              </div>
-            </CardContent>
-          </Card>
-        </TabsContent>
       </Tabs>
+
+      <ChangePasswordDialog
+        open={passwordOpen}
+        onOpenChange={setPasswordOpen}
+        onChanged={() => {
+          queryClient.clear();
+          toast.success('Password changed. Please sign in again.');
+          window.location.assign('/login');
+        }}
+      />
     </div>
+  );
+}
+
+function SessionsSection() {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const { data, isLoading } = useQuery({
+    queryKey: ['sessions'],
+    queryFn: () => authApi.listSessions(),
+  });
+  const sessions = data?.data ?? [];
+
+  const revoke = async (sessionId: string) => {
+    try {
+      await authApi.revokeSession(sessionId);
+      await queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      toast.success('That device has been signed out.');
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not sign that device out.'));
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <Label>Active sessions</Label>
+      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {!isLoading && sessions.length === 0 && (
+        <p className="text-sm text-muted-foreground">No other active sessions.</p>
+      )}
+      <ul className="space-y-2">
+        {sessions.map((s: any) => (
+          <li key={s.sessionId} className="flex items-center gap-3 rounded-lg border border-border p-3">
+            <Monitor className="h-4 w-4 flex-shrink-0 text-muted-foreground" />
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-medium">{s.userAgent || 'Unknown device'}</p>
+              <p className="text-xs text-muted-foreground">
+                {s.ipAddress || 'unknown address'} · started {formatRelativeTime(s.createdAt)}
+                {s.current && ' · this device'}
+              </p>
+            </div>
+            {!s.current && (
+              <Button variant="outline" size="sm" onClick={() => revoke(s.sessionId)}>
+                Sign out
+              </Button>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+function ChangePasswordDialog({
+  open,
+  onOpenChange,
+  onChanged,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onChanged: () => void;
+}) {
+  const [current, setCurrent] = useState('');
+  const [next, setNext] = useState('');
+  const [confirm, setConfirm] = useState('');
+
+  const mismatch = next !== '' && confirm !== '' && next !== confirm;
+  const tooShort = next !== '' && next.length < 12;
+
+  return (
+    <FormDialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) {
+          setCurrent('');
+          setNext('');
+          setConfirm('');
+        }
+        onOpenChange(o);
+      }}
+      title="Change password"
+      description="You will be signed out on every device, including this one."
+      submitLabel="Change password"
+      disabledReason={
+        !current || !next || !confirm
+          ? 'Fill in every field'
+          : tooShort
+            ? 'Use at least 12 characters'
+            : mismatch
+              ? 'The new passwords do not match'
+              : undefined
+      }
+      onSubmit={async () => {
+        await authApi.changePassword({ currentPassword: current, newPassword: next });
+        onChanged();
+      }}
+    >
+      <div className="space-y-2">
+        <Label htmlFor="currentPassword">Current password</Label>
+        <Input id="currentPassword" type="password" value={current} onChange={(e) => setCurrent(e.target.value)} />
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="newPassword">New password</Label>
+        <Input id="newPassword" type="password" value={next} onChange={(e) => setNext(e.target.value)} />
+        {tooShort && <p className="text-xs text-destructive">Use at least 12 characters.</p>}
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="confirmPassword">Confirm new password</Label>
+        <Input id="confirmPassword" type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+        {mismatch && <p className="text-xs text-destructive">These do not match.</p>}
+      </div>
+    </FormDialog>
   );
 }

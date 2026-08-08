@@ -13,6 +13,8 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/rs/zerolog"
+
+	"github.com/teamup/teamup/internal/httpx"
 	"github.com/teamup/teamup/internal/observability"
 )
 
@@ -47,6 +49,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 		protected.POST("/link/:provider", h.LinkAccount)
 		protected.DELETE("/link/:provider", h.UnlinkAccount)
 		protected.GET("/sessions", h.ListSessions)
+		protected.POST("/password", h.ChangePassword)
 		protected.DELETE("/sessions/:sessionId", h.RevokeSession)
 	}
 }
@@ -347,8 +350,61 @@ func (h *Handler) UnlinkAccount(c *gin.Context) {
 }
 
 func (h *Handler) ListSessions(c *gin.Context) {
-	// In production, list active refresh tokens for user
-	c.JSON(http.StatusOK, gin.H{"sessions": []any{}})
+	userCtx := GetUserFromContext(c)
+	userID, err := uuid.Parse(userCtx.UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+
+	sessions, err := h.service.ListSessions(c.Request.Context(), userID)
+	if err != nil {
+		h.logger.Error().Err(err).Msg("List sessions failed")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list sessions"})
+		return
+	}
+
+	// Marking the caller's own session lets the UI label "this device" and
+	// avoid offering to revoke it.
+	type sessionView struct {
+		Session
+		Current bool `json:"current"`
+	}
+	out := make([]sessionView, 0, len(sessions))
+	for _, sess := range sessions {
+		out = append(out, sessionView{Session: sess, Current: sess.SessionID == userCtx.SessionID})
+	}
+	c.JSON(http.StatusOK, gin.H{"sessions": out})
+}
+
+// ChangePassword rotates the caller's own password. Nothing could rotate it
+// before, so a password set by the setup wizard was permanent.
+func (h *Handler) ChangePassword(c *gin.Context) {
+	userCtx := GetUserFromContext(c)
+	userID, err := uuid.Parse(userCtx.UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+
+	var req struct {
+		CurrentPassword string `json:"currentPassword" binding:"required"`
+		NewPassword     string `json:"newPassword" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := h.service.ChangePassword(c.Request.Context(), userID, req.CurrentPassword, req.NewPassword); err != nil {
+		httpx.Error(c, err, "failed to change password")
+		return
+	}
+
+	// Changing the password revoked every session, including this one, so the
+	// browser must not be left holding credentials that no longer work.
+	h.service.ClearAuthCookies(c.Writer)
+	c.JSON(http.StatusOK, gin.H{"message": "password changed, please sign in again"})
 }
 
 func (h *Handler) RevokeSession(c *gin.Context) {
@@ -360,8 +416,14 @@ func (h *Handler) RevokeSession(c *gin.Context) {
 		return
 	}
 
-	if err := h.service.RevokeSession(c.Request.Context(), sessionID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to revoke session"})
+	// Scoped to the caller: a session id must not be revocable by anyone else.
+	userID, err := uuid.Parse(userCtx.UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+	if err := h.service.RevokeUserSession(c.Request.Context(), userID, sessionID); err != nil {
+		httpx.Error(c, err, "failed to revoke session")
 		return
 	}
 

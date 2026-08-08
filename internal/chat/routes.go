@@ -38,6 +38,44 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.POST("/messages/:id/reactions", h.AddReaction)
 	rg.DELETE("/messages/:id/reactions/:emoji", h.RemoveReaction)
 	rg.POST("/channels/:id/read", h.MarkRead)
+	rg.GET("/search/messages", h.SearchMessages)
+}
+
+// SearchMessages backs the header search box, which had no endpoint at all.
+func (h *Handler) SearchMessages(c *gin.Context) {
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+
+	q := SearchQuery{Text: c.Query("q")}
+	if raw := c.Query("channelId"); raw != "" {
+		if id, err := uuid.Parse(raw); err == nil {
+			q.ChannelID = &id
+		}
+	}
+	if raw := c.Query("userId"); raw != "" {
+		if id, err := uuid.Parse(raw); err == nil {
+			q.UserID = &id
+		}
+	}
+	if raw := c.Query("limit"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil {
+			q.Limit = n
+		}
+	}
+	if raw := c.Query("offset"); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil {
+			q.Offset = n
+		}
+	}
+
+	results, err := h.service.SearchMessages(c.Request.Context(), cl.OrgID, cl.UserID, q)
+	if err != nil {
+		httpx.Error(c, err, "search failed")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"results": results})
 }
 
 type caller struct {

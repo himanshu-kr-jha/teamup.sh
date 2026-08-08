@@ -374,3 +374,109 @@ func TestLinkedIdentityRoundTrip(t *testing.T) {
 		t.Error("identity should be gone after unlink")
 	}
 }
+
+// Changing a password is the one credential operation a self-hosted admin
+// genuinely needs: the wizard sets the initial password and there was no way
+// to rotate it.
+func TestChangePassword(t *testing.T) {
+	pool := testDB(t)
+	svc := testService(pool)
+	ctx := context.Background()
+
+	email := "rotate-" + uuid.New().String()[:8] + "@acme.test"
+	_, userID := seedUser(t, pool, email, "correct-horse-battery")
+
+	if err := svc.ChangePassword(ctx, userID, "wrong-current-one", "brand-new-password"); err == nil {
+		t.Fatal("the current password must be verified before changing it")
+	}
+
+	if err := svc.ChangePassword(ctx, userID, "correct-horse-battery", "brand-new-password"); err != nil {
+		t.Fatalf("change password: %v", err)
+	}
+
+	user, err := svc.GetUserByEmail(ctx, email)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if err := svc.VerifyPassword(user, "brand-new-password"); err != nil {
+		t.Errorf("the new password should authenticate: %v", err)
+	}
+	if err := svc.VerifyPassword(user, "correct-horse-battery"); err == nil {
+		t.Error("the old password must stop working")
+	}
+}
+
+func TestChangePasswordEnforcesLength(t *testing.T) {
+	pool := testDB(t)
+	svc := testService(pool)
+	ctx := context.Background()
+
+	email := "short-" + uuid.New().String()[:8] + "@acme.test"
+	_, userID := seedUser(t, pool, email, "correct-horse-battery")
+
+	if err := svc.ChangePassword(ctx, userID, "correct-horse-battery", "short"); err == nil {
+		t.Fatal("a password under the minimum length must be rejected")
+	}
+}
+
+// Rotating the password must not leave old sessions usable.
+func TestChangePasswordRevokesOtherSessions(t *testing.T) {
+	pool := testDB(t)
+	svc := testService(pool)
+	ctx := context.Background()
+
+	email := "revoke-pw-" + uuid.New().String()[:8] + "@acme.test"
+	_, userID := seedUser(t, pool, email, "correct-horse-battery")
+	user, _ := svc.GetUserByEmail(ctx, email)
+
+	sessionID := uuid.New().String()
+	if _, err := svc.generateAndStoreRefreshToken(ctx, user, sessionID, "ua", "127.0.0.1"); err != nil {
+		t.Fatalf("issue session: %v", err)
+	}
+
+	if err := svc.ChangePassword(ctx, userID, "correct-horse-battery", "brand-new-password"); err != nil {
+		t.Fatalf("change: %v", err)
+	}
+
+	revoked, err := svc.isSessionRevoked(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if !revoked {
+		t.Error("existing sessions must be revoked when the password changes")
+	}
+}
+
+func TestListSessionsReturnsActiveOnes(t *testing.T) {
+	pool := testDB(t)
+	svc := testService(pool)
+	ctx := context.Background()
+
+	email := "sessions-" + uuid.New().String()[:8] + "@acme.test"
+	_, userID := seedUser(t, pool, email, "correct-horse-battery")
+	user, _ := svc.GetUserByEmail(ctx, email)
+
+	s1 := uuid.New().String()
+	if _, err := svc.generateAndStoreRefreshToken(ctx, user, s1, "Firefox on Linux", "127.0.0.1"); err != nil {
+		t.Fatalf("issue: %v", err)
+	}
+
+	sessions, err := svc.ListSessions(ctx, userID)
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected one active session, got %d", len(sessions))
+	}
+	if sessions[0].UserAgent != "Firefox on Linux" {
+		t.Errorf("session should carry the device it was issued to: %+v", sessions[0])
+	}
+
+	if err := svc.RevokeSession(ctx, s1); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	sessions, _ = svc.ListSessions(ctx, userID)
+	if len(sessions) != 0 {
+		t.Errorf("a revoked session should not be listed, got %d", len(sessions))
+	}
+}

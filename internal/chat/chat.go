@@ -851,3 +851,83 @@ func (s *Service) DeleteMessage(ctx context.Context, messageID, userID uuid.UUID
 func (s *Service) MarkRead(ctx context.Context, channelID, userID, messageID uuid.UUID) error {
 	return s.updateLastRead(ctx, channelID, userID, messageID)
 }
+
+// ── Message search ────────────────────────────────────────────────────────
+
+// SearchQuery narrows a full-text search. Text is required; everything else
+// is optional.
+type SearchQuery struct {
+	Text      string
+	ChannelID *uuid.UUID
+	UserID    *uuid.UUID
+	Limit     int
+	Offset    int
+}
+
+// SearchResult is a matching message with enough context to render a row and
+// link back to it.
+type SearchResult struct {
+	ID          uuid.UUID `json:"id"`
+	ChannelID   uuid.UUID `json:"channelId"`
+	ChannelName string    `json:"channelName"`
+	UserID      uuid.UUID `json:"userId"`
+	UserName    string    `json:"userName"`
+	Content     string    `json:"content"`
+	Highlight   string    `json:"highlight"`
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
+// SearchMessages runs a full-text search over the messages the caller may
+// read: channels they belong to, plus the organization's public channels.
+//
+// websearch_to_tsquery gives the quoting and negation behaviour people expect
+// from a search box, and never errors on malformed input the way plainto_ or
+// to_tsquery can.
+func (s *Service) SearchMessages(ctx context.Context, orgID, userID uuid.UUID, q SearchQuery) ([]SearchResult, error) {
+	text := strings.TrimSpace(q.Text)
+	if text == "" {
+		return []SearchResult{}, nil
+	}
+	if q.Limit <= 0 || q.Limit > 100 {
+		q.Limit = 25
+	}
+	if q.Offset < 0 {
+		q.Offset = 0
+	}
+
+	rows, err := s.db.Query(ctx, `
+		SELECT m.id, m.channel_id, COALESCE(c.name, ''), m.user_id, u.name, m.content,
+		       ts_headline('english', m.content, websearch_to_tsquery('english', $2),
+		                   'StartSel=<mark>, StopSel=</mark>, MaxFragments=2, MaxWords=18, MinWords=5'),
+		       m.created_at
+		FROM messages m
+		JOIN channels c ON c.id = m.channel_id
+		JOIN users u ON u.id = m.user_id
+		LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.user_id = $3
+		WHERE m.org_id = $1
+		  AND m.deleted_at IS NULL
+		  AND c.deleted_at IS NULL
+		  AND (cm.user_id IS NOT NULL OR c.type = 'public')
+		  AND m.content_search @@ websearch_to_tsquery('english', $2)
+		  AND ($4::uuid IS NULL OR m.channel_id = $4)
+		  AND ($5::uuid IS NULL OR m.user_id = $5)
+		ORDER BY ts_rank_cd(m.content_search, websearch_to_tsquery('english', $2), 32) DESC,
+		         m.created_at DESC
+		LIMIT $6 OFFSET $7
+	`, orgID, text, userID, q.ChannelID, q.UserID, q.Limit, q.Offset)
+	if err != nil {
+		return nil, fmt.Errorf("search messages: %w", err)
+	}
+	defer rows.Close()
+
+	results := []SearchResult{}
+	for rows.Next() {
+		var r SearchResult
+		if err := rows.Scan(&r.ID, &r.ChannelID, &r.ChannelName, &r.UserID, &r.UserName,
+			&r.Content, &r.Highlight, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan search result: %w", err)
+		}
+		results = append(results, r)
+	}
+	return results, rows.Err()
+}

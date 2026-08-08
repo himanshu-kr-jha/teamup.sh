@@ -232,3 +232,119 @@ func TestUploadRejectsMalformedIdentifiers(t *testing.T) {
 		t.Fatal("a non-uuid parent reference must be refused")
 	}
 }
+
+// ── Attachment records (ticket 10) ────────────────────────────────────────
+//
+// Nothing ever inserted into `attachments`, so an uploaded file was
+// unreachable once the browser forgot its object key.
+
+func TestRecordedAttachmentCanBeListedAndResolved(t *testing.T) {
+	svc := accessService(t)
+	pool := svc.db
+	ctx := context.Background()
+
+	org := testsupport.SeedOrg(t, pool)
+	channel := testsupport.SeedChannel(t, pool, org, "general", org.OwnerID)
+	key := "org-" + org.ID.String() + "/chat/" + channel.String() + "/20260101T000000Z-notes.pdf"
+
+	att, err := svc.RecordAttachment(ctx, AttachmentRecord{
+		OrgID: org.ID, UploadedBy: org.OwnerID,
+		Category: "chat", RefID: channel.String(), ObjectKey: key,
+		Filename: "notes.pdf", ContentType: "application/pdf", SizeBytes: 2048,
+	})
+	if err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if att.ID == uuid.Nil {
+		t.Fatal("attachment was not persisted")
+	}
+
+	listed, err := svc.ListAttachments(ctx, org.ID, "chat", channel.String())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(listed) != 1 || listed[0].Filename != "notes.pdf" || listed[0].SizeBytes != 2048 {
+		t.Fatalf("attachment not listed correctly: %+v", listed)
+	}
+}
+
+func TestRecordingAnAttachmentTwiceUpdatesRatherThanDuplicating(t *testing.T) {
+	svc := accessService(t)
+	pool := svc.db
+	ctx := context.Background()
+
+	org := testsupport.SeedOrg(t, pool)
+	channel := testsupport.SeedChannel(t, pool, org, "general", org.OwnerID)
+	key := "org-" + org.ID.String() + "/chat/" + channel.String() + "/20260101T000000Z-notes.pdf"
+
+	rec := AttachmentRecord{
+		OrgID: org.ID, UploadedBy: org.OwnerID,
+		Category: "chat", RefID: channel.String(), ObjectKey: key,
+		Filename: "notes.pdf", ContentType: "application/pdf", SizeBytes: 1,
+	}
+	if _, err := svc.RecordAttachment(ctx, rec); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	rec.SizeBytes = 4096
+	if _, err := svc.RecordAttachment(ctx, rec); err != nil {
+		t.Fatalf("second: %v", err)
+	}
+
+	listed, _ := svc.ListAttachments(ctx, org.ID, "chat", channel.String())
+	if len(listed) != 1 {
+		t.Fatalf("object key is unique, so re-recording must update: got %d", len(listed))
+	}
+	if listed[0].SizeBytes != 4096 {
+		t.Errorf("re-recording should refresh the metadata, got %d", listed[0].SizeBytes)
+	}
+}
+
+// Recording is an authorisation boundary too: the same checks as issuing the
+// upload URL apply, or a caller could register a row against someone else's
+// object.
+func TestRecordingAnAttachmentIsAccessChecked(t *testing.T) {
+	svc := accessService(t)
+	pool := svc.db
+	ctx := context.Background()
+
+	org := testsupport.SeedOrg(t, pool)
+	theirs := testsupport.SeedOrg(t, pool)
+	theirChannel := testsupport.SeedChannel(t, pool, theirs, "theirs", theirs.OwnerID)
+	theirKey := "org-" + theirs.ID.String() + "/chat/" + theirChannel.String() + "/20260101T000000Z-x.pdf"
+
+	_, err := svc.RecordAttachment(ctx, AttachmentRecord{
+		OrgID: org.ID, UploadedBy: org.OwnerID,
+		Category: "chat", RefID: theirChannel.String(), ObjectKey: theirKey,
+		Filename: "x.pdf", ContentType: "application/pdf", SizeBytes: 1,
+	})
+	if err == nil {
+		t.Fatal("recording an attachment against another organization must be refused")
+	}
+}
+
+func TestListAttachmentsIsScopedToTheOrganization(t *testing.T) {
+	svc := accessService(t)
+	pool := svc.db
+	ctx := context.Background()
+
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedOrg(t, pool)
+	channel := testsupport.SeedChannel(t, pool, org, "general", org.OwnerID)
+	key := "org-" + org.ID.String() + "/chat/" + channel.String() + "/20260101T000000Z-notes.pdf"
+
+	if _, err := svc.RecordAttachment(ctx, AttachmentRecord{
+		OrgID: org.ID, UploadedBy: org.OwnerID,
+		Category: "chat", RefID: channel.String(), ObjectKey: key,
+		Filename: "notes.pdf", ContentType: "application/pdf", SizeBytes: 1,
+	}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	listed, err := svc.ListAttachments(ctx, other.ID, "chat", channel.String())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(listed) != 0 {
+		t.Errorf("another organization must not see these attachments: %+v", listed)
+	}
+}

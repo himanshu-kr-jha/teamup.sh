@@ -32,6 +32,9 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.POST("/tasks/:id/labels", h.AddLabel)
 	rg.DELETE("/tasks/:id/labels/:labelId", h.RemoveLabel)
 	rg.GET("/tasks/:id/activities", h.GetActivities)
+	rg.GET("/tasks/:id/watchers", h.ListWatchers)
+	rg.POST("/tasks/:id/watchers", h.AddWatcher)
+	rg.DELETE("/tasks/:id/watchers/:userId", h.RemoveWatcher)
 	rg.GET("/labels", h.ListLabels)
 	rg.POST("/labels", h.CreateLabel)
 }
@@ -364,4 +367,73 @@ func (h *Handler) CreateLabel(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, label)
+}
+
+func (h *Handler) ListWatchers(c *gin.Context) {
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	id, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	watchers, err := h.service.ListWatchers(c.Request.Context(), cl.OrgID, id)
+	if err != nil {
+		httpx.Error(c, err, "failed to list watchers")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"users": watchers})
+}
+
+// AddWatcher defaults to the caller, so "follow this task" needs no body.
+func (h *Handler) AddWatcher(c *gin.Context) {
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	id, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	var req struct {
+		UserID string `json:"userId"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	userID := cl.UserID
+	if req.UserID != "" {
+		parsed, err := uuid.Parse(req.UserID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid userId"})
+			return
+		}
+		userID = parsed
+	}
+
+	if err := h.service.AddWatcher(c.Request.Context(), cl.OrgID, id, userID); err != nil {
+		httpx.Error(c, err, "failed to add watcher")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "watching"})
+}
+
+func (h *Handler) RemoveWatcher(c *gin.Context) {
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	id, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	userID, ok := pathUUID(c, "userId")
+	if !ok {
+		return
+	}
+	if err := h.service.RemoveWatcher(c.Request.Context(), cl.OrgID, id, userID); err != nil {
+		httpx.Error(c, err, "failed to remove watcher")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "no longer watching"})
 }

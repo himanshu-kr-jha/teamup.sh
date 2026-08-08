@@ -1,8 +1,9 @@
-import { Bell, Search, Menu, Sun, Moon } from 'lucide-react';
+import { Search, Menu, Sun, Moon } from 'lucide-react';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { Button } from '@/shared/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/shared/components/ui/dropdown-menu';
 import { Avatar, AvatarFallback, AvatarImage } from '@/shared/components/ui/avatar';
+import { NotificationBell } from '@/features/notifications/NotificationBell';
 import { useState } from 'react';
 
 interface HeaderProps {
@@ -54,43 +55,8 @@ export function Header({ onMenuClick }: HeaderProps) {
           {theme === 'light' ? <Moon className="h-5 w-5" /> : <Sun className="h-5 w-5" />}
         </Button>
 
-        {/* Notifications */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="relative" aria-label="Notifications">
-              <Bell className="h-5 w-5" aria-hidden="true" />
-              <span className="absolute -top-1 -right-1 h-4 w-4 rounded-full bg-destructive text-[10px] font-medium text-destructive-foreground flex items-center justify-center">
-                3
-              </span>
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-80">
-            <div className="p-2 border-b border-border">
-              <h3 className="font-medium">Notifications</h3>
-            </div>
-            <div className="max-h-96 overflow-y-auto">
-              <DropdownMenuItem className="p-3 hover:bg-accent focus:bg-accent" onSelect={() => {}}>
-                <p className="font-medium">New message in #general</p>
-                <p className="text-sm text-muted-foreground">John Doe: "Hey team, meeting in 5 mins"</p>
-                <p className="text-xs text-muted-foreground">2 min ago</p>
-              </DropdownMenuItem>
-              <DropdownMenuItem className="p-3 hover:bg-accent focus:bg-accent" onSelect={() => {}}>
-                <p className="font-medium">Task assigned: "Fix login bug"</p>
-                <p className="text-sm text-muted-foreground">Assigned by Jane Smith</p>
-                <p className="text-xs text-muted-foreground">1 hour ago</p>
-              </DropdownMenuItem>
-              <DropdownMenuItem className="p-3 hover:bg-accent focus:bg-accent" onSelect={() => {}}>
-                <p className="font-medium">Call started: Daily Standup</p>
-                <p className="text-sm text-muted-foreground">Join the ongoing call</p>
-                <p className="text-xs text-muted-foreground">3 hours ago</p>
-              </DropdownMenuItem>
-            </div>
-            <DropdownMenuSeparator />
-            <DropdownMenuItem className="text-center text-primary" onSelect={() => {}}>
-              View all notifications
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        {/* Notifications: real unread count and list */}
+        <NotificationBell />
 
         {/* User menu */}
         <DropdownMenu>

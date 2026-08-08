@@ -342,3 +342,120 @@ func (s *Service) CalculateChecksum(reader io.Reader) (string, error) {
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
 }
+
+// ── Attachment records ────────────────────────────────────────────────────
+//
+// Issuing a presigned URL was only half the job: nothing recorded that the
+// upload happened, so a file became unreachable the moment the browser forgot
+// its object key, and history never returned attachments at all.
+
+// AttachmentRecord is what the client reports once its upload has completed.
+type AttachmentRecord struct {
+	OrgID       uuid.UUID `json:"orgId"`
+	UploadedBy  uuid.UUID `json:"uploadedBy"`
+	Category    string    `json:"category"`
+	RefID       string    `json:"refId"`
+	ObjectKey   string    `json:"objectKey"`
+	Filename    string    `json:"filename"`
+	ContentType string    `json:"contentType"`
+	SizeBytes   int64     `json:"sizeBytes"`
+}
+
+// Attachment is a stored file as it is handed back to a client.
+type Attachment struct {
+	ID          uuid.UUID `json:"id"`
+	OrgID       uuid.UUID `json:"orgId"`
+	UploadedBy  uuid.UUID `json:"uploadedBy"`
+	Category    string    `json:"category"`
+	RefID       string    `json:"refId"`
+	ObjectKey   string    `json:"objectKey"`
+	Filename    string    `json:"filename"`
+	ContentType string    `json:"contentType"`
+	SizeBytes   int64     `json:"sizeBytes"`
+	CreatedAt   time.Time `json:"createdAt"`
+}
+
+// RecordAttachment registers a completed upload. It re-runs the same access
+// check as issuing the URL, so a caller cannot register a row against an
+// object they were never entitled to write.
+func (s *Service) RecordAttachment(ctx context.Context, rec AttachmentRecord) (*Attachment, error) {
+	if err := s.validateAccess(ctx, UploadRequest{
+		OrgID:    rec.OrgID.String(),
+		UserID:   rec.UploadedBy.String(),
+		Category: rec.Category,
+		RefID:    rec.RefID,
+		Filename: rec.Filename,
+		Size:     rec.SizeBytes,
+	}); err != nil {
+		return nil, err
+	}
+	// The key must also be one this organization could have produced.
+	if _, _, err := parseObjectKey(rec.ObjectKey, rec.OrgID); err != nil {
+		return nil, apperrors.New(apperrors.CodeForbidden, "access denied")
+	}
+
+	var a Attachment
+	err := s.db.QueryRow(ctx, `
+		INSERT INTO attachments (id, org_id, uploaded_by, category, ref_id, object_key,
+		                         filename, content_type, size_bytes, created_at)
+		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, NOW())
+		ON CONFLICT (object_key) DO UPDATE
+		SET filename = EXCLUDED.filename, content_type = EXCLUDED.content_type,
+		    size_bytes = EXCLUDED.size_bytes, ref_id = EXCLUDED.ref_id, deleted_at = NULL
+		RETURNING id, org_id, uploaded_by, category, ref_id, object_key,
+		          filename, content_type, size_bytes, created_at
+	`, rec.OrgID, rec.UploadedBy, rec.Category, rec.RefID, rec.ObjectKey,
+		rec.Filename, rec.ContentType, rec.SizeBytes).Scan(
+		&a.ID, &a.OrgID, &a.UploadedBy, &a.Category, &a.RefID, &a.ObjectKey,
+		&a.Filename, &a.ContentType, &a.SizeBytes, &a.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("record attachment: %w", err)
+	}
+	return &a, nil
+}
+
+// ListAttachments returns the files hanging off one parent.
+func (s *Service) ListAttachments(ctx context.Context, orgID uuid.UUID, category, refID string) ([]Attachment, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, org_id, uploaded_by, category, ref_id, object_key,
+		       filename, content_type, size_bytes, created_at
+		FROM attachments
+		WHERE org_id = $1 AND category = $2 AND ref_id = $3 AND deleted_at IS NULL
+		ORDER BY created_at
+	`, orgID, category, refID)
+	if err != nil {
+		return nil, fmt.Errorf("list attachments: %w", err)
+	}
+	defer rows.Close()
+
+	out := []Attachment{}
+	for rows.Next() {
+		var a Attachment
+		if err := rows.Scan(&a.ID, &a.OrgID, &a.UploadedBy, &a.Category, &a.RefID, &a.ObjectKey,
+			&a.Filename, &a.ContentType, &a.SizeBytes, &a.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan attachment: %w", err)
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+// RequireParentAccess exposes the parent entitlement check for callers that
+// need it without issuing a URL, such as listing a parent's attachments.
+func (s *Service) RequireParentAccess(ctx context.Context, orgID uuid.UUID, userID, category, refID string) error {
+	user, err := uuid.Parse(userID)
+	if err != nil {
+		return apperrors.New(apperrors.CodeForbidden, "access denied")
+	}
+	if !allowedCategories[category] {
+		return apperrors.New(apperrors.CodeBadRequest, "unknown attachment category")
+	}
+	ref, err := uuid.Parse(refID)
+	if err != nil {
+		return apperrors.New(apperrors.CodeBadRequest, "invalid attachment reference")
+	}
+	if err := s.requireOrgMember(ctx, orgID, user); err != nil {
+		return err
+	}
+	return s.requireParentAccess(ctx, orgID, user, category, ref)
+}

@@ -476,6 +476,7 @@ func (s *Service) UpdateTask(ctx context.Context, orgID, id, actorID uuid.UUID, 
 	if _, reassigned := updates["assigneeId"]; reassigned {
 		s.notifyAssignee(ctx, orgID, actorID, after)
 	}
+	s.notifyWatchers(ctx, orgID, id, actorID, "A task you follow changed", after.Title)
 	return after, nil
 }
 
@@ -690,4 +691,97 @@ func (s *Service) GetActivities(ctx context.Context, orgID, taskID uuid.UUID) ([
 		activities = append(activities, a)
 	}
 	return activities, rows.Err()
+}
+
+// ── Watchers ──────────────────────────────────────────────────────────────
+
+// Watcher is someone following a task's changes.
+type Watcher struct {
+	UserID uuid.UUID `json:"userId"`
+	Name   string    `json:"name"`
+	Email  string    `json:"email"`
+}
+
+// AddWatcher is idempotent and refuses users from another organization.
+func (s *Service) AddWatcher(ctx context.Context, orgID, taskID, userID uuid.UUID) error {
+	tag, err := s.db.Exec(ctx, `
+		INSERT INTO task_watchers (task_id, user_id)
+		SELECT t.id, u.id FROM tasks t JOIN users u ON u.org_id = t.org_id
+		WHERE t.id = $1 AND u.id = $2 AND t.org_id = $3
+		  AND t.deleted_at IS NULL AND u.deleted_at IS NULL
+		ON CONFLICT DO NOTHING
+	`, taskID, userID, orgID)
+	if err != nil {
+		return fmt.Errorf("add watcher: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		var exists bool
+		if err := s.db.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM task_watchers WHERE task_id = $1 AND user_id = $2)`,
+			taskID, userID).Scan(&exists); err != nil {
+			return fmt.Errorf("verify watcher: %w", err)
+		}
+		if !exists {
+			return apperrors.New(apperrors.CodeNotFound, "task or user not found in this organization")
+		}
+	}
+	return nil
+}
+
+func (s *Service) RemoveWatcher(ctx context.Context, orgID, taskID, userID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `
+		DELETE FROM task_watchers tw USING tasks t
+		WHERE tw.task_id = t.id AND tw.task_id = $1 AND tw.user_id = $2 AND t.org_id = $3
+	`, taskID, userID, orgID)
+	if err != nil {
+		return fmt.Errorf("remove watcher: %w", err)
+	}
+	return nil
+}
+
+func (s *Service) ListWatchers(ctx context.Context, orgID, taskID uuid.UUID) ([]Watcher, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT u.id, u.name, u.email
+		FROM task_watchers tw
+		JOIN tasks t ON t.id = tw.task_id
+		JOIN users u ON u.id = tw.user_id
+		WHERE tw.task_id = $1 AND t.org_id = $2 AND u.deleted_at IS NULL
+		ORDER BY u.name
+	`, taskID, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("list watchers: %w", err)
+	}
+	defer rows.Close()
+
+	watchers := []Watcher{}
+	for rows.Next() {
+		var w Watcher
+		if err := rows.Scan(&w.UserID, &w.Name, &w.Email); err != nil {
+			return nil, fmt.Errorf("scan watcher: %w", err)
+		}
+		watchers = append(watchers, w)
+	}
+	return watchers, rows.Err()
+}
+
+// notifyWatchers tells everyone following a task that it changed. The person
+// who made the change is never notified about their own action.
+func (s *Service) notifyWatchers(ctx context.Context, orgID, taskID, actorID uuid.UUID, title, body string) {
+	if s.notifier == nil {
+		return
+	}
+	watchers, err := s.ListWatchers(ctx, orgID, taskID)
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("could not load watchers to notify")
+		return
+	}
+	for _, w := range watchers {
+		if w.UserID == actorID {
+			continue
+		}
+		if err := s.notifier.Notify(ctx, orgID, w.UserID, "task.updated", title, body,
+			map[string]any{"taskId": taskID.String()}); err != nil {
+			s.logger.Warn().Err(err).Msg("watcher notification failed")
+		}
+	}
 }

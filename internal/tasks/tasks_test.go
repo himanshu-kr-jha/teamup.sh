@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -389,4 +390,106 @@ func TestGetTaskUnknownIsNotFound(t *testing.T) {
 	if _, err := svc.GetTask(context.Background(), org.ID, uuid.New()); err == nil {
 		t.Fatal("an unknown task must report not-found")
 	}
+}
+
+// ── Watchers (ticket 07) ──────────────────────────────────────────────────
+//
+// The frontend already declared these endpoints; the server had none.
+
+func TestWatchersLifecycle(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	mate := testsupport.SeedUser(t, pool, org, "watcher@example.test", "member")
+	task := createTask(t, svc, org, "Watch me")
+
+	for i := 0; i < 2; i++ {
+		if err := svc.AddWatcher(ctx, org.ID, task.ID, mate); err != nil {
+			t.Fatalf("add watcher (pass %d): %v", i, err)
+		}
+	}
+
+	watchers, err := svc.ListWatchers(ctx, org.ID, task.ID)
+	if err != nil {
+		t.Fatalf("list watchers: %v", err)
+	}
+	if len(watchers) != 1 {
+		t.Fatalf("watching twice must not duplicate, got %d", len(watchers))
+	}
+	if watchers[0].Name == "" {
+		t.Error("a watcher should carry a name for rendering")
+	}
+
+	if err := svc.RemoveWatcher(ctx, org.ID, task.ID, mate); err != nil {
+		t.Fatalf("remove watcher: %v", err)
+	}
+	watchers, _ = svc.ListWatchers(ctx, org.ID, task.ID)
+	if len(watchers) != 0 {
+		t.Errorf("watcher not removed: %+v", watchers)
+	}
+}
+
+func TestWatcherFromAnotherOrganizationIsRefused(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedOrg(t, pool)
+	task := createTask(t, svc, org, "Mine")
+
+	if err := svc.AddWatcher(ctx, org.ID, task.ID, other.OwnerID); err == nil {
+		t.Fatal("a user from another organization must not watch this task")
+	}
+}
+
+// Watching is what makes a change reach someone who is neither the assignee
+// nor the person making it.
+func TestWatchersAreNotifiedOfChangesButNotTheirOwn(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	watcher := testsupport.SeedUser(t, pool, org, "follower@example.test", "member")
+	task := createTask(t, svc, org, "Followed")
+
+	notifier := &recordingNotifier{}
+	svc.SetNotifier(notifier)
+
+	if err := svc.AddWatcher(ctx, org.ID, task.ID, watcher); err != nil {
+		t.Fatalf("watch: %v", err)
+	}
+	if err := svc.AddWatcher(ctx, org.ID, task.ID, org.OwnerID); err != nil {
+		t.Fatalf("watch as owner: %v", err)
+	}
+
+	if _, err := svc.UpdateTask(ctx, org.ID, task.ID, org.OwnerID,
+		map[string]interface{}{"status": "in_progress"}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	if notifier.count(watcher) != 1 {
+		t.Errorf("the watcher should have been notified, got %d", notifier.count(watcher))
+	}
+	if notifier.count(org.OwnerID) != 0 {
+		t.Error("the person making the change must not be notified about it")
+	}
+}
+
+type recordingNotifier struct {
+	mu   sync.Mutex
+	sent map[uuid.UUID]int
+}
+
+func (r *recordingNotifier) Notify(_ context.Context, _, userID uuid.UUID, _, _, _ string, _ map[string]any) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.sent == nil {
+		r.sent = map[uuid.UUID]int{}
+	}
+	r.sent[userID]++
+	return nil
+}
+
+func (r *recordingNotifier) count(userID uuid.UUID) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.sent[userID]
 }

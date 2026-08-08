@@ -5,6 +5,7 @@ import * as ToastPrimitives from '@radix-ui/react-toast';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { X } from 'lucide-react';
 import { cn } from '@/shared/utils/cn';
+import { useToastStore } from '@/shared/hooks/useToast';
 
 const ToastProvider = ToastPrimitives.Provider;
 
@@ -115,10 +116,31 @@ export {
   ToastAction,
 };
 
-// Toaster component
+// Toaster renders whatever has been pushed onto the toast store. It was
+// previously mounted but rendered nothing, so every toast in the app was
+// silently dropped.
 export function Toaster() {
+  const toasts = useToastStore((s) => s.toasts);
+  const dismiss = useToastStore((s) => s.dismiss);
+
   return (
     <ToastProvider>
+      {toasts.map(({ id, title, description, variant }) => (
+        <Toast
+          key={id}
+          variant={variant}
+          duration={variant === 'destructive' ? 8000 : 4000}
+          onOpenChange={(open) => {
+            if (!open) dismiss(id);
+          }}
+        >
+          <div className="grid gap-1">
+            {title && <ToastTitle>{title}</ToastTitle>}
+            <ToastDescription>{description}</ToastDescription>
+          </div>
+          <ToastClose />
+        </Toast>
+      ))}
       <ToastViewport />
     </ToastProvider>
   );

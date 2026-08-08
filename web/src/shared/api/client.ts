@@ -80,8 +80,34 @@ export const authApi = {
   logout: () => api.post('/auth/logout'),
   linkAccount: (provider: string) => api.post(`/auth/link/${provider}`),
   unlinkAccount: (provider: string) => api.delete(`/auth/link/${provider}`),
-  listSessions: () => api.get('/auth/sessions'),
+  listSessions: () => getList('/auth/sessions', 'sessions'),
   revokeSession: (sessionId: string) => api.delete(`/auth/sessions/${sessionId}`),
+  changePassword: (data: { currentPassword: string; newPassword: string }) =>
+    api.post('/auth/password', data),
+};
+
+export const orgApi = {
+  get: () => api.get('/org'),
+  update: (data: { name?: string; logoUrl?: string }) => api.patch('/org', data),
+  listUsers: () => getList('/users', 'users'),
+  getUser: (id: string) => api.get(`/users/${id}`),
+  updateUser: (id: string, data: { name?: string; avatarUrl?: string }) => api.patch(`/users/${id}`, data),
+  deactivateUser: (id: string) => api.delete(`/users/${id}`),
+  listRoles: () => getList('/roles', 'roles'),
+  createRole: (data: { name: string; description?: string; permissions?: string[] }) => api.post('/roles', data),
+  updateRole: (id: string, data: { name?: string; description?: string; permissions?: string[] }) =>
+    api.patch(`/roles/${id}`, data),
+  deleteRole: (id: string) => api.delete(`/roles/${id}`),
+  assignRole: (userId: string, roleId: string) => api.post(`/users/${userId}/roles`, { roleId }),
+  removeRole: (userId: string, roleId: string) => api.delete(`/users/${userId}/roles/${roleId}`),
+  listTeams: () => getList('/teams', 'teams'),
+  createTeam: (data: { name: string; description?: string; managerId?: string }) => api.post('/teams', data),
+  updateTeam: (id: string, data: { name?: string; description?: string; managerId?: string }) =>
+    api.patch(`/teams/${id}`, data),
+  deleteTeam: (id: string) => api.delete(`/teams/${id}`),
+  listTeamMembers: (id: string) => getList(`/teams/${id}/members`, 'users'),
+  addTeamMember: (id: string, userId: string) => api.post(`/teams/${id}/members`, { userId }),
+  removeTeamMember: (id: string, userId: string) => api.delete(`/teams/${id}/members/${userId}`),
 };
 
 // The API wraps collections in a named key ({"channels": [...]}) while the
@@ -100,8 +126,9 @@ export const channelsApi = {
   get: (id: string) => api.get(`/channels/${id}`),
   update: (id: string, data: Partial<{ name: string; description: string; isPrivate: boolean }>) => api.patch(`/channels/${id}`, data),
   delete: (id: string) => api.delete(`/channels/${id}`),
-  addMember: (id: string, userId: string) => api.post(`/channels/${id}/members`, { userId }),
+  addMember: (id: string, userId: string, role?: string) => api.post(`/channels/${id}/members`, { userId, role }),
   removeMember: (id: string, userId: string) => api.delete(`/channels/${id}/members/${userId}`),
+  markRead: (id: string, messageId: string) => api.post(`/channels/${id}/read`, { messageId }),
   getMessages: (id: string, params?: { limit?: number; before?: string; after?: string }) => getList(`/channels/${id}/messages`, 'messages', params),
   sendMessage: (id: string, data: { content: string; tempId: string; replyTo?: string; attachments?: any[] }) => api.post(`/channels/${id}/messages`, data),
   editMessage: (messageId: string, content: string) => api.patch(`/messages/${messageId}`, { content }),
@@ -111,8 +138,14 @@ export const channelsApi = {
 };
 
 export const messagesApi = {
-  search: (params: { q: string; channelIds?: string[]; userIds?: string[]; dateFrom?: string; dateTo?: string; limit?: number; offset?: number }) =>
-    api.get('/search/messages', { params }),
+  search: (params: { q: string; channelId?: string; userId?: string; dateFrom?: string; dateTo?: string; limit?: number; offset?: number }) =>
+    getList('/search/messages', 'results', params),
+};
+
+export const presenceApi = {
+  listOnline: () => getList('/presence/org/online', 'users'),
+  get: (userId: string) => api.get(`/presence/${userId}`),
+  update: (status: string) => api.patch('/presence', { status }),
 };
 
 export const tasksApi = {
@@ -124,9 +157,13 @@ export const tasksApi = {
   addComment: (id: string, content: string) => api.post(`/tasks/${id}/comments`, { content }),
   addLabel: (id: string, labelId: string) => api.post(`/tasks/${id}/labels`, { labelId }),
   removeLabel: (id: string, labelId: string) => api.delete(`/tasks/${id}/labels/${labelId}`),
+  listWatchers: (id: string) => getList(`/tasks/${id}/watchers`, 'users'),
   addWatcher: (id: string, userId: string) => api.post(`/tasks/${id}/watchers`, { userId }),
   removeWatcher: (id: string, userId: string) => api.delete(`/tasks/${id}/watchers/${userId}`),
   getActivities: (id: string) => getList(`/tasks/${id}/activities`, 'activities'),
+  listComments: (id: string) => getList(`/tasks/${id}/comments`, 'comments'),
+  listLabels: () => getList('/labels', 'labels'),
+  createLabel: (data: { name: string; color?: string }) => api.post('/labels', data),
 };
 
 export const callsApi = {
@@ -146,6 +183,8 @@ export const filesApi = {
 };
 
 export const notificationsApi = {
+  unreadCount: () => api.get('/notifications/unread-count'),
+  vapidKey: () => api.get('/notifications/vapid-key'),
   list: (params?: { unreadOnly?: boolean; limit?: number; offset?: number }) => getList('/notifications', 'notifications', params),
   markRead: (id: string) => api.patch(`/notifications/${id}/read`),
   markAllRead: () => api.patch('/notifications/read-all'),
