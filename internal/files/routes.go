@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/teamup/teamup/internal/auth"
+	"github.com/teamup/teamup/internal/httpx"
 )
 
 type Handler struct {
@@ -51,7 +52,7 @@ func (h *Handler) GetUploadURL(c *gin.Context) {
 		UserID:      user.UserID,
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate upload URL"})
+		httpx.Error(c, err, "failed to generate upload URL")
 		return
 	}
 
@@ -77,8 +78,8 @@ func (h *Handler) CompleteMultipart(c *gin.Context) {
 		return
 	}
 
-	if err := h.service.CompleteMultipartUpload(c.Request.Context(), orgID, req.ObjectKey, req.UploadID, req.Parts); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete upload"})
+	if err := h.service.CompleteMultipartUpload(c.Request.Context(), orgID, user.UserID, req.ObjectKey, req.UploadID, req.Parts); err != nil {
+		httpx.Error(c, err, "failed to complete upload")
 		return
 	}
 
@@ -96,9 +97,9 @@ func (h *Handler) GetDownloadURL(c *gin.Context) {
 	filename := c.Query("filename")
 	inline := c.Query("inline") == "true"
 
-	url, err := h.service.GenerateDownloadURL(c.Request.Context(), orgID, objectKey, filename, inline)
+	url, err := h.service.GenerateDownloadURL(c.Request.Context(), orgID, user.UserID, objectKey, filename, inline)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate download URL"})
+		httpx.Error(c, err, "failed to generate download URL")
 		return
 	}
 

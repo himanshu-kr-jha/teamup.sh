@@ -53,6 +53,22 @@ docker compose -f docker-compose.prod.yml up -d
 helm install teamup ./helm/teamup -n teamup --create-namespace
 ```
 
+## Testing
+
+Most tests run against a real PostgreSQL. Create the template database once:
+
+```bash
+make build          # the migrate command lives in the binary
+make test-db        # creates and migrates teamup_test
+make test-unit      # or: TEAMUP_TEST_DATABASE_URL=... go test ./...
+```
+
+Each package clones that template into its own database
+(`teamup_test_<package>`) and truncates between tests, so packages stay
+isolated and can run in parallel. Tests that need a database **skip** when
+`TEAMUP_TEST_DATABASE_URL` is unset, so `go test ./...` still works without
+PostgreSQL — it just covers less.
+
 ## Configuration
 
 All configuration via environment variables or config file:

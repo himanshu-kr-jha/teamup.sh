@@ -2,12 +2,13 @@ package wizard
 
 import (
 	"context"
-	"os"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/teamup/teamup/internal/testsupport"
 )
 
 // FinalizeSetup must reject bad data before it opens a transaction, so a
@@ -34,53 +35,21 @@ func TestFinalizeSetupRejectsShortPasswordBeforeTouchingDB(t *testing.T) {
 	}
 }
 
-// testDB returns a pool against a disposable database, or skips.
+// testDB hands back a pool against an empty database. FinalizeSetup enforces
+// a single organization per instance, so these tests genuinely need the clean
+// slate the shared harness provides.
 func testDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-
-	dsn := os.Getenv("TEAMUP_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set TEAMUP_TEST_DATABASE_URL to run wizard database tests")
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Fatalf("connect test database: %v", err)
-	}
-	if err := pool.Ping(context.Background()); err != nil {
-		t.Fatalf("ping test database: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
-}
-
-func cleanupOrg(t *testing.T, pool *pgxpool.Pool, subdomain string) {
-	t.Helper()
-	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `DELETE FROM organizations WHERE subdomain = $1`, subdomain); err != nil {
-		t.Fatalf("cleanup org %q: %v", subdomain, err)
-	}
-}
-
-// FinalizeSetup enforces a single organization per instance, so these tests
-// need the disposable test database to actually be empty. Other packages seed
-// organizations of their own; run with -p 1 so they cannot overlap.
-func resetOrgs(t *testing.T, pool *pgxpool.Pool) {
-	t.Helper()
-	if _, err := pool.Exec(context.Background(), `DELETE FROM organizations`); err != nil {
-		t.Fatalf("reset organizations: %v", err)
-	}
+	return testsupport.DB(t)
 }
 
 func TestFinalizeSetupCreatesOrgAdminAndRoles(t *testing.T) {
 	pool := testDB(t)
 	svc := &Service{db: pool}
 	ctx := context.Background()
-	resetOrgs(t, pool)
 
 	data := completeData()
 	data.OrgSubdomain = "finalize-creates"
-	cleanupOrg(t, pool, data.OrgSubdomain)
-	t.Cleanup(func() { cleanupOrg(t, pool, data.OrgSubdomain) })
 
 	if err := svc.FinalizeSetup(ctx, data); err != nil {
 		t.Fatalf("finalize: %v", err)
@@ -154,12 +123,9 @@ func TestFinalizeSetupIsIdempotent(t *testing.T) {
 	pool := testDB(t)
 	svc := &Service{db: pool}
 	ctx := context.Background()
-	resetOrgs(t, pool)
 
 	data := completeData()
 	data.OrgSubdomain = "finalize-idempotent"
-	cleanupOrg(t, pool, data.OrgSubdomain)
-	t.Cleanup(func() { cleanupOrg(t, pool, data.OrgSubdomain) })
 
 	if err := svc.FinalizeSetup(ctx, data); err != nil {
 		t.Fatalf("first finalize: %v", err)
@@ -213,18 +179,13 @@ func TestFinalizeSetupRefusesASecondOrganization(t *testing.T) {
 	pool := testDB(t)
 	svc := &Service{db: pool}
 	ctx := context.Background()
-	resetOrgs(t, pool)
 
 	first := completeData()
 	first.OrgSubdomain = "race-first"
-	cleanupOrg(t, pool, first.OrgSubdomain)
-	t.Cleanup(func() { cleanupOrg(t, pool, first.OrgSubdomain) })
 
 	second := completeData()
 	second.OrgSubdomain = "race-second"
 	second.AdminEmail = "intruder@evil.test"
-	cleanupOrg(t, pool, second.OrgSubdomain)
-	t.Cleanup(func() { cleanupOrg(t, pool, second.OrgSubdomain) })
 
 	if err := svc.FinalizeSetup(ctx, first); err != nil {
 		t.Fatalf("first finalize: %v", err)
@@ -246,12 +207,9 @@ func TestIsSetupCompleteReflectsOrganizations(t *testing.T) {
 	pool := testDB(t)
 	svc := &Service{db: pool}
 	ctx := context.Background()
-	resetOrgs(t, pool)
 
 	data := completeData()
 	data.OrgSubdomain = "setup-complete-check"
-	cleanupOrg(t, pool, data.OrgSubdomain)
-	t.Cleanup(func() { cleanupOrg(t, pool, data.OrgSubdomain) })
 
 	if err := svc.FinalizeSetup(ctx, data); err != nil {
 		t.Fatalf("finalize: %v", err)

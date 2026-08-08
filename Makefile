@@ -53,12 +53,26 @@ build-all: build-frontend
 		go build -ldflags="$(LDFLAGS)" -o $(BUILD_DIR)/$(BINARY_NAME)-linux-$$arch ./cmd/teamup; \
 	done
 
+# Database-backed tests need one migrated database to clone per package.
+# Point TEAMUP_TEST_DATABASE_URL at it; tests skip when it is unset.
+TEST_DATABASE_URL ?= postgres://teamup:teamup@localhost:5432/teamup_test?sslmode=disable
+
+# Create and migrate the template database the test harness clones from.
+test-db:
+	@echo "Preparing test database..."
+	@psql "$(subst /teamup_test?,/postgres?,$(TEST_DATABASE_URL))" -v ON_ERROR_STOP=1 \
+		-c "DROP DATABASE IF EXISTS teamup_test WITH (FORCE);" \
+		-c "CREATE DATABASE teamup_test;"
+	@TEAMUP_DATABASE_URL="$(TEST_DATABASE_URL)" $(BUILD_DIR)/$(BINARY_NAME) migrate up
+	@echo "Test database ready: $(TEST_DATABASE_URL)"
+
 # Run tests
 test: test-unit test-integration
 
 test-unit:
 	@echo "Running unit tests..."
-	go test -p 1 -v -race -coverprofile=coverage.out -covermode=atomic ./internal/... ./pkg/...
+	TEAMUP_TEST_DATABASE_URL="$(TEST_DATABASE_URL)" \
+		go test -race -coverprofile=coverage.out -covermode=atomic ./internal/... ./pkg/...
 
 test-integration:
 	@echo "Running integration tests..."

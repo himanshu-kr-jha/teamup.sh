@@ -334,6 +334,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 	chatService := chat.NewService(dbPool, redisClient)
 	callsService := calls.NewService(dbPool, cfg.CallsConfig())
 	filesService := files.NewService(cfg.FilesConfig())
+	// The presigned-URL access checks are database-backed, so without this the
+	// file endpoints fail closed.
+	filesService.SetDB(dbPool)
 	notificationsService := notifications.NewService(dbPool, redisClient, cfg.NotificationsConfig())
 	presenceService := presence.NewService(redisClient)
 	tasksService := tasks.NewService(dbPool)

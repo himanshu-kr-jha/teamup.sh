@@ -2,78 +2,37 @@ package auth
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/crypto/bcrypt"
+
+	"github.com/teamup/teamup/internal/testsupport"
 )
 
 func testDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-
-	dsn := os.Getenv("TEAMUP_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("set TEAMUP_TEST_DATABASE_URL to run auth database tests")
-	}
-	pool, err := pgxpool.New(context.Background(), dsn)
-	if err != nil {
-		t.Fatalf("connect test database: %v", err)
-	}
-	if err := pool.Ping(context.Background()); err != nil {
-		t.Fatalf("ping test database: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pool
+	return testsupport.DB(t)
 }
 
-// seedUser creates an org + owner user the way the setup wizard does.
+// seedUser creates an org + owner user the way the setup wizard does, with the
+// given email and password.
 func seedUser(t *testing.T, pool *pgxpool.Pool, email, password string) (orgID, userID uuid.UUID) {
 	t.Helper()
-	ctx := context.Background()
 
-	subdomain := "authtest-" + uuid.New().String()[:8]
-	if _, err := pool.Exec(ctx, `DELETE FROM organizations WHERE subdomain = $1`, subdomain); err != nil {
-		t.Fatalf("cleanup: %v", err)
-	}
-
-	orgID = uuid.New()
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO organizations (id, name, subdomain, created_at) VALUES ($1, 'Auth Test', $2, NOW())
-	`, orgID, subdomain); err != nil {
-		t.Fatalf("insert org: %v", err)
-	}
-	t.Cleanup(func() {
-		_, _ = pool.Exec(context.Background(), `DELETE FROM organizations WHERE id = $1`, orgID)
-	})
-
-	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	org := testsupport.SeedOrg(t, pool)
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.MinCost)
 	if err != nil {
 		t.Fatalf("hash: %v", err)
 	}
-	userID = uuid.New()
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO users (id, org_id, name, email, password_hash, role, is_admin, created_at)
-		VALUES ($1, $2, 'Test Admin', $3, $4, 'owner', true, NOW())
-	`, userID, orgID, email, hash); err != nil {
-		t.Fatalf("insert user: %v", err)
+	if _, err := pool.Exec(context.Background(), `
+		UPDATE users SET email = $2, password_hash = $3 WHERE id = $1
+	`, org.OwnerID, email, hash); err != nil {
+		t.Fatalf("set credentials: %v", err)
 	}
-
-	roleID := uuid.New()
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO roles (id, org_id, name, permissions, is_system, created_at)
-		VALUES ($1, $2, 'owner', '["*"]', true, NOW())
-	`, roleID, orgID); err != nil {
-		t.Fatalf("insert role: %v", err)
-	}
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO user_roles (user_id, role_id, assigned_at) VALUES ($1, $2, NOW())
-	`, userID, roleID); err != nil {
-		t.Fatalf("insert user_role: %v", err)
-	}
-	return orgID, userID
+	return org.ID, org.OwnerID
 }
 
 func testService(pool *pgxpool.Pool) *Service {
