@@ -119,6 +119,23 @@ func (h *Handler) GetCallToken(c *gin.Context) {
 		return
 	}
 
+	// Being in the organization is not enough: a call between two people must
+	// not be joinable by anyone who can see it in the list.
+	userID, err := uuid.Parse(user.UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+	mayJoin, err := h.service.MayJoin(c.Request.Context(), orgID, id, userID)
+	if err != nil {
+		httpx.Error(c, err, "failed to check call access")
+		return
+	}
+	if !mayJoin {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you were not invited to this call"})
+		return
+	}
+
 	token, err := h.service.GetToken(c.Request.Context(), call.RoomName, user.UserID, user.Email)
 	if err != nil {
 		httpx.Error(c, err, "failed to generate token")
@@ -126,10 +143,8 @@ func (h *Handler) GetCallToken(c *gin.Context) {
 	}
 
 	// Issuing a join grant is the point at which someone actually joins.
-	if userID, err := uuid.Parse(user.UserID); err == nil {
-		if err := h.service.MarkParticipantJoined(c.Request.Context(), id, userID); err != nil {
-			h.service.logger.Warn().Err(err).Msg("could not record call attendance")
-		}
+	if err := h.service.MarkParticipantJoined(c.Request.Context(), id, userID); err != nil {
+		h.service.logger.Warn().Err(err).Msg("could not record call attendance")
 	}
 
 	c.JSON(http.StatusOK, gin.H{"token": token, "roomName": call.RoomName})
@@ -182,6 +197,23 @@ func (h *Handler) EndCall(c *gin.Context) {
 	call, err := h.service.GetCall(c.Request.Context(), orgID, id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "call not found"})
+		return
+	}
+
+	// Ending a call drops everyone, so it needs the same entitlement as
+	// joining — it previously had no check at all.
+	userID, err := uuid.Parse(user.UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+	mayEnd, err := h.service.MayJoin(c.Request.Context(), orgID, id, userID)
+	if err != nil {
+		httpx.Error(c, err, "failed to check call access")
+		return
+	}
+	if !mayEnd && !user.HasAnyRole("owner", "admin") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you are not part of this call"})
 		return
 	}
 

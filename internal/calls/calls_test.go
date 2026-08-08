@@ -279,3 +279,67 @@ func TestGetCallUnknownIsNotFound(t *testing.T) {
 		t.Fatal("an unknown call must report not-found")
 	}
 }
+
+// A call between two people must not be joinable by everyone who can list it.
+func TestOnlyInviteesOrChannelMembersMayJoin(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	invitee := testsupport.SeedUser(t, pool, org, "invited@example.test", "member")
+	outsider := testsupport.SeedUser(t, pool, org, "nosy@example.test", "member")
+
+	call, err := svc.CreateCall(ctx, org.ID, org.OwnerID, nil, "video", nil, []string{invitee.String()})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	for _, who := range []struct {
+		name string
+		id   uuid.UUID
+		want bool
+	}{
+		{"host", org.OwnerID, true},
+		{"invitee", invitee, true},
+		{"uninvited member of the same org", outsider, false},
+	} {
+		ok, err := svc.MayJoin(ctx, org.ID, call.ID, who.id)
+		if err != nil {
+			t.Fatalf("%s: %v", who.name, err)
+		}
+		if ok != who.want {
+			t.Errorf("%s: MayJoin = %v, want %v", who.name, ok, who.want)
+		}
+	}
+}
+
+// A call hung off a channel is open to that channel, so "join the standup"
+// works without inviting people one by one.
+func TestChannelMembersMayJoinAChannelCall(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	member := testsupport.SeedUser(t, pool, org, "teammate@example.test", "member")
+	outsider := testsupport.SeedUser(t, pool, org, "elsewhere@example.test", "member")
+	channel := testsupport.SeedChannel(t, pool, org, "standup", org.OwnerID, member)
+
+	call, err := svc.CreateCall(ctx, org.ID, org.OwnerID, nil, "video", &channel, nil)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	ok, err := svc.MayJoin(ctx, org.ID, call.ID, member)
+	if err != nil {
+		t.Fatalf("member: %v", err)
+	}
+	if !ok {
+		t.Error("a channel member should be able to join the channel's call")
+	}
+
+	ok, err = svc.MayJoin(ctx, org.ID, call.ID, outsider)
+	if err != nil {
+		t.Fatalf("outsider: %v", err)
+	}
+	if ok {
+		t.Error("someone outside the channel must not join its call")
+	}
+}

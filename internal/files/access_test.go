@@ -348,3 +348,59 @@ func TestListAttachmentsIsScopedToTheOrganization(t *testing.T) {
 		t.Errorf("another organization must not see these attachments: %+v", listed)
 	}
 }
+
+// The object key encodes the parent it was issued for. Trusting the body
+// instead let a member re-file someone else's upload under a channel only
+// they can read, renaming it in the process.
+func TestRecordAttachmentRejectsAMismatchedParent(t *testing.T) {
+	svc := accessService(t)
+	pool := svc.db
+	ctx := context.Background()
+
+	org := testsupport.SeedOrg(t, pool)
+	shared := testsupport.SeedChannel(t, pool, org, "shared", org.OwnerID)
+	private := testsupport.SeedChannel(t, pool, org, "private", org.OwnerID)
+	key := "org-" + org.ID.String() + "/chat/" + shared.String() + "/20260101T000000Z-notes.pdf"
+
+	// Key says `shared`, body claims `private`.
+	_, err := svc.RecordAttachment(ctx, AttachmentRecord{
+		OrgID: org.ID, UploadedBy: org.OwnerID,
+		Category: "chat", RefID: private.String(), ObjectKey: key,
+		Filename: "notes.pdf", ContentType: "application/pdf", SizeBytes: 1,
+	})
+	if err == nil {
+		t.Fatal("a parent that disagrees with the object key must be refused")
+	}
+}
+
+func TestRecordAttachmentCannotHijackSomeoneElsesUpload(t *testing.T) {
+	svc := accessService(t)
+	pool := svc.db
+	ctx := context.Background()
+
+	org := testsupport.SeedOrg(t, pool)
+	thief := testsupport.SeedUser(t, pool, org, "thief@example.test", "member")
+	channel := testsupport.SeedChannel(t, pool, org, "shared", org.OwnerID, thief)
+	key := "org-" + org.ID.String() + "/chat/" + channel.String() + "/20260101T000000Z-salaries.xlsx"
+
+	rec := AttachmentRecord{
+		OrgID: org.ID, UploadedBy: org.OwnerID,
+		Category: "chat", RefID: channel.String(), ObjectKey: key,
+		Filename: "salaries.xlsx", ContentType: "application/vnd.ms-excel", SizeBytes: 100,
+	}
+	if _, err := svc.RecordAttachment(ctx, rec); err != nil {
+		t.Fatalf("owner records: %v", err)
+	}
+
+	// Another member of the same channel re-records the same object key.
+	rec.UploadedBy = thief
+	rec.Filename = "harmless.txt"
+	if _, err := svc.RecordAttachment(ctx, rec); err == nil {
+		t.Fatal("re-recording another member's object must be refused")
+	}
+
+	listed, _ := svc.ListAttachments(ctx, org.ID, "chat", channel.String())
+	if len(listed) != 1 || listed[0].Filename != "salaries.xlsx" {
+		t.Errorf("the original record must be untouched, got %+v", listed)
+	}
+}

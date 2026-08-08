@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { User, Bell, Shield, Palette, Loader2, Save, Monitor } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
@@ -24,6 +24,12 @@ export function SettingsPage() {
   const [name, setName] = useState(user?.name || '');
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'system');
   const [passwordOpen, setPasswordOpen] = useState(false);
+
+  // The user may still be loading on a hard refresh; without this the name
+  // field stays empty and Save is disabled even once it arrives.
+  useEffect(() => {
+    if (user?.name) setName((current) => current || user.name);
+  }, [user?.name]);
 
   // The save used to PATCH a path that carried the API prefix twice, against a
   // route that does not exist, and swallow the 404 into the console — so it

@@ -302,13 +302,18 @@ func (s *Service) Notify(ctx context.Context, orgID, userID uuid.UUID, kind, tit
 	if err := s.CreateNotification(ctx, notif); err != nil {
 		return err
 	}
-	// Push is best effort: a missing subscription must not fail the action
-	// that triggered the notification.
-	if err := s.SendToUser(ctx, userID.String(), PushPayload{
-		Title: title, Body: body, Tag: kind, Data: data,
-	}); err != nil {
-		s.logger.Warn().Err(err).Str("user", userID.String()).Msg("web push delivery failed")
-	}
+	// Push is best effort and must not hold up the action that triggered it:
+	// delivery can take seconds per device. Detached from the request context
+	// so cancelling the HTTP request does not cancel delivery.
+	go func() {
+		pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		if err := s.SendToUser(pushCtx, userID.String(), PushPayload{
+			Title: title, Body: body, Tag: kind, Data: data,
+		}); err != nil {
+			s.logger.Warn().Err(err).Str("user", userID.String()).Msg("web push delivery failed")
+		}
+	}()
 	return nil
 }
 

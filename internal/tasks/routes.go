@@ -396,22 +396,9 @@ func (h *Handler) AddWatcher(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var req struct {
-		UserID string `json:"userId"`
-	}
-	_ = c.ShouldBindJSON(&req)
-
-	userID := cl.UserID
-	if req.UserID != "" {
-		parsed, err := uuid.Parse(req.UserID)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid userId"})
-			return
-		}
-		userID = parsed
-	}
-
-	if err := h.service.AddWatcher(c.Request.Context(), cl.OrgID, id, userID); err != nil {
+	// Following is always self-service: honouring an arbitrary userId let one
+	// member sign another up for every change notification on a task.
+	if err := h.service.AddWatcher(c.Request.Context(), cl.OrgID, id, cl.UserID); err != nil {
 		httpx.Error(c, err, "failed to add watcher")
 		return
 	}
@@ -429,6 +416,10 @@ func (h *Handler) RemoveWatcher(c *gin.Context) {
 	}
 	userID, ok := pathUUID(c, "userId")
 	if !ok {
+		return
+	}
+	if userID != cl.UserID {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you can only stop following for yourself"})
 		return
 	}
 	if err := h.service.RemoveWatcher(c.Request.Context(), cl.OrgID, id, userID); err != nil {

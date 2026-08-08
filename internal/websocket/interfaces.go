@@ -57,11 +57,14 @@ type Claims struct {
 }
 
 // Presence represents user presence
+// Serialised onto the wire by the presence endpoints, so the tags have to
+// match what the frontend reads — without them every status came back as
+// PascalCase and no presence indicator ever lit up.
 type Presence struct {
-	UserID       string
-	OrgID        string
-	Status       string
-	CustomStatus string
-	CustomEmoji  string
-	LastActivity time.Time
+	UserID       string    `json:"userId"`
+	OrgID        string    `json:"orgId"`
+	Status       string    `json:"status"`
+	CustomStatus string    `json:"customStatus,omitempty"`
+	CustomEmoji  string    `json:"customEmoji,omitempty"`
+	LastActivity time.Time `json:"lastActivity"`
 }

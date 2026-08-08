@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -389,19 +390,31 @@ func (s *Service) RecordAttachment(ctx context.Context, rec AttachmentRecord) (*
 	}); err != nil {
 		return nil, err
 	}
-	// The key must also be one this organization could have produced.
-	if _, _, err := parseObjectKey(rec.ObjectKey, rec.OrgID); err != nil {
+	// The key encodes the organization, category and parent it was issued for.
+	// Trusting the body's category/refId instead would let a caller re-file
+	// somebody else's object under a parent only they can read.
+	keyCategory, keyRef, err := parseObjectKey(rec.ObjectKey, rec.OrgID)
+	if err != nil {
+		return nil, apperrors.New(apperrors.CodeForbidden, "access denied")
+	}
+	if keyCategory != rec.Category || keyRef.String() != rec.RefID {
 		return nil, apperrors.New(apperrors.CodeForbidden, "access denied")
 	}
 
 	var a Attachment
-	err := s.db.QueryRow(ctx, `
+	err = s.db.QueryRow(ctx, `
 		INSERT INTO attachments (id, org_id, uploaded_by, category, ref_id, object_key,
 		                         filename, content_type, size_bytes, created_at)
 		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, $7, $8, NOW())
 		ON CONFLICT (object_key) DO UPDATE
 		SET filename = EXCLUDED.filename, content_type = EXCLUDED.content_type,
-		    size_bytes = EXCLUDED.size_bytes, ref_id = EXCLUDED.ref_id, deleted_at = NULL
+		    size_bytes = EXCLUDED.size_bytes
+		-- Only the original uploader may refresh their own record. Without
+		-- this, re-recording an object key seen in a listing let anyone rename
+		-- another member's file or move it out of the channel it belongs to.
+		WHERE attachments.org_id = EXCLUDED.org_id
+		  AND attachments.uploaded_by = EXCLUDED.uploaded_by
+		  AND attachments.deleted_at IS NULL
 		RETURNING id, org_id, uploaded_by, category, ref_id, object_key,
 		          filename, content_type, size_bytes, created_at
 	`, rec.OrgID, rec.UploadedBy, rec.Category, rec.RefID, rec.ObjectKey,
@@ -409,6 +422,10 @@ func (s *Service) RecordAttachment(ctx context.Context, rec AttachmentRecord) (*
 		&a.ID, &a.OrgID, &a.UploadedBy, &a.Category, &a.RefID, &a.ObjectKey,
 		&a.Filename, &a.ContentType, &a.SizeBytes, &a.CreatedAt)
 	if err != nil {
+		if err == pgx.ErrNoRows {
+			// The conflicting row belongs to somebody else.
+			return nil, apperrors.New(apperrors.CodeForbidden, "access denied")
+		}
 		return nil, fmt.Errorf("record attachment: %w", err)
 	}
 	return &a, nil

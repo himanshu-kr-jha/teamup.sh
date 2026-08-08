@@ -345,7 +345,13 @@ func (s *Service) HandleRead(ctx context.Context, conn websocket.WSConnection, m
 
 // createMessage stores a message. org_id is derived from the channel rather
 // than trusted from the caller.
+// sentinelStripper removes the control characters search uses to delimit a
+// match, so a user cannot type one and forge a highlight in someone else's
+// results.
+var sentinelStripper = strings.NewReplacer(HighlightStart, "", HighlightEnd, "")
+
 func (s *Service) createMessage(ctx context.Context, msg *Message) error {
+	msg.Content = sentinelStripper.Replace(msg.Content)
 	err := s.db.QueryRow(ctx, `
 		INSERT INTO messages (id, org_id, channel_id, user_id, content, reply_to, created_at)
 		SELECT $1, c.org_id, $2, $3, $4, $5, $6
@@ -359,25 +365,18 @@ func (s *Service) createMessage(ctx context.Context, msg *Message) error {
 		return fmt.Errorf("create message: %w", err)
 	}
 
-	for _, a := range msg.Attachments {
-		// Scoped to the uploader and the channel's organization: keyed on
-		// object_key alone, a client could re-point another tenant's
-		// attachment row at their own message.
-		if _, err := s.db.Exec(ctx, `
-			UPDATE attachments a SET ref_id = $1
-			FROM channels c
-			WHERE a.object_key = $2 AND a.uploaded_by = $3
-			  AND c.id = $4 AND a.org_id = c.org_id
-		`, msg.ID.String(), a.ObjectKey, msg.UserID, msg.ChannelID); err != nil {
-			return fmt.Errorf("link attachment: %w", err)
-		}
-	}
+	// Attachments are filed against the channel, which is what both the upload
+	// URL and the listing use as their parent. Re-pointing them at the message
+	// id used to orphan them: the row no longer matched a channel listing, and
+	// the access check resolves a chat ref through channel_members, where a
+	// message id can never match.
 
 	s.notifyMentions(ctx, msg)
 	return nil
 }
 
 func (s *Service) updateMessage(ctx context.Context, id uuid.UUID, content string, editedAt *time.Time) error {
+	content = sentinelStripper.Replace(content)
 	tag, err := s.db.Exec(ctx, `
 		UPDATE messages SET content = $2, edited_at = $3
 		WHERE id = $1 AND deleted_at IS NULL

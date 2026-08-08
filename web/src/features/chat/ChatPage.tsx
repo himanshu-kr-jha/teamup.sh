@@ -11,6 +11,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { channelsApi, filesApi } from '@/shared/api/client';
 import { useUpload } from '@/features/files/useUpload';
 import { useToast } from '@/shared/hooks/useToast';
+import { apiErrorMessage } from '@/shared/api/errors';
 import { AttachmentChip } from '@/features/files/AttachmentChip';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { useUIStore } from '@/shared/store';
@@ -86,12 +87,23 @@ export function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [uploadError]);
 
-  // Send message mutation
+  // The messages query goes through getList, so the cache entry is the whole
+  // axios response and the array lives on `.data`. Every writer below used to
+  // treat the entry itself as the array, which threw inside onMutate and meant
+  // the send request was never issued at all.
+  const writeMessages = (
+    channel: string,
+    update: (messages: Message[]) => Message[]
+  ) =>
+    queryClient.setQueryData(['messages', channel], (old: any) =>
+      old ? { ...old, data: update(old.data ?? []) } : old
+    );
+
   const sendMessageMutation = useMutation({
     mutationFn: (data: { channelId: string; content: string; tempId: string }) => channelsApi.sendMessage(data.channelId, data),
     onMutate: async (variables) => {
       await queryClient.cancelQueries({ queryKey: ['messages', variables.channelId] });
-      const previousMessages = queryClient.getQueryData<Message[]>(['messages', variables.channelId]);
+      const previous = queryClient.getQueryData(['messages', variables.channelId]);
       const tempMessage: Message = {
         id: variables.tempId,
         channelId: variables.channelId,
@@ -103,15 +115,17 @@ export function ChatPage() {
         createdAt: new Date().toISOString(),
         pending: true,
       };
-      queryClient.setQueryData(['messages', variables.channelId], (old: Message[] | undefined) => [tempMessage, ...(old || [])]);
-      return { previousMessages };
+      // History is oldest-first, so a new message belongs at the end.
+      writeMessages(variables.channelId, (messages) => [...messages, tempMessage]);
+      return { previous };
     },
     onError: (err, variables, context) => {
-      queryClient.setQueryData(['messages', variables.channelId], context?.previousMessages);
+      queryClient.setQueryData(['messages', variables.channelId], context?.previous);
+      toast.error(apiErrorMessage(err, 'Could not send that message.'));
     },
     onSuccess: (data, variables) => {
-      queryClient.setQueryData(['messages', variables.channelId], (old: Message[] | undefined) =>
-        old?.map((m) => (m.id === variables.tempId ? { ...data, pending: false } : m))
+      writeMessages(variables.channelId, (messages) =>
+        messages.map((m) => (m.id === variables.tempId ? { ...(data.data as Message), pending: false } : m))
       );
     },
     onSettled: (data, error, variables) => {
@@ -122,26 +136,27 @@ export function ChatPage() {
   // Handle incoming messages via WebSocket
   useEffect(() => {
     const unsubscribe = on('chat.message', (msg) => {
-      if (msg.payload.channelId === channelId) {
-        queryClient.setQueryData(['messages', channelId], (old: Message[] | undefined) => {
-          const exists = old?.some((m) => m.id === msg.payload.id);
-          if (exists) return old;
-          return [msg.payload, ...(old || [])];
-        });
+      if (msg.payload.channelId === channelId && channelId) {
+        writeMessages(channelId, (messages) =>
+          messages.some((m) => m.id === msg.payload.id) ? messages : [...messages, msg.payload]
+        );
       }
     });
     return unsubscribe;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channelId, on, queryClient]);
 
   // Handle sent confirmation
   useEffect(() => {
     const unsubscribe = on('chat.sent', (msg) => {
       const { tempId, messageId, timestamp } = msg.payload;
-      queryClient.setQueryData(['messages', channelId], (old: Message[] | undefined) =>
-        old?.map((m) => (m.id === tempId ? { ...m, id: messageId, createdAt: timestamp, pending: false } : m))
+      if (!channelId) return;
+      writeMessages(channelId, (messages) =>
+        messages.map((m) => (m.id === tempId ? { ...m, id: messageId, createdAt: timestamp, pending: false } : m))
       );
     });
     return unsubscribe;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channelId, on, queryClient]);
 
   // Scroll to bottom

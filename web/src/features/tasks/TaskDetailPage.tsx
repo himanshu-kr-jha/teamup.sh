@@ -146,7 +146,22 @@ export function TaskDetailPage() {
                 <div className="flex items-start justify-between gap-4">
                   <div>
                     {editing ? (
-                      <Input value={task.title} onChange={e => updateTaskMutation.mutate({ title: e.target.value })} className="text-2xl font-bold" autoFocus />
+                      <Input
+                        defaultValue={task.title}
+                        className="text-2xl font-bold"
+                        autoFocus
+                        // Commit on blur or Enter: firing per keystroke saved
+                        // the first character and closed the editor mid-word.
+                        onBlur={(e) => {
+                          const value = e.target.value.trim();
+                          if (value && value !== task.title) updateTaskMutation.mutate({ title: value });
+                          else setEditing(false);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') e.currentTarget.blur();
+                          if (e.key === 'Escape') setEditing(false);
+                        }}
+                      />
                     ) : (
                       <h1 className="text-2xl font-bold">{task.title}</h1>
                     )}
@@ -179,7 +194,17 @@ export function TaskDetailPage() {
                 <div className="space-y-2">
                   <label className="text-sm font-medium">Description</label>
                   {editing ? (
-                    <Textarea value={task.description} onChange={e => updateTaskMutation.mutate({ description: e.target.value })} rows={6} />
+                    <Textarea
+                      defaultValue={task.description}
+                      rows={6}
+                      onBlur={(e) => {
+                        if (e.target.value !== task.description) {
+                          updateTaskMutation.mutate({ description: e.target.value });
+                        } else {
+                          setEditing(false);
+                        }
+                      }}
+                    />
                   ) : (
                     <div className="prose prose-sm max-w-none">{task.description || <span className="text-muted-foreground">No description</span>}</div>
                   )}

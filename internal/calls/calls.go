@@ -607,3 +607,43 @@ func (s *Service) MarkCallEnded(ctx context.Context, orgID, callID uuid.UUID) er
 	}
 	return nil
 }
+
+// IsParticipant reports whether the user was invited to, or has joined, a call.
+func (s *Service) IsParticipant(ctx context.Context, callID, userID uuid.UUID) (bool, error) {
+	var ok bool
+	err := s.db.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM call_participants WHERE call_id = $1 AND user_id = $2)`,
+		callID, userID).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("check call participation: %w", err)
+	}
+	return ok, nil
+}
+
+// MayJoin decides whether someone is entitled to a join token. Being in the
+// organization is not enough: a private call between two people must not be
+// joinable by everyone else who can list it.
+//
+// A call attached to a channel is open to that channel's members, which is how
+// "join the standup" works without inviting people one by one.
+func (s *Service) MayJoin(ctx context.Context, orgID, callID, userID uuid.UUID) (bool, error) {
+	invited, err := s.IsParticipant(ctx, callID, userID)
+	if err != nil {
+		return false, err
+	}
+	if invited {
+		return true, nil
+	}
+
+	var ok bool
+	err = s.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM calls c
+			JOIN channel_members cm ON cm.channel_id = c.channel_id
+			WHERE c.id = $1 AND c.org_id = $2 AND cm.user_id = $3)
+	`, callID, orgID, userID).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("check call channel membership: %w", err)
+	}
+	return ok, nil
+}
