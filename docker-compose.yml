@@ -62,11 +62,43 @@ services:
           use_external_ip: true
         keys:
           "devkey": "devsecret"
+        # Egress reports job status back over Redis; without it recordings
+        # start but their completion is never observed.
+        redis:
+          address: redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:7880/"]
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # Call recording. LiveKit Egress composites the room and writes the file
+  # straight into MinIO, so the media never passes through the application.
+  # Without this service, starting a recording reports that it is unavailable.
+  livekit-egress:
+    image: livekit/egress:latest
+    restart: unless-stopped
+    # Chromium inside the container needs these to render the room.
+    cap_add:
+      - SYS_ADMIN
+    environment:
+      EGRESS_CONFIG_BODY: |
+        redis:
+          address: redis:6379
+        api_key: devkey
+        api_secret: devsecret
+        ws_url: ws://livekit:7880
+        insecure: true
+    depends_on:
+      redis:
+        condition: service_healthy
+      livekit:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
 
   # TeamUp application
   teamup:

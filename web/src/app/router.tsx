@@ -6,6 +6,7 @@ import { ChatPage } from '@/features/chat/ChatPage';
 import { CallsPage } from '@/features/calls/CallsPage';
 import { TasksPage } from '@/features/tasks/TasksPage';
 import { SettingsPage } from '@/features/settings/SettingsPage';
+import { AdminPage } from '@/features/admin/AdminPage';
 import { CallViewPage } from '@/features/calls/CallViewPage';
 import { TaskDetailPage } from '@/features/tasks/TaskDetailPage';
 import { useAuthStore } from '@/shared/store/authStore';
@@ -69,6 +70,7 @@ export const router = createBrowserRouter([
       { path: 'tasks', element: <TasksPage /> },
       { path: 'tasks/:taskId', element: <TaskDetailPage /> },
       { path: 'settings', element: <SettingsPage /> },
+      { path: 'organization', element: <AdminPage /> },
     ],
   },
 ]);

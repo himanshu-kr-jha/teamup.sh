@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ChevronLeft, Calendar, MessageSquare, Plus, MoreVertical } from 'lucide-react';
+import { ChevronLeft, Calendar, MessageSquare, MoreVertical } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Textarea } from '@/shared/components/ui/textarea';
@@ -10,7 +10,10 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
 import { formatRelativeTime, formatDate } from '@/shared/utils/cn';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { tasksApi } from '@/shared/api/client';
+import { tasksApi, orgApi } from '@/shared/api/client';
+import { apiErrorMessage } from '@/shared/api/errors';
+import { useToast } from '@/shared/hooks/useToast';
+import { useAuth } from '@/features/auth/AuthProvider';
 
 interface Task {
   id: string;
@@ -52,6 +55,8 @@ const priorities = ['low', 'medium', 'high', 'urgent'] as const;
 
 export function TaskDetailPage() {
   const { taskId } = useParams<{ taskId: string }>();
+  const { data: membersData } = useQuery({ queryKey: ['users'], queryFn: () => orgApi.listUsers() });
+  const members = membersData?.data ?? [];
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
@@ -216,10 +221,17 @@ export function TaskDetailPage() {
                         </div>
                       </div>
                     ) : (
-                      <Button variant="outline" className="w-full" onClick={() => {}}>
-                        <Plus className="mr-2 h-4 w-4" />
-                        Assign
-                      </Button>
+                      <Select
+                        value=""
+                        onValueChange={(v) => updateTaskMutation.mutate({ assigneeId: v } as any)}
+                      >
+                        <SelectTrigger><SelectValue placeholder="Assign someone" /></SelectTrigger>
+                        <SelectContent>
+                          {members.map((m: any) => (
+                            <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     )}
                   </CardContent>
                 </Card>
@@ -236,13 +248,22 @@ export function TaskDetailPage() {
                         <span>{formatDate(task.dueDate)}</span>
                       </div>
                     ) : (
-                      <Button variant="outline" className="w-full" onClick={() => {}}>
-                        <Calendar className="mr-2 h-4 w-4" />
-                        Set due date
-                      </Button>
+                      <Input
+                        type="date"
+                        aria-label="Set due date"
+                        onChange={(e) =>
+                          e.target.value &&
+                          updateTaskMutation.mutate({
+                            dueDate: new Date(`${e.target.value}T00:00:00`).toISOString(),
+                          } as any)
+                        }
+                      />
                     )}
                   </CardContent>
                 </Card>
+
+                <LabelsCard taskId={taskId!} labels={task.labels ?? []} />
+                <WatchersCard taskId={taskId!} />
 
                 {/* Reporter */}
                 <Card>
@@ -318,5 +339,104 @@ export function TaskDetailPage() {
         </div>
       )}
     </div>
+  );
+}
+
+
+// Labels and watchers had no UI at all; watchers had no server route either.
+function LabelsCard({ taskId, labels }: { taskId: string; labels: any[] }) {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const { data } = useQuery({ queryKey: ['labels'], queryFn: () => tasksApi.listLabels() });
+  const all = data?.data ?? [];
+
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['task', taskId] });
+
+  const attach = async (labelId: string) => {
+    try {
+      await tasksApi.addLabel(taskId, labelId);
+      refresh();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not add that label.'));
+    }
+  };
+
+  const detach = async (labelId: string) => {
+    try {
+      await tasksApi.removeLabel(taskId, labelId);
+      refresh();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not remove that label.'));
+    }
+  };
+
+  const available = all.filter((l: any) => !labels.some((x) => x.id === l.id));
+
+  return (
+    <Card>
+      <CardHeader><CardTitle>Labels</CardTitle></CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex flex-wrap gap-1">
+          {labels.length === 0 && <span className="text-sm text-muted-foreground">None yet.</span>}
+          {labels.map((l: any) => (
+            <Badge key={l.id} variant="secondary" className="gap-1" style={{ borderColor: l.color }}>
+              {l.name}
+              <button onClick={() => detach(l.id)} aria-label={`Remove ${l.name}`} className="opacity-60 hover:opacity-100">
+                ×
+              </button>
+            </Badge>
+          ))}
+        </div>
+        {available.length > 0 && (
+          <Select value="" onValueChange={attach}>
+            <SelectTrigger><SelectValue placeholder="Add a label" /></SelectTrigger>
+            <SelectContent>
+              {available.map((l: any) => (
+                <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function WatchersCard({ taskId }: { taskId: string }) {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const { user } = useAuth();
+  const { data } = useQuery({
+    queryKey: ['task-watchers', taskId],
+    queryFn: () => tasksApi.listWatchers(taskId),
+  });
+  const watchers = data?.data ?? [];
+  const following = watchers.some((w: any) => w.userId === user?.id);
+
+  const toggle = async () => {
+    try {
+      if (following) await tasksApi.removeWatcher(taskId, user!.id);
+      else await tasksApi.addWatcher(taskId, user!.id);
+      queryClient.invalidateQueries({ queryKey: ['task-watchers', taskId] });
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not change what you follow.'));
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader><CardTitle>Watchers</CardTitle></CardHeader>
+      <CardContent className="space-y-3">
+        {watchers.length === 0 && <p className="text-sm text-muted-foreground">Nobody is following this.</p>}
+        <ul className="space-y-1">
+          {watchers.map((w: any) => (
+            <li key={w.userId} className="text-sm">{w.name}</li>
+          ))}
+        </ul>
+        <Button variant="outline" size="sm" className="w-full" onClick={toggle}>
+          {following ? 'Stop following' : 'Follow this task'}
+        </Button>
+      </CardContent>
+    </Card>
   );
 }

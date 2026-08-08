@@ -177,6 +177,10 @@ export const callsApi = {
 
 export const filesApi = {
   getUploadUrl: (data: { category: string; refId: string; filename: string; contentType: string; size: number }) => api.post('/files/upload-url', data),
+  // Registers a finished upload; without this the file has no record.
+  record: (data: { category: string; refId: string; objectKey: string; filename: string; contentType: string; size: number }) =>
+    api.post('/files/record', data),
+  list: (category: string, refId: string) => getList('/files', 'attachments', { category, refId }),
   initiateMultipart: (data: { category: string; refId: string; filename: string; contentType: string; size: number }) => api.post('/files/multipart/initiate', data),
   completeMultipart: (data: { objectKey: string; uploadId: string; parts: { partNumber: number; etag: string }[] }) => api.post('/files/multipart/complete', data),
   getDownloadUrl: (objectKey: string, filename?: string, inline?: boolean) => api.get('/files/download-url', { params: { objectKey, filename, inline } }),

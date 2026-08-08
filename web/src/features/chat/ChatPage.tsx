@@ -8,10 +8,15 @@ import { cn } from '@/shared/utils/cn';
 import { formatRelativeTime } from '@/shared/utils/cn';
 import { useWebSocket } from '@/features/websocket/WSProvider';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { channelsApi } from '@/shared/api/client';
+import { channelsApi, filesApi } from '@/shared/api/client';
+import { useUpload } from '@/features/files/useUpload';
+import { useToast } from '@/shared/hooks/useToast';
+import { AttachmentChip } from '@/features/files/AttachmentChip';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { useUIStore } from '@/shared/store';
 import { CreateChannelDialog } from './CreateChannelDialog';
+import { usePresence, type PresenceStatus } from '@/features/presence/usePresence';
+import { PresenceDot } from '@/features/presence/PresenceDot';
 
 interface Message {
   id: string;
@@ -62,6 +67,24 @@ export function ChatPage() {
   const messages = useMemo(() => messagesResponse?.data || [], [messagesResponse]);
 
   const activeChannel = channels.find((c) => c.id === channelId);
+  const { statusOf } = usePresence();
+  const toast = useToast();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const { upload, progress, error: uploadError } = useUpload('chat', channelId || '');
+
+  // Files already attached to this channel.
+  const { data: attachmentsData } = useQuery({
+    queryKey: ['attachments', channelId],
+    queryFn: () => filesApi.list('chat', channelId!),
+    enabled: !!channelId,
+  });
+  const attachments = attachmentsData?.data ?? [];
+
+  useEffect(() => {
+    if (uploadError) toast.error(uploadError);
+    // toast is rebuilt each render; the error is the real trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uploadError]);
 
   // Send message mutation
   const sendMessageMutation = useMutation({
@@ -239,7 +262,7 @@ export function ChatPage() {
             ) : (
               <>
                 {messages.map((msg) => (
-                  <MessageBubble key={msg.id} message={msg} isOwn={msg.userId === user?.id} />
+                  <MessageBubble key={msg.id} message={msg} isOwn={msg.userId === user?.id} status={statusOf(msg.userId)} />
                 ))}
                 <div ref={messagesEndRef} />
               </>
@@ -247,9 +270,50 @@ export function ChatPage() {
           </div>
 
           {/* Message input */}
+          {attachments.length > 0 && (
+            <div className="border-t border-border px-4 py-2">
+              <p className="mb-1 text-xs font-medium text-muted-foreground">Files in this channel</p>
+              <div className="flex flex-wrap gap-2">
+                {attachments.map((a: any) => (
+                  <AttachmentChip key={a.id} attachment={a} />
+                ))}
+              </div>
+            </div>
+          )}
+
           <form onSubmit={handleSend} className="p-4 border-t border-border">
             <div className="flex items-end gap-2">
-              <Button variant="ghost" size="icon" className="shrink-0"><Paperclip className="h-5 w-5" /></Button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                className="hidden"
+                aria-label="Attach a file"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = '';
+                  if (!file || !channelId) return;
+                  const uploaded = await upload(file);
+                  if (uploaded) {
+                    queryClient.invalidateQueries({ queryKey: ['attachments', channelId] });
+                    toast.success(`${uploaded.filename} attached.`);
+                  }
+                }}
+              />
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="shrink-0"
+                disabled={!channelId || progress !== null}
+                onClick={() => fileInputRef.current?.click()}
+                aria-label="Attach a file"
+              >
+                {progress !== null ? (
+                  <span className="text-xs font-medium">{progress}%</span>
+                ) : (
+                  <Paperclip className="h-5 w-5" />
+                )}
+              </Button>
               <div className="flex-1 relative">
                 <Input
                   value={message}
@@ -287,13 +351,24 @@ export function ChatPage() {
   );
 }
 
-function MessageBubble({ message, isOwn }: { message: Message; isOwn: boolean }) {
+function MessageBubble({
+  message,
+  isOwn,
+  status,
+}: {
+  message: Message;
+  isOwn: boolean;
+  status: PresenceStatus;
+}) {
   return (
     <div className={cn('flex gap-3 max-w-[70%]', isOwn ? 'justify-end' : 'justify-start')}>
       {!isOwn && (
-        <Avatar className="h-8 w-8 shrink-0">
-          <AvatarFallback>{message.userName.charAt(0).toUpperCase()}</AvatarFallback>
-        </Avatar>
+        <div className="relative shrink-0">
+          <Avatar className="h-8 w-8">
+            <AvatarFallback>{message.userName.charAt(0).toUpperCase()}</AvatarFallback>
+          </Avatar>
+          <PresenceDot status={status} className="absolute -bottom-0.5 -right-0.5" />
+        </div>
       )}
       <div className={cn('flex flex-col', isOwn ? 'items-end' : 'items-start')}>
         {!isOwn && <p className="text-xs text-muted-foreground mb-1">{message.userName}</p>}

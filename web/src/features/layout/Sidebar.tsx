@@ -1,5 +1,5 @@
 import { Link, NavLink } from 'react-router-dom';
-import { MessageSquare, Video, CheckSquare, Settings, ChevronLeft, ChevronRight, Hash, User } from 'lucide-react';
+import { MessageSquare, Video, CheckSquare, Settings, Users, ChevronLeft, ChevronRight, Hash, User } from 'lucide-react';
 import { useUIStore } from '@/shared/store';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { cn } from '@/shared/utils/cn';
@@ -12,6 +12,7 @@ export function Sidebar() {
     { path: '/chat', label: 'Chat', icon: MessageSquare },
     { path: '/calls', label: 'Calls', icon: Video },
     { path: '/tasks', label: 'Tasks', icon: CheckSquare },
+    { path: '/organization', label: 'Organization', icon: Users },
     { path: '/settings', label: 'Settings', icon: Settings },
   ];
 
@@ -64,24 +65,7 @@ export function Sidebar() {
             </NavLink>
           ))}
 
-          {/* Quick actions (collapsed shows icons only) */}
-          <div className="pt-4 border-t border-border">
-            <NavLink
-              to="/settings"
-              className={({ isActive }) =>
-                cn(
-                  'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-                  isActive
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
-                  !sidebarOpen && 'justify-center px-2'
-                )
-              }
-            >
-              <Settings className="h-5 w-5 flex-shrink-0" aria-hidden="true" />
-              {sidebarOpen && <span>Settings</span>}
-            </NavLink>
-          </div>
+
         </nav>
 
         {/* User status - only show when authenticated and sidebar open */}

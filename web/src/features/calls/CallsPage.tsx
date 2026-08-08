@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Video, Phone, Users, Search, Loader2, Clock, CheckCircle, XCircle, MoreVertical } from 'lucide-react';
+import { Video, Phone, Users, Search, Loader2, Clock, CheckCircle, XCircle } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Card, CardContent } from '@/shared/components/ui/card';
@@ -7,6 +7,8 @@ import { Badge } from '@/shared/components/ui/badge';
 import { formatDate, formatTime } from '@/shared/utils/cn';
 import { useQuery } from '@tanstack/react-query';
 import { callsApi } from '@/shared/api/client';
+import { useNavigate } from 'react-router-dom';
+import { CreateCallDialog } from './CreateCallDialog';
 
 interface Call {
   id: string;
@@ -21,7 +23,7 @@ interface Call {
   startedAt?: string;
   endedAt?: string;
   durationSeconds?: number;
-  participants: { userId: string; userName: string; userAvatar?: string; role: string }[];
+  participants?: { userId: string; userName: string; userAvatar?: string; role: string }[];
   createdAt: string;
 }
 
@@ -33,8 +35,10 @@ const statusConfig = {
 };
 
 export function CallsPage() {
+  const navigate = useNavigate();
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [createOpen, setCreateOpen] = useState(false);
 
   const { data: callsResponse, isLoading } = useQuery({
     queryKey: ['calls', { search: searchQuery, status: statusFilter }],
@@ -44,7 +48,8 @@ export function CallsPage() {
   const calls = callsResponse?.data || [];
 
   const filteredCalls = calls.filter((call) => {
-    if (searchQuery && !call.title.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+    // A call needs no title, so match defensively.
+    if (searchQuery && !(call.title ?? '').toLowerCase().includes(searchQuery.toLowerCase())) return false;
     if (statusFilter !== 'all' && call.status !== statusFilter) return false;
     return true;
   });
@@ -77,7 +82,7 @@ export function CallsPage() {
             <option value="ended">Ended</option>
             <option value="cancelled">Cancelled</option>
           </select>
-          <Button onClick={() => {}}>New Call</Button>
+          <Button onClick={() => setCreateOpen(true)}>New Call</Button>
         </div>
       </div>
 
@@ -94,16 +99,21 @@ export function CallsPage() {
         ) : (
           <div className="space-y-4">
             {filteredCalls.map((call) => (
-              <CallCard key={call.id} call={call} />
+              <CallCard key={call.id} call={call} onJoin={(id) => navigate(`/calls/${id}`)} />
             ))}
           </div>
         )}
       </div>
+      <CreateCallDialog
+        open={createOpen}
+        onOpenChange={setCreateOpen}
+        onCreated={(id) => navigate(`/calls/${id}`)}
+      />
     </div>
   );
 }
 
-function CallCard({ call }: { call: Call }) {
+function CallCard({ call, onJoin }: { call: Call; onJoin: (id: string) => void }) {
   const config = statusConfig[call.status];
 
   return (
@@ -156,28 +166,29 @@ function CallCard({ call }: { call: Call }) {
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              {call.participants.slice(0, 5).map((p) => (
+              {(call.participants ?? []).slice(0, 5).map((p) => (
                 <div key={p.userId} className="relative -ml-1" title={p.userName}>
                   <div className="h-8 w-8 rounded-full bg-primary/20 flex items-center justify-center border-2 border-background">
                     <span className="text-xs font-medium text-primary">{p.userName.charAt(0).toUpperCase()}</span>
                   </div>
                 </div>
               ))}
-              {call.participants.length > 5 && (
+              {(call.participants ?? []).length > 5 && (
                 <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center border-2 border-background">
-                  <span className="text-xs font-medium text-muted-foreground">+{call.participants.length - 5}</span>
+                  <span className="text-xs font-medium text-muted-foreground">+{(call.participants ?? []).length - 5}</span>
                 </div>
               )}
             </div>
           </div>
 
           <div className="flex items-center gap-2 shrink-0">
-            <Button variant="outline" size="sm" onClick={() => {}}>
-              Join
-            </Button>
-            <Button variant="ghost" size="icon" onClick={() => {}}>
-              <MoreVertical className="h-4 w-4" />
-            </Button>
+            {call.status !== 'ended' ? (
+              <Button variant="outline" size="sm" onClick={() => onJoin(call.id)}>
+                Join
+              </Button>
+            ) : (
+              <span className="text-xs text-muted-foreground">Ended</span>
+            )}
           </div>
         </div>
       </CardContent>

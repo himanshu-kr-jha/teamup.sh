@@ -1,9 +1,10 @@
-import { Search, Menu, Sun, Moon } from 'lucide-react';
+import { Menu, Sun, Moon } from 'lucide-react';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { Button } from '@/shared/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/shared/components/ui/dropdown-menu';
 import { Avatar, AvatarFallback, AvatarImage } from '@/shared/components/ui/avatar';
 import { NotificationBell } from '@/features/notifications/NotificationBell';
+import { SearchBox } from '@/features/search/SearchBox';
 import { useState } from 'react';
 
 interface HeaderProps {
@@ -12,7 +13,6 @@ interface HeaderProps {
 
 export function Header({ onMenuClick }: HeaderProps) {
   const { user, logout } = useAuth();
-  const [searchQuery, setSearchQuery] = useState('');
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
 
   return (
@@ -26,17 +26,7 @@ export function Header({ onMenuClick }: HeaderProps) {
       </button>
 
       <div className="flex-1 flex items-center gap-4">
-        <div className="relative w-full max-w-md hidden sm:block">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-          <input
-            type="search"
-            placeholder="Search messages, tasks, people..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full h-9 rounded-md bg-secondary pl-10 pr-4 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring"
-            aria-label="Search"
-          />
-        </div>
+        <SearchBox />
       </div>
 
       <div className="flex items-center gap-2">

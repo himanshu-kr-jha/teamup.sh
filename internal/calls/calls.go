@@ -50,33 +50,35 @@ type Service struct {
 	egressService *lksdk.EgressClient
 }
 
+// Serialised straight onto the wire by the create handler, so the tags have to
+// match what the frontend reads.
 type Call struct {
-	ID              uuid.UUID
-	OrgID           uuid.UUID
-	ChannelID       *uuid.UUID
-	RoomName        string
-	LiveKitRoomSID  *string
-	Title           *string
-	CallType        string
-	Status          string
-	StartedAt       *time.Time
-	EndedAt         *time.Time
-	DurationSeconds *int
-	RecordingURL    *string
-	RecordingStatus *string
-	CreatedBy       uuid.UUID
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID              uuid.UUID  `json:"id"`
+	OrgID           uuid.UUID  `json:"orgId"`
+	ChannelID       *uuid.UUID `json:"channelId,omitempty"`
+	RoomName        string     `json:"roomName"`
+	LiveKitRoomSID  *string    `json:"-"`
+	Title           *string    `json:"title,omitempty"`
+	CallType        string     `json:"callType"`
+	Status          string     `json:"status"`
+	StartedAt       *time.Time `json:"startedAt,omitempty"`
+	EndedAt         *time.Time `json:"endedAt,omitempty"`
+	DurationSeconds *int       `json:"durationSeconds,omitempty"`
+	RecordingURL    *string    `json:"recordingUrl,omitempty"`
+	RecordingStatus *string    `json:"recordingStatus,omitempty"`
+	CreatedBy       uuid.UUID  `json:"createdBy"`
+	CreatedAt       time.Time  `json:"createdAt"`
+	UpdatedAt       time.Time  `json:"updatedAt"`
 }
 
 type CallParticipant struct {
-	CallID     uuid.UUID
-	UserID     uuid.UUID
-	Role       string
-	JoinedAt   *time.Time
-	LeftAt     *time.Time
-	IsMuted    bool
-	IsCameraOn bool
+	CallID     uuid.UUID  `json:"callId"`
+	UserID     uuid.UUID  `json:"userId"`
+	Role       string     `json:"role"`
+	JoinedAt   *time.Time `json:"joinedAt,omitempty"`
+	LeftAt     *time.Time `json:"leftAt,omitempty"`
+	IsMuted    bool       `json:"isMuted"`
+	IsCameraOn bool       `json:"isCameraOn"`
 }
 
 func NewService(db *pgxpool.Pool, cfg Config) *Service {

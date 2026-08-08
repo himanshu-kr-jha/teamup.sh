@@ -877,6 +877,15 @@ type SearchResult struct {
 	CreatedAt   time.Time `json:"createdAt"`
 }
 
+// HighlightStart and HighlightEnd delimit a match inside SearchResult.
+// Deliberately not HTML: ts_headline does not escape the message it is
+// highlighting, so emitting <mark> would hand user-authored markup straight to
+// the browser. The client splits on these and renders text.
+const (
+	HighlightStart = "\x02"
+	HighlightEnd   = "\x03"
+)
+
 // SearchMessages runs a full-text search over the messages the caller may
 // read: channels they belong to, plus the organization's public channels.
 //
@@ -898,7 +907,7 @@ func (s *Service) SearchMessages(ctx context.Context, orgID, userID uuid.UUID, q
 	rows, err := s.db.Query(ctx, `
 		SELECT m.id, m.channel_id, COALESCE(c.name, ''), m.user_id, u.name, m.content,
 		       ts_headline('english', m.content, websearch_to_tsquery('english', $2),
-		                   'StartSel=<mark>, StopSel=</mark>, MaxFragments=2, MaxWords=18, MinWords=5'),
+		                   'StartSel=' || chr(2) || ', StopSel=' || chr(3) || ', MaxFragments=2, MaxWords=18, MinWords=5'),
 		       m.created_at
 		FROM messages m
 		JOIN channels c ON c.id = m.channel_id

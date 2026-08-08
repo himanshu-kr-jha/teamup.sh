@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -233,4 +234,32 @@ func TestSearchIsPaged(t *testing.T) {
 		t.Error("the second page should not repeat the first")
 	}
 	_ = uuid.Nil
+}
+
+// ts_headline does not escape the content it highlights, so HTML delimiters
+// would hand user-authored markup to the browser verbatim.
+func TestSearchHighlightDoesNotEmitHTML(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	ch := testsupport.SeedChannel(t, pool, org, "general", org.OwnerID)
+
+	if _, err := svc.SendMessage(ctx, ch, org.OwnerID,
+		`<script>alert("xss")</script> deployment notes`, nil); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	results, err := svc.SearchMessages(ctx, org.ID, org.OwnerID, SearchQuery{Text: "deployment"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected one result, got %d", len(results))
+	}
+	if strings.Contains(results[0].Highlight, "<mark>") {
+		t.Error("highlights must not be HTML")
+	}
+	if !strings.Contains(results[0].Highlight, HighlightStart) {
+		t.Errorf("expected the sentinel delimiter, got %q", results[0].Highlight)
+	}
 }
