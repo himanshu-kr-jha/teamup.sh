@@ -43,7 +43,7 @@ export function SettingsPage() {
   };
 
   return (
-    <div className="flex h-screen flex-col bg-background">
+    <div className="flex h-full flex-col bg-background">
       <div className="flex h-16 items-center justify-between px-4 md:px-6 border-b border-border">
         <h1 className="text-2xl font-bold">Settings</h1>
         <Button onClick={handleSave} disabled={saving || !name.trim()}>

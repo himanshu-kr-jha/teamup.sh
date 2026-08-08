@@ -93,11 +93,11 @@ export function TaskDetailPage() {
   });
 
   if (isLoading) {
-    return <div className="flex h-screen items-center justify-center">Loading...</div>;
+    return <div className="flex h-full items-center justify-center">Loading...</div>;
   }
 
   if (!task) {
-    return <div className="flex h-screen items-center justify-center">Task not found</div>;
+    return <div className="flex h-full items-center justify-center">Task not found</div>;
   }
 
   const handleStatusChange = (status: typeof statuses[number]) => {
@@ -109,7 +109,7 @@ export function TaskDetailPage() {
   };
 
   return (
-    <div className="flex h-screen flex-col bg-background">
+    <div className="flex h-full flex-col bg-background">
       {/* Header */}
       <div className="flex h-16 items-center justify-between px-4 md:px-6 border-b border-border">
         <Button variant="ghost" size="icon" onClick={() => navigate(-1)}>

@@ -11,6 +11,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { channelsApi } from '@/shared/api/client';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { useUIStore } from '@/shared/store';
+import { CreateChannelDialog } from './CreateChannelDialog';
 
 interface Message {
   id: string;
@@ -37,6 +38,7 @@ export function ChatPage() {
   const params = useParams<{ channelId?: string }>();
   const [message, setMessage] = useState('');
   const [showSidebar, setShowSidebar] = useState(true);
+  const [createChannelOpen, setCreateChannelOpen] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const channelId = params.channelId || activeChannelId;
 
@@ -138,11 +140,11 @@ export function ChatPage() {
   };
 
   if (channelsLoading) {
-    return <div className="flex h-screen items-center justify-center">Loading channels...</div>;
+    return <div className="flex h-full items-center justify-center">Loading channels...</div>;
   }
 
   return (
-    <div className="flex h-screen flex-col bg-background">
+    <div className="flex h-full flex-col bg-background">
       {/* Mobile sidebar toggle */}
       <button
         className="lg:hidden fixed bottom-4 right-4 z-50 p-2 rounded-full bg-primary text-primary-foreground shadow-lg"
@@ -152,7 +154,7 @@ export function ChatPage() {
         {showSidebar ? <ChevronLeft className="h-6 w-6" /> : <MessageSquare className="h-6 w-6" />}
       </button>
 
-      <div className={cn('flex h-screen', showSidebar ? 'lg:flex-row' : 'lg:flex-col')}>
+      <div className={cn('flex h-full', showSidebar ? 'lg:flex-row' : 'lg:flex-col')}>
         {/* Sidebar */}
         <aside className={cn(
           'fixed inset-y-0 left-0 z-40 w-72 bg-card border-r border-border transition-transform duration-200 lg:relative lg:translate-x-0',
@@ -193,7 +195,7 @@ export function ChatPage() {
 
             {/* New channel button */}
             <div className="p-2 border-t border-border">
-              <Button variant="outline" className="w-full" onClick={() => {}}>
+              <Button variant="outline" className="w-full" onClick={() => setCreateChannelOpen(true)}>
                 <MessageSquare className="mr-2 h-4 w-4" />
                 New Channel
               </Button>
@@ -272,6 +274,15 @@ export function ChatPage() {
           </form>
         </div>
       </div>
+
+      <CreateChannelDialog
+        open={createChannelOpen}
+        onOpenChange={setCreateChannelOpen}
+        onCreated={(id) => {
+          setActiveChannelId(id);
+          navigate(`/chat/${id}`);
+        }}
+      />
     </div>
   );
 }

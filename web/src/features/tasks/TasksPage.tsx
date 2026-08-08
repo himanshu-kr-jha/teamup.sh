@@ -8,6 +8,7 @@ import { cn } from '@/shared/utils/cn';
 import { formatRelativeTime } from '@/shared/utils/cn';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { tasksApi } from '@/shared/api/client';
+import { CreateTaskDialog } from './CreateTaskDialog';
 
 interface Task {
   id: string;
@@ -47,6 +48,7 @@ export function TasksPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [viewMode, setViewMode] = useState<'list' | 'board'>('board');
+  const [createOpen, setCreateOpen] = useState(false);
 
   const { data: tasksResponse, isLoading } = useQuery({
     queryKey: ['tasks', { search: searchQuery, status: statusFilter }],
@@ -75,11 +77,11 @@ export function TasksPage() {
   });
 
   if (isLoading) {
-    return <div className="flex h-screen items-center justify-center"><Loader2 className="h-8 w-8 animate-spin" /></div>;
+    return <div className="flex h-full items-center justify-center"><Loader2 className="h-8 w-8 animate-spin" /></div>;
   }
 
   return (
-    <div className="flex h-screen flex-col bg-background">
+    <div className="flex h-full flex-col bg-background">
       {/* Header */}
       <div className="flex h-16 items-center justify-between px-4 md:px-6 border-b border-border">
         <div className="flex items-center gap-4">
@@ -120,7 +122,7 @@ export function TasksPage() {
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
-          <Button onClick={() => {}}>New Task</Button>
+          <Button onClick={() => setCreateOpen(true)}>New Task</Button>
         </div>
       </div>
 
@@ -152,6 +154,8 @@ export function TasksPage() {
           </div>
         )}
       </div>
+
+      <CreateTaskDialog open={createOpen} onOpenChange={setCreateOpen} />
     </div>
   );
 }

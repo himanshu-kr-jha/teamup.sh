@@ -50,7 +50,7 @@ export function CallsPage() {
   });
 
   return (
-    <div className="flex h-screen flex-col bg-background">
+    <div className="flex h-full flex-col bg-background">
       {/* Header */}
       <div className="flex h-16 items-center justify-between px-4 md:px-6 border-b border-border">
         <div className="flex items-center gap-4">
