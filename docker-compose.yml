@@ -1,0 +1,113 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: teamup
+      POSTGRES_PASSWORD: teamup
+      POSTGRES_DB: teamup
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U teamup -d teamup"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  livekit:
+    image: livekit/livekit-server:latest
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882"
+    environment:
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          port_range_start: 50000
+          port_range_end: 60000
+          use_external_ip: true
+        keys:
+          "devkey": "devsecret"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:7880/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # TeamUp application
+  teamup:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      TEAMUP_DATABASE_URL: postgres://teamup:teamup@postgres:5432/teamup?sslmode=disable
+      TEAMUP_REDIS_URL: redis://redis:6379
+      TEAMUP_MINIO_ENDPOINT: minio:9000
+      TEAMUP_MINIO_ACCESS_KEY: minioadmin
+      TEAMUP_MINIO_SECRET_KEY: minioadmin
+      TEAMUP_MINIO_BUCKET: teamup-files
+      TEAMUP_LIVEKIT_URL: http://livekit:7880
+      TEAMUP_LIVEKIT_API_KEY: devkey
+      TEAMUP_LIVEKIT_API_SECRET: devsecret
+      TEAMUP_PORT: "8080"
+      TEAMUP_ENV: development
+      TEAMUP_LOG_LEVEL: debug
+      TEAMUP_BASE_URL: http://localhost:8080
+      TEAMUP_AUTO_SETUP: "true"
+      TEAMUP_SETUP_ORG_NAME: "Demo Org"
+      TEAMUP_SETUP_ORG_SUBDOMAIN: "demo"
+      TEAMUP_SETUP_ADMIN_EMAIL: "admin@demo.local"
+      TEAMUP_SETUP_ADMIN_PASSWORD: "admin123456"
+      TEAMUP_SETUP_OIDC_PROVIDER: "custom"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      livekit:
+        condition: service_healthy
+    volumes:
+      - ./web/dist:/app/web/dist:ro
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:

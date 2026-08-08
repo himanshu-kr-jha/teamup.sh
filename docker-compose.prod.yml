@@ -1,0 +1,174 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: teamup
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: teamup
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U teamup -d teamup"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+  livekit:
+    image: livekit/livekit-server:latest
+    environment:
+      LIVEKIT_CONFIG: |
+        port: 7880
+        rtc:
+          tcp_port: 7881
+          port_range_start: 50000
+          port_range_end: 60000
+          use_external_ip: true
+        keys:
+          "${LIVEKIT_API_KEY}": "${LIVEKIT_API_SECRET}"
+        redis:
+          address: "redis:6379"
+          password: "${REDIS_PASSWORD}"
+    ports:
+      - "7880:7880"
+      - "7881:7881"
+      - "7882:7882"
+      - "50000-60000:50000-60000/udp"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:7880/"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 1G
+
+  teamup:
+    image: ghcr.io/yourorg/teamup:latest
+    ports:
+      - "8080:8080"
+    environment:
+      TEAMUP_DATABASE_URL: postgres://teamup:${POSTGRES_PASSWORD}@postgres:5432/teamup?sslmode=disable
+      TEAMUP_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      TEAMUP_MINIO_ENDPOINT: minio:9000
+      TEAMUP_MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      TEAMUP_MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      TEAMUP_MINIO_BUCKET: teamup-files
+      TEAMUP_MINIO_SECURE: "false"
+      TEAMUP_LIVEKIT_URL: http://livekit:7880
+      TEAMUP_LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
+      TEAMUP_LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}
+      TEAMUP_PORT: "8080"
+      TEAMUP_ENV: production
+      TEAMUP_LOG_LEVEL: info
+      TEAMUP_BASE_URL: https://teamup.example.com
+      TEAMUP_AUTH_SECRET: ${AUTH_SECRET}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      livekit:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/healthz/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Reverse proxy (nginx)
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      - teamup
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:

@@ -1,0 +1,244 @@
+# Default values for TeamUp Helm chart
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/yourorg/teamup
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+
+service:
+  type: ClusterIP
+  port: 8080
+  targetPort: 8080
+
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+  hosts:
+    - host: teamup.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: teamup-tls
+      hosts:
+        - teamup.example.com
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 250m
+    memory: 512Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# TeamUp configuration
+config:
+  env: production
+  logLevel: info
+  port: 8080
+  baseURL: "https://teamup.example.com"
+
+  database:
+    host: postgresql
+    port: 5432
+    name: teamup
+    user: teamup
+    # password: set via secret
+    sslmode: disable
+    maxConns: 20
+
+  redis:
+    host: redis-master
+    port: 6379
+    # password: set via secret
+    db: 0
+
+  minio:
+    endpoint: minio:9000
+    accessKey: minioadmin
+    secretKey: minioadmin
+    bucket: teamup-files
+    secure: false
+
+  livekit:
+    url: http://livekit:7880
+    apiKey: changeme
+    apiSecret: changeme
+
+  auth:
+    issuer: teamup
+    audience: teamup-api
+    accessTokenTTL: 15m
+    refreshTokenTTL: 720h
+
+  # OIDC providers (configured via wizard)
+  # google:
+  #   clientId: ""
+  #   clientSecret: ""
+  # entra:
+  #   clientId: ""
+  #   clientSecret: ""
+  #   tenantId: ""
+  # custom:
+  #   issuer: ""
+  #   clientId: ""
+  #   clientSecret: ""
+
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    path: /metrics
+  prometheusRule:
+    enabled: true
+
+# Dependencies
+postgresql:
+  enabled: true
+  auth:
+    postgresPassword: changeme
+    username: teamup
+    password: changeme
+    database: teamup
+  primary:
+    persistence:
+      size: 20Gi
+    resources:
+      limits:
+        cpu: 500m
+        memory: 1Gi
+      requests:
+        cpu: 100m
+        memory: 256Mi
+
+redis:
+  enabled: true
+  architecture: standalone
+  auth:
+    enabled: true
+    password: changeme
+  master:
+    persistence:
+      size: 5Gi
+    resources:
+      limits:
+        cpu: 250m
+        memory: 512Mi
+      requests:
+        cpu: 50m
+        memory: 128Mi
+
+minio:
+  enabled: true
+  mode: standalone
+  rootUser: minioadmin
+  rootPassword: minioadmin
+  buckets:
+    - name: teamup-files
+      policy: none
+  persistence:
+    size: 50Gi
+  resources:
+    limits:
+      cpu: 500m
+      memory: 1Gi
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+livekit:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: livekit/livekit-server
+    tag: latest
+  config:
+    port: 7880
+    rtc:
+      tcpPort: 7881
+      portRangeStart: 50000
+      portRangeEnd: 60000
+      useExternalIP: true
+    keys:
+      "changeme": "changeme"
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 250m
+      memory: 512Mi
+  service:
+    type: ClusterIP
+    ports:
+      - port: 7880
+        name: http
+      - port: 7881
+        name: rtc-tcp
+      - port: 7882
+        name: rtc-udp
+        protocol: UDP
+
+# Secrets (will be created from these values)
+secrets:
+  database:
+    password: ""
+  redis:
+    password: ""
+  minio:
+    accessKey: ""
+    secretKey: ""
+  livekit:
+    apiKey: ""
+    apiSecret: ""
+  auth:
+    secret: ""
+  vapid:
+    publicKey: ""
+    privateKey: ""
+    subject: "mailto:admin@teamup.local"

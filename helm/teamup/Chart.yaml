@@ -1,0 +1,15 @@
+apiVersion: v2
+name: teamup
+description: A self-hosted collaboration platform Helm chart
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+keywords:
+  - collaboration
+  - chat
+  - video-calls
+  - tasks
+  - teamup
+maintainers:
+  - name: TeamUp Team
+    email: team@teamup.local

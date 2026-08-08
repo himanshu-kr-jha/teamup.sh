@@ -1,0 +1,95 @@
+# Binaries
+bin/
+/teamup
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary
+*.test
+
+# Output of go coverage tool
+*.out
+coverage.out
+
+# Dependency directories
+vendor/
+
+# IDE / agent tooling
+.idea/
+.vscode/
+.serena/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# Build artifacts
+dist/
+build/
+web/dist/
+cmd/teamup/web/dist/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Certificates
+certs/
+*.pem
+*.key
+*.crt
+
+# MinIO data
+minio-data/
+
+# Docker
+.docker/
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.tfplan
+
+# Helm
+helm/teamup/charts/
+helm/teamup/*.tgz
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Vite
+web/.vite/
+web/coverage/
+
+# Playwright
+web/test-results/
+web/playwright-report/
+
+# Turbo
+.turbo/
+
+# Vercel
+.vercel
+
+# TypeScript
+*.tsbuildinfo
+next-env.d.ts
