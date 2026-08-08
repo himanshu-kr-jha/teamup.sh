@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
@@ -174,25 +175,34 @@ func (s *Service) GenerateAccessToken(ctx context.Context, user *User, sessionID
 	return token.SignedString(s.cfg.PrivateKey)
 }
 
-// GenerateRefreshToken creates a long-lived refresh token
-func (s *Service) GenerateRefreshToken(ctx context.Context, user *User, ua, ip string) (*RefreshToken, string, error) {
+// hashRefreshToken derives the stored lookup key for a refresh token.
+//
+// SHA-256 rather than bcrypt: bcrypt is salted, so the same token hashes
+// differently every time and the row could never be found again — which is why
+// the whole refresh path used to be unimplemented. Password stretching buys
+// nothing here anyway, because the token is 256 bits of CSPRNG output rather
+// than a guessable secret.
+func hashRefreshToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// GenerateRefreshToken creates a long-lived refresh token bound to sessionID.
+// The caller passes the session id so the access token issued alongside it
+// refers to the same session; otherwise access-token validation looks up a
+// session that has no stored token and rejects every request.
+func (s *Service) GenerateRefreshToken(ctx context.Context, user *User, sessionID, ua, ip string) (*RefreshToken, string, error) {
 	rawToken := make([]byte, 32)
 	if _, err := rand.Read(rawToken); err != nil {
 		return nil, "", err
 	}
 	tokenString := base64.RawURLEncoding.EncodeToString(rawToken)
 
-	hash, err := bcrypt.GenerateFromPassword([]byte(tokenString), bcrypt.DefaultCost)
-	if err != nil {
-		return nil, "", err
-	}
-
-	sessionID := uuid.New().String()
 	rt := &RefreshToken{
 		ID:        uuid.New(),
 		UserID:    user.ID,
 		SessionID: sessionID,
-		TokenHash: string(hash),
+		TokenHash: hashRefreshToken(tokenString),
 		UserAgent: ua,
 		IPAddress: ip,
 		ExpiresAt: time.Now().Add(s.cfg.RefreshTokenTTL),
@@ -226,8 +236,10 @@ func (s *Service) RefreshAccessToken(ctx context.Context, refreshToken, ua, ip s
 		return nil, err
 	}
 
-	// Generate new token pair
-	newRT, newRawToken, err := s.GenerateRefreshToken(ctx, user, ua, ip)
+	// Rotation starts a new session so the previous access token stops being
+	// accepted along with the refresh token it was paired with.
+	newSessionID := uuid.New().String()
+	newRT, newRawToken, err := s.GenerateRefreshToken(ctx, user, newSessionID, ua, ip)
 	if err != nil {
 		return nil, err
 	}
@@ -473,66 +485,164 @@ func GetAndClearPKCECookie(w http.ResponseWriter, r *http.Request) (string, erro
 	return cookie.Value, nil
 }
 
-// Database operations (stubs - implement with actual queries)
-func (s *Service) storeRefreshToken(ctx context.Context, rt *RefreshToken) error {
-	// INSERT INTO refresh_tokens ...
-	return nil
-}
+// userColumns is shared by the by-id and by-email loads. Roles come from the
+// RBAC join table; without them every permission check downstream sees an
+// empty role list.
+const userColumns = `
+	SELECT u.id, u.org_id, u.email, u.name, COALESCE(u.avatar_url, ''),
+	       COALESCE(u.password_hash, ''), COALESCE(u.is_active, true),
+	       COALESCE(ARRAY_REMOVE(ARRAY_AGG(r.name), NULL), '{}') AS roles
+	FROM users u
+	LEFT JOIN user_roles ur ON ur.user_id = u.id
+	LEFT JOIN roles r ON r.id = ur.role_id
+	WHERE u.deleted_at IS NULL AND %s
+	GROUP BY u.id`
 
-func (s *Service) findRefreshTokenByHash(ctx context.Context, tokenString string) (*RefreshToken, error) {
-	// SELECT * FROM refresh_tokens WHERE token_hash = ...
-	return nil, apperrors.ErrNotFound
-}
-
-func (s *Service) updateRefreshToken(ctx context.Context, rt *RefreshToken) error {
-	// UPDATE refresh_tokens SET revoked_at = ... WHERE id = ...
-	return nil
-}
-
-func (s *Service) revokeSessionTokens(ctx context.Context, sessionID string) error {
-	// UPDATE refresh_tokens SET revoked_at = NOW() WHERE session_id = ...
-	return nil
-}
-
-func (s *Service) revokeAllUserTokens(ctx context.Context, userID uuid.UUID) error {
-	// UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = ...
-	return nil
-}
-
-func (s *Service) isSessionRevoked(ctx context.Context, sessionID string) (bool, error) {
-	// SELECT 1 FROM refresh_tokens WHERE session_id = ... AND revoked_at IS NULL
-	return false, nil
+func scanUser(row pgx.Row) (*User, error) {
+	var u User
+	err := row.Scan(&u.ID, &u.OrgID, &u.Email, &u.Name, &u.AvatarURL,
+		&u.PasswordHash, &u.IsActive, &u.Roles)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, apperrors.ErrNotFound
+		}
+		return nil, err
+	}
+	return &u, nil
 }
 
 func (s *Service) getUser(ctx context.Context, userID uuid.UUID) (*User, error) {
-	// SELECT * FROM users WHERE id = ...
-	return nil, apperrors.ErrNotFound
+	return scanUser(s.db.QueryRow(ctx, fmt.Sprintf(userColumns, "u.id = $1"), userID))
 }
 
+// GetUserByEmail looks the account up case-insensitively: browsers send
+// whatever the user typed, and addresses are not case-sensitive in practice.
 func (s *Service) GetUserByEmail(ctx context.Context, email string) (*User, error) {
-	// SELECT * FROM users WHERE email = ...
-	return nil, apperrors.ErrNotFound
+	return scanUser(s.db.QueryRow(ctx,
+		fmt.Sprintf(userColumns, "LOWER(u.email) = LOWER($1)"), email))
 }
 
+// VerifyPassword compares against the bcrypt hash stored by the setup wizard.
 func (s *Service) VerifyPassword(user *User, password string) error {
-	// In production, verify bcrypt hash from database
-	// For now, return error since no password is stored
-	return apperrors.New(apperrors.CodeUnauthorized, "password authentication not configured")
+	if user == nil || user.PasswordHash == "" {
+		// OIDC-only accounts have no password; refuse rather than treating an
+		// empty hash as a match.
+		return apperrors.New(apperrors.CodeUnauthorized, "password authentication not available for this account")
+	}
+	if !user.IsActive {
+		return apperrors.New(apperrors.CodeUnauthorized, "account is disabled")
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
+		return apperrors.New(apperrors.CodeUnauthorized, "invalid credentials")
+	}
+	return nil
+}
+
+func (s *Service) storeRefreshToken(ctx context.Context, rt *RefreshToken) error {
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO refresh_tokens (id, user_id, session_id, token_hash, user_agent, ip_address, expires_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, NULLIF($6, '')::inet, $7, $8)
+	`, rt.ID, rt.UserID, rt.SessionID, rt.TokenHash, rt.UserAgent, rt.IPAddress, rt.ExpiresAt, rt.CreatedAt)
+	return err
+}
+
+func (s *Service) findRefreshTokenByHash(ctx context.Context, tokenString string) (*RefreshToken, error) {
+	var rt RefreshToken
+	var ua, ip *string
+	err := s.db.QueryRow(ctx, `
+		SELECT id, user_id, session_id, token_hash, user_agent, host(ip_address), expires_at, revoked_at, created_at
+		FROM refresh_tokens WHERE token_hash = $1
+	`, hashRefreshToken(tokenString)).Scan(
+		&rt.ID, &rt.UserID, &rt.SessionID, &rt.TokenHash, &ua, &ip,
+		&rt.ExpiresAt, &rt.RevokedAt, &rt.CreatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, apperrors.ErrNotFound
+		}
+		return nil, err
+	}
+	if ua != nil {
+		rt.UserAgent = *ua
+	}
+	if ip != nil {
+		rt.IPAddress = *ip
+	}
+	return &rt, nil
+}
+
+func (s *Service) updateRefreshToken(ctx context.Context, rt *RefreshToken) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE refresh_tokens SET revoked_at = $2 WHERE id = $1`, rt.ID, rt.RevokedAt)
+	return err
+}
+
+func (s *Service) revokeSessionTokens(ctx context.Context, sessionID string) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE refresh_tokens SET revoked_at = NOW() WHERE session_id = $1 AND revoked_at IS NULL`, sessionID)
+	return err
+}
+
+func (s *Service) revokeAllUserTokens(ctx context.Context, userID uuid.UUID) error {
+	_, err := s.db.Exec(ctx,
+		`UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`, userID)
+	return err
+}
+
+// isSessionRevoked backs access-token validation. A session with no live
+// refresh token — revoked, expired, or never issued — is not usable, so an
+// unknown session id reports revoked rather than allowing a forged token.
+func (s *Service) isSessionRevoked(ctx context.Context, sessionID string) (bool, error) {
+	var live int
+	err := s.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM refresh_tokens
+		WHERE session_id = $1 AND revoked_at IS NULL AND expires_at > NOW()
+	`, sessionID).Scan(&live)
+	if err != nil {
+		return true, err
+	}
+	return live == 0, nil
 }
 
 func (s *Service) getLinkedIdentity(ctx context.Context, provider, providerID string) (*LinkedIdentity, error) {
-	// SELECT * FROM linked_identities WHERE provider = ... AND provider_id = ...
-	return nil, apperrors.ErrNotFound
+	var li LinkedIdentity
+	var email, at, rtok, idt *string
+	err := s.db.QueryRow(ctx, `
+		SELECT user_id, provider, provider_id, email, access_token, refresh_token, id_token, updated_at
+		FROM linked_identities WHERE provider = $1 AND provider_id = $2
+	`, provider, providerID).Scan(&li.UserID, &li.Provider, &li.ProviderID,
+		&email, &at, &rtok, &idt, &li.UpdatedAt)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, apperrors.ErrNotFound
+		}
+		return nil, err
+	}
+	for dst, src := range map[*string]*string{
+		&li.Email: email, &li.AccessToken: at, &li.RefreshToken: rtok, &li.IDToken: idt,
+	} {
+		if src != nil {
+			*dst = *src
+		}
+	}
+	return &li, nil
 }
 
 func (s *Service) upsertLinkedIdentity(ctx context.Context, li *LinkedIdentity) error {
-	// INSERT ... ON CONFLICT ...
-	return nil
+	_, err := s.db.Exec(ctx, `
+		INSERT INTO linked_identities (user_id, provider, provider_id, email, access_token, refresh_token, id_token, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+		ON CONFLICT (user_id, provider) DO UPDATE
+		SET provider_id = EXCLUDED.provider_id, email = EXCLUDED.email,
+		    access_token = EXCLUDED.access_token, refresh_token = EXCLUDED.refresh_token,
+		    id_token = EXCLUDED.id_token, updated_at = NOW()
+	`, li.UserID, li.Provider, li.ProviderID, li.Email, li.AccessToken, li.RefreshToken, li.IDToken)
+	return err
 }
 
 func (s *Service) deleteLinkedIdentity(ctx context.Context, userID uuid.UUID, provider string) error {
-	// DELETE FROM linked_identities WHERE user_id = ... AND provider = ...
-	return nil
+	_, err := s.db.Exec(ctx,
+		`DELETE FROM linked_identities WHERE user_id = $1 AND provider = $2`, userID, provider)
+	return err
 }
 
 // GenerateVAPIDKeys generates a new VAPID key pair for Web Push

@@ -124,7 +124,7 @@ func (h *Handler) LoginWithPassword(c *gin.Context) {
 		return
 	}
 
-	refreshToken, err := h.service.generateAndStoreRefreshToken(c.Request.Context(), user, c.Request.UserAgent(), c.ClientIP())
+	refreshToken, err := h.service.generateAndStoreRefreshToken(c.Request.Context(), user, sessionID, c.Request.UserAgent(), c.ClientIP())
 	if err != nil {
 		h.logger.Error().Err(err).Msg("Refresh token generation failed")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "token generation failed"})
@@ -204,7 +204,7 @@ func (h *Handler) HandleCallback(c *gin.Context) {
 		return
 	}
 
-	refreshToken, err := h.service.generateAndStoreRefreshToken(c.Request.Context(), user, c.Request.UserAgent(), c.ClientIP())
+	refreshToken, err := h.service.generateAndStoreRefreshToken(c.Request.Context(), user, sessionID, c.Request.UserAgent(), c.ClientIP())
 	if err != nil {
 		h.logger.Error().Err(err).Msg("Refresh token generation failed")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "token generation failed"})
@@ -388,8 +388,8 @@ func (h *Handler) findOrCreateUser(ctx context.Context, providerName string, use
 }
 
 // generateAndStoreRefreshToken creates and stores a refresh token
-func (s *Service) generateAndStoreRefreshToken(ctx context.Context, user *User, ua, ip string) (string, error) {
-	_, rawToken, err := s.GenerateRefreshToken(ctx, user, ua, ip)
+func (s *Service) generateAndStoreRefreshToken(ctx context.Context, user *User, sessionID, ua, ip string) (string, error) {
+	_, rawToken, err := s.GenerateRefreshToken(ctx, user, sessionID, ua, ip)
 	if err != nil {
 		return "", err
 	}
@@ -421,4 +421,6 @@ type User struct {
 	AuthProvider string    `json:"-"`
 	AvatarURL    string    `json:"avatarUrl,omitempty"`
 	IsActive     bool      `json:"-"`
+	// Never serialized: this is the bcrypt hash used by VerifyPassword.
+	PasswordHash string `json:"-"`
 }

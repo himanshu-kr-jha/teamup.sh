@@ -58,7 +58,7 @@ test: test-unit test-integration
 
 test-unit:
 	@echo "Running unit tests..."
-	go test -v -race -coverprofile=coverage.out -covermode=atomic ./internal/... ./pkg/...
+	go test -p 1 -v -race -coverprofile=coverage.out -covermode=atomic ./internal/... ./pkg/...
 
 test-integration:
 	@echo "Running integration tests..."

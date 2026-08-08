@@ -84,15 +84,25 @@ export const authApi = {
   revokeSession: (sessionId: string) => api.delete(`/auth/sessions/${sessionId}`),
 };
 
+// The API wraps collections in a named key ({"channels": [...]}) while the
+// pages expect response.data to be the array itself, so an unwrapped response
+// made every list render crash with "x.map is not a function". getList
+// normalises that in one place and tolerates a null collection.
+async function getList<T = any>(url: string, key: string, params?: unknown) {
+  const res = await api.get(url, { params: params as any });
+  const value = res.data?.[key];
+  return { ...res, data: (Array.isArray(value) ? value : []) as T[] };
+}
+
 export const channelsApi = {
-  list: (params?: { orgId?: string }) => api.get('/channels', { params }),
+  list: (params?: { orgId?: string }) => getList('/channels', 'channels', params),
   create: (data: { name?: string; type: string; description?: string; teamId?: string }) => api.post('/channels', data),
   get: (id: string) => api.get(`/channels/${id}`),
   update: (id: string, data: Partial<{ name: string; description: string; isPrivate: boolean }>) => api.patch(`/channels/${id}`, data),
   delete: (id: string) => api.delete(`/channels/${id}`),
   addMember: (id: string, userId: string) => api.post(`/channels/${id}/members`, { userId }),
   removeMember: (id: string, userId: string) => api.delete(`/channels/${id}/members/${userId}`),
-  getMessages: (id: string, params?: { limit?: number; before?: string; after?: string }) => api.get(`/channels/${id}/messages`, { params }),
+  getMessages: (id: string, params?: { limit?: number; before?: string; after?: string }) => getList(`/channels/${id}/messages`, 'messages', params),
   sendMessage: (id: string, data: { content: string; tempId: string; replyTo?: string; attachments?: any[] }) => api.post(`/channels/${id}/messages`, data),
   editMessage: (messageId: string, content: string) => api.patch(`/messages/${messageId}`, { content }),
   deleteMessage: (messageId: string) => api.delete(`/messages/${messageId}`),
@@ -106,7 +116,7 @@ export const messagesApi = {
 };
 
 export const tasksApi = {
-  list: (params?: { projectId?: string; assigneeId?: string; status?: string; labelIds?: string[] }) => api.get('/tasks', { params }),
+  list: (params?: { projectId?: string; assigneeId?: string; status?: string; labelIds?: string[] }) => getList('/tasks', 'tasks', params),
   create: (data: { title: string; description?: string; projectId?: string; assigneeId?: string; priority?: string; taskType?: string; dueDate?: string; labels?: string[] }) => api.post('/tasks', data),
   get: (id: string) => api.get(`/tasks/${id}`),
   update: (id: string, data: Partial<{ title: string; description: string; status: string; priority: string; assigneeId: string; dueDate: string; storyPoints: number }>) => api.patch(`/tasks/${id}`, data),
@@ -116,11 +126,11 @@ export const tasksApi = {
   removeLabel: (id: string, labelId: string) => api.delete(`/tasks/${id}/labels/${labelId}`),
   addWatcher: (id: string, userId: string) => api.post(`/tasks/${id}/watchers`, { userId }),
   removeWatcher: (id: string, userId: string) => api.delete(`/tasks/${id}/watchers/${userId}`),
-  getActivities: (id: string) => api.get(`/tasks/${id}/activities`),
+  getActivities: (id: string) => getList(`/tasks/${id}/activities`, 'activities'),
 };
 
 export const callsApi = {
-  list: (params?: { status?: string; channelId?: string }) => api.get('/calls', { params }),
+  list: (params?: { status?: string; channelId?: string }) => getList('/calls', 'calls', params),
   create: (data: { title?: string; channelId?: string; callType: 'video' | 'audio'; invitees?: string[] }) => api.post('/calls', data),
   get: (id: string) => api.get(`/calls/${id}`),
   getToken: (id: string) => api.post(`/calls/${id}/token`),
@@ -136,7 +146,7 @@ export const filesApi = {
 };
 
 export const notificationsApi = {
-  list: (params?: { unreadOnly?: boolean; limit?: number; offset?: number }) => api.get('/notifications', { params }),
+  list: (params?: { unreadOnly?: boolean; limit?: number; offset?: number }) => getList('/notifications', 'notifications', params),
   markRead: (id: string) => api.patch(`/notifications/${id}/read`),
   markAllRead: () => api.patch('/notifications/read-all'),
   archive: (id: string) => api.delete(`/notifications/${id}`),

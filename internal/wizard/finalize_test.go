@@ -61,10 +61,21 @@ func cleanupOrg(t *testing.T, pool *pgxpool.Pool, subdomain string) {
 	}
 }
 
+// FinalizeSetup enforces a single organization per instance, so these tests
+// need the disposable test database to actually be empty. Other packages seed
+// organizations of their own; run with -p 1 so they cannot overlap.
+func resetOrgs(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	if _, err := pool.Exec(context.Background(), `DELETE FROM organizations`); err != nil {
+		t.Fatalf("reset organizations: %v", err)
+	}
+}
+
 func TestFinalizeSetupCreatesOrgAdminAndRoles(t *testing.T) {
 	pool := testDB(t)
 	svc := &Service{db: pool}
 	ctx := context.Background()
+	resetOrgs(t, pool)
 
 	data := completeData()
 	data.OrgSubdomain = "finalize-creates"
@@ -143,6 +154,7 @@ func TestFinalizeSetupIsIdempotent(t *testing.T) {
 	pool := testDB(t)
 	svc := &Service{db: pool}
 	ctx := context.Background()
+	resetOrgs(t, pool)
 
 	data := completeData()
 	data.OrgSubdomain = "finalize-idempotent"
@@ -201,6 +213,7 @@ func TestFinalizeSetupRefusesASecondOrganization(t *testing.T) {
 	pool := testDB(t)
 	svc := &Service{db: pool}
 	ctx := context.Background()
+	resetOrgs(t, pool)
 
 	first := completeData()
 	first.OrgSubdomain = "race-first"
@@ -233,6 +246,7 @@ func TestIsSetupCompleteReflectsOrganizations(t *testing.T) {
 	pool := testDB(t)
 	svc := &Service{db: pool}
 	ctx := context.Background()
+	resetOrgs(t, pool)
 
 	data := completeData()
 	data.OrgSubdomain = "setup-complete-check"
