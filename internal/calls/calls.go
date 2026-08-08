@@ -94,6 +94,13 @@ func NewService(db *pgxpool.Pool, cfg Config) *Service {
 	return s
 }
 
+// SetLogger wires real logging. Left at the zero value every diagnostic in
+// this package was written to a nil writer and silently discarded — including
+// the fail-closed paths that swallow an error and deny access.
+func (s *Service) SetLogger(l zerolog.Logger) {
+	s.logger = l.With().Str("component", "calls").Logger()
+}
+
 func (s *Service) SetBroadcaster(b Broadcaster) {
 	s.broadcaster = b
 }

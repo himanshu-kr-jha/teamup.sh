@@ -69,6 +69,26 @@ func pathUUID(c *gin.Context, param string) (uuid.UUID, bool) {
 	return id, true
 }
 
+// requireChannelAdmin gates the operations that affect everyone in a channel —
+// renaming, archiving, and managing membership. Plain membership is not
+// enough: any member could otherwise archive a channel or remove its owner.
+func (h *Handler) requireChannelAdmin(c *gin.Context, cl caller, channelID uuid.UUID) bool {
+	if _, err := h.service.GetChannel(c.Request.Context(), cl.OrgID, channelID); err != nil {
+		httpx.Error(c, apperrors.ErrNotFound, "channel not found")
+		return false
+	}
+	if h.service.IsChannelAdmin(c.Request.Context(), channelID, cl.UserID) {
+		return true
+	}
+	// Organization admins can always administer a channel.
+	if auth.GetUserFromContext(c).HasAnyRole("owner", "admin") {
+		return true
+	}
+	httpx.Error(c, apperrors.New(apperrors.CodeForbidden,
+		"you need to be a channel administrator"), "access denied")
+	return false
+}
+
 // requireMembership keeps channel-scoped reads and writes to members. Public
 // channels are readable by anyone in the organization.
 func (h *Handler) requireMembership(c *gin.Context, cl caller, channelID uuid.UUID, writing bool) bool {
@@ -164,7 +184,7 @@ func (h *Handler) UpdateChannel(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if !h.requireMembership(c, cl, channelID, true) {
+	if !h.requireChannelAdmin(c, cl, channelID) {
 		return
 	}
 	var req struct {
@@ -194,7 +214,7 @@ func (h *Handler) DeleteChannel(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if !h.requireMembership(c, cl, channelID, true) {
+	if !h.requireChannelAdmin(c, cl, channelID) {
 		return
 	}
 	if err := h.service.ArchiveChannel(c.Request.Context(), cl.OrgID, channelID); err != nil {
@@ -213,7 +233,7 @@ func (h *Handler) AddMember(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if !h.requireMembership(c, cl, channelID, true) {
+	if !h.requireChannelAdmin(c, cl, channelID) {
 		return
 	}
 	var req struct {
@@ -249,9 +269,9 @@ func (h *Handler) RemoveMember(c *gin.Context) {
 	if !ok {
 		return
 	}
-	// Members may always remove themselves; removing anyone else needs
-	// membership of the channel.
-	if userID != cl.UserID && !h.requireMembership(c, cl, channelID, true) {
+	// Members may always remove themselves; removing anyone else is a channel
+	// administration action.
+	if userID != cl.UserID && !h.requireChannelAdmin(c, cl, channelID) {
 		return
 	}
 	if err := h.service.RemoveMember(c.Request.Context(), cl.OrgID, channelID, userID); err != nil {

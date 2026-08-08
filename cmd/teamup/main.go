@@ -351,6 +351,15 @@ func runServer(cmd *cobra.Command, args []string) error {
 	tasksService := tasks.NewService(dbPool)
 	wizardService := wizard.NewService(dbPool, redisClient, &authCfg, logger)
 
+	// Without this every service logs to a nil writer, so the fail-closed
+	// paths that deny access on error do so silently.
+	orgService.SetLogger(logger)
+	chatService.SetLogger(logger)
+	callsService.SetLogger(logger)
+	filesService.SetLogger(logger)
+	notificationsService.SetLogger(logger)
+	tasksService.SetLogger(logger)
+
 	// Create combined service for WebSocket hub
 	combinedService := &combinedService{
 		chatService:  chatService,
@@ -391,7 +400,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// The setup wizard generates and stores a VAPID keypair with the
 	// organization. Prefer it over the environment, otherwise an instance
 	// provisioned through the wizard has no working push keys at all.
-	loadStoredVAPIDKeys(ctx, orgService, notificationsService, logger)
+	vapidCtx, cancelVAPID := context.WithTimeout(context.Background(), 10*time.Second)
+	loadStoredVAPIDKeys(vapidCtx, orgService, notificationsService, logger)
+	cancelVAPID()
 
 	// Setup Gin router
 	if cfg.Environment == "production" {
@@ -715,7 +726,11 @@ func connectRedis(url string) (*redis.Client, error) {
 // the first organization is the instance's organization.
 func loadStoredVAPIDKeys(ctx context.Context, orgService *org.Service, notifier *notifications.Service, logger zerolog.Logger) {
 	complete, err := orgService.IsSetupComplete(ctx)
-	if err != nil || !complete {
+	if err != nil {
+		logger.Warn().Err(err).Msg("Could not check setup status for VAPID keys")
+		return
+	}
+	if !complete {
 		return
 	}
 

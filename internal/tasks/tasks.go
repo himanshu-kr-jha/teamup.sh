@@ -108,6 +108,13 @@ func NewService(db *pgxpool.Pool) *Service {
 	return &Service{db: db}
 }
 
+// SetLogger wires real logging. Left at the zero value every diagnostic in
+// this package was written to a nil writer and silently discarded — including
+// the fail-closed paths that swallow an error and deny access.
+func (s *Service) SetLogger(l zerolog.Logger) {
+	s.logger = l.With().Str("component", "tasks").Logger()
+}
+
 // taskColumns keeps the reporter and assignee names alongside the row so a
 // board can render without a lookup per card.
 const taskColumns = `
@@ -313,11 +320,96 @@ var updatableFields = map[string]string{
 	"parentTaskId": "parent_task_id",
 }
 
+// allowedStatuses and allowedPriorities mirror the binding tags on create.
+// PATCH takes a free-form map, so without these an update could set a status
+// no board column matches.
+var (
+	allowedStatuses   = map[string]bool{"todo": true, "in_progress": true, "in_review": true, "done": true, "blocked": true}
+	allowedPriorities = map[string]bool{"low": true, "medium": true, "high": true, "urgent": true}
+	allowedTaskTypes  = map[string]bool{"task": true, "bug": true, "story": true, "epic": true, "subtask": true}
+)
+
+// validateUpdates checks the values, not just the field names. The whitelist
+// alone let a caller write an assignee or parent task belonging to another
+// organization, which then leaked that user's name back through the board.
+func (s *Service) validateUpdates(ctx context.Context, orgID uuid.UUID, updates map[string]interface{}) error {
+	enum := func(field string, allowed map[string]bool) error {
+		raw, ok := updates[field]
+		if !ok {
+			return nil
+		}
+		value, isString := raw.(string)
+		if !isString || !allowed[value] {
+			return apperrors.New(apperrors.CodeBadRequest, "invalid "+field)
+		}
+		return nil
+	}
+	if err := enum("status", allowedStatuses); err != nil {
+		return err
+	}
+	if err := enum("priority", allowedPriorities); err != nil {
+		return err
+	}
+	if err := enum("taskType", allowedTaskTypes); err != nil {
+		return err
+	}
+
+	// Nullable foreign keys are global in the schema, so they have to be
+	// confined to this organization here.
+	if raw, ok := updates["assigneeId"]; ok && raw != nil {
+		id, err := parseUUIDValue(raw)
+		if err != nil {
+			return apperrors.New(apperrors.CodeBadRequest, "invalid assigneeId")
+		}
+		var exists bool
+		if err := s.db.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL)`,
+			id, orgID).Scan(&exists); err != nil {
+			return fmt.Errorf("check assignee: %w", err)
+		}
+		if !exists {
+			return apperrors.New(apperrors.CodeNotFound, "assignee not found in this organization")
+		}
+		updates["assigneeId"] = id
+	}
+	if raw, ok := updates["parentTaskId"]; ok && raw != nil {
+		id, err := parseUUIDValue(raw)
+		if err != nil {
+			return apperrors.New(apperrors.CodeBadRequest, "invalid parentTaskId")
+		}
+		var exists bool
+		if err := s.db.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL)`,
+			id, orgID).Scan(&exists); err != nil {
+			return fmt.Errorf("check parent task: %w", err)
+		}
+		if !exists {
+			return apperrors.New(apperrors.CodeNotFound, "parent task not found in this organization")
+		}
+		updates["parentTaskId"] = id
+	}
+	return nil
+}
+
+func parseUUIDValue(raw interface{}) (uuid.UUID, error) {
+	switch v := raw.(type) {
+	case string:
+		return uuid.Parse(v)
+	case uuid.UUID:
+		return v, nil
+	default:
+		return uuid.Nil, fmt.Errorf("not a uuid")
+	}
+}
+
 // UpdateTask applies a partial change and records one activity entry per field
 // that actually moved, so the task's history reflects what changed.
 func (s *Service) UpdateTask(ctx context.Context, orgID, id, actorID uuid.UUID, updates map[string]interface{}) (*Task, error) {
 	before, err := s.GetTask(ctx, orgID, id)
 	if err != nil {
+		return nil, err
+	}
+	if err := s.validateUpdates(ctx, orgID, updates); err != nil {
 		return nil, err
 	}
 
@@ -436,9 +528,18 @@ func (s *Service) DeleteTask(ctx context.Context, orgID, id uuid.UUID) error {
 	return nil
 }
 
+// AddComment writes the comment and its activity entry in one transaction:
+// splitting them left a committed comment with no history when the second
+// write failed, and returned an error for a comment that actually exists.
 func (s *Service) AddComment(ctx context.Context, orgID, taskID, userID uuid.UUID, content string) (*TaskComment, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
 	var c TaskComment
-	err := s.db.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO task_comments (id, task_id, user_id, content, created_at)
 		SELECT gen_random_uuid(), t.id, $2, $3, NOW()
 		FROM tasks t WHERE t.id = $1 AND t.org_id = $4 AND t.deleted_at IS NULL
@@ -452,11 +553,6 @@ func (s *Service) AddComment(ctx context.Context, orgID, taskID, userID uuid.UUI
 		return nil, fmt.Errorf("add comment: %w", err)
 	}
 
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
 	if err := recordActivity(ctx, tx, taskID, userID, "comment", "", content); err != nil {
 		return nil, err
 	}

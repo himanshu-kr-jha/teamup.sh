@@ -154,6 +154,13 @@ func NewService(db *pgxpool.Pool, redis *redis.Client) *Service {
 	}
 }
 
+// SetLogger wires real logging. Left at the zero value every diagnostic in
+// this package was written to a nil writer and silently discarded — including
+// the fail-closed paths that swallow an error and deny access.
+func (s *Service) SetLogger(l zerolog.Logger) {
+	s.logger = l.With().Str("component", "chat").Logger()
+}
+
 func (s *Service) SetBroadcaster(b Broadcaster) {
 	s.broadcaster = b
 }
@@ -353,9 +360,15 @@ func (s *Service) createMessage(ctx context.Context, msg *Message) error {
 	}
 
 	for _, a := range msg.Attachments {
+		// Scoped to the uploader and the channel's organization: keyed on
+		// object_key alone, a client could re-point another tenant's
+		// attachment row at their own message.
 		if _, err := s.db.Exec(ctx, `
-			UPDATE attachments SET ref_id = $1 WHERE object_key = $2
-		`, msg.ID.String(), a.ObjectKey); err != nil {
+			UPDATE attachments a SET ref_id = $1
+			FROM channels c
+			WHERE a.object_key = $2 AND a.uploaded_by = $3
+			  AND c.id = $4 AND a.org_id = c.org_id
+		`, msg.ID.String(), a.ObjectKey, msg.UserID, msg.ChannelID); err != nil {
 			return fmt.Errorf("link attachment: %w", err)
 		}
 	}
@@ -405,6 +418,21 @@ func (s *Service) getMessageOwner(ctx context.Context, id uuid.UUID) (uuid.UUID,
 	return owner, nil
 }
 
+// IsChannelAdmin reports whether the user owns or administers the channel.
+func (s *Service) IsChannelAdmin(ctx context.Context, channelID, userID uuid.UUID) bool {
+	var ok bool
+	err := s.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM channel_members
+			WHERE channel_id = $1 AND user_id = $2 AND role IN ('owner', 'admin'))
+	`, channelID, userID).Scan(&ok)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("channel admin check failed")
+		return false
+	}
+	return ok
+}
+
 // isChannelAdmin lets a channel owner or admin moderate someone else's
 // message.
 func (s *Service) isChannelAdmin(ctx context.Context, messageID, userID uuid.UUID) bool {
@@ -430,6 +458,9 @@ func (s *Service) updateLastRead(ctx context.Context, channelID, userID uuid.UUI
 		SET last_read_at = GREATEST(COALESCE(cm.last_read_at, 'epoch'::timestamptz), m.created_at)
 		FROM messages m
 		WHERE m.id = $3 AND cm.channel_id = $1 AND cm.user_id = $2
+		  -- Without this a message id from another channel could advance this
+		  -- channel's read marker, permanently zeroing the unread count.
+		  AND m.channel_id = cm.channel_id
 	`, channelID, userID, messageID)
 	if err != nil {
 		return fmt.Errorf("update last read: %w", err)

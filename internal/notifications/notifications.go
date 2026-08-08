@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
+	"io"
+	"net/http"
+	"sync"
 	"time"
 
 	"github.com/SherClockHolmes/webpush-go"
@@ -110,6 +112,13 @@ func NewService(db *pgxpool.Pool, redis *redis.Client, cfg Config) *Service {
 	}
 }
 
+// SetLogger wires real logging. Left at the zero value every diagnostic in
+// this package was written to a nil writer and silently discarded — including
+// the fail-closed paths that swallow an error and deny access.
+func (s *Service) SetLogger(l zerolog.Logger) {
+	s.logger = l.With().Str("component", "notifications").Logger()
+}
+
 // SaveSubscription stores a device's push endpoint. Re-subscribing from the
 // same device updates the existing row rather than accumulating duplicates —
 // browsers rotate keys and would otherwise leave dead endpoints behind.
@@ -158,13 +167,25 @@ func (s *Service) SendToUser(ctx context.Context, userID string, payload PushPay
 		return err
 	}
 
+	// Bounded and synchronous with respect to the caller's context: the old
+	// unbounded `go` per subscription leaked goroutines whenever the push
+	// service hung, with no way to cancel them.
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 8)
 	for _, sub := range subs {
-		go s.sendToSubscription(sub, payload)
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(sub PushSubscription) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			s.sendToSubscription(ctx, sub, payload)
+		}(sub)
 	}
+	wg.Wait()
 	return nil
 }
 
-func (s *Service) sendToSubscription(sub PushSubscription, payload PushPayload) {
+func (s *Service) sendToSubscription(ctx context.Context, sub PushSubscription, payload PushPayload) {
 	pushSub := &webpush.Subscription{
 		Endpoint: sub.Endpoint,
 		Keys: webpush.Keys{
@@ -173,19 +194,33 @@ func (s *Service) sendToSubscription(sub PushSubscription, payload PushPayload) 
 		},
 	}
 
-	body, _ := json.Marshal(payload)
-	_, err := webpush.SendNotification(body, pushSub, &webpush.Options{
+	body, err := json.Marshal(payload)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("encode push payload")
+		return
+	}
+
+	resp, err := webpush.SendNotification(body, pushSub, &webpush.Options{
 		VAPIDPublicKey:  s.cfg.VAPIDPublicKey,
 		VAPIDPrivateKey: s.cfg.VAPIDPrivateKey,
+		Subscriber:      s.cfg.VAPIDSubject,
 		TTL:             3600,
+		HTTPClient:      &http.Client{Timeout: 10 * time.Second},
 	})
 	if err != nil {
-		// Check if error is related to expired/gone subscription
-		errMsg := err.Error()
-		if strings.Contains(errMsg, "expired") || strings.Contains(errMsg, "gone") {
-			s.deleteSubscription(context.Background(), sub.ID)
-		}
+		s.logger.Warn().Err(err).Str("endpoint", sub.Endpoint).Msg("push delivery failed")
 		return
+	}
+	// The body has to be drained and closed or every push leaks a connection.
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+
+	// A dead endpoint answers 404/410 with no error, so checking only err
+	// meant expired subscriptions were never pruned.
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+		if err := s.deleteSubscription(ctx, sub.ID); err != nil {
+			s.logger.Warn().Err(err).Msg("could not prune expired push subscription")
+		}
 	}
 }
 

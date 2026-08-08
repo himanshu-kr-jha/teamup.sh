@@ -71,6 +71,13 @@ func NewService(db *pgxpool.Pool) *Service {
 	return &Service{db: db}
 }
 
+// SetLogger wires real logging. Left at the zero value every diagnostic in
+// this package was written to a nil writer and silently discarded — including
+// the fail-closed paths that swallow an error and deny access.
+func (s *Service) SetLogger(l zerolog.Logger) {
+	s.logger = l.With().Str("component", "org").Logger()
+}
+
 // ── Organizations ─────────────────────────────────────────────────────────
 
 func (s *Service) CreateOrganization(ctx context.Context, name, subdomain string, logoURL *string) (*Organization, error) {
@@ -349,9 +356,11 @@ func (s *Service) DeleteRole(ctx context.Context, orgID, roleID uuid.UUID) error
 	return nil
 }
 
-// AssignRole is idempotent, and refuses to cross organization boundaries: the
-// user and the role must belong to the same tenant.
-func (s *Service) AssignRole(ctx context.Context, userID, roleID, assignedBy uuid.UUID) error {
+// AssignRole is idempotent and confined to one organization: the caller's, the
+// target user's and the role's must all agree. Requiring only that the user and
+// role agree with each other let an admin of one tenant grant a role inside
+// another.
+func (s *Service) AssignRole(ctx context.Context, orgID, userID, roleID, assignedBy uuid.UUID) error {
 	var assigner any
 	if assignedBy != uuid.Nil {
 		assigner = assignedBy
@@ -360,18 +369,21 @@ func (s *Service) AssignRole(ctx context.Context, userID, roleID, assignedBy uui
 		INSERT INTO user_roles (user_id, role_id, assigned_by, assigned_at)
 		SELECT u.id, r.id, $3, NOW()
 		FROM users u JOIN roles r ON r.org_id = u.org_id
-		WHERE u.id = $1 AND r.id = $2 AND u.deleted_at IS NULL
+		WHERE u.id = $1 AND r.id = $2 AND u.org_id = $4 AND u.deleted_at IS NULL
 		ON CONFLICT (user_id, role_id) DO NOTHING
-	`, userID, roleID, assigner)
+	`, userID, roleID, assigner, orgID)
 	if err != nil {
 		return fmt.Errorf("assign role: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		// Either already assigned (fine) or the pair does not line up.
 		var exists bool
-		if err := s.db.QueryRow(ctx,
-			`SELECT EXISTS (SELECT 1 FROM user_roles WHERE user_id = $1 AND role_id = $2)`,
-			userID, roleID).Scan(&exists); err != nil {
+		if err := s.db.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM user_roles ur
+				JOIN users u ON u.id = ur.user_id
+				WHERE ur.user_id = $1 AND ur.role_id = $2 AND u.org_id = $3)`,
+			userID, roleID, orgID).Scan(&exists); err != nil {
 			return fmt.Errorf("verify role assignment: %w", err)
 		}
 		if !exists {
@@ -398,6 +410,13 @@ func (s *Service) RemoveRole(ctx context.Context, orgID, userID, roleID uuid.UUI
 // ── Teams ─────────────────────────────────────────────────────────────────
 
 func (s *Service) CreateTeam(ctx context.Context, orgID uuid.UUID, name, description string, parentID, managerID *uuid.UUID) (*Team, error) {
+	if err := s.requireSameOrgUser(ctx, orgID, managerID); err != nil {
+		return nil, err
+	}
+	if err := s.requireSameOrgTeam(ctx, orgID, parentID); err != nil {
+		return nil, err
+	}
+
 	var t Team
 	err := s.db.QueryRow(ctx, `
 		INSERT INTO teams (id, org_id, parent_id, name, description, manager_id, created_at, updated_at)
@@ -438,6 +457,9 @@ func (s *Service) ListTeams(ctx context.Context, orgID uuid.UUID) ([]Team, error
 }
 
 func (s *Service) UpdateTeam(ctx context.Context, orgID, teamID uuid.UUID, name, description *string, managerID *uuid.UUID) (*Team, error) {
+	if err := s.requireSameOrgUser(ctx, orgID, managerID); err != nil {
+		return nil, err
+	}
 	var t Team
 	err := s.db.QueryRow(ctx, `
 		UPDATE teams SET name = COALESCE($3, name), description = COALESCE($4, description),
@@ -464,6 +486,41 @@ func (s *Service) DeleteTeam(ctx context.Context, orgID, teamID uuid.UUID) error
 	}
 	if tag.RowsAffected() == 0 {
 		return apperrors.ErrNotFound
+	}
+	return nil
+}
+
+// requireSameOrgUser and requireSameOrgTeam guard the nullable foreign keys.
+// The database constraints are global, so without these a team could be
+// managed by — or nested under — a row belonging to another tenant.
+func (s *Service) requireSameOrgUser(ctx context.Context, orgID uuid.UUID, userID *uuid.UUID) error {
+	if userID == nil {
+		return nil
+	}
+	var ok bool
+	if err := s.db.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL)`,
+		*userID, orgID).Scan(&ok); err != nil {
+		return fmt.Errorf("check user organization: %w", err)
+	}
+	if !ok {
+		return apperrors.New(apperrors.CodeNotFound, "user not found in this organization")
+	}
+	return nil
+}
+
+func (s *Service) requireSameOrgTeam(ctx context.Context, orgID uuid.UUID, teamID *uuid.UUID) error {
+	if teamID == nil {
+		return nil
+	}
+	var ok bool
+	if err := s.db.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM teams WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL)`,
+		*teamID, orgID).Scan(&ok); err != nil {
+		return fmt.Errorf("check team organization: %w", err)
+	}
+	if !ok {
+		return apperrors.New(apperrors.CodeNotFound, "team not found in this organization")
 	}
 	return nil
 }

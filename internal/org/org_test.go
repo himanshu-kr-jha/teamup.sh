@@ -296,7 +296,7 @@ func TestAssignRoleIsIdempotentAndScoped(t *testing.T) {
 
 	adminRole := org.RoleIDs["admin"]
 	for i := 0; i < 2; i++ {
-		if err := svc.AssignRole(ctx, member, adminRole, org.OwnerID); err != nil {
+		if err := svc.AssignRole(ctx, org.ID, member, adminRole, org.OwnerID); err != nil {
 			t.Fatalf("assign (pass %d): %v", i, err)
 		}
 	}
@@ -310,8 +310,53 @@ func TestAssignRoleIsIdempotentAndScoped(t *testing.T) {
 	}
 
 	// A role belonging to another organization must not attach.
-	if err := svc.AssignRole(ctx, member, other.RoleIDs["admin"], org.OwnerID); err == nil {
+	if err := svc.AssignRole(ctx, org.ID, member, other.RoleIDs["admin"], org.OwnerID); err == nil {
 		t.Error("assigning a role from another organization must fail")
+	}
+}
+
+// The review found this reachable: an admin of one organization could grant a
+// role belonging to another, because only the user and role had to agree.
+func TestAssignRoleRefusesACrossOrganizationGrant(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+
+	attacker := testsupport.SeedOrg(t, pool)
+	victim := testsupport.SeedOrg(t, pool)
+
+	// Attacker's organization, victim's user and victim's role.
+	if err := svc.AssignRole(ctx, attacker.ID, victim.OwnerID, victim.RoleIDs["owner"], attacker.OwnerID); err == nil {
+		t.Fatal("granting a role inside another organization must be refused")
+	}
+
+	var granted int
+	if err := pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM user_roles WHERE user_id = $1 AND role_id = $2`,
+		victim.OwnerID, victim.RoleIDs["owner"]).Scan(&granted); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	// Only the seeded assignment; no extra row from the attacker.
+	if granted != 1 {
+		t.Errorf("expected the seeded assignment only, got %d", granted)
+	}
+}
+
+func TestTeamManagerMustBelongToTheOrganization(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedOrg(t, pool)
+
+	if _, err := svc.CreateTeam(ctx, org.ID, "Platform", "", nil, &other.OwnerID); err == nil {
+		t.Fatal("a manager from another organization must be refused")
+	}
+
+	team, err := svc.CreateTeam(ctx, org.ID, "Platform", "", nil, nil)
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	if _, err := svc.UpdateTeam(ctx, org.ID, team.ID, nil, nil, &other.OwnerID); err == nil {
+		t.Fatal("reassigning to a foreign manager must be refused")
 	}
 }
 
@@ -322,7 +367,7 @@ func TestRemoveRole(t *testing.T) {
 	member := testsupport.SeedUser(t, pool, org, "demote@example.test", "member")
 
 	adminRole := org.RoleIDs["admin"]
-	if err := svc.AssignRole(ctx, member, adminRole, org.OwnerID); err != nil {
+	if err := svc.AssignRole(ctx, org.ID, member, adminRole, org.OwnerID); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
 	if err := svc.RemoveRole(ctx, org.ID, member, adminRole); err != nil {

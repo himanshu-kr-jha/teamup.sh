@@ -281,6 +281,10 @@ func (h *Handler) DeleteRole(c *gin.Context) {
 }
 
 func (h *Handler) AssignRole(c *gin.Context) {
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
 	userID, ok := pathUUID(c, "id")
 	if !ok {
 		return
@@ -301,7 +305,7 @@ func (h *Handler) AssignRole(c *gin.Context) {
 	caller := auth.GetUserFromContext(c)
 	assigner, _ := uuid.Parse(caller.UserID)
 
-	if err := h.service.AssignRole(c.Request.Context(), userID, roleID, assigner); err != nil {
+	if err := h.service.AssignRole(c.Request.Context(), orgID, userID, roleID, assigner); err != nil {
 		httpx.Error(c, err, "failed to assign role")
 		return
 	}

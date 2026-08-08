@@ -92,17 +92,47 @@ func (h *Handler) GetCall(c *gin.Context) {
 	c.JSON(http.StatusOK, call)
 }
 
+// GetCallToken issues a LiveKit join grant. It previously signed a token for
+// the raw call id — which is not the room name — without loading the call or
+// checking that the caller belongs to the organization, so any authenticated
+// user could mint a grant for any UUID-shaped room.
 func (h *Handler) GetCallToken(c *gin.Context) {
-	id, _ := uuid.Parse(c.Param("id"))
 	user := auth.GetUserFromContext(c)
-
-	token, err := h.service.GetToken(c.Request.Context(), id.String(), user.UserID, user.Email)
+	orgID, err := uuid.Parse(user.OrgID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate token"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"token": token})
+	call, err := h.service.GetCall(c.Request.Context(), orgID, id)
+	if err != nil {
+		httpx.Error(c, err, "call not found")
+		return
+	}
+	if call.Status == "ended" {
+		c.JSON(http.StatusConflict, gin.H{"error": "this call has ended"})
+		return
+	}
+
+	token, err := h.service.GetToken(c.Request.Context(), call.RoomName, user.UserID, user.Email)
+	if err != nil {
+		httpx.Error(c, err, "failed to generate token")
+		return
+	}
+
+	// Issuing a join grant is the point at which someone actually joins.
+	if userID, err := uuid.Parse(user.UserID); err == nil {
+		if err := h.service.MarkParticipantJoined(c.Request.Context(), id, userID); err != nil {
+			h.service.logger.Warn().Err(err).Msg("could not record call attendance")
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"token": token, "roomName": call.RoomName})
 }
 
 func (h *Handler) StartRecording(c *gin.Context) {
@@ -146,7 +176,8 @@ func (h *Handler) StopRecording(c *gin.Context) {
 }
 
 func (h *Handler) EndCall(c *gin.Context) {
-	orgID, _ := uuid.Parse(auth.GetUserFromContext(c).OrgID)
+	user := auth.GetUserFromContext(c)
+	orgID, _ := uuid.Parse(user.OrgID)
 	id, _ := uuid.Parse(c.Param("id"))
 	call, err := h.service.GetCall(c.Request.Context(), orgID, id)
 	if err != nil {

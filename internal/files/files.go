@@ -35,6 +35,7 @@ type Service struct {
 	db         *pgxpool.Pool
 	cfg        Config
 	logger     zerolog.Logger
+	initErr    error
 }
 
 type UploadRequest struct {
@@ -67,15 +68,28 @@ type CompletedPart struct {
 }
 
 func NewService(cfg Config) *Service {
-	client, _ := minio.New(cfg.Endpoint, &minio.Options{
+	// A discarded error here left a nil client that panicked on first use;
+	// the service now reports the misconfiguration when it is asked to work.
+	client, err := minio.New(cfg.Endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
 		Secure: cfg.Secure,
 	})
+	if err != nil {
+		client = nil
+	}
 	return &Service{
 		client:     client,
 		bucketName: cfg.Bucket,
 		cfg:        cfg,
+		initErr:    err,
 	}
+}
+
+// SetLogger wires real logging. Left at the zero value every diagnostic in
+// this package was written to a nil writer and silently discarded — including
+// the fail-closed paths that swallow an error and deny access.
+func (s *Service) SetLogger(l zerolog.Logger) {
+	s.logger = l.With().Str("component", "files").Logger()
 }
 
 func (s *Service) SetDB(db *pgxpool.Pool) {
@@ -83,6 +97,9 @@ func (s *Service) SetDB(db *pgxpool.Pool) {
 }
 
 func (s *Service) GenerateUploadURL(ctx context.Context, req UploadRequest) (*UploadResponse, error) {
+	if s.client == nil {
+		return nil, apperrors.New(apperrors.CodeUnavailable, "object storage is not configured")
+	}
 	if err := s.validateAccess(ctx, req); err != nil {
 		return nil, err
 	}
@@ -93,26 +110,25 @@ func (s *Service) GenerateUploadURL(ctx context.Context, req UploadRequest) (*Up
 		contentType = mime.TypeByExtension(filepath.Ext(req.Filename))
 	}
 
-	// Single-part upload (< 50MB): presigned PUT
-	if req.Size < 50*1024*1024 {
-		url, err := s.client.PresignedPutObject(ctx, s.bucketName, objectKey, 15*time.Minute)
-		return &UploadResponse{
-			UploadURL: url.String(),
-			ObjectKey: objectKey,
-			ExpiresAt: time.Now().Add(15 * time.Minute),
-			Headers:   map[string]string{"Content-Type": contentType},
-		}, err
+	// Larger objects get a longer window; MinIO handles the multipart split
+	// internally behind a presigned PUT.
+	expiry := 15 * time.Minute
+	if req.Size >= 50*1024*1024 {
+		expiry = 2 * time.Hour
 	}
 
-	// Multipart upload (>= 50MB): use presigned PUT with longer expiry (MinIO v7 handles multipart internally for large objects)
-	// PresignedPutObject supports up to 5GB, MinIO handles multipart internally
-	url, err := s.client.PresignedPutObject(ctx, s.bucketName, objectKey, 2*time.Hour)
+	// The error has to be checked before touching the URL: minio-go returns a
+	// nil *url.URL alongside it, so calling String() first panics.
+	presigned, err := s.client.PresignedPutObject(ctx, s.bucketName, objectKey, expiry)
+	if err != nil {
+		return nil, fmt.Errorf("presign upload: %w", err)
+	}
 	return &UploadResponse{
-		UploadURL: url.String(),
+		UploadURL: presigned.String(),
 		ObjectKey: objectKey,
-		ExpiresAt: time.Now().Add(2 * time.Hour),
+		ExpiresAt: time.Now().Add(expiry),
 		Headers:   map[string]string{"Content-Type": contentType},
-	}, err
+	}, nil
 }
 
 func (s *Service) buildObjectKey(req UploadRequest) string {
@@ -132,6 +148,9 @@ func (s *Service) CompleteMultipartUpload(ctx context.Context, orgID, userID, ob
 }
 
 func (s *Service) GenerateDownloadURL(ctx context.Context, orgID, userID, objectKey, filename string, inline bool) (string, error) {
+	if s.client == nil {
+		return "", apperrors.New(apperrors.CodeUnavailable, "object storage is not configured")
+	}
 	if err := s.validateObjectAccess(ctx, orgID, userID, objectKey); err != nil {
 		return "", err
 	}
@@ -143,8 +162,11 @@ func (s *Service) GenerateDownloadURL(ctx context.Context, orgID, userID, object
 		reqParams.Set("response-content-disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	}
 
-	url, err := s.client.PresignedGetObject(ctx, s.bucketName, objectKey, 1*time.Hour, reqParams)
-	return url.String(), err
+	presigned, err := s.client.PresignedGetObject(ctx, s.bucketName, objectKey, 1*time.Hour, reqParams)
+	if err != nil {
+		return "", fmt.Errorf("presign download: %w", err)
+	}
+	return presigned.String(), nil
 }
 
 // Presigned URLs bypass this application once issued, so these two checks are

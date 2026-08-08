@@ -142,10 +142,10 @@ func (h *Handler) Subscribe(c *gin.Context) {
 		return
 	}
 
+	// SaveSubscription validates and parses these itself; MustParse here
+	// panicked on any request whose claims were incomplete.
 	sub := &PushSubscription{
 		ID:         uuid.New(),
-		UserID:     uuid.MustParse(user.UserID),
-		OrgID:      uuid.MustParse(user.OrgID),
 		Endpoint:   req.Endpoint,
 		P256DH:     req.P256DH,
 		Auth:       req.Auth,
@@ -154,15 +154,17 @@ func (h *Handler) Subscribe(c *gin.Context) {
 	}
 
 	if err := h.service.SaveSubscription(c.Request.Context(), user.UserID, user.OrgID, sub); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save subscription"})
+		httpx.Error(c, err, "failed to save subscription")
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "subscribed"})
 }
 
+// Unsubscribe used to report success without deleting anything, so revoking
+// push in the UI left the device receiving notifications indefinitely.
 func (h *Handler) Unsubscribe(c *gin.Context) {
-	_ = auth.GetUserFromContext(c)
+	user := auth.GetUserFromContext(c)
 
 	var req struct {
 		Endpoint string `json:"endpoint" binding:"required"`
@@ -172,6 +174,9 @@ func (h *Handler) Unsubscribe(c *gin.Context) {
 		return
 	}
 
-	// DELETE FROM push_subscriptions WHERE user_id = ... AND endpoint = ...
+	if err := h.service.DeleteSubscriptionByEndpoint(c.Request.Context(), user.UserID, req.Endpoint); err != nil {
+		httpx.Error(c, err, "failed to unsubscribe")
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "unsubscribed"})
 }
