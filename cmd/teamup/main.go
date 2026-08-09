@@ -28,6 +28,7 @@ import (
 	"github.com/teamup/teamup/internal/calls"
 	"github.com/teamup/teamup/internal/chat"
 	"github.com/teamup/teamup/internal/files"
+	"github.com/teamup/teamup/internal/mail"
 	"github.com/teamup/teamup/internal/notifications"
 	"github.com/teamup/teamup/internal/observability"
 	"github.com/teamup/teamup/internal/org"
@@ -391,6 +392,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 	notificationsService.SetBroadcaster(wsHub)
 	chatService.SetNotifier(notificationsService)
 	orgService.SetChannelEnroller(chatService)
+	// Outgoing mail reads its settings from the organization, which is where
+	// the setup wizard puts them.
+	mailService := mail.NewService(orgService, cfg.BaseURL, logger)
 	tasksService.SetNotifier(notificationsService)
 
 	// Auto-setup if configured. It gets its own deadline: ctx above carries the
@@ -473,7 +477,10 @@ func runServer(cmd *cobra.Command, args []string) error {
 		protected := api.Group("/")
 		protected.Use(authService.AuthMiddleware())
 		{
-			org.RegisterRoutes(protected, orgService)
+			org.RegisterRoutes(protected, orgService, func(h *org.Handler) {
+				h.SetMailer(mailService)
+				h.SetLogger(logger)
+			})
 			chat.RegisterRoutes(protected, chatService)
 			calls.RegisterRoutes(protected, callsService)
 			files.RegisterRoutes(protected, filesService)

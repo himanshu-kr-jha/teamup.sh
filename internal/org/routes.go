@@ -1,26 +1,51 @@
 package org
 
 import (
+	"context"
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 
 	"github.com/teamup/teamup/internal/auth"
 	"github.com/teamup/teamup/internal/httpx"
+	"github.com/teamup/teamup/internal/mail"
 	apperrors "github.com/teamup/teamup/pkg/errors"
 )
 
+// Mailer posts a message on the organization's behalf. An interface so the
+// handler can be built without one, which is what an installation with no mail
+// server amounts to.
+type Mailer interface {
+	Send(ctx context.Context, orgID uuid.UUID, msg mail.Message) error
+	WelcomeMessage(orgName, name, email, temporaryPassword string) mail.Message
+	Configured(ctx context.Context, orgID uuid.UUID) bool
+}
+
 type Handler struct {
 	service *Service
+	mailer  Mailer
+	logger  zerolog.Logger
 }
 
 func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
+// SetMailer wires outgoing mail. Without it nothing is posted and the
+// administrator passes credentials on themselves.
+func (h *Handler) SetMailer(m Mailer) { h.mailer = m }
+
+// SetLogger wires real logging for the paths that only warn.
+func (h *Handler) SetLogger(l zerolog.Logger) { h.logger = l }
+
+func RegisterRoutes(rg *gin.RouterGroup, service *Service, options ...func(*Handler)) {
 	h := NewHandler(service)
+	for _, option := range options {
+		option(h)
+	}
 
 	rg.GET("/org", h.GetOrganization)
 	rg.PATCH("/org", h.requireAdmin, h.UpdateOrganization)
@@ -147,18 +172,49 @@ func (h *Handler) AddMember(c *gin.Context) {
 		return
 	}
 
-	member, temporaryPassword, err := h.service.AddMember(c.Request.Context(), orgID, req.Name, req.Email, req.Role)
+	ctx := c.Request.Context()
+	member, temporaryPassword, err := h.service.AddMember(ctx, orgID, req.Name, req.Email, req.Role)
 	if err != nil {
 		httpx.Error(c, err, "failed to add member")
 		return
 	}
+
+	// Post them their details. Best effort and reported back either way: an
+	// installation with no mail server is a supported setup, and the password
+	// is on screen regardless.
+	emailed := h.sendWelcome(ctx, orgID, member, temporaryPassword)
 
 	// The only time this password is ever visible: it is stored hashed and
 	// cannot be recovered.
 	c.JSON(http.StatusCreated, gin.H{
 		"user":              member,
 		"temporaryPassword": temporaryPassword,
+		"emailed":           emailed,
 	})
+}
+
+// sendWelcome posts a new member their sign-in details, and says whether it
+// managed to. Never fails the request: the account exists either way, and the
+// administrator can pass the password on by hand.
+func (h *Handler) sendWelcome(ctx context.Context, orgID uuid.UUID, member *User, temporaryPassword string) bool {
+	if h.mailer == nil {
+		return false
+	}
+	organization, err := h.service.GetOrganization(ctx, orgID)
+	if err != nil {
+		h.logger.Warn().Err(err).Msg("could not load the organization to write a welcome email")
+		return false
+	}
+	msg := h.mailer.WelcomeMessage(organization.Name, member.Name, member.Email, temporaryPassword)
+	if err := h.mailer.Send(ctx, orgID, msg); err != nil {
+		if errors.Is(err, mail.ErrNotConfigured) {
+			h.logger.Info().Msg("no mail server configured; the new member's password was not posted")
+		} else {
+			h.logger.Warn().Err(err).Msg("could not post the new member's password")
+		}
+		return false
+	}
+	return true
 }
 
 func (h *Handler) GetUser(c *gin.Context) {

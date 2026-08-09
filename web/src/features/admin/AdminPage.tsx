@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Users, Shield, UsersRound, Trash2, Plus, Copy, UserPlus } from 'lucide-react';
+import { Users, Shield, UsersRound, Trash2, Plus, Copy, UserPlus, Download } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
@@ -71,7 +71,9 @@ function MembersTab({ isAdmin, currentUserId }: { isAdmin: boolean; currentUserI
   const queryClient = useQueryClient();
   const [assignFor, setAssignFor] = useState<any | null>(null);
   const [adding, setAdding] = useState(false);
-  const [newCredentials, setNewCredentials] = useState<{ email: string; password: string } | null>(null);
+  const [newCredentials, setNewCredentials] = useState<
+    { name: string; email: string; password: string; emailed: boolean } | null
+  >(null);
   const { statusOf } = usePresence();
 
   const { data: usersData, isLoading } = useQuery({ queryKey: ['users'], queryFn: () => orgApi.listUsers() });
@@ -202,7 +204,7 @@ function AddMemberDialog({
   open: boolean;
   roles: any[];
   onOpenChange: (open: boolean) => void;
-  onAdded: (credentials: { email: string; password: string }) => void;
+  onAdded: (credentials: { name: string; email: string; password: string; emailed: boolean }) => void;
 }) {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -231,7 +233,12 @@ function AddMemberDialog({
           email: email.trim(),
           role: role || undefined,
         });
-        const created = { email: email.trim(), password: res.data.temporaryPassword };
+        const created = {
+          name: name.trim(),
+          email: email.trim(),
+          password: res.data.temporaryPassword,
+          emailed: !!res.data.emailed,
+        };
         reset();
         onAdded(created);
       }}
@@ -279,10 +286,34 @@ function TemporaryPasswordDialog({
   credentials,
   onClose,
 }: {
-  credentials: { email: string; password: string } | null;
+  credentials: { name: string; email: string; password: string; emailed: boolean } | null;
   onClose: () => void;
 }) {
   const toast = useToast();
+
+  // A file the administrator can pass on directly. Built in the browser
+  // because this password exists nowhere else — it is hashed on the server and
+  // cannot be fetched again.
+  const downloadCredentials = () => {
+    if (!credentials) return;
+    const signIn = `${window.location.origin}/login`;
+    const rows = [
+      ['Name', 'Email', 'Temporary password', 'Sign in at'],
+      [credentials.name, credentials.email, credentials.password, signIn],
+    ];
+    const csv = rows
+      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','))
+      .join('\r\n');
+
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `teamup-${credentials.email.replace(/[^a-z0-9]+/gi, '-')}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <Dialog open={!!credentials} onOpenChange={(o) => !o && onClose()}>
@@ -290,8 +321,9 @@ function TemporaryPasswordDialog({
         <DialogHeader>
           <DialogTitle>Member added</DialogTitle>
           <DialogDescription>
-            Pass these on to {credentials?.email}. They will be asked to choose their
-            own password the first time they sign in.
+            {credentials?.emailed
+              ? `Sent to ${credentials?.email}. They will be asked to choose their own password the first time they sign in.`
+              : `Pass these on to ${credentials?.email}. They will be asked to choose their own password the first time they sign in.`}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-2">
@@ -316,10 +348,20 @@ function TemporaryPasswordDialog({
             </Button>
           </div>
           <p className="text-sm text-destructive">
-            This will not be shown again. Copy it before closing this dialog.
+            This will not be shown again. Copy it or download it before closing.
           </p>
+          {!credentials?.emailed && (
+            <p className="text-sm text-muted-foreground">
+              No email was sent — this installation has no mail server configured, so
+              you will need to pass these on yourself.
+            </p>
+          )}
         </div>
-        <DialogFooter>
+        <DialogFooter className="gap-2 sm:justify-between">
+          <Button variant="outline" onClick={downloadCredentials}>
+            <Download className="mr-2 h-4 w-4" />
+            Download as CSV
+          </Button>
           <Button onClick={onClose}>Done</Button>
         </DialogFooter>
       </DialogContent>

@@ -8,6 +8,7 @@ import { cn } from '@/shared/utils/cn';
 import { formatRelativeTime } from '@/shared/utils/cn';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { Tabs, TabsList, TabsTrigger } from '@/shared/components/ui/tabs';
+import { StandupView } from './StandupView';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
 import { tasksApi } from '@/shared/api/client';
 import { CreateTaskDialog } from './CreateTaskDialog';
@@ -51,7 +52,7 @@ export function TasksPage() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [viewMode, setViewMode] = useState<'list' | 'board'>('board');
   const [createOpen, setCreateOpen] = useState(false);
-  const [scope, setScope] = useState<'mine' | 'team' | 'all'>('mine');
+  const [scope, setScope] = useState<'mine' | 'team' | 'all' | 'standup'>('mine');
   const [teamId, setTeamId] = useState('all');
   const [assigneeId, setAssigneeId] = useState('all');
 
@@ -83,7 +84,8 @@ export function TasksPage() {
         status: statusFilter !== 'all' ? statusFilter : undefined,
         // 'all' is everything in the organization, which is what the board
         // showed before the subtabs existed; the server takes no scope for it.
-        scope: scope === 'all' ? undefined : scope,
+        // Standup fetches its own, grouped by person.
+        scope: scope === 'all' || scope === 'standup' ? undefined : scope,
         teamId: scope === 'team' && teamId !== 'all' ? teamId : undefined,
         assigneeId: scope === 'team' && assigneeId !== 'all' ? assigneeId : undefined,
       }),
@@ -121,10 +123,11 @@ export function TasksPage() {
       <div className="flex h-16 items-center justify-between px-4 md:px-6 border-b border-border">
         <div className="flex items-center gap-4">
           <h1 className="text-2xl font-bold">Tasks</h1>
-          <Tabs value={scope} onValueChange={(v) => setScope(v as 'mine' | 'team' | 'all')}>
+          <Tabs value={scope} onValueChange={(v) => setScope(v as typeof scope)}>
             <TabsList>
               <TabsTrigger value="mine">My tasks</TabsTrigger>
               {managesSomebody && <TabsTrigger value="team">Team tasks</TabsTrigger>}
+              {managesSomebody && <TabsTrigger value="standup">Standup</TabsTrigger>}
               <TabsTrigger value="all">All tasks</TabsTrigger>
             </TabsList>
           </Tabs>
@@ -164,7 +167,7 @@ export function TasksPage() {
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
-          {scope === 'team' && managedTeams.length > 1 && (
+          {(scope === 'team' || scope === 'standup') && managedTeams.length > 1 && (
             <Select value={teamId} onValueChange={(v) => { setTeamId(v); setAssigneeId('all'); }}>
               <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -175,7 +178,7 @@ export function TasksPage() {
               </SelectContent>
             </Select>
           )}
-          {scope === 'team' && (
+          {(scope === 'team' || scope === 'standup') && (
             <Select value={assigneeId} onValueChange={setAssigneeId}>
               <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
               <SelectContent>
@@ -192,7 +195,9 @@ export function TasksPage() {
 
       {/* Task Board */}
       <div className="flex-1 overflow-auto p-4 md:p-6">
-        {viewMode === 'board' ? (
+        {scope === 'standup' ? (
+          <StandupView teamId={teamId} assigneeId={assigneeId} />
+        ) : viewMode === 'board' ? (
           <div className="flex gap-4 h-full min-h-[calc(100vh-200px)]">
             {columns.map((column) => (
               <div key={column.id} className="flex flex-col w-72 flex-shrink-0">

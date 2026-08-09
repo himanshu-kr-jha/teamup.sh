@@ -91,10 +91,12 @@ export const orgApi = {
   update: (data: { name?: string; logoUrl?: string }) => api.patch('/org', data),
   listUsers: () => getList('/users', 'users'),
   addMember: (data: { name: string; email: string; role?: string }) =>
-    api.post<{ user: { id: string; name: string; email: string }; temporaryPassword: string }>(
-      '/users',
-      data
-    ),
+    api.post<{
+      user: { id: string; name: string; email: string };
+      temporaryPassword: string;
+      /** Whether the credentials were posted to them, or need passing on by hand. */
+      emailed: boolean;
+    }>('/users', data),
   getUser: (id: string) => api.get(`/users/${id}`),
   updateUser: (id: string, data: { name?: string; avatarUrl?: string }) => api.patch(`/users/${id}`, data),
   deactivateUser: (id: string) => api.delete(`/users/${id}`),
