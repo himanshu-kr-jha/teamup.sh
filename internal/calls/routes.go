@@ -225,7 +225,7 @@ func (h *Handler) DeclineCall(c *gin.Context) {
 				httpx.Error(c, err, "failed to end call")
 				return
 			}
-			go h.service.NoteIfMissed(context.WithoutCancel(ctx), id)
+			go h.service.NoteIfMissed(context.WithoutCancel(ctx), id, reason)
 		}
 	}
 
@@ -470,7 +470,7 @@ func (h *Handler) EndCall(c *gin.Context) {
 	}
 	// Hanging up on a call nobody ever picked up leaves a missed call behind,
 	// which is the only trace the other person gets if they were away.
-	go h.service.NoteIfMissed(context.WithoutCancel(c.Request.Context()), id)
+	go h.service.NoteIfMissed(context.WithoutCancel(c.Request.Context()), id, "no_answer")
 
 	c.JSON(http.StatusOK, gin.H{"message": "call ended"})
 }

@@ -770,7 +770,7 @@ func (s *Service) SetReachability(r Reachable) { s.reachable = r }
 // ChatRecorder writes a note into the conversation between two people. An
 // interface so calls does not depend on the chat package.
 type ChatRecorder interface {
-	RecordCallEvent(ctx context.Context, orgID, callerID, calleeID uuid.UUID, text string) error
+	RecordCallEvent(ctx context.Context, orgID, callerID, calleeID uuid.UUID, text string) (uuid.UUID, error)
 }
 
 // SetChatRecorder wires where a missed call is written down.
@@ -784,7 +784,7 @@ func (s *Service) SetChatRecorder(c ChatRecorder) { s.chat = c }
 // the conversation between exactly those two. A call to a real channel that
 // nobody joined is not a missed call — it is a meeting nobody came to, and does
 // not belong in anybody's private conversation.
-func (s *Service) NoteIfMissed(ctx context.Context, callID uuid.UUID) {
+func (s *Service) NoteIfMissed(ctx context.Context, callID uuid.UUID, reason string) {
 	if s.chat == nil {
 		return
 	}
@@ -829,10 +829,32 @@ func (s *Service) NoteIfMissed(ctx context.Context, callID uuid.UUID) {
 		return
 	}
 
-	if err := s.chat.RecordCallEvent(ctx, orgID, createdBy, callees[0],
-		"Missed call"); err != nil {
+	channelID, err := s.chat.RecordCallEvent(ctx, orgID, createdBy, callees[0], noteFor(reason))
+	if err != nil {
 		s.logger.Warn().Err(err).Msg("could not write a missed call into the conversation")
+		return
 	}
+
+	// Whoever was calling is put into that conversation. A call that did not
+	// happen almost always becomes a message, and making them go and find the
+	// person again is the step nobody wants to take.
+	if s.broadcaster != nil {
+		s.broadcaster.BroadcastToUser(createdBy.String(), protocol.NewMessage("call.missed", map[string]any{
+			"callId":    callID.String(),
+			"channelId": channelID.String(),
+			"reason":    reason,
+		}))
+	}
+}
+
+// noteFor is what the conversation says happened. Turning somebody down and
+// not being there are different things, and the person who was called knows
+// which they did.
+func noteFor(reason string) string {
+	if reason == "declined" {
+		return "Call declined"
+	}
+	return "Missed call"
 }
 
 func (s *Service) isReachable(userID string) bool {

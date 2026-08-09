@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Search, Filter, MoreVertical, Calendar, User, Loader2 } from 'lucide-react';
+import { Search, Filter, MoreVertical, Calendar, User, Loader2, Plus } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/shared/components/ui/dropdown-menu';
@@ -56,6 +56,10 @@ export function TasksPage() {
   const [scope, setScope] = useState<'mine' | 'team' | 'all' | 'standup'>('mine');
   const [teamId, setTeamId] = useState('all');
   const [assigneeId, setAssigneeId] = useState('all');
+  // Which column a phone is showing. Separate from the status filter, which is
+  // the wide screen's way of narrowing a board that shows every column at once.
+  const [phoneColumn, setPhoneColumn] = useState('todo');
+  const [searchOpen, setSearchOpen] = useState(false);
 
   // Only somebody who actually manages a team gets the team view.
   const { data: managedData } = useQuery({
@@ -118,15 +122,21 @@ export function TasksPage() {
     return <div className="flex h-full items-center justify-center"><Loader2 className="h-8 w-8 animate-spin" /></div>;
   }
 
+  const countIn = (status: string) => filteredTasks.filter((t) => t.status === status).length;
+  const onPhone = filteredTasks.filter((t) => t.status === phoneColumn);
+
   return (
-    <div className="flex h-full flex-col bg-background">
+    // min-h-0 all the way down, or the scrolling region grows to fit its
+    // contents instead of the screen and the whole page scrolls behind the
+    // header. On a phone that is the difference between one screen and four.
+    <div className="flex h-full min-h-0 flex-col bg-background">
       {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2 md:h-16 md:flex-nowrap md:py-0 md:px-6">
-        {/* On a phone the title and the tabs each get their own line; four tabs
-            do not fit beside a heading. */}
-        <div className="flex w-full min-w-0 flex-col gap-2 md:w-auto md:flex-row md:items-center md:gap-3">
-          <h1 className="text-xl font-bold md:text-2xl">Tasks</h1>
-          <Tabs value={scope} onValueChange={(v) => setScope(v as typeof scope)} className="min-w-0">
+      <div className="shrink-0 border-b border-border px-3 py-2 md:flex md:h-16 md:items-center md:justify-between md:gap-2 md:px-6 md:py-0">
+        <div className="flex min-w-0 items-center gap-2 md:gap-3">
+          {/* The heading goes on a phone: the navigation already says where you
+              are, and the row is worth more as tabs than as a label. */}
+          <h1 className="hidden text-xl font-bold md:block md:text-2xl">Tasks</h1>
+          <Tabs value={scope} onValueChange={(v) => setScope(v as typeof scope)} className="min-w-0 flex-1 md:flex-none">
             <TabsList className="w-full justify-start overflow-x-auto md:w-auto">
               <TabsTrigger value="mine">My tasks</TabsTrigger>
               {managesSomebody && <TabsTrigger value="team">Team tasks</TabsTrigger>}
@@ -134,7 +144,7 @@ export function TasksPage() {
               <TabsTrigger value="all">All tasks</TabsTrigger>
             </TabsList>
           </Tabs>
-          <div className="hidden sm:flex items-center gap-2">
+          <div className="hidden md:flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={() => setViewMode('list')}>
               <span className="h-4 w-4" /> List
             </Button>
@@ -142,9 +152,30 @@ export function TasksPage() {
               <span className="h-4 w-4" /> Board
             </Button>
           </div>
+
+          {/* Phone: searching and adding are icons, so they cost no row. */}
+          <Button
+            variant="ghost"
+            size="icon"
+            className="shrink-0 md:hidden"
+            aria-label="Search"
+            aria-pressed={searchOpen}
+            onClick={() => {
+              setSearchOpen((open) => {
+                if (open) setSearchQuery('');
+                return !open;
+              });
+            }}
+          >
+            <Search className="h-5 w-5" />
+          </Button>
+          <Button size="icon" className="shrink-0 md:hidden" aria-label="New task" onClick={() => setCreateOpen(true)}>
+            <Plus className="h-5 w-5" />
+          </Button>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="relative hidden sm:block">
+
+        <div className="mt-2 hidden flex-wrap items-center gap-2 md:mt-0 md:flex">
+          <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               placeholder="Search tasks..."
@@ -196,37 +227,119 @@ export function TasksPage() {
         </div>
       </div>
 
+      {/* Phone: search appears only when asked for, and the team filters only
+          when the chosen scope has any. Neither costs a row otherwise. */}
+      {searchOpen && (
+        <div className="shrink-0 border-b border-border px-3 py-2 md:hidden">
+          <Input
+            autoFocus
+            placeholder="Search tasks..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            aria-label="Search tasks"
+          />
+        </div>
+      )}
+      {(scope === 'team' || scope === 'standup') && (
+        <div className="flex shrink-0 gap-2 border-b border-border px-3 py-2 md:hidden">
+          {managedTeams.length > 1 && (
+            <Select value={teamId} onValueChange={(v) => { setTeamId(v); setAssigneeId('all'); }}>
+              <SelectTrigger className="h-9 min-w-0 flex-1"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All teams</SelectItem>
+                {managedTeams.map((t) => (
+                  <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          <Select value={assigneeId} onValueChange={setAssigneeId}>
+            <SelectTrigger className="h-9 min-w-0 flex-1"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Everyone</SelectItem>
+              {peopleInScope.map((m) => (
+                <SelectItem key={m.userId} value={m.userId}>{m.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+
+      {/* Phone: one column at a time, picked here. Four columns side by side on
+          a phone meant scrolling sideways to find a column and downwards to
+          read it, with the counts of the other three out of sight. */}
+      {scope !== 'standup' && (
+        <div className="flex shrink-0 gap-1 overflow-x-auto border-b border-border px-3 py-2 md:hidden">
+          {columns.map((column) => (
+            <button
+              key={column.id}
+              onClick={() => setPhoneColumn(column.id)}
+              aria-pressed={phoneColumn === column.id}
+              className={cn(
+                'flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs font-medium transition-colors',
+                phoneColumn === column.id
+                  ? 'bg-primary text-primary-foreground'
+                  : 'bg-muted text-muted-foreground'
+              )}
+            >
+              {column.title}
+              <span
+                className={cn(
+                  'rounded-full px-1.5 text-[11px]',
+                  phoneColumn === column.id ? 'bg-primary-foreground/20' : 'bg-background/70'
+                )}
+              >
+                {countIn(column.id)}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* Task Board */}
-      <div className="flex-1 overflow-auto p-4 md:p-6">
+      <div className="min-h-0 flex-1 overflow-y-auto p-3 md:overflow-auto md:p-6">
         {scope === 'standup' ? (
           <StandupView teamId={teamId} assigneeId={assigneeId} />
-        ) : viewMode === 'board' ? (
-          <div className="flex h-full min-h-[calc(100vh-220px)] snap-x snap-mandatory gap-4 overflow-x-auto pb-2">
-            {columns.map((column) => (
-              <div
-                key={column.id}
-                className="flex w-[85vw] max-w-xs flex-shrink-0 snap-start flex-col sm:w-72"
-              >
-                <div className={cn('rounded-t-lg px-3 py-2 text-sm font-medium', column.color)}>
-                  {column.title}
-                  <span className="ml-2 text-xs opacity-70">
-                    {filteredTasks.filter((t) => t.status === column.id).length}
-                  </span>
-                </div>
-                <div className={cn('flex-1 overflow-y-auto rounded-b-lg p-2 space-y-2', column.color + '/50')}>
-                  {filteredTasks.filter((t) => t.status === column.id).map((task) => (
-                    <TaskCard key={task.id} task={task} onUpdate={updateTaskMutation.mutate} />
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
         ) : (
-          <div className="space-y-4">
-            {filteredTasks.map((task) => (
-              <TaskCard key={task.id} task={task} onUpdate={updateTaskMutation.mutate} />
-            ))}
-          </div>
+          <>
+            {/* Phone */}
+            <div className="space-y-2 md:hidden">
+              {onPhone.length === 0 ? (
+                <p className="py-12 text-center text-sm text-muted-foreground">
+                  Nothing in {columns.find((c) => c.id === phoneColumn)?.title.toLowerCase()}.
+                </p>
+              ) : (
+                onPhone.map((task) => (
+                  <TaskCard key={task.id} task={task} onUpdate={updateTaskMutation.mutate} />
+                ))
+              )}
+            </div>
+
+            {/* Anything wider */}
+            {viewMode === 'board' ? (
+              <div className="hidden h-full gap-4 overflow-x-auto pb-2 md:flex">
+                {columns.map((column) => (
+                  <div key={column.id} className="flex w-72 min-h-0 flex-shrink-0 flex-col">
+                    <div className={cn('rounded-t-lg px-3 py-2 text-sm font-medium', column.color)}>
+                      {column.title}
+                      <span className="ml-2 text-xs opacity-70">{countIn(column.id)}</span>
+                    </div>
+                    <div className={cn('min-h-0 flex-1 overflow-y-auto rounded-b-lg p-2 space-y-2', column.color + '/50')}>
+                      {filteredTasks.filter((t) => t.status === column.id).map((task) => (
+                        <TaskCard key={task.id} task={task} onUpdate={updateTaskMutation.mutate} />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="hidden space-y-4 md:block">
+                {filteredTasks.map((task) => (
+                  <TaskCard key={task.id} task={task} onUpdate={updateTaskMutation.mutate} />
+                ))}
+              </div>
+            )}
+          </>
         )}
       </div>
 
@@ -236,8 +349,13 @@ export function TasksPage() {
 }
 
 function TaskCard({ task, onUpdate }: { task: Task; onUpdate: (data: { id: string; data: any }) => void }) {
+  // The footer used to be drawn whether or not it held anything, so a task with
+  // nobody on it and no date ended in an empty bordered strip — on a phone that
+  // is a row of the screen spent on nothing.
+  const hasFooter = !!(task.assigneeName || task.dueDate || task.projectName);
+
   return (
-    <div className="rounded-lg border border-border bg-card p-4 shadow-sm transition-shadow hover:shadow-md">
+    <div className="rounded-lg border border-border bg-card p-3 shadow-sm transition-shadow hover:shadow-md md:p-4">
       <div className="mb-2 flex items-start justify-between gap-2">
         {/* The card had no way into the task at all, so the detail page —
             comments, history, members — was unreachable from the board. */}
@@ -265,10 +383,12 @@ function TaskCard({ task, onUpdate }: { task: Task; onUpdate: (data: { id: strin
         </DropdownMenu>
       </div>
 
-      {task.description && <p className="text-sm text-muted-foreground mb-3 line-clamp-2">{task.description}</p>}
+      {task.description && <p className="mb-2 line-clamp-2 text-sm text-muted-foreground md:mb-3">{task.description}</p>}
 
-      <div className="flex flex-wrap items-center gap-2 mb-3">
-        <Badge variant="secondary" className={cn('text-xs', statusColors[task.status])}>
+      <div className={cn('flex flex-wrap items-center gap-2', hasFooter ? 'mb-2 md:mb-3' : '')}>
+        {/* The status is the column you are looking at, so on a phone repeating
+            it on every card says nothing. */}
+        <Badge variant="secondary" className={cn('hidden text-xs md:inline-flex', statusColors[task.status])}>
           {task.status.replace('_', ' ')}
         </Badge>
         <Badge variant="secondary" className={cn('text-xs', priorityColors[task.priority])}>
@@ -284,7 +404,8 @@ function TaskCard({ task, onUpdate }: { task: Task; onUpdate: (data: { id: strin
         ))}
       </div>
 
-      <div className="flex items-center justify-between pt-2 border-t border-border">
+      {hasFooter && (
+      <div className="flex items-center justify-between border-t border-border pt-2">
         <div className="flex items-center gap-2">
           {task.assigneeName && (
             <div className="flex items-center gap-1 text-xs text-muted-foreground">
@@ -303,6 +424,7 @@ function TaskCard({ task, onUpdate }: { task: Task; onUpdate: (data: { id: strin
           <span className="text-xs text-muted-foreground">{task.projectName}</span>
         )}
       </div>
+      )}
     </div>
   );
 }

@@ -689,9 +689,9 @@ type recordedEvents struct {
 	notes []string
 }
 
-func (r *recordedEvents) RecordCallEvent(_ context.Context, _, _, _ uuid.UUID, text string) error {
+func (r *recordedEvents) RecordCallEvent(_ context.Context, _, _, _ uuid.UUID, text string) (uuid.UUID, error) {
 	r.notes = append(r.notes, text)
-	return nil
+	return uuid.New(), nil
 }
 
 // A private call nobody picked up is the one case where the other person has
@@ -710,7 +710,7 @@ func TestAPrivateCallNobodyAnsweredIsWrittenIntoTheConversation(t *testing.T) {
 		t.Fatalf("create call: %v", err)
 	}
 
-	svc.NoteIfMissed(ctx, call.ID)
+	svc.NoteIfMissed(ctx, call.ID, "no_answer")
 	if len(recorder.notes) != 1 {
 		t.Fatalf("a missed call should leave a note, got %+v", recorder.notes)
 	}
@@ -724,7 +724,7 @@ func TestAPrivateCallNobodyAnsweredIsWrittenIntoTheConversation(t *testing.T) {
 	if err := svc.MarkAnswered(ctx, answered.ID); err != nil {
 		t.Fatalf("mark answered: %v", err)
 	}
-	svc.NoteIfMissed(ctx, answered.ID)
+	svc.NoteIfMissed(ctx, answered.ID, "no_answer")
 	if len(recorder.notes) != 1 {
 		t.Errorf("an answered call is not a missed one, got %+v", recorder.notes)
 	}
@@ -754,7 +754,7 @@ func TestAMissedCallFromADirectMessageIsStillNoted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create call: %v", err)
 	}
-	svc.NoteIfMissed(ctx, call.ID)
+	svc.NoteIfMissed(ctx, call.ID, "no_answer")
 	if len(recorder.notes) != 1 {
 		t.Fatalf("a call from a direct message that nobody answered is a missed call, got %+v", recorder.notes)
 	}
@@ -776,8 +776,30 @@ func TestAnUnansweredChannelCallIsNotAMissedCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create call: %v", err)
 	}
-	svc.NoteIfMissed(ctx, call.ID)
+	svc.NoteIfMissed(ctx, call.ID, "no_answer")
 	if len(recorder.notes) != 0 {
 		t.Errorf("a channel call should leave nothing in a private conversation, got %+v", recorder.notes)
+	}
+}
+
+// Turning somebody down and not being there are different things, and the
+// conversation should not describe one as the other.
+func TestADeclinedCallSaysSoRatherThanCallingItMissed(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedUser(t, pool, org, "declined-note@example.test", "member")
+
+	recorder := &recordedEvents{}
+	svc.SetChatRecorder(recorder)
+
+	call, err := svc.CreateCall(ctx, org.ID, org.OwnerID, nil, "video", nil, []string{other.String()})
+	if err != nil {
+		t.Fatalf("create call: %v", err)
+	}
+	svc.NoteIfMissed(ctx, call.ID, "declined")
+
+	if len(recorder.notes) != 1 || recorder.notes[0] != "Call declined" {
+		t.Errorf("a declined call should say so, got %+v", recorder.notes)
 	}
 }

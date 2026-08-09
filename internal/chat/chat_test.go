@@ -1481,13 +1481,19 @@ func TestAMissedCallIsWrittenIntoTheConversationAsAnEvent(t *testing.T) {
 	org := testsupport.SeedOrg(t, pool)
 	other := testsupport.SeedUser(t, pool, org, "was-away@example.test", "member")
 
-	if err := svc.RecordCallEvent(ctx, org.ID, org.OwnerID, other, "Missed call"); err != nil {
+	written, err := svc.RecordCallEvent(ctx, org.ID, org.OwnerID, other, "Missed call")
+	if err != nil {
 		t.Fatalf("record: %v", err)
 	}
 
 	dm, err := svc.OpenDirectMessage(ctx, org.ID, other, org.OwnerID)
 	if err != nil {
 		t.Fatalf("open the conversation: %v", err)
+	}
+	// The conversation it names is the one whoever called will be taken to, so
+	// it has to be the same one either of them would open by hand.
+	if written != dm.ID {
+		t.Errorf("the note went to %v but their conversation is %v", written, dm.ID)
 	}
 	history, err := svc.GetMessages(ctx, dm.ID, 10, nil)
 	if err != nil {

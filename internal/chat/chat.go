@@ -899,10 +899,13 @@ func (s *Service) OpenDirectMessage(ctx context.Context, orgID, userID, otherID 
 // Posted into their direct message, creating it if they have never spoken:
 // finding out you were called belongs where you would look anyway, not in a
 // separate list of calls nobody opens.
-func (s *Service) RecordCallEvent(ctx context.Context, orgID, callerID, calleeID uuid.UUID, text string) error {
+//
+// Returns the conversation it was written into, so whoever was calling can be
+// taken there — a call that did not happen usually turns into a message.
+func (s *Service) RecordCallEvent(ctx context.Context, orgID, callerID, calleeID uuid.UUID, text string) (uuid.UUID, error) {
 	dm, err := s.OpenDirectMessage(ctx, orgID, callerID, calleeID)
 	if err != nil {
-		return fmt.Errorf("find the conversation: %w", err)
+		return uuid.Nil, fmt.Errorf("find the conversation: %w", err)
 	}
 
 	msg := &Message{
@@ -915,14 +918,14 @@ func (s *Service) RecordCallEvent(ctx context.Context, orgID, callerID, calleeID
 		CreatedAt: time.Now(),
 	}
 	if err := s.createMessage(ctx, msg); err != nil {
-		return err
+		return uuid.Nil, err
 	}
 	if s.broadcaster != nil {
 		s.broadcaster.BroadcastToChannel(dm.ID.String(), protocol.NewMessage(
 			protocol.TypeChatMessage, protocol.ChatMessagePayload{Message: s.messageToData(msg)},
 		), "")
 	}
-	return nil
+	return dm.ID, nil
 }
 
 // EnrolInOpenChannels puts a user into every public and announcement channel

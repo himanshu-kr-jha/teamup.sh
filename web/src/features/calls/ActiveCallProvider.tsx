@@ -145,6 +145,17 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
     });
   }, [on, toast]);
 
+  // A call that did not happen almost always turns into a message, so whoever
+  // was calling is put into that conversation rather than left on an empty
+  // call page to go and find the person again.
+  useEffect(() => {
+    return on('call.missed', (msg) => {
+      const payload = msg.payload as any;
+      if (!payload?.channelId) return;
+      navigate(`/chat/${payload.channelId}`);
+    });
+  }, [on, navigate]);
+
   // Whether the phone at the other end is actually ringing. The server says so
   // when the call goes out and again if they come online while it is still
   // going, which is the difference between "calling" and "ringing".
