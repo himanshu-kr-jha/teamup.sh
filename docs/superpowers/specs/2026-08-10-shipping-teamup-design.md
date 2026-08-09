@@ -143,8 +143,8 @@ alongside the Redis fan-out, when the values it advertises can be honoured.
 ### Compose, no repo clone
 
 ```
-curl -fsSLO https://github.com/<owner>/teamup/releases/latest/download/compose.yml
-curl -fsSL  https://github.com/<owner>/teamup/releases/latest/download/gen-env.sh | sh -s teamup.acme.com
+curl -fsSLO https://github.com/himanshu-kr-jha/teamup.sh/releases/latest/download/compose.yml
+curl -fsSL  https://github.com/himanshu-kr-jha/teamup.sh/releases/latest/download/gen-env.sh | sh -s teamup.acme.com
 docker compose up -d
 ```
 
@@ -202,16 +202,16 @@ autocert replaces it.
 
 ## CI/CD
 
-Assumes GitHub Actions and GHCR, consistent with the `ghcr.io` references
-already in the repository. No git remote is currently configured; this assumption
-must be confirmed before the workflows are written.
+GitHub Actions and GHCR, against `himanshu-kr-jha/teamup.sh`. This was an
+assumption when the design was written — no git remote was configured then — and
+has since been confirmed.
 
 - **`ci.yml`** (push, pull request): `golangci-lint`; `go test -race` with a
   Postgres service container wired to the existing `TEAMUP_TEST_DATABASE_URL`
   contract; frontend lint and build; and `docker build` without push. The last
   step is what makes the clean-clone build failure impossible to reintroduce.
 - **`release.yml`** (tag `v*`): multi-arch buildx to
-  `ghcr.io/<owner>/teamup:{version,latest}` for amd64 and arm64; static linux
+  `ghcr.io/himanshu-kr-jha/teamup.sh:{version,latest}` for amd64 and arm64; static linux
   amd64 and arm64 binaries, `compose.yml` and `gen-env.sh` attached to the
   GitHub Release.
 

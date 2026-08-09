@@ -1202,7 +1202,7 @@ services:
   # them in production at all: the entrypoint went straight to `server`, so a
   # fresh deployment came up against an empty database.
   teamup-migrate:
-    image: ghcr.io/${GITHUB_REPOSITORY:-teamup/teamup}:${TEAMUP_VERSION:-latest}
+    image: ghcr.io/${GITHUB_REPOSITORY:-himanshu-kr-jha/teamup.sh}:${TEAMUP_VERSION:-latest}
     command: ["migrate", "up"]
     environment:
       TEAMUP_DATABASE_URL: postgres://teamup:${POSTGRES_PASSWORD}@postgres:5432/teamup?sslmode=disable
@@ -1220,7 +1220,7 @@ services:
     restart: "no"
 
   teamup:
-    image: ghcr.io/${GITHUB_REPOSITORY:-teamup/teamup}:${TEAMUP_VERSION:-latest}
+    image: ghcr.io/${GITHUB_REPOSITORY:-himanshu-kr-jha/teamup.sh}:${TEAMUP_VERSION:-latest}
     ports:
       - "80:80"
       - "443:443"
@@ -1786,9 +1786,9 @@ There is no `.github/` at all, and every compose file and the chart referenced `
 
 **Interfaces:**
 - Consumes: the Dockerfile from Task 1, `scripts/gen-env.sh` from Task 7, `docker-compose.prod.yml` from Task 6.
-- Produces: `ghcr.io/<owner>/teamup:{version,latest}` and release assets.
+- Produces: `ghcr.io/himanshu-kr-jha/teamup.sh:{version,latest}` and release assets.
 
-> **Assumption to confirm before starting:** no git remote is configured. This assumes GitHub and GHCR, consistent with the `ghcr.io` references already in the repository. If the project lands elsewhere, both files change and nothing else does.
+> Targets GitHub Actions and GHCR at `himanshu-kr-jha/teamup.sh`. This was an unconfirmed assumption when the plan was written, because no git remote existed then; it has since been confirmed and the image path is settled.
 
 - [ ] **Step 1: Write `.github/workflows/ci.yml`**
 
@@ -2022,7 +2022,7 @@ jobs:
           context: .
           push: false
           load: true
-          tags: ghcr.io/teamup/teamup:latest
+          tags: ghcr.io/himanshu-kr-jha/teamup.sh:latest
           cache-from: type=gha
 
       # No TEAMUP_DOMAIN: CI has no public hostname, so the server stays on
@@ -2124,7 +2124,7 @@ Expected: `YAML OK`.
 - [ ] **Step 4: Run the equivalent locally before relying on CI**
 
 ```bash
-docker build -t ghcr.io/teamup/teamup:latest .
+docker build -t ghcr.io/himanshu-kr-jha/teamup.sh:latest .
 cp .env .env.local.bak 2>/dev/null || true
 # write the same test .env as the workflow, then:
 docker compose -f docker-compose.prod.yml up -d postgres redis minio livekit
@@ -2167,8 +2167,8 @@ Restructure the rest into four paths, in this order:
 2. **On your own network** — `./start.sh --lan`, with the existing explanation of what will not work and why.
 3. **On a server, with Docker** — the three commands from the spec:
    ```bash
-   curl -fsSLO https://github.com/<owner>/teamup/releases/latest/download/docker-compose.prod.yml
-   curl -fsSL  https://github.com/<owner>/teamup/releases/latest/download/gen-env.sh | sh -s teamup.acme.com
+   curl -fsSLO https://github.com/himanshu-kr-jha/teamup.sh/releases/latest/download/docker-compose.prod.yml
+   curl -fsSL  https://github.com/himanshu-kr-jha/teamup.sh/releases/latest/download/gen-env.sh | sh -s teamup.acme.com
    docker compose -f docker-compose.prod.yml up -d
    ```
    Prerequisites: a DNS A record for the domain pointing at the machine, and open ports 80, 443, TCP 7881 and UDP 50000–60000. State that ports 80 and 443 must be reachable *before* first start or the certificate cannot be issued.
@@ -2200,8 +2200,8 @@ Delete the "**A note on the current state:**" paragraph in the Deploying section
 The short version, on a server with a domain pointed at it:
 
 ```bash
-curl -fsSLO https://github.com/<owner>/teamup/releases/latest/download/docker-compose.prod.yml
-curl -fsSL  https://github.com/<owner>/teamup/releases/latest/download/gen-env.sh | sh -s teamup.example.com
+curl -fsSLO https://github.com/himanshu-kr-jha/teamup.sh/releases/latest/download/docker-compose.prod.yml
+curl -fsSL  https://github.com/himanshu-kr-jha/teamup.sh/releases/latest/download/gen-env.sh | sh -s teamup.example.com
 docker compose -f docker-compose.prod.yml up -d
 ```
 

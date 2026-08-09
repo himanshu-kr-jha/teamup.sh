@@ -521,7 +521,7 @@ helm/teamup/
 **values.yaml (key sections):**
 ```yaml
 image:
-  repository: ghcr.io/yourorg/teamup
+  repository: ghcr.io/himanshu-kr-jha/teamup.sh
   tag: "1.0.0"
   pullPolicy: IfNotPresent
 

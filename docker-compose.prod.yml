@@ -106,7 +106,7 @@ services:
           memory: 1G
 
   teamup:
-    image: ghcr.io/yourorg/teamup:latest
+    image: ghcr.io/himanshu-kr-jha/teamup.sh:latest
     ports:
       - "8080:8080"
     environment:
