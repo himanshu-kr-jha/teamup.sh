@@ -916,3 +916,135 @@ func TestSomebodyWhoManagesNothingIsOfferedOnlyThemselves(t *testing.T) {
 		t.Errorf("expected only themselves, got %+v", people)
 	}
 }
+
+// Being added to a task is being asked to pay attention to it, so it belongs
+// in your list — not only in the notification that told you about it.
+func TestATaskYouWereAddedToIsInYourList(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	me := testsupport.SeedUser(t, pool, org, "added-to-task@example.test", "member")
+	somebodyElse := testsupport.SeedUser(t, pool, org, "owner-of-task@example.test", "member")
+
+	task, err := svc.CreateTask(ctx, org.ID, org.OwnerID, "Not mine at all", "", "", "", "",
+		nil, &somebodyElse, nil, nil, nil, true)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	before, err := svc.ListTasks(ctx, org.ID, Filters{Involving: &me})
+	if err != nil {
+		t.Fatalf("list before: %v", err)
+	}
+	if len(before) != 0 {
+		t.Fatalf("nothing should be mine yet: %+v", titlesOf(before))
+	}
+
+	if err := svc.AddWatcher(ctx, org.ID, task.ID, me); err != nil {
+		t.Fatalf("add to task: %v", err)
+	}
+
+	after, err := svc.ListTasks(ctx, org.ID, Filters{Involving: &me})
+	if err != nil {
+		t.Fatalf("list after: %v", err)
+	}
+	if len(after) != 1 || after[0].ID != task.ID {
+		t.Errorf("a task I was added to is missing: %+v", titlesOf(after))
+	}
+}
+
+// And taking somebody off it takes it back out of their list.
+func TestBeingRemovedFromATaskTakesItOutOfYourList(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	me := testsupport.SeedUser(t, pool, org, "removed-from-task@example.test", "member")
+
+	task, err := svc.CreateTask(ctx, org.ID, org.OwnerID, "Briefly mine", "", "", "", "",
+		nil, nil, nil, nil, nil, true)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := svc.AddWatcher(ctx, org.ID, task.ID, me); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if err := svc.RemoveWatcher(ctx, org.ID, task.ID, me); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+
+	mine, err := svc.ListTasks(ctx, org.ID, Filters{Involving: &me})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(mine) != 0 {
+		t.Errorf("it should have gone: %+v", titlesOf(mine))
+	}
+}
+
+// A task must not appear twice because you are both assigned to it and on it.
+func TestATaskYouAreBothAssignedAndAddedToAppearsOnce(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	me := testsupport.SeedUser(t, pool, org, "both@example.test", "member")
+
+	task, err := svc.CreateTask(ctx, org.ID, org.OwnerID, "Doubly mine", "", "", "", "",
+		nil, &me, nil, nil, nil, true)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := svc.AddWatcher(ctx, org.ID, task.ID, me); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	mine, err := svc.ListTasks(ctx, org.ID, Filters{Involving: &me})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(mine) != 1 {
+		t.Errorf("listed %d times: %+v", len(mine), titlesOf(mine))
+	}
+}
+
+// Adding and removing have to be symmetric: somebody who can put you on a task
+// can take you off it again, or a mistake could only be undone by its victim.
+func TestWhoeverCanAddYouToATaskCanTakeYouOff(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	manager := testsupport.SeedUser(t, pool, org, "sym-mgr@example.test", "manager")
+	report := testsupport.SeedUser(t, pool, org, "sym-report@example.test", "member")
+	testsupport.SeedTeam(t, pool, org, "photon", &manager, nil, report)
+
+	task, err := svc.CreateTask(ctx, org.ID, manager, "Shared", "", "", "", "",
+		nil, nil, nil, nil, nil, false)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// The manager may put their report on it...
+	mayAdd, err := svc.MayAssign(ctx, org.ID, manager, report, false)
+	if err != nil {
+		t.Fatalf("may assign: %v", err)
+	}
+	if !mayAdd {
+		t.Fatal("a manager should be able to put their report on a task")
+	}
+	if err := svc.AddWatcher(ctx, org.ID, task.ID, report); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	// ...and the same test governs taking them off again.
+	if err := svc.RemoveWatcher(ctx, org.ID, task.ID, report); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	watchers, err := svc.ListWatchers(ctx, org.ID, task.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, w := range watchers {
+		if w.UserID == report {
+			t.Error("they are still on the task")
+		}
+	}
+}

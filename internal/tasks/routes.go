@@ -501,11 +501,26 @@ func (h *Handler) RemoveWatcher(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// Symmetric with adding: you can always take yourself off, and you can take
+	// off anybody you could have put on. Leaving this self-service only meant
+	// somebody could be added to a task and then nobody but themselves could
+	// undo it.
+	ctx := c.Request.Context()
 	if userID != cl.UserID {
-		c.JSON(http.StatusForbidden, gin.H{"error": "you can only stop following for yourself"})
-		return
+		mayRemove, err := h.service.MayAssign(ctx, cl.OrgID, cl.UserID, userID,
+			auth.GetUserFromContext(c).HasAnyRole("owner", "admin"))
+		if err != nil {
+			httpx.Error(c, err, "failed to remove watcher")
+			return
+		}
+		if !mayRemove {
+			c.JSON(http.StatusForbidden, gin.H{
+				"error": "you can only take yourself off, or somebody on a team you manage",
+			})
+			return
+		}
 	}
-	if err := h.service.RemoveWatcher(c.Request.Context(), cl.OrgID, id, userID); err != nil {
+	if err := h.service.RemoveWatcher(ctx, cl.OrgID, id, userID); err != nil {
 		httpx.Error(c, err, "failed to remove watcher")
 		return
 	}

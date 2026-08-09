@@ -35,7 +35,7 @@ import { useAuth } from '@/features/auth/AuthProvider';
 import { useUIStore } from '@/shared/store';
 import { CreateChannelDialog } from './CreateChannelDialog';
 import { usePresence, type PresenceStatus } from '@/features/presence/usePresence';
-import { PresenceDot } from '@/features/presence/PresenceDot';
+import { PresenceDot, presenceLabel } from '@/features/presence/PresenceDot';
 
 interface Message {
   id: string;
@@ -268,7 +268,10 @@ export function ChatPage() {
   const channelSubtitle = !channelId
     ? 'Pick a conversation to start reading'
     : activeChannel?.type === 'dm'
-      ? 'Direct message'
+      ? presenceLabel(
+          statusOf(activeChannel?.counterpartId),
+          personOf(activeChannel?.counterpartId)?.note
+        )
       : activeChannel?.type === 'announcement'
         ? 'Announcements — only administrators can post'
         : `${activeChannel?.memberCount ?? 0} ${activeChannel?.memberCount === 1 ? 'member' : 'members'}`;
@@ -346,7 +349,17 @@ export function ChatPage() {
                             )}
                           >
                             {channel.type === 'dm' ? (
-                              <User className="h-4 w-4 shrink-0 opacity-70" />
+                              // A conversation with a person shows whether that
+                              // person is around, which is the thing you want to
+                              // know before starting to type.
+                              <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
+                                <User className="h-4 w-4 opacity-70" />
+                                <PresenceDot
+                                  status={statusOf(channel.counterpartId)}
+                                  note={personOf(channel.counterpartId)?.note}
+                                  className="absolute -bottom-1 -right-1 h-2 w-2"
+                                />
+                              </span>
                             ) : channel.type === 'announcement' ? (
                               <Megaphone className="h-4 w-4 shrink-0 opacity-70" />
                             ) : (
@@ -403,8 +416,14 @@ export function ChatPage() {
                 )}
               </div>
               <div className="min-w-0">
-                <h2 className="truncate font-semibold leading-tight">
+                <h2 className="flex items-center gap-2 truncate font-semibold leading-tight">
                   {activeChannel?.name || (channelId ? 'Channel' : 'No channel selected')}
+                  {activeChannel?.type === 'dm' && (
+                    <PresenceDot
+                      status={statusOf(activeChannel?.counterpartId)}
+                      note={personOf(activeChannel?.counterpartId)?.note}
+                    />
+                  )}
                 </h2>
                 <p className="truncate text-sm text-muted-foreground">{channelSubtitle}</p>
               </div>

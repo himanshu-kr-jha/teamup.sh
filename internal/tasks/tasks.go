@@ -107,8 +107,10 @@ type Filters struct {
 	ManagedBy *uuid.UUID
 	// TeamID narrows further to a single one of those teams.
 	TeamID *uuid.UUID
-	// Involving narrows to this person's own work: assigned to them, or raised
-	// by them, so a task they created and have not handed out is still theirs.
+	// Involving narrows to this person's own work: assigned to them, raised by
+	// them, or a task they were put on. A task somebody adds you to is work you
+	// are expected to be across, so it belongs in your list rather than only in
+	// the notification that told you about it.
 	Involving *uuid.UUID
 }
 
@@ -177,7 +179,13 @@ func (s *Service) ListTasks(ctx context.Context, orgID uuid.UUID, f Filters) ([]
 	}
 	if f.Involving != nil {
 		args = append(args, *f.Involving)
-		where = append(where, fmt.Sprintf("(t.assignee_id = $%d OR t.reporter_id = $%d)", len(args), len(args)))
+		n := len(args)
+		where = append(where, fmt.Sprintf(`(
+			t.assignee_id = $%d
+			OR t.reporter_id = $%d
+			OR EXISTS (SELECT 1 FROM task_watchers tw
+			           WHERE tw.task_id = t.id AND tw.user_id = $%d)
+		)`, n, n, n))
 	}
 	if f.ManagedBy != nil {
 		// Walks down from every team this person manages, so a team lead who

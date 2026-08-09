@@ -140,8 +140,11 @@ type Channel struct {
 	MaxMembers  int        `json:"maxMembers"`
 	MemberCount int        `json:"memberCount"`
 	UnreadCount int        `json:"unreadCount"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	UpdatedAt   time.Time  `json:"updatedAt"`
+	// CounterpartID is the other person in a direct message, so their
+	// availability can be shown beside the conversation.
+	CounterpartID *uuid.UUID `json:"counterpartId,omitempty"`
+	CreatedAt     time.Time  `json:"createdAt"`
+	UpdatedAt     time.Time  `json:"updatedAt"`
 }
 
 type ChannelMember struct {
@@ -614,9 +617,12 @@ func (s *Service) ListChannels(ctx context.Context, orgID, userID uuid.UUID) ([]
 		            AND msg.user_id <> $2
 		            AND msg.created_at > COALESCE(cm.last_read_at, 'epoch'::timestamptz)),
 		       -- A direct message has no name of its own; each side sees the
-		       -- other person.
+		       -- other person, and needs their id to show their availability.
 		       (SELECT u.name FROM channel_members other
 		          JOIN users u ON u.id = other.user_id
+		          WHERE other.channel_id = c.id AND other.user_id <> $2
+		          LIMIT 1),
+		       (SELECT other.user_id FROM channel_members other
 		          WHERE other.channel_id = c.id AND other.user_id <> $2
 		          LIMIT 1)
 		FROM channels c
@@ -637,13 +643,18 @@ func (s *Service) ListChannels(ctx context.Context, orgID, userID uuid.UUID) ([]
 	for rows.Next() {
 		var c Channel
 		var counterpart *string
+		var counterpartID *uuid.UUID
 		if err := rows.Scan(&c.ID, &c.OrgID, &c.TeamID, &c.Name, &c.Type, &c.Description,
 			&c.CreatedBy, &c.IsArchived, &c.IsPrivate, &c.MaxMembers,
-			&c.CreatedAt, &c.UpdatedAt, &c.MemberCount, &c.UnreadCount, &counterpart); err != nil {
+			&c.CreatedAt, &c.UpdatedAt, &c.MemberCount, &c.UnreadCount,
+			&counterpart, &counterpartID); err != nil {
 			return nil, fmt.Errorf("scan channel: %w", err)
 		}
-		if c.Type == "dm" && counterpart != nil {
-			c.Name = counterpart
+		if c.Type == "dm" {
+			if counterpart != nil {
+				c.Name = counterpart
+			}
+			c.CounterpartID = counterpartID
 		}
 		channels = append(channels, c)
 	}

@@ -1405,3 +1405,69 @@ func TestADeletedMessageCannotBeEdited(t *testing.T) {
 		t.Error("a deleted message was edited back into existence")
 	}
 }
+
+// The conversation list shows the other person's availability, which needs
+// their id and not only their name.
+func TestADirectMessageCarriesTheOtherPersonsId(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedUser(t, pool, org, "counterpart@example.test", "member")
+
+	dm, err := svc.OpenDirectMessage(ctx, org.ID, org.OwnerID, other)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	mine, err := svc.ListChannels(ctx, org.ID, org.OwnerID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var found *Channel
+	for i := range mine {
+		if mine[i].ID == dm.ID {
+			found = &mine[i]
+		}
+	}
+	if found == nil {
+		t.Fatal("the conversation is missing")
+	}
+	if found.CounterpartID == nil || *found.CounterpartID != other {
+		t.Errorf("wrong counterpart: %+v", found.CounterpartID)
+	}
+
+	// And from their side it is the other way round.
+	theirs, err := svc.ListChannels(ctx, org.ID, other)
+	if err != nil {
+		t.Fatalf("list theirs: %v", err)
+	}
+	for _, c := range theirs {
+		if c.ID == dm.ID {
+			if c.CounterpartID == nil || *c.CounterpartID != org.OwnerID {
+				t.Errorf("their side points at the wrong person: %+v", c.CounterpartID)
+			}
+		}
+	}
+}
+
+// A channel is a room, not a person, so it has no counterpart.
+func TestAChannelHasNoCounterpart(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	name := "roomy"
+	ch, err := svc.CreateChannel(ctx, org.ID, org.OwnerID, &name, "public", nil, nil)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	channels, err := svc.ListChannels(ctx, org.ID, org.OwnerID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, c := range channels {
+		if c.ID == ch.ID && c.CounterpartID != nil {
+			t.Errorf("a channel should have no counterpart, got %v", c.CounterpartID)
+		}
+	}
+}
