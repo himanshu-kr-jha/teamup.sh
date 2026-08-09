@@ -10,11 +10,12 @@ import { cn } from '@/shared/utils/cn';
 import { PresenceDot } from './PresenceDot';
 import type { PresenceStatus } from './usePresence';
 
-/** What somebody can choose. In a call and offline are observed, not chosen. */
+/** What somebody can choose. Being in a call, and being signed out, are
+ *  observed rather than chosen — both surface through the states below. */
 const choices: { value: PresenceStatus; label: string; hint: string }[] = [
   { value: 'available', label: 'Available', hint: 'Around and happy to be interrupted' },
-  { value: 'busy', label: 'Busy', hint: 'Working on something; interrupt only if it matters' },
-  { value: 'away', label: 'Away', hint: 'Not at the desk for a while' },
+  { value: 'busy', label: 'Busy', hint: 'Head down, or in a call — interrupt only if it matters' },
+  { value: 'away', label: 'Away', hint: 'Not at the desk — how you appear when signed out too' },
   { value: 'on_leave', label: 'On leave', hint: 'Off for a day or more' },
 ];
 

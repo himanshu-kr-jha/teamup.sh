@@ -3,7 +3,20 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { presenceApi } from '@/shared/api/client';
 import { useWebSocket } from '@/features/websocket/WSProvider';
 
-export type PresenceStatus = 'available' | 'away' | 'busy' | 'in_call' | 'on_leave' | 'offline';
+/**
+ * What a colleague sees. Deliberately four states: somebody not connected is
+ * away, and somebody in a call is busy — the older names are kept only so a
+ * cached response still renders.
+ */
+export type PresenceStatus =
+  | 'available'
+  | 'away'
+  | 'busy'
+  | 'on_leave'
+  /** @deprecated the server sends busy instead */
+  | 'in_call'
+  /** @deprecated the server sends away instead */
+  | 'offline';
 
 export interface Person {
   userId: string;
@@ -45,7 +58,7 @@ export function usePresence() {
 
   return {
     statusOf: (userId?: string): PresenceStatus =>
-      (userId && people.get(userId)?.status) || 'offline',
+      (userId && people.get(userId)?.status) || 'away',
     personOf: (userId?: string): Person | undefined =>
       userId ? people.get(userId) : undefined,
     everybody: [...people.values()],

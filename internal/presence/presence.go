@@ -94,18 +94,25 @@ func (s *Service) SetInCall(userID, orgID string, inCall bool) error {
 }
 
 // Effective is what to show for somebody: what they chose, corrected by what
-// is actually true. Being in a call beats being "available"; being on leave
-// outranks everything, including being connected, because it is a statement
-// about the days ahead rather than this moment.
+// is actually true.
+//
+// The vocabulary is deliberately small — available, busy, away, on leave —
+// because a dot has to be readable at a glance. Somebody who is not connected
+// reads as away rather than offline: to a colleague those mean the same thing,
+// which is "not right now". Being in a call reads as busy for the same reason:
+// what matters is that they cannot talk, not why.
+//
+// Leave outranks everything, including being connected, because it is a
+// statement about the days ahead rather than about this moment.
 func Effective(chosen Availability, connected, inCall bool) string {
 	if chosen.Status == "on_leave" {
 		return "on_leave"
 	}
 	if inCall {
-		return "in_call"
+		return "busy"
 	}
 	if !connected {
-		return "offline"
+		return "away"
 	}
 	if chosen.Status == "" {
 		return "available"

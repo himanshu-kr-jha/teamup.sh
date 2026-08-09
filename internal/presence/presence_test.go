@@ -12,11 +12,14 @@ func TestEffectiveStatus(t *testing.T) {
 		want      string
 	}{
 		{"connected and nothing said", "available", true, false, "available"},
-		{"in a call beats being available", "available", true, true, "in_call"},
-		{"in a call beats being busy", "busy", true, true, "in_call"},
+		// A colleague only needs to know they cannot talk, not why.
+		{"in a call reads as busy", "available", true, true, "busy"},
+		{"in a call reads as busy even if they said busy", "busy", true, true, "busy"},
 		{"away is respected while connected", "away", true, false, "away"},
 		{"busy is respected while connected", "busy", true, false, "busy"},
-		{"not connected reads as offline", "available", false, false, "offline"},
+		// Not connected and away amount to the same thing: not right now.
+		{"not connected reads as away", "available", false, false, "away"},
+		{"not connected stays away whatever they chose", "busy", false, false, "away"},
 		// Leave is a statement about the days ahead, so it holds even when
 		// they are not here — which is exactly when it matters.
 		{"on leave shows while away from the keyboard", "on_leave", false, false, "on_leave"},
