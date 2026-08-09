@@ -2,6 +2,8 @@ package calls
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -35,6 +37,11 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 func (h *Handler) ListCalls(c *gin.Context) {
 	user := auth.GetUserFromContext(c)
 	orgID, _ := uuid.Parse(user.OrgID)
+	viewerID, err := uuid.Parse(user.UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
 	status := c.Query("status")
 
 	var channelID *uuid.UUID
@@ -44,7 +51,7 @@ func (h *Handler) ListCalls(c *gin.Context) {
 		}
 	}
 
-	calls, err := h.service.ListCalls(c.Request.Context(), orgID, status, channelID)
+	calls, err := h.service.ListCalls(c.Request.Context(), orgID, viewerID, status, channelID)
 	if err != nil {
 		httpx.Error(c, err, "failed to list calls")
 		return
@@ -171,6 +178,20 @@ func (h *Handler) DeclineCall(c *gin.Context) {
 		return
 	}
 
+	// A call that simply rang out is not the same as one somebody turned down,
+	// and the caller should be told which.
+	var req struct {
+		Reason string `json:"reason" binding:"omitempty,oneof=declined no_answer"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	reason := req.Reason
+	if reason == "" {
+		reason = "declined"
+	}
+
 	if err := h.service.MarkParticipantLeft(ctx, id, userID); err != nil {
 		httpx.Error(c, err, "failed to decline call")
 		return
@@ -178,10 +199,35 @@ func (h *Handler) DeclineCall(c *gin.Context) {
 
 	// Tell the person who started it, not everybody: one person turning it
 	// down does not end the call for the rest.
-	go h.service.AnnounceCallOver(context.WithoutCancel(ctx), call, "declined", callerName(user),
+	go h.service.AnnounceCallOver(context.WithoutCancel(ctx), call, reason, callerName(user),
 		[]string{call.CreatedBy.String()})
 
-	c.JSON(http.StatusOK, gin.H{"message": "declined"})
+	// If nobody is left who might still pick up, the call is over. Otherwise
+	// the caller waits in an empty room until they notice.
+	waiting, err := h.service.AnybodyLeftToAnswer(ctx, id, call.CreatedBy)
+	if err != nil {
+		httpx.Error(c, err, "failed to decline call")
+		return
+	}
+	if !waiting {
+		joined, err := h.service.SomebodyJoined(ctx, id, call.CreatedBy)
+		if err != nil {
+			httpx.Error(c, err, "failed to decline call")
+			return
+		}
+		// Only drop it if the call never actually got going.
+		if !joined {
+			if err := h.service.EndCall(ctx, call.RoomName); err != nil {
+				h.service.logger.Warn().Err(err).Str("room", call.RoomName).Msg("LiveKit room teardown failed")
+			}
+			if err := h.service.MarkCallEnded(ctx, orgID, id); err != nil {
+				httpx.Error(c, err, "failed to end call")
+				return
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"message": reason})
 }
 
 // callerName prefers something a callee will recognise over a bare id.

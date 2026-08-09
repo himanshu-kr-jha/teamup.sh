@@ -1,15 +1,15 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { Hash, Send, Paperclip, Smile, Bell, Settings, ChevronLeft, MessageSquare, Video, User } from 'lucide-react';
+import { Hash, Send, Paperclip, Smile, Bell, Settings, ChevronLeft, MessageSquare, Video, User, Megaphone } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Avatar, AvatarFallback } from '@/shared/components/ui/avatar';
 import { cn } from '@/shared/utils/cn';
-import { formatRelativeTime } from '@/shared/utils/cn';
 import { useWebSocket } from '@/features/websocket/WSProvider';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { callsApi, channelsApi, filesApi } from '@/shared/api/client';
 import { useUpload, type UploadedFile } from '@/features/files/useUpload';
+import { useChime } from '@/shared/hooks/useChime';
 import { useToast } from '@/shared/hooks/useToast';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { AttachmentChip } from '@/features/files/AttachmentChip';
@@ -54,6 +54,7 @@ export function ChatPage() {
   const [staged, setStaged] = useState<UploadedFile[]>([]);
   const [newChatOpen, setNewChatOpen] = useState(false);
   const [startingCall, setStartingCall] = useState(false);
+  const { ping } = useChime();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const channelId = params.channelId || activeChannelId;
 
@@ -138,10 +139,23 @@ export function ChatPage() {
   // Handle incoming messages via WebSocket
   useEffect(() => {
     const unsubscribe = on('chat.message', (msg) => {
-      if (msg.payload.channelId === channelId && channelId) {
+      // The frame carries {message: {...}}; reading the payload directly gave
+      // an object with no channelId, so every live message was discarded and
+      // the only way to see one was to reload.
+      const incoming = ((msg.payload as any)?.message ?? msg.payload) as Message;
+      if (!incoming?.id) return;
+      // Somebody else's message is worth hearing about wherever it landed;
+      // your own coming back is not.
+      if (incoming.userId !== user?.id) ping();
+
+      if (incoming.channelId === channelId && channelId) {
         writeMessages(channelId, (messages) =>
-          messages.some((m) => m.id === msg.payload.id) ? messages : [...messages, msg.payload]
+          messages.some((m) => m.id === incoming.id) ? messages : [...messages, incoming]
         );
+      } else {
+        // A message for a channel you are not looking at only changes its
+        // unread count, which lives on the channel list.
+        queryClient.invalidateQueries({ queryKey: ['channels'] });
       }
     });
     return unsubscribe;
@@ -203,6 +217,17 @@ export function ChatPage() {
     }
   };
 
+  const channelSubtitle = !channelId
+    ? 'Pick a conversation to start reading'
+    : activeChannel?.type === 'dm'
+      ? 'Direct message'
+      : activeChannel?.type === 'announcement'
+        ? 'Announcements — only administrators can post'
+        : `${activeChannel?.memberCount ?? 0} ${activeChannel?.memberCount === 1 ? 'member' : 'members'}`;
+
+  const rooms = channels.filter((c: any) => c.type !== 'dm');
+  const directMessages = channels.filter((c: any) => c.type === 'dm');
+
   const handleChannelClick = (id: string) => {
     setActiveChannelId(id);
     navigate(`/chat/${id}`);
@@ -231,39 +256,74 @@ export function ChatPage() {
         )}>
           <div className="flex h-full flex-col">
             {/* Header */}
-            <div className="flex h-16 items-center justify-between px-4 border-b border-border">
-              <Link to="/chat" className="flex items-center gap-2">
-                <Hash className="h-8 w-8 text-primary" />
-                <span className="font-bold text-xl">TeamUp</span>
+            <div className="flex h-16 items-center justify-between border-b border-border px-4">
+              <Link to="/chat" className="text-lg font-semibold">
+                Conversations
               </Link>
+              <span className="text-xs text-muted-foreground">
+                {channels.length} {channels.length === 1 ? 'open' : 'open'}
+              </span>
             </div>
 
-            {/* Channels list */}
-            <div className="flex-1 overflow-y-auto p-2 space-y-1">
-              {channels.map((channel) => (
-                <button
-                  key={channel.id}
-                  onClick={() => handleChannelClick(channel.id)}
-                  className={cn(
-                    'w-full flex items-center gap-3 rounded-lg px-3 py-2 text-left text-sm font-medium transition-colors',
-                    channel.id === channelId
-                      ? 'bg-primary text-primary-foreground'
-                      : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
-                  )}
-                >
-                  {channel.type === 'dm' ? (
-                    <User className="h-5 w-5 flex-shrink-0" />
-                  ) : (
-                    <MessageSquare className="h-5 w-5 flex-shrink-0" />
-                  )}
-                  <span className="truncate flex-1">{channel.name || 'Unnamed'}</span>
-                  {channel.unreadCount > 0 && (
-                    <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary/20 px-1.5 text-xs font-medium text-primary-foreground">
-                      {channel.unreadCount > 9 ? '9+' : channel.unreadCount}
-                    </span>
-                  )}
-                </button>
-              ))}
+            {/* Channels and conversations, kept apart: a room and a person
+                are not the same kind of thing. */}
+            <div className="flex-1 overflow-y-auto p-2">
+              {channels.length === 0 && (
+                <p className="px-3 py-8 text-center text-sm text-muted-foreground">
+                  Nothing here yet. Start a chat or create a channel.
+                </p>
+              )}
+
+              {[
+                { label: 'Channels', items: rooms },
+                { label: 'Direct messages', items: directMessages },
+              ].map((group) =>
+                group.items.length === 0 ? null : (
+                  <div key={group.label} className="mb-4">
+                    <p className="px-3 pb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      {group.label}
+                    </p>
+                    <div className="space-y-0.5">
+                      {group.items.map((channel) => {
+                        const active = channel.id === channelId;
+                        return (
+                          <button
+                            key={channel.id}
+                            onClick={() => handleChannelClick(channel.id)}
+                            className={cn(
+                              'flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm transition-colors',
+                              active
+                                ? 'bg-primary text-primary-foreground font-medium'
+                                : 'text-foreground/80 hover:bg-accent hover:text-accent-foreground'
+                            )}
+                          >
+                            {channel.type === 'dm' ? (
+                              <User className="h-4 w-4 shrink-0 opacity-70" />
+                            ) : channel.type === 'announcement' ? (
+                              <Megaphone className="h-4 w-4 shrink-0 opacity-70" />
+                            ) : (
+                              <Hash className="h-4 w-4 shrink-0 opacity-70" />
+                            )}
+                            <span className={cn('flex-1 truncate', channel.unreadCount > 0 && !active && 'font-semibold')}>
+                              {channel.name || 'Unnamed'}
+                            </span>
+                            {channel.unreadCount > 0 && (
+                              <span
+                                className={cn(
+                                  'flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1.5 text-xs font-semibold',
+                                  active ? 'bg-primary-foreground/20 text-primary-foreground' : 'bg-primary text-primary-foreground'
+                                )}
+                              >
+                                {channel.unreadCount > 9 ? '9+' : channel.unreadCount}
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )
+              )}
             </div>
 
             {/* New channel button */}
@@ -284,15 +344,21 @@ export function ChatPage() {
         <div className="flex-1 flex flex-col min-w-0">
           {/* Channel header */}
           <div className="flex h-16 items-center gap-4 px-4 border-b border-border">
-            <div className="flex items-center gap-3">
-              <MessageSquare className="h-8 w-8 text-primary" />
-              <div>
-                <h2 className="font-semibold">
+            <div className="flex min-w-0 items-center gap-3">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                {activeChannel?.type === 'dm' ? (
+                  <User className="h-5 w-5 text-primary" />
+                ) : activeChannel?.type === 'announcement' ? (
+                  <Megaphone className="h-5 w-5 text-primary" />
+                ) : (
+                  <Hash className="h-5 w-5 text-primary" />
+                )}
+              </div>
+              <div className="min-w-0">
+                <h2 className="truncate font-semibold leading-tight">
                   {activeChannel?.name || (channelId ? 'Channel' : 'No channel selected')}
                 </h2>
-                <p className="text-sm text-muted-foreground">
-                  {channelId ? `${activeChannel?.type || 'group'} channel` : 'Pick a channel to start reading'}
-                </p>
+                <p className="truncate text-sm text-muted-foreground">{channelSubtitle}</p>
               </div>
             </div>
             <div className="flex-1" />
@@ -320,20 +386,46 @@ export function ChatPage() {
           </div>
 
           {/* Messages */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          <div className="flex-1 space-y-1 overflow-y-auto p-4">
             {messagesLoading ? (
-              <div className="flex items-center justify-center h-full">Loading messages...</div>
+              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                Loading messages…
+              </div>
             ) : messages.length === 0 ? (
-              <div className="flex flex-col items-center justify-center h-full text-muted-foreground">
-                <MessageSquare className="h-12 w-12 mb-4 opacity-50" />
+              <div className="flex h-full flex-col items-center justify-center text-muted-foreground">
+                <MessageSquare className="mb-4 h-12 w-12 opacity-40" aria-hidden="true" />
                 <p className="text-lg">No messages yet</p>
-                <p className="text-sm">Start the conversation!</p>
+                <p className="text-sm">
+                  {activeChannel?.type === 'dm'
+                    ? `Say hello to ${activeChannel?.name ?? 'them'}.`
+                    : 'Be the first to say something.'}
+                </p>
               </div>
             ) : (
               <>
-                {messages.map((msg) => (
-                  <MessageBubble key={msg.id} message={msg} isOwn={msg.userId === user?.id} status={statusOf(msg.userId)} />
-                ))}
+                {messages.map((msg, i) => {
+                  const previous = messages[i - 1];
+                  // A run of messages from one person in quick succession
+                  // reads as one turn in the conversation, so only the first
+                  // carries their name and picture.
+                  const sameAuthor = previous?.userId === msg.userId;
+                  const closeInTime =
+                    previous != null &&
+                    new Date(msg.createdAt).getTime() - new Date(previous.createdAt).getTime() < 5 * 60 * 1000;
+                  const newDay = !previous || !sameDay(previous.createdAt, msg.createdAt);
+
+                  return (
+                    <div key={msg.id}>
+                      {newDay && <DaySeparator when={msg.createdAt} />}
+                      <MessageBubble
+                        message={msg}
+                        isOwn={msg.userId === user?.id}
+                        status={statusOf(msg.userId)}
+                        grouped={sameAuthor && closeInTime && !newDay}
+                      />
+                    </div>
+                  );
+                })}
                 <div ref={messagesEndRef} />
               </>
             )}
@@ -341,8 +433,10 @@ export function ChatPage() {
 
           {/* Message input */}
           {staged.length > 0 && (
-            <div className="border-t border-border px-4 py-2">
-              <p className="mb-1 text-xs font-medium text-muted-foreground">Attached — press Send</p>
+            <div className="border-t border-border bg-muted/30 px-4 py-2">
+              <p className="mb-1.5 text-xs font-medium text-muted-foreground">
+                {staged.length === 1 ? 'Attached' : `${staged.length} attached`} — press Send
+              </p>
               <div className="flex flex-wrap gap-2">
                 {staged.map((file) => (
                   <span key={file.id} className="flex items-center gap-1">
@@ -402,7 +496,15 @@ export function ChatPage() {
                 <Input
                   value={message}
                   onChange={(e) => setMessage(e.target.value)}
-                  placeholder="Type a message..."
+                  placeholder={
+                    activeChannel?.type === 'dm'
+                      ? `Message ${activeChannel?.name ?? ''}`.trim()
+                      : activeChannel?.name
+                        ? `Message #${activeChannel.name}`
+                        : 'Type a message…'
+                  }
+                  aria-label="Message"
+                  disabled={!channelId}
                   className="pr-10"
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
@@ -411,8 +513,10 @@ export function ChatPage() {
                     }
                   }}
                 />
-                <div className="absolute right-2 bottom-2 flex items-center gap-1">
-                  <Button variant="ghost" size="icon" type="button"><Smile className="h-5 w-5" /></Button>
+                <div className="absolute bottom-1 right-1 flex items-center gap-1">
+                  <Button variant="ghost" size="icon" type="button" aria-label="Emoji" className="h-8 w-8">
+                    <Smile className="h-4 w-4" />
+                  </Button>
                 </div>
               </div>
               <Button
@@ -455,31 +559,90 @@ export function ChatPage() {
   );
 }
 
+function sameDay(a: string, b: string) {
+  const x = new Date(a);
+  const y = new Date(b);
+  return x.toDateString() === y.toDateString();
+}
+
+/** "Today", "Yesterday", or the date — so a long history is navigable. */
+function DaySeparator({ when }: { when: string }) {
+  const day = new Date(when);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+
+  const label =
+    day.toDateString() === today.toDateString()
+      ? 'Today'
+      : day.toDateString() === yesterday.toDateString()
+        ? 'Yesterday'
+        : day.toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
+
+  return (
+    <div className="my-4 flex items-center gap-3">
+      <div className="h-px flex-1 bg-border" />
+      <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      <div className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
+
 function MessageBubble({
   message,
   isOwn,
   status,
+  grouped,
 }: {
   message: Message;
   isOwn: boolean;
   status: PresenceStatus;
+  /** Part of a run from the same person: no repeated name or picture. */
+  grouped: boolean;
 }) {
+  const time = new Date(message.createdAt).toLocaleTimeString(undefined, {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
   return (
-    <div className={cn('flex gap-3 max-w-[70%]', isOwn ? 'justify-end' : 'justify-start')}>
-      {!isOwn && (
-        <div className="relative shrink-0">
-          <Avatar className="h-8 w-8">
-            <AvatarFallback>{message.userName.charAt(0).toUpperCase()}</AvatarFallback>
-          </Avatar>
-          <PresenceDot status={status} className="absolute -bottom-0.5 -right-0.5" />
-        </div>
+    <div
+      className={cn(
+        'group flex w-full items-end gap-2',
+        isOwn ? 'justify-end' : 'justify-start',
+        grouped ? 'mt-0.5' : 'mt-3'
       )}
-      <div className={cn('flex flex-col', isOwn ? 'items-end' : 'items-start')}>
-        {!isOwn && <p className="text-xs text-muted-foreground mb-1">{message.userName}</p>}
-        <div className={cn(
-          'rounded-2xl px-4 py-2 max-w-[80%]',
-          isOwn ? 'bg-primary text-primary-foreground rounded-tr-none' : 'bg-secondary text-secondary-foreground rounded-tl-none'
-        )}>
+    >
+      {!isOwn &&
+        (grouped ? (
+          // Keeps the run aligned with the first message above it.
+          <div className="w-8 shrink-0" aria-hidden="true" />
+        ) : (
+          <div className="relative shrink-0">
+            <Avatar className="h-8 w-8">
+              <AvatarFallback className="text-xs">
+                {(message.userName || '?').charAt(0).toUpperCase()}
+              </AvatarFallback>
+            </Avatar>
+            <PresenceDot status={status} className="absolute -bottom-0.5 -right-0.5" />
+          </div>
+        ))}
+
+      <div className={cn('relative flex min-w-0 max-w-[75%] flex-col', isOwn ? 'items-end' : 'items-start')}>
+        {!isOwn && !grouped && (
+          <p className="mb-1 px-1 text-xs font-medium text-muted-foreground">{message.userName}</p>
+        )}
+        <div
+          className={cn(
+            'w-fit max-w-full break-words rounded-2xl px-3.5 py-2 text-sm shadow-sm',
+            isOwn
+              ? 'bg-primary text-primary-foreground'
+              : 'bg-muted text-foreground',
+            // Only the first of a run gets the tail.
+            !grouped && (isOwn ? 'rounded-tr-sm' : 'rounded-tl-sm'),
+            message.pending && 'opacity-60'
+          )}
+        >
           {message.content && <p className="whitespace-pre-wrap">{message.content}</p>}
           {message.attachments?.length > 0 && (
             <div className={cn('flex flex-wrap gap-2', message.content && 'mt-2')}>
@@ -488,10 +651,17 @@ function MessageBubble({
               ))}
             </div>
           )}
-          <p className={cn('text-xs mt-1 opacity-70', isOwn ? 'text-primary-foreground/70' : 'text-muted-foreground')}>
-            {formatRelativeTime(message.createdAt)}
-          </p>
         </div>
+        {/* Out of the flow: shown on hover without moving anything. */}
+        <span
+          className={cn(
+            'pointer-events-none absolute bottom-0 whitespace-nowrap text-[0.7rem] text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100',
+            isOwn ? 'right-full mr-2' : 'left-full ml-2',
+            message.pending && 'opacity-100'
+          )}
+        >
+          {message.pending ? 'Sending…' : time}
+        </span>
       </div>
     </div>
   );

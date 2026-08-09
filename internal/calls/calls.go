@@ -633,9 +633,22 @@ func scanCall(row pgx.Row) (*CallModel, error) {
 
 // ListCalls returns the organization's calls, most recent first, optionally
 // narrowed by status or the channel the call belongs to.
-func (s *Service) ListCalls(ctx context.Context, orgID uuid.UUID, status string, channelID *uuid.UUID) ([]CallModel, error) {
-	where := []string{"c.org_id = $1"}
-	args := []any{orgID}
+// ListCalls returns the calls a person is entitled to see: ones they were part
+// of, and ones belonging to a channel they are in. It used to filter on the
+// organization alone, so a one-to-one call between two people was listed to
+// everybody — who called whom, and when.
+func (s *Service) ListCalls(ctx context.Context, orgID, viewerID uuid.UUID, status string, channelID *uuid.UUID) ([]CallModel, error) {
+	args := []any{orgID, viewerID}
+	where := []string{
+		"c.org_id = $1",
+		`(
+		    EXISTS (SELECT 1 FROM call_participants p
+		            WHERE p.call_id = c.id AND p.user_id = $2)
+		    OR (c.channel_id IS NOT NULL AND EXISTS (
+		            SELECT 1 FROM channel_members cm
+		            WHERE cm.channel_id = c.channel_id AND cm.user_id = $2))
+		)`,
+	}
 	if status != "" && status != "all" {
 		args = append(args, status)
 		where = append(where, fmt.Sprintf("c.status = $%d", len(args)))
@@ -717,6 +730,36 @@ func (s *Service) MarkParticipantLeft(ctx context.Context, callID, userID uuid.U
 		return fmt.Errorf("mark left: %w", err)
 	}
 	return nil
+}
+
+// AnybodyLeftToAnswer reports whether the call still has somebody who was
+// invited, has not joined and has not left. When nobody does, a call that was
+// never picked up should stop rather than leave the caller sitting in an empty
+// room.
+func (s *Service) AnybodyLeftToAnswer(ctx context.Context, callID, callerID uuid.UUID) (bool, error) {
+	var outstanding int
+	err := s.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM call_participants
+		WHERE call_id = $1 AND user_id <> $2 AND left_at IS NULL
+	`, callID, callerID).Scan(&outstanding)
+	if err != nil {
+		return false, fmt.Errorf("count outstanding participants: %w", err)
+	}
+	return outstanding > 0, nil
+}
+
+// SomebodyJoined reports whether anybody other than the caller actually picked
+// up, which is what separates "declined" from "nobody answered".
+func (s *Service) SomebodyJoined(ctx context.Context, callID, callerID uuid.UUID) (bool, error) {
+	var joined int
+	err := s.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM call_participants
+		WHERE call_id = $1 AND user_id <> $2 AND joined_at IS NOT NULL
+	`, callID, callerID).Scan(&joined)
+	if err != nil {
+		return false, fmt.Errorf("count joined participants: %w", err)
+	}
+	return joined > 0, nil
 }
 
 // MarkCallEnded closes the record: without it a call stayed "active" forever

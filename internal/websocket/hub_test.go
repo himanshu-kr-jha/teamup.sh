@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -161,4 +162,101 @@ func TestConnectingDoesNotAnnounceAcrossOrganizations(t *testing.T) {
 		t.Errorf("we were told somebody in another organization came online: %s", msg.Type)
 	case <-time.After(200 * time.Millisecond):
 	}
+}
+
+// stubRoster answers with a fixed set of members.
+type stubRoster struct{ members []string }
+
+func (r stubRoster) ChannelMemberIDs(context.Context, string) ([]string, error) {
+	return r.members, nil
+}
+
+// Channel delivery went through a subscription table that nothing ever filled
+// in, so a message reached nobody and the only way to see one was to reload.
+func TestAChannelMessageReachesItsMembers(t *testing.T) {
+	hub := NewHub(nil, stubPresence{}, nil, zerolog.Nop())
+	hub.SetChannelRoster(stubRoster{members: []string{"user-a", "user-b"}})
+
+	a := testConnection(hub, "conn-a", "user-a", "org-1")
+	b := testConnection(hub, "conn-b", "user-b", "org-1")
+	outsider := testConnection(hub, "conn-c", "user-c", "org-1")
+	for _, c := range []*Connection{a, b, outsider} {
+		hub.Register(c)
+	}
+	// Drained after every registration: each one announces presence to the
+	// connections already there.
+	for _, c := range []*Connection{a, b, outsider} {
+		drain(c)
+	}
+
+	hub.BroadcastToChannel("channel-1",
+		protocol.NewMessage(protocol.TypeChatMessage, map[string]string{"content": "hello"}), "user-a")
+
+	// The sender is excluded; they already have it optimistically.
+	select {
+	case msg := <-a.SendCh:
+		t.Errorf("the sender got their own message back: %s", msg.Type)
+	default:
+	}
+
+	select {
+	case msg := <-b.SendCh:
+		if msg.Type != protocol.TypeChatMessage {
+			t.Errorf("wrong message: %s", msg.Type)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a member of the channel never received the message")
+	}
+
+	select {
+	case msg := <-outsider.SendCh:
+		t.Errorf("somebody outside the channel received it: %s", msg.Type)
+	default:
+	}
+}
+
+// Somebody who joins a channel while connected must start receiving straight
+// away, without reconnecting — which a subscription captured at connect time
+// could never do.
+func TestDeliveryFollowsMembershipWithoutReconnecting(t *testing.T) {
+	hub := NewHub(nil, stubPresence{}, nil, zerolog.Nop())
+	roster := &mutableRoster{}
+	hub.SetChannelRoster(roster)
+
+	conn := testConnection(hub, "conn-late", "user-late", "org-1")
+	hub.Register(conn)
+	drain(conn)
+
+	// Not a member yet.
+	hub.BroadcastToChannel("channel-1", protocol.NewMessage(protocol.TypeChatMessage, nil), "")
+	select {
+	case <-conn.SendCh:
+		t.Fatal("received a message for a channel they are not in")
+	default:
+	}
+
+	roster.set([]string{"user-late"})
+	hub.BroadcastToChannel("channel-1", protocol.NewMessage(protocol.TypeChatMessage, nil), "")
+	select {
+	case <-conn.SendCh:
+	case <-time.After(time.Second):
+		t.Error("joining a channel did not start delivery")
+	}
+}
+
+type mutableRoster struct {
+	mu      sync.Mutex
+	members []string
+}
+
+func (r *mutableRoster) set(members []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.members = members
+}
+
+func (r *mutableRoster) ChannelMemberIDs(context.Context, string) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.members...), nil
 }

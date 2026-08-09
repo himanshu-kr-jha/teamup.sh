@@ -273,11 +273,19 @@ func (s *Service) HandleEditMessage(ctx context.Context, conn websocket.WSConnec
 	}
 
 	if s.broadcaster != nil {
-		s.broadcaster.BroadcastToChannel("", protocol.NewMessage(protocol.TypeChatMessage, protocol.ChatMessagePayload{
+		// Addressed to the message's own channel: this used to broadcast to
+		// "", which matches no channel, so an edit reached nobody.
+		channelID, err := s.messageChannel(ctx, messageID)
+		if err != nil {
+			s.logger.Warn().Err(err).Msg("could not resolve channel for edited message")
+			return
+		}
+		s.broadcaster.BroadcastToChannel(channelID.String(), protocol.NewMessage(protocol.TypeChatMessage, protocol.ChatMessagePayload{
 			Message: protocol.MessageData{
-				ID:       messageID.String(),
-				Content:  payload.Content,
-				EditedAt: &now,
+				ID:        messageID.String(),
+				ChannelID: channelID.String(),
+				Content:   payload.Content,
+				EditedAt:  &now,
 			},
 		}), conn.UserID())
 	}
@@ -315,7 +323,12 @@ func (s *Service) HandleDeleteMessage(ctx context.Context, conn websocket.WSConn
 	}
 
 	if s.broadcaster != nil {
-		s.broadcaster.BroadcastToChannel("", protocol.NewMessage(protocol.TypeChatDelete, payload), conn.UserID())
+		channelID, err := s.messageChannel(ctx, messageID)
+		if err != nil {
+			s.logger.Warn().Err(err).Msg("could not resolve channel for deleted message")
+			return
+		}
+		s.broadcaster.BroadcastToChannel(channelID.String(), protocol.NewMessage(protocol.TypeChatDelete, payload), conn.UserID())
 	}
 }
 
@@ -433,6 +446,21 @@ func (s *Service) deleteMessage(ctx context.Context, id uuid.UUID, deletedAt *ti
 	return nil
 }
 
+// messageChannel resolves which channel a message belongs to, so an edit or a
+// delete can be addressed to the same people who saw the original.
+func (s *Service) messageChannel(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
+	var channelID uuid.UUID
+	err := s.db.QueryRow(ctx,
+		`SELECT channel_id FROM messages WHERE id = $1`, id).Scan(&channelID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return uuid.Nil, apperrors.ErrNotFound
+		}
+		return uuid.Nil, fmt.Errorf("get message channel: %w", err)
+	}
+	return channelID, nil
+}
+
 func (s *Service) getMessageOwner(ctx context.Context, id uuid.UUID) (uuid.UUID, error) {
 	var owner uuid.UUID
 	err := s.db.QueryRow(ctx,
@@ -529,16 +557,29 @@ func (s *Service) convertAttachments(atts []protocol.Attachment) []Attachment {
 
 func (s *Service) messageToData(msg *Message) protocol.MessageData {
 	return protocol.MessageData{
-		ID:          msg.ID.String(),
-		ChannelID:   msg.ChannelID.String(),
-		UserID:      msg.UserID.String(),
+		ID:        msg.ID.String(),
+		ChannelID: msg.ChannelID.String(),
+		UserID:    msg.UserID.String(),
+		// Carried through, or a message that arrives live renders with no
+		// author until the page is reloaded.
+		UserName:    msg.UserName,
+		UserAvatar:  msg.UserAvatar,
 		Content:     msg.Content,
 		Attachments: s.attachmentsToProtocol(msg.Attachments),
 		Reactions:   msg.Reactions,
+		ReplyTo:     replyToString(msg.ReplyTo),
 		CreatedAt:   msg.CreatedAt,
 		EditedAt:    msg.EditedAt,
 		DeletedAt:   msg.DeletedAt,
 	}
+}
+
+func replyToString(id *uuid.UUID) *string {
+	if id == nil {
+		return nil
+	}
+	s := id.String()
+	return &s
 }
 
 func (s *Service) attachmentsToProtocol(atts []Attachment) []protocol.Attachment {
@@ -927,6 +968,33 @@ func (s *Service) AddMember(ctx context.Context, orgID, channelID, userID uuid.U
 		}
 	}
 	return nil
+}
+
+// ChannelMemberIDs answers who is in a channel, for live delivery. Kept
+// separate from ListMembers because delivery runs on every message and only
+// needs the ids.
+func (s *Service) ChannelMemberIDs(ctx context.Context, channelID string) ([]string, error) {
+	id, err := uuid.Parse(channelID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid channel id: %w", err)
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT cm.user_id FROM channel_members cm WHERE cm.channel_id = $1
+	`, id)
+	if err != nil {
+		return nil, fmt.Errorf("list channel member ids: %w", err)
+	}
+	defer rows.Close()
+
+	ids := []string{}
+	for rows.Next() {
+		var userID uuid.UUID
+		if err := rows.Scan(&userID); err != nil {
+			return nil, fmt.Errorf("scan channel member id: %w", err)
+		}
+		ids = append(ids, userID.String())
+	}
+	return ids, rows.Err()
 }
 
 // ListMembers backs the channel settings panel, which had no way to find out

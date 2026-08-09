@@ -40,6 +40,13 @@ type PresenceServiceInterface interface {
 	GetAllOnline(orgID string) ([]Presence, error)
 }
 
+// ChannelRosterInterface answers who is in a channel. Delivery resolves this
+// at send time rather than keeping a subscription table in step with every
+// channel somebody joins, leaves or has created for them while connected.
+type ChannelRosterInterface interface {
+	ChannelMemberIDs(ctx context.Context, channelID string) ([]string, error)
+}
+
 // AuthServiceInterface defines the interface for auth service
 type AuthServiceInterface interface {
 	ValidateAccessToken(ctx context.Context, token string) (*Claims, error)

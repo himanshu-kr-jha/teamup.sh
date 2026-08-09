@@ -382,6 +382,8 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	// Set broadcasters for chat and calls services
 	chatService.SetBroadcaster(wsHub)
+	// Who a channel message reaches is resolved from membership at send time.
+	wsHub.SetChannelRoster(chatService)
 	callsService.SetBroadcaster(wsHub)
 
 	// Notifications reach the browser over the same socket, and the features

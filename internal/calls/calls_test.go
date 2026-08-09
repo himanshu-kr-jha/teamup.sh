@@ -50,7 +50,7 @@ func TestCreatedCallIsPersistedAndListed(t *testing.T) {
 		t.Error("creator name should be loaded for rendering")
 	}
 
-	list, err := svc.ListCalls(ctx, org.ID, "", nil)
+	list, err := svc.ListCalls(ctx, org.ID, org.OwnerID, "", nil)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestListCallsIsEmptyForANewOrganization(t *testing.T) {
 	svc, pool := newService(t)
 	org := testsupport.SeedOrg(t, pool)
 
-	list, err := svc.ListCalls(context.Background(), org.ID, "", nil)
+	list, err := svc.ListCalls(context.Background(), org.ID, org.OwnerID, "", nil)
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestCallsDoNotCrossOrganizations(t *testing.T) {
 	if _, err := svc.GetCall(ctx, mine.ID, call.ID); err == nil {
 		t.Error("a call from another organization must not be readable")
 	}
-	list, _ := svc.ListCalls(ctx, mine.ID, "", nil)
+	list, _ := svc.ListCalls(ctx, mine.ID, mine.OwnerID, "", nil)
 	if len(list) != 0 {
 		t.Errorf("history leaked another organization's calls: %+v", list)
 	}
@@ -189,7 +189,7 @@ func TestListCallsFiltersByStatusAndChannel(t *testing.T) {
 		t.Fatalf("end: %v", err)
 	}
 
-	active, err := svc.ListCalls(ctx, org.ID, "active", nil)
+	active, err := svc.ListCalls(ctx, org.ID, org.OwnerID, "active", nil)
 	if err != nil {
 		t.Fatalf("filter active: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestListCallsFiltersByStatusAndChannel(t *testing.T) {
 		t.Errorf("status filter wrong: %+v", active)
 	}
 
-	byChannel, err := svc.ListCalls(ctx, org.ID, "", &channel)
+	byChannel, err := svc.ListCalls(ctx, org.ID, org.OwnerID, "", &channel)
 	if err != nil {
 		t.Fatalf("filter channel: %v", err)
 	}
@@ -440,5 +440,157 @@ func TestAChannelCallInviteListIsBounded(t *testing.T) {
 	}
 	if total-len(invitees) != 5 {
 		t.Errorf("uninvited: got %d want 5", total-len(invitees))
+	}
+}
+
+// ── Who can see which calls ───────────────────────────────────────────────
+
+// A one-to-one call between two people used to be listed to the whole
+// organization: who called whom, and when.
+func TestAPrivateCallIsNotListedToEverybody(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedUser(t, pool, org, "callee@example.test", "member")
+	bystander := testsupport.SeedUser(t, pool, org, "bystander@example.test", "member")
+
+	call, err := svc.CreateCall(ctx, org.ID, org.OwnerID, nil, "video", nil, []string{other.String()})
+	if err != nil {
+		t.Fatalf("create call: %v", err)
+	}
+
+	for _, who := range []struct {
+		name string
+		id   uuid.UUID
+	}{{"the caller", org.OwnerID}, {"the person called", other}} {
+		list, err := svc.ListCalls(ctx, org.ID, who.id, "", nil)
+		if err != nil {
+			t.Fatalf("list for %s: %v", who.name, err)
+		}
+		if !containsCall(list, call.ID) {
+			t.Errorf("%s cannot see their own call", who.name)
+		}
+	}
+
+	list, err := svc.ListCalls(ctx, org.ID, bystander, "", nil)
+	if err != nil {
+		t.Fatalf("list for bystander: %v", err)
+	}
+	if containsCall(list, call.ID) {
+		t.Error("somebody uninvolved can see a private call")
+	}
+}
+
+// A call started in a channel belongs to that channel's members.
+func TestAChannelCallIsVisibleToThatChannel(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	member := testsupport.SeedUser(t, pool, org, "in-channel@example.test", "member")
+	outsider := testsupport.SeedUser(t, pool, org, "out-of-channel@example.test", "member")
+
+	channelID := testsupport.SeedChannel(t, pool, org, "standup", org.OwnerID, member)
+
+	call, err := svc.CreateCall(ctx, org.ID, org.OwnerID, nil, "video", &channelID, nil)
+	if err != nil {
+		t.Fatalf("create call: %v", err)
+	}
+
+	list, err := svc.ListCalls(ctx, org.ID, member, "", nil)
+	if err != nil {
+		t.Fatalf("list for member: %v", err)
+	}
+	if !containsCall(list, call.ID) {
+		t.Error("a channel member cannot see their channel's call")
+	}
+
+	hidden, err := svc.ListCalls(ctx, org.ID, outsider, "", nil)
+	if err != nil {
+		t.Fatalf("list for outsider: %v", err)
+	}
+	if containsCall(hidden, call.ID) {
+		t.Error("somebody outside the channel can see its call")
+	}
+}
+
+func containsCall(calls []CallModel, id uuid.UUID) bool {
+	for _, c := range calls {
+		if c.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// The caller needs to know whether a call was turned down or simply rang out,
+// and a call nobody picked up should not leave them in an empty room.
+func TestACallWithNobodyLeftToAnswerIsOver(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedUser(t, pool, org, "declines@example.test", "member")
+
+	call, err := svc.CreateCall(ctx, org.ID, org.OwnerID, nil, "video", nil, []string{other.String()})
+	if err != nil {
+		t.Fatalf("create call: %v", err)
+	}
+
+	waiting, err := svc.AnybodyLeftToAnswer(ctx, call.ID, org.OwnerID)
+	if err != nil {
+		t.Fatalf("outstanding: %v", err)
+	}
+	if !waiting {
+		t.Fatal("somebody was called, so the call is still waiting on them")
+	}
+
+	if err := svc.MarkParticipantLeft(ctx, call.ID, other); err != nil {
+		t.Fatalf("decline: %v", err)
+	}
+
+	waiting, err = svc.AnybodyLeftToAnswer(ctx, call.ID, org.OwnerID)
+	if err != nil {
+		t.Fatalf("outstanding after decline: %v", err)
+	}
+	if waiting {
+		t.Error("the only person called has gone, so nothing is left to wait for")
+	}
+
+	joined, err := svc.SomebodyJoined(ctx, call.ID, org.OwnerID)
+	if err != nil {
+		t.Fatalf("joined: %v", err)
+	}
+	if joined {
+		t.Error("nobody picked up, so this was never a conversation")
+	}
+}
+
+// A call somebody actually joined must not be torn down when a second person
+// declines it.
+func TestACallSomebodyJoinedIsNotDroppedByAnotherDecline(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	answered := testsupport.SeedUser(t, pool, org, "answers@example.test", "member")
+	declined := testsupport.SeedUser(t, pool, org, "busy@example.test", "member")
+
+	call, err := svc.CreateCall(ctx, org.ID, org.OwnerID, nil, "video", nil,
+		[]string{answered.String(), declined.String()})
+	if err != nil {
+		t.Fatalf("create call: %v", err)
+	}
+
+	if err := svc.MarkParticipantJoined(ctx, call.ID, answered); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+	if err := svc.MarkParticipantLeft(ctx, call.ID, declined); err != nil {
+		t.Fatalf("decline: %v", err)
+	}
+
+	joined, err := svc.SomebodyJoined(ctx, call.ID, org.OwnerID)
+	if err != nil {
+		t.Fatalf("joined: %v", err)
+	}
+	if !joined {
+		t.Error("somebody picked up, so the call is real and must not be dropped")
 	}
 }

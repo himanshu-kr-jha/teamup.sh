@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import { useWebSocket } from '@/features/websocket/WSProvider';
 import {
   LiveKitRoom,
   GridLayout,
@@ -28,6 +29,7 @@ export function CallViewPage() {
   const { roomName: callId } = useParams<{ roomName: string }>();
   const navigate = useNavigate();
   const toast = useToast();
+  const { on } = useWebSocket();
 
   const [token, setToken] = useState('');
   const [error, setError] = useState('');
@@ -53,6 +55,24 @@ export function CallViewPage() {
   }, [callId]);
 
   const leave = () => navigate('/calls');
+
+  // The other side turning the call down, or never picking it up, has to reach
+  // the caller: otherwise they sit in an empty room with no idea why.
+  useEffect(() => {
+    return on('call.ended', (msg) => {
+      const payload = msg.payload as any;
+      if (payload?.callId !== callId) return;
+      const who = payload.declinedBy ? `${payload.declinedBy} ` : '';
+      if (payload.reason === 'no_answer') {
+        toast.toast(`${who ? who + 'did not answer.' : 'Nobody answered.'}`);
+      } else if (payload.reason === 'declined') {
+        toast.toast(`${who}declined the call.`);
+      } else {
+        toast.toast('The call has ended.');
+      }
+      navigate('/calls');
+    });
+  }, [on, callId, navigate, toast]);
 
   if (loading) {
     return (

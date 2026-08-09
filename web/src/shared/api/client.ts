@@ -199,8 +199,9 @@ export const callsApi = {
   getToken: (id: string) => api.post(`/calls/${id}/token`),
   startRecording: (id: string) => api.post(`/calls/${id}/record`),
   end: (id: string) => api.post(`/calls/${id}/end`),
-  /** Turns a call down and tells whoever started it. */
-  decline: (id: string) => api.post(`/calls/${id}/decline`),
+  /** Turns a call down and tells whoever started it why. */
+  decline: (id: string, reason: 'declined' | 'no_answer' = 'declined') =>
+    api.post(`/calls/${id}/decline`, { reason }),
 };
 
 export const filesApi = {

@@ -20,6 +20,7 @@ type Hub struct {
 	services        ServiceInterface
 	presenceService PresenceServiceInterface
 	authService     AuthServiceInterface
+	roster          ChannelRosterInterface
 	logger          zerolog.Logger
 
 	mu          sync.RWMutex
@@ -102,7 +103,6 @@ func (h *Hub) Register(conn *Connection) {
 	}
 	h.userConns[conn.UserID()][conn.ID] = conn
 
-	h.subscribeToUserChannels(conn)
 	h.mu.Unlock()
 
 	h.presenceService.SetOnline(conn.UserID(), conn.OrgID())
@@ -141,9 +141,8 @@ func (h *Hub) Unregister(conn *Connection) {
 	}
 }
 
-func (h *Hub) subscribeToUserChannels(conn *Connection) {
-	// In a real implementation, fetch user's channels from chat service
-}
+// SetChannelRoster wires the lookup that decides who a channel message reaches.
+func (h *Hub) SetChannelRoster(r ChannelRosterInterface) { h.roster = r }
 
 func (h *Hub) SubscribeToChannel(conn *Connection, channelID string) {
 	h.mu.Lock()
@@ -171,19 +170,47 @@ func (h *Hub) UnsubscribeFromChannel(conn *Connection, channelID string) {
 	}
 }
 
+// BroadcastToChannel delivers to everybody in a channel who is connected.
+//
+// The roster is read at send time. This used to go through a subscription table
+// that nothing ever filled in — subscribeToUserChannels was a stub — so channel
+// messages reached nobody and the only way to see a new one was to reload the
+// page. Resolving membership per broadcast also means a channel somebody joins,
+// or a conversation started with them, works immediately without anybody having
+// to reconnect.
 func (h *Hub) BroadcastToChannel(channelID string, msg *protocol.Message, excludeUserID string) {
-	h.mu.RLock()
-	channelSubs, ok := h.channelSubs[channelID]
-	h.mu.RUnlock()
+	recipients := map[string]bool{}
 
-	if !ok {
-		return
+	if h.roster != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		members, err := h.roster.ChannelMemberIDs(ctx, channelID)
+		if err != nil {
+			h.logger.Warn().Err(err).Str("channel", channelID).Msg("could not resolve channel members for delivery")
+		}
+		for _, id := range members {
+			recipients[id] = true
+		}
 	}
 
-	for userID, conn := range channelSubs {
+	// Anybody who explicitly subscribed is included too, so an explicit
+	// subscription still works for clients that use one.
+	h.mu.RLock()
+	for userID := range h.channelSubs[channelID] {
+		recipients[userID] = true
+	}
+	conns := make([]*Connection, 0, len(recipients))
+	for userID := range recipients {
 		if userID == excludeUserID {
 			continue
 		}
+		for _, conn := range h.userConns[userID] {
+			conns = append(conns, conn)
+		}
+	}
+	h.mu.RUnlock()
+
+	for _, conn := range conns {
 		conn.Enqueue(msg)
 	}
 }

@@ -11,6 +11,7 @@ import {
 } from '@/shared/components/ui/dialog';
 import { Button } from '@/shared/components/ui/button';
 import { useWebSocket } from '@/features/websocket/WSProvider';
+import { useChime } from '@/shared/hooks/useChime';
 import { callsApi } from '@/shared/api/client';
 
 interface IncomingCall {
@@ -45,46 +46,15 @@ export function IncomingCallDialog() {
     setQueue((all) => all.filter((c) => c.callId !== callId));
   }, []);
 
-  const audioRef = useRef<AudioContext | null>(null);
+  const { ring: ringOnce, stop: stopTone } = useChime();
   const ringTimerRef = useRef<ReturnType<typeof setInterval>>();
   const giveUpTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
   const stopRinging = useCallback(() => {
     clearInterval(ringTimerRef.current);
     clearTimeout(giveUpTimerRef.current);
-    audioRef.current?.close().catch(() => {
-      // Already closed; nothing to do.
-    });
-    audioRef.current = null;
-  }, []);
-
-  const ringOnce = useCallback(() => {
-    try {
-      const Ctor = window.AudioContext ?? (window as any).webkitAudioContext;
-      if (!Ctor) return;
-      if (!audioRef.current) audioRef.current = new Ctor();
-      const ctx = audioRef.current;
-      if (ctx.state === 'suspended') void ctx.resume();
-
-      const now = ctx.currentTime;
-      const gain = ctx.createGain();
-      gain.connect(ctx.destination);
-      // Two short bursts, the shape of a telephone ring.
-      [0, 0.4].forEach((offset) => {
-        const osc = ctx.createOscillator();
-        osc.type = 'sine';
-        osc.frequency.value = 480;
-        osc.connect(gain);
-        osc.start(now + offset);
-        osc.stop(now + offset + 0.3);
-      });
-      gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.exponentialRampToValueAtTime(0.15, now + 0.05);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.75);
-    } catch {
-      // No audio available — the dialog still shows.
-    }
-  }, []);
+    stopTone();
+  }, [stopTone]);
 
   useEffect(() => {
     return on('call.invited', (msg) => {
@@ -126,7 +96,14 @@ export function IncomingCallDialog() {
     ringTimerRef.current = setInterval(ringOnce, RING_EVERY_MS);
     // It rings for a while and then gives up rather than for ever.
     const missed = call.callId;
-    giveUpTimerRef.current = setTimeout(() => dismiss(missed), RING_FOR_MS);
+    giveUpTimerRef.current = setTimeout(() => {
+      dismiss(missed);
+      // Tell the caller it rang out rather than leaving them waiting on a
+      // room nobody is coming to.
+      callsApi.decline(missed, 'no_answer').catch(() => {
+        // They will notice the empty room instead.
+      });
+    }, RING_FOR_MS);
     return stopRinging;
   }, [call, ringOnce, stopRinging, dismiss]);
 
@@ -140,7 +117,7 @@ export function IncomingCallDialog() {
     const id = call!.callId;
     dismiss(id);
     // Tell whoever rang, so they are not left watching it ring out.
-    callsApi.decline(id).catch(() => {
+    callsApi.decline(id, 'declined').catch(() => {
       // They will see it time out instead.
     });
   };
