@@ -9,7 +9,6 @@ import { useWebSocket } from '@/features/websocket/WSProvider';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { callsApi, channelsApi, filesApi } from '@/shared/api/client';
 import { useUpload, type UploadedFile } from '@/features/files/useUpload';
-import { useChime } from '@/shared/hooks/useChime';
 import { useToast } from '@/shared/hooks/useToast';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { AttachmentChip } from '@/features/files/AttachmentChip';
@@ -54,7 +53,6 @@ export function ChatPage() {
   const [staged, setStaged] = useState<UploadedFile[]>([]);
   const [newChatOpen, setNewChatOpen] = useState(false);
   const [startingCall, setStartingCall] = useState(false);
-  const { ping } = useChime();
   // What we last told the server was read, per channel, so scrolling or a
   // re-render does not repeat the call.
   const lastReadRef = useRef<Record<string, string>>({});
@@ -149,9 +147,9 @@ export function ChatPage() {
       // the only way to see one was to reload.
       const incoming = ((msg.payload as any)?.message ?? msg.payload) as Message;
       if (!incoming?.id) return;
-      // Somebody else's message is worth hearing about wherever it landed;
-      // your own coming back is not.
-      if (incoming.userId !== user?.id) ping();
+      // The sound and the desktop notification are raised by
+      // ChatNotifications, which listens wherever you are in the app. This
+      // only keeps the conversation on screen up to date.
 
       writeMessages(incoming.channelId, (messages) =>
         messages.some((m) => m.id === incoming.id) ? messages : [...messages, incoming]

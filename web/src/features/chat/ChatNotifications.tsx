@@ -1,0 +1,76 @@
+import { useEffect, useRef } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
+import { useWebSocket } from '@/features/websocket/WSProvider';
+import { useAuth } from '@/features/auth/AuthProvider';
+import { useChime } from '@/shared/hooks/useChime';
+import { useDesktopNotifications } from '@/shared/hooks/useDesktopNotifications';
+
+/**
+ * Watches for messages wherever you are in the app.
+ *
+ * This used to live on the chat page, which meant that on Tasks, Calls or
+ * Settings nothing reacted to a message at all — no sound, no badge, no
+ * notification. Mounted above the router, it reacts everywhere, and raises a
+ * desktop notification whenever the conversation is not the one in front of
+ * you: another app tab, another browser tab, or a window behind this one.
+ */
+export function ChatNotifications() {
+  const { on } = useWebSocket();
+  const { user } = useAuth();
+  const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { ping } = useChime();
+  const { notify } = useDesktopNotifications();
+
+  // Read inside the handler rather than captured, so resubscribing is not
+  // needed every time you change page.
+  const pathnameRef = useRef(location.pathname);
+  pathnameRef.current = location.pathname;
+
+  useEffect(() => {
+    return on('chat.message', (msg) => {
+      const incoming = ((msg.payload as any)?.message ?? msg.payload) as {
+        id?: string;
+        channelId?: string;
+        userId?: string;
+        userName?: string;
+        content?: string;
+        attachments?: unknown[];
+      };
+      if (!incoming?.id || !incoming.channelId) return;
+      // Your own message coming back is not news.
+      if (incoming.userId === user?.id) return;
+
+      ping();
+
+      // Unread counts live on the channel list, which is on screen only in
+      // chat — refresh it wherever you are so the badge is right when you
+      // arrive.
+      queryClient.invalidateQueries({ queryKey: ['channels'] });
+
+      const watchingThisConversation =
+        document.visibilityState === 'visible' &&
+        pathnameRef.current === `/chat/${incoming.channelId}`;
+      if (watchingThisConversation) return;
+
+      const body = incoming.content?.trim()
+        ? incoming.content
+        : incoming.attachments?.length
+          ? 'Sent a file'
+          : 'Sent a message';
+
+      notify({
+        title: incoming.userName || 'New message',
+        body,
+        // One notification per conversation: a burst replaces itself rather
+        // than burying the screen.
+        tag: `chat-${incoming.channelId}`,
+        onClick: () => navigate(`/chat/${incoming.channelId}`),
+      });
+    });
+  }, [on, user?.id, queryClient, navigate, ping, notify]);
+
+  return null;
+}

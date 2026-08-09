@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Bell, CheckCheck, Loader2, X } from 'lucide-react';
+import { Bell, CheckCheck, Loader2, X, BellRing } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import {
   DropdownMenu,
@@ -10,6 +10,7 @@ import {
 } from '@/shared/components/ui/dropdown-menu';
 import { notificationsApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
+import { useDesktopNotifications } from '@/shared/hooks/useDesktopNotifications';
 import { useToast } from '@/shared/hooks/useToast';
 import { useWebSocket } from '@/features/websocket/WSProvider';
 import { formatRelativeTime, cn } from '@/shared/utils/cn';
@@ -56,6 +57,8 @@ export function NotificationBell() {
       queryClient.invalidateQueries({ queryKey: ['notifications', 'unread-count'] });
     });
   }, [on, queryClient]);
+
+  const { permission, request } = useDesktopNotifications();
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['notifications'] });
@@ -117,6 +120,35 @@ export function NotificationBell() {
             </Button>
           )}
         </div>
+
+        {/* Browsers only grant this in response to something the user did,
+            so there has to be somewhere to ask. */}
+        {permission === 'default' && (
+          <button
+            onClick={async () => {
+              const result = await request();
+              if (result === 'granted') toast.success('Notifications are on.');
+              else if (result === 'denied') {
+                toast.error('Your browser blocked notifications for this site.');
+              }
+            }}
+            className="flex w-full items-center gap-2 border-b border-border px-3 py-2 text-left text-sm hover:bg-accent"
+          >
+            <BellRing className="h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
+            <span>
+              <span className="block font-medium">Turn on desktop notifications</span>
+              <span className="block text-xs text-muted-foreground">
+                Be told about messages while TeamUp is open in another tab.
+              </span>
+            </span>
+          </button>
+        )}
+        {permission === 'denied' && (
+          <p className="border-b border-border px-3 py-2 text-xs text-muted-foreground">
+            Desktop notifications are blocked for this site. Allow them in your
+            browser's settings to be told about messages in other tabs.
+          </p>
+        )}
 
         <div className="max-h-96 overflow-y-auto">
           {isLoading && (

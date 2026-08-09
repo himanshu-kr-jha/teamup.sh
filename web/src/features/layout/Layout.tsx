@@ -5,6 +5,7 @@ import { useUIStore } from "@/shared/store";
 import { useAuthStore } from "@/shared/store/authStore";
 import { IncomingCallDialog } from "@/features/calls/IncomingCallDialog";
 import { ActiveCallProvider } from "@/features/calls/ActiveCallProvider";
+import { ChatNotifications } from "@/features/chat/ChatNotifications";
 import { cn } from "@/shared/utils/cn";
 
 export function Layout() {
@@ -38,6 +39,9 @@ export function Layout() {
         </div>
         {/* A call has to reach you wherever you are, not only on the calls page. */}
         <IncomingCallDialog />
+      {/* A message has to reach you wherever you are too, not only on the
+          page that happens to be about chat. */}
+      <ChatNotifications />
         {sidebarOpen && (
           <div
             className="fixed inset-0 z-40 bg-black/50 lg:hidden"
