@@ -63,7 +63,12 @@ services:
           tcp_port: 7881
           port_range_start: 50000
           port_range_end: 60000
-          use_external_ip: true
+          # On a server with a public address, let LiveKit discover it. On a
+          # local network that discovery finds an address phones on the same
+          # network cannot reach, so set TEAMUP_LIVEKIT_NODE_IP to this
+          # machine's LAN address and turn discovery off.
+          use_external_ip: ${TEAMUP_LIVEKIT_USE_EXTERNAL_IP:-true}
+          node_ip: "${TEAMUP_LIVEKIT_NODE_IP:-}"
         keys:
           "devkey": "devsecret"
         # Egress reports job status back over Redis; without it recordings

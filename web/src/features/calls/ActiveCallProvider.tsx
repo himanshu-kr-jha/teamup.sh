@@ -408,9 +408,18 @@ function CallTiles({ compact }: { compact: boolean }) {
   );
 }
 
-/** Same host as the page unless told otherwise, so this works behind a proxy. */
+/**
+ * Where LiveKit's signalling socket lives.
+ *
+ * Over HTTPS it has to be reached through this origin: a secure page cannot
+ * open a plain ws:// connection, and LiveKit's own port is not behind the
+ * site's certificate. Over plain HTTP — a machine on a local network, say —
+ * the port is addressed directly, because there is no proxy in front of it.
+ */
 function liveKitURL() {
   if (import.meta.env.VITE_LIVEKIT_URL) return import.meta.env.VITE_LIVEKIT_URL;
-  const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return `${scheme}//${window.location.hostname}:7880`;
+  if (window.location.protocol === 'https:') {
+    return `wss://${window.location.host}/livekit`;
+  }
+  return `ws://${window.location.hostname}:7880`;
 }

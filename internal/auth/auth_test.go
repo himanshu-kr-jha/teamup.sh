@@ -641,3 +641,47 @@ func TestCurrentUserAnswersWithTheWholeUser(t *testing.T) {
 		t.Errorf("email: got %q want %q", got.User.Email, email)
 	}
 }
+
+// A browser discards a Secure cookie that arrives over plain HTTP, so a sign-in
+// from another machine on a local network succeeds server-side and then fails
+// silently in the browser. The flag has to be able to come off — and has to be
+// on unless somebody deliberately turns it off.
+func TestCookiesAreSecureUnlessDeliberatelyRelaxed(t *testing.T) {
+	pool := testDB(t)
+
+	secure := testService(pool)
+	if !secure.cookieSecure() {
+		t.Error("cookies should be Secure by default")
+	}
+
+	relaxed := NewService(pool, nil, Config{
+		Issuer: "teamup", Audience: "teamup-api",
+		AccessTokenTTL: time.Minute, RefreshTokenTTL: time.Hour,
+		InsecureCookies: true,
+	})
+	if relaxed.cookieSecure() {
+		t.Error("the flag should come off when asked")
+	}
+
+	// And it reaches the cookies themselves.
+	w := httptest.NewRecorder()
+	relaxed.SetAuthCookies(w, &TokenPair{AccessToken: "a", RefreshToken: "r", ExpiresIn: 60})
+	for _, cookie := range w.Result().Cookies() {
+		if cookie.Secure {
+			t.Errorf("%s is still marked Secure", cookie.Name)
+		}
+		// HttpOnly is not negotiable: it is what keeps the token out of reach
+		// of anything running on the page.
+		if !cookie.HttpOnly {
+			t.Errorf("%s must stay HttpOnly", cookie.Name)
+		}
+	}
+
+	w = httptest.NewRecorder()
+	secure.SetAuthCookies(w, &TokenPair{AccessToken: "a", RefreshToken: "r", ExpiresIn: 60})
+	for _, cookie := range w.Result().Cookies() {
+		if !cookie.Secure {
+			t.Errorf("%s should be Secure by default", cookie.Name)
+		}
+	}
+}

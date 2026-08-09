@@ -43,7 +43,19 @@ type Config struct {
 	PublicKey       *rsa.PublicKey
 	AccessTokenTTL  time.Duration
 	RefreshTokenTTL time.Duration
+	// InsecureCookies drops the Secure flag from auth cookies.
+	//
+	// A browser will not store a Secure cookie sent over plain HTTP — except
+	// on localhost, which it treats as trusted — so with this left on, signing
+	// in from another machine over http://<address> fails silently: the
+	// response looks fine and the cookie is simply discarded. Turning it off
+	// is for testing over a local network and nowhere else.
+	InsecureCookies bool
 }
+
+// cookieSecure reports whether to mark cookies Secure. Always true unless
+// explicitly relaxed, so the safe setting is the one you get by default.
+func (s *Service) cookieSecure() bool { return !s.cfg.InsecureCookies }
 
 type Service struct {
 	db        *pgxpool.Pool
@@ -319,7 +331,7 @@ func (s *Service) SetAuthCookies(w http.ResponseWriter, tokens *TokenPair) {
 		Value:    tokens.AccessToken,
 		Path:     "/",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   s.cookieSecure(),
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   tokens.ExpiresIn,
 	})
@@ -330,7 +342,7 @@ func (s *Service) SetAuthCookies(w http.ResponseWriter, tokens *TokenPair) {
 		Value:    tokens.RefreshToken,
 		Path:     "/api/auth/refresh",
 		HttpOnly: true,
-		Secure:   true,
+		Secure:   s.cookieSecure(),
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(s.cfg.RefreshTokenTTL.Seconds()),
 	})
@@ -345,7 +357,7 @@ func (s *Service) ClearAuthCookies(w http.ResponseWriter) {
 			Path:     "/",
 			MaxAge:   -1,
 			HttpOnly: true,
-			Secure:   true,
+			Secure:   s.cookieSecure(),
 			SameSite: http.SameSiteStrictMode,
 		})
 	}
@@ -485,6 +497,9 @@ func GeneratePKCE() (codeVerifier, codeChallenge string, err error) {
 	return codeVerifier, codeChallenge, nil
 }
 
+// The OIDC cookies below stay Secure unconditionally. Signing in through an
+// external provider requires an HTTPS redirect URI anyway, so there is no
+// plain-HTTP case for them to support.
 func SetPKCECookie(w http.ResponseWriter, verifier string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     "pkce_verifier",

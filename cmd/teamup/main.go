@@ -143,6 +143,11 @@ type Config struct {
 	// works and needs no entry here.
 	AllowedWSOrigins []string `env:"TEAMUP_ALLOWED_WS_ORIGINS" envSeparator:","`
 
+	// Drops the Secure flag from auth cookies so a browser will keep them over
+	// plain HTTP. Needed only to reach TeamUp from another machine on a local
+	// network by address; anything on the open internet must leave this alone.
+	InsecureCookies bool `env:"TEAMUP_INSECURE_COOKIES" envDefault:"false"`
+
 	// OIDC Providers (configured via wizard)
 	GoogleClientID     string `env:"TEAMUP_GOOGLE_CLIENT_ID"`
 	GoogleClientSecret string `env:"TEAMUP_GOOGLE_CLIENT_SECRET"`
@@ -210,6 +215,7 @@ func (c *Config) AuthConfig() auth.Config {
 		CustomSecret:    c.CustomClientSecret,
 		AccessTokenTTL:  15 * time.Minute,
 		RefreshTokenTTL: 7 * 24 * time.Hour,
+		InsecureCookies: c.InsecureCookies,
 	}
 }
 
