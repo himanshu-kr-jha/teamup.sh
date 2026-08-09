@@ -3,6 +3,7 @@ version: '3.8'
 services:
   postgres:
     image: postgres:16-alpine
+    container_name: teamup-postgres
     environment:
       POSTGRES_USER: teamup
       POSTGRES_PASSWORD: teamup
@@ -19,6 +20,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    container_name: teamup-redis
     ports:
       - "6379:6379"
     volumes:
@@ -31,6 +33,7 @@ services:
 
   minio:
     image: minio/minio:latest
+    container_name: teamup-minio
     command: server /data --console-address ":9001"
     ports:
       - "9000:9000"
@@ -48,6 +51,7 @@ services:
 
   livekit:
     image: livekit/livekit-server:latest
+    container_name: teamup-livekit
     ports:
       - "7880:7880"
       - "7881:7881"
