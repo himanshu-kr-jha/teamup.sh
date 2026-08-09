@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
 	"github.com/teamup/teamup/pkg/protocol"
@@ -259,4 +260,63 @@ func (r *mutableRoster) ChannelMemberIDs(context.Context, string) ([]string, err
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.members...), nil
+}
+
+// stubDeliverer records who the hub tried to ring when they connected.
+type stubDeliverer struct {
+	mu      sync.Mutex
+	rung    []string
+	arrived chan struct{}
+}
+
+func (s *stubDeliverer) DeliverPendingInvitations(_ context.Context, userID uuid.UUID) {
+	s.mu.Lock()
+	s.rung = append(s.rung, userID.String())
+	s.mu.Unlock()
+	select {
+	case s.arrived <- struct{}{}:
+	default:
+	}
+}
+
+// Being connected is what separates a phone that rings from one that is merely
+// being called, so the hub has to be able to say which.
+func TestTheHubKnowsWhoIsConnected(t *testing.T) {
+	hub := NewHub(nil, stubPresence{}, nil, zerolog.Nop())
+	conn := testConnection(hub, "conn-1", "user-1", "org-1")
+
+	if hub.IsConnected("user-1") {
+		t.Error("nobody has connected yet")
+	}
+	hub.Register(conn)
+	if !hub.IsConnected("user-1") {
+		t.Error("somebody with a session open is reachable")
+	}
+	hub.Unregister(conn)
+	if hub.IsConnected("user-1") {
+		t.Error("their session is gone, so they are not reachable")
+	}
+}
+
+// Somebody who was away while being called should have their phone ring when
+// they come back, which means connecting is what triggers the attempt.
+func TestConnectingRingsForCallsThatWereWaiting(t *testing.T) {
+	hub := NewHub(nil, stubPresence{}, nil, zerolog.Nop())
+	deliverer := &stubDeliverer{arrived: make(chan struct{}, 1)}
+	hub.SetCallInviteDeliverer(deliverer)
+
+	userID := uuid.New()
+	hub.Register(testConnection(hub, "conn-1", userID.String(), "org-1"))
+
+	select {
+	case <-deliverer.arrived:
+	case <-time.After(2 * time.Second):
+		t.Fatal("connecting should look for calls still waiting on them")
+	}
+
+	deliverer.mu.Lock()
+	defer deliverer.mu.Unlock()
+	if len(deliverer.rung) != 1 || deliverer.rung[0] != userID.String() {
+		t.Errorf("the wrong person was rung: %v", deliverer.rung)
+	}
 }

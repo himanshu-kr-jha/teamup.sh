@@ -118,10 +118,13 @@ type MessageData struct {
 	Attachments []Attachment        `json:"attachments,omitempty"`
 	ReplyTo     *string             `json:"replyTo,omitempty"`
 	Reactions   map[string][]string `json:"reactions,omitempty"` // emoji -> userIDs
-	CreatedAt   time.Time           `json:"createdAt"`
-	EditedAt    *time.Time          `json:"editedAt,omitempty"`
-	DeletedAt   *time.Time          `json:"deletedAt,omitempty"`
-	Pending     bool                `json:"pending,omitempty"` // For optimistic UI
+	// Kind is "user" for something somebody wrote and "event" for something
+	// that happened, like a missed call.
+	Kind      string     `json:"kind,omitempty"`
+	CreatedAt time.Time  `json:"createdAt"`
+	EditedAt  *time.Time `json:"editedAt,omitempty"`
+	DeletedAt *time.Time `json:"deletedAt,omitempty"`
+	Pending   bool       `json:"pending,omitempty"` // For optimistic UI
 }
 
 type Attachment struct {

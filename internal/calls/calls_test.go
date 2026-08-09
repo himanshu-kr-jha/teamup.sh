@@ -610,3 +610,174 @@ func TestMutingWithoutAMediaServerSaysSo(t *testing.T) {
 		t.Errorf("status: got %d want 400", apperrors.HTTPStatus(err))
 	}
 }
+
+// Somebody who was away when they were called should have their phone ring the
+// moment they come back, rather than never learning it happened.
+func TestACallStillRingingIsWaitingForSomebodyWhoWasAway(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	away := testsupport.SeedUser(t, pool, org, "away@example.test", "member")
+
+	call, err := svc.CreateCall(ctx, org.ID, org.OwnerID, nil, "video", nil, []string{away.String()})
+	if err != nil {
+		t.Fatalf("create call: %v", err)
+	}
+
+	pending, err := svc.PendingInvitationsFor(ctx, away)
+	if err != nil {
+		t.Fatalf("pending: %v", err)
+	}
+	if len(pending) != 1 || pending[0].CallID != call.ID {
+		t.Fatalf("the call should still be waiting on them, got %+v", pending)
+	}
+	if pending[0].CallerID != org.OwnerID {
+		t.Errorf("the invitation should name who is calling, got %v", pending[0].CallerID)
+	}
+
+	// The caller does not wait forever. Past the ringing window it is a missed
+	// call, and coming online must not start a phone ringing for it.
+	if _, err := pool.Exec(ctx,
+		`UPDATE calls SET started_at = NOW() - INTERVAL '10 minutes' WHERE id = $1`, call.ID); err != nil {
+		t.Fatalf("age the call: %v", err)
+	}
+	pending, err = svc.PendingInvitationsFor(ctx, away)
+	if err != nil {
+		t.Fatalf("pending after the window: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("a call that stopped ringing long ago should not ring now, got %d", len(pending))
+	}
+}
+
+// Whoever is doing the calling is not waiting for their own phone to ring, and
+// a call that was answered is over as an invitation.
+func TestPendingInvitationsExcludeTheCallerAndAnsweredCalls(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	callee := testsupport.SeedUser(t, pool, org, "picks-up@example.test", "member")
+
+	call, err := svc.CreateCall(ctx, org.ID, org.OwnerID, nil, "video", nil, []string{callee.String()})
+	if err != nil {
+		t.Fatalf("create call: %v", err)
+	}
+
+	pending, err := svc.PendingInvitationsFor(ctx, org.OwnerID)
+	if err != nil {
+		t.Fatalf("pending for the caller: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("the caller should not be rung by their own call, got %d", len(pending))
+	}
+
+	if err := svc.MarkParticipantJoined(ctx, call.ID, callee); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+	pending, err = svc.PendingInvitationsFor(ctx, callee)
+	if err != nil {
+		t.Fatalf("pending after joining: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Errorf("a call already picked up should not ring again, got %d", len(pending))
+	}
+}
+
+// recordedEvents stands in for chat, so the test can see what would have been
+// written into the conversation without depending on that package.
+type recordedEvents struct {
+	notes []string
+}
+
+func (r *recordedEvents) RecordCallEvent(_ context.Context, _, _, _ uuid.UUID, text string) error {
+	r.notes = append(r.notes, text)
+	return nil
+}
+
+// A private call nobody picked up is the one case where the other person has
+// no way of finding out unless it is written down.
+func TestAPrivateCallNobodyAnsweredIsWrittenIntoTheConversation(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	away := testsupport.SeedUser(t, pool, org, "missed@example.test", "member")
+
+	recorder := &recordedEvents{}
+	svc.SetChatRecorder(recorder)
+
+	call, err := svc.CreateCall(ctx, org.ID, org.OwnerID, nil, "video", nil, []string{away.String()})
+	if err != nil {
+		t.Fatalf("create call: %v", err)
+	}
+
+	svc.NoteIfMissed(ctx, call.ID)
+	if len(recorder.notes) != 1 {
+		t.Fatalf("a missed call should leave a note, got %+v", recorder.notes)
+	}
+
+	// Once somebody picks up it is a conversation, not a missed call, however
+	// it ends afterwards.
+	answered, err := svc.CreateCall(ctx, org.ID, org.OwnerID, nil, "video", nil, []string{away.String()})
+	if err != nil {
+		t.Fatalf("create second call: %v", err)
+	}
+	if err := svc.MarkAnswered(ctx, answered.ID); err != nil {
+		t.Fatalf("mark answered: %v", err)
+	}
+	svc.NoteIfMissed(ctx, answered.ID)
+	if len(recorder.notes) != 1 {
+		t.Errorf("an answered call is not a missed one, got %+v", recorder.notes)
+	}
+}
+
+// A call placed from a direct message carries that channel, and it is still a
+// call between two people — the guard against noting channel calls must not
+// swallow it.
+func TestAMissedCallFromADirectMessageIsStillNoted(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedUser(t, pool, org, "dm-missed@example.test", "member")
+
+	dm := uuid.New()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO channels (id, org_id, name, type, created_by, created_at)
+		VALUES ($1, $2, 'dm', 'dm', $3, NOW())
+	`, dm, org.ID, org.OwnerID); err != nil {
+		t.Fatalf("seed dm: %v", err)
+	}
+
+	recorder := &recordedEvents{}
+	svc.SetChatRecorder(recorder)
+
+	call, err := svc.CreateCall(ctx, org.ID, org.OwnerID, nil, "video", &dm, []string{other.String()})
+	if err != nil {
+		t.Fatalf("create call: %v", err)
+	}
+	svc.NoteIfMissed(ctx, call.ID)
+	if len(recorder.notes) != 1 {
+		t.Fatalf("a call from a direct message that nobody answered is a missed call, got %+v", recorder.notes)
+	}
+}
+
+// A meeting nobody came to is not a missed call, and must not turn up in
+// somebody's private conversation.
+func TestAnUnansweredChannelCallIsNotAMissedCall(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedUser(t, pool, org, "channel-call@example.test", "member")
+	ch := testsupport.SeedChannel(t, pool, org, "standup", org.OwnerID, other)
+
+	recorder := &recordedEvents{}
+	svc.SetChatRecorder(recorder)
+
+	call, err := svc.CreateCall(ctx, org.ID, org.OwnerID, nil, "video", &ch, []string{other.String()})
+	if err != nil {
+		t.Fatalf("create call: %v", err)
+	}
+	svc.NoteIfMissed(ctx, call.ID)
+	if len(recorder.notes) != 0 {
+		t.Errorf("a channel call should leave nothing in a private conversation, got %+v", recorder.notes)
+	}
+}

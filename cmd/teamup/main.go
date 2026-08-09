@@ -394,6 +394,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 	chatService.SetBroadcaster(wsHub)
 	// Who a channel message reaches is resolved from membership at send time.
 	wsHub.SetChannelRoster(chatService)
+	// A call that arrived while somebody was away rings when they come back,
+	// and the caller is told whether anybody is actually there.
+	wsHub.SetCallInviteDeliverer(callsService)
+	callsService.SetReachability(wsHub)
+	callsService.SetChatRecorder(chatService)
 	callsService.SetBroadcaster(wsHub)
 
 	// Notifications reach the browser over the same socket, and the features

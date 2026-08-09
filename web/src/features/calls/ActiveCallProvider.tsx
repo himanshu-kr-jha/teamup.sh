@@ -58,6 +58,16 @@ export function useActiveCall() {
   return context;
 }
 
+/**
+ * What to call the wait. A phone that is switched off is not ringing, and
+ * telling the caller it is leaves them wondering why nobody picks up.
+ */
+function waitingLabel(reachable: boolean | null): string {
+  if (reachable === true) return 'Ringing\u2026';
+  if (reachable === false) return 'Calling\u2026';
+  return 'Waiting for others';
+}
+
 /** How long somebody may sit alone before being asked whether they meant to. */
 const ALONE_BEFORE_ASKING_MS = 90_000;
 /** How long they have to answer before the call is dropped. */
@@ -73,6 +83,10 @@ const ANSWER_WINDOW_MS = 30_000;
  */
 export function ActiveCallProvider({ children }: { children: ReactNode }) {
   const [activeCall, setActiveCall] = useState<ActiveCall | null>(null);
+  // Keyed by call, because the server says whether the other end is there as
+  // soon as the call goes out — which is before joining has finished, and
+  // before there is an active call to attribute it to.
+  const [reach, setReach] = useState<Record<string, boolean>>({});
   const [joining, setJoining] = useState(false);
   const [error, setError] = useState('');
   const toast = useToast();
@@ -131,6 +145,17 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
     });
   }, [on, toast]);
 
+  // Whether the phone at the other end is actually ringing. The server says so
+  // when the call goes out and again if they come online while it is still
+  // going, which is the difference between "calling" and "ringing".
+  useEffect(() => {
+    return on('call.reach', (msg) => {
+      const payload = msg.payload as any;
+      if (!payload?.callId) return;
+      setReach((current) => ({ ...current, [payload.callId]: !!payload.reachable }));
+    });
+  }, [on]);
+
   // Being in a call is observed rather than chosen, so it sets itself and
   // clears when the call ends however it ends.
   useEffect(() => {
@@ -171,7 +196,12 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
           // changes, so the media session survives moving around the app.
           className="contents"
         >
-          <CallFrame callId={activeCall.callId} expanded={expanded} onLeave={leave} />
+          <CallFrame
+            callId={activeCall.callId}
+            expanded={expanded}
+            onLeave={leave}
+            reachable={activeCall.callId in reach ? reach[activeCall.callId] : null}
+          />
           <RoomAudioRenderer />
         </LiveKitRoom>
       )}
@@ -184,10 +214,13 @@ function CallFrame({
   callId,
   expanded,
   onLeave,
+  reachable,
 }: {
   callId: string;
   expanded: boolean;
   onLeave: () => void;
+  /** Whether the other end has a session open; null until the server says. */
+  reachable: boolean | null;
 }) {
   const navigate = useNavigate();
   const toast = useToast();
@@ -296,7 +329,7 @@ function CallFrame({
           >
             {!expanded && <GripVertical className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />}
             <span className="flex-1 truncate text-sm font-medium">
-              {alone ? 'Waiting for others' : `In a call · ${remote.length + 1}`}
+              {alone ? waitingLabel(reachable) : `In a call · ${remote.length + 1}`}
             </span>
             <Button
               variant="ghost"

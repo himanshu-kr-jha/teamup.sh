@@ -4,7 +4,7 @@ export type WSMessageType =
   | 'task.comment'
   | 'chat.send' | 'chat.sent' | 'chat.message' | 'chat.edit' | 'chat.delete' | 'chat.reaction' | 'chat.typing' | 'chat.read'
   | 'presence.update' | 'presence.changed' | 'presence.sync'
-  | 'call.invite' | 'call.invited' | 'call.accept' | 'call.decline' | 'call.ended' | 'call.signaling' | 'call.signaling.relay'
+  | 'call.invite' | 'call.invited' | 'call.accept' | 'call.decline' | 'call.ended' | 'call.reach' | 'call.signaling' | 'call.signaling.relay'
   | 'notification.new' | 'notification.read';
 
 export interface Message<T = any> {

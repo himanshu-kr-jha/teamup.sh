@@ -225,6 +225,7 @@ func (h *Handler) DeclineCall(c *gin.Context) {
 				httpx.Error(c, err, "failed to end call")
 				return
 			}
+			go h.service.NoteIfMissed(context.WithoutCancel(ctx), id)
 		}
 	}
 
@@ -360,6 +361,13 @@ func (h *Handler) GetCallToken(c *gin.Context) {
 	if err := h.service.MarkParticipantJoined(c.Request.Context(), id, userID); err != nil {
 		h.service.logger.Warn().Err(err).Msg("could not record call attendance")
 	}
+	// Somebody other than the caller picking up is what makes this not a
+	// missed call, whatever happens to it afterwards.
+	if userID != call.CreatedBy {
+		if err := h.service.MarkAnswered(c.Request.Context(), id); err != nil {
+			h.service.logger.Warn().Err(err).Msg("could not record that a call was answered")
+		}
+	}
 
 	c.JSON(http.StatusOK, gin.H{"token": token, "roomName": call.RoomName})
 }
@@ -460,6 +468,9 @@ func (h *Handler) EndCall(c *gin.Context) {
 	if others, err := h.service.Participants(c.Request.Context(), id, user.UserID); err == nil {
 		go h.service.AnnounceCallOver(context.WithoutCancel(c.Request.Context()), call, "ended", "", others)
 	}
+	// Hanging up on a call nobody ever picked up leaves a missed call behind,
+	// which is the only trace the other person gets if they were away.
+	go h.service.NoteIfMissed(context.WithoutCancel(c.Request.Context()), id)
 
 	c.JSON(http.StatusOK, gin.H{"message": "call ended"})
 }

@@ -110,6 +110,10 @@ type Message struct {
 	ReplyTo     *uuid.UUID          `json:"replyTo,omitempty"`
 	Attachments []Attachment        `json:"attachments"`
 	Reactions   map[string][]string `json:"reactions"`
+	// Kind separates what somebody wrote from what happened: "user" or
+	// "event". An event is shown as a note in the conversation rather than as
+	// a message from a person.
+	Kind string `json:"kind"`
 	// ReadCount is how many other people in the channel have read this, so a
 	// sender can tell whether their message landed.
 	ReadCount int        `json:"readCount"`
@@ -385,11 +389,12 @@ var sentinelStripper = strings.NewReplacer(HighlightStart, "", HighlightEnd, "")
 func (s *Service) createMessage(ctx context.Context, msg *Message) error {
 	msg.Content = sentinelStripper.Replace(msg.Content)
 	err := s.db.QueryRow(ctx, `
-		INSERT INTO messages (id, org_id, channel_id, user_id, content, reply_to, created_at)
-		SELECT $1, c.org_id, $2, $3, $4, $5, $6
+		INSERT INTO messages (id, org_id, channel_id, user_id, content, reply_to, kind, created_at)
+		SELECT $1, c.org_id, $2, $3, $4, $5, $7, $6
 		FROM channels c WHERE c.id = $2 AND c.deleted_at IS NULL
 		RETURNING created_at
-	`, msg.ID, msg.ChannelID, msg.UserID, msg.Content, msg.ReplyTo, msg.CreatedAt).Scan(&msg.CreatedAt)
+	`, msg.ID, msg.ChannelID, msg.UserID, msg.Content, msg.ReplyTo, msg.CreatedAt,
+		defaultKind(msg.Kind)).Scan(&msg.CreatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return apperrors.New(apperrors.CodeNotFound, "channel not found")
@@ -573,11 +578,20 @@ func (s *Service) messageToData(msg *Message) protocol.MessageData {
 		Content:     msg.Content,
 		Attachments: s.attachmentsToProtocol(msg.Attachments),
 		Reactions:   msg.Reactions,
+		Kind:        defaultKind(msg.Kind),
 		ReplyTo:     replyToString(msg.ReplyTo),
 		CreatedAt:   msg.CreatedAt,
 		EditedAt:    msg.EditedAt,
 		DeletedAt:   msg.DeletedAt,
 	}
+}
+
+// defaultKind keeps ordinary messages as they were when nothing says otherwise.
+func defaultKind(kind string) string {
+	if kind == "" {
+		return "user"
+	}
+	return kind
 }
 
 func replyToString(id *uuid.UUID) *string {
@@ -876,6 +890,39 @@ func (s *Service) OpenDirectMessage(ctx context.Context, orgID, userID, otherID 
 	}
 	c.MemberCount = 2
 	return &c, nil
+}
+
+// RecordCallEvent writes a note into the conversation between two people —
+// "missed call" and the like. It is not something either of them said, so it
+// is marked as an event and shown differently.
+//
+// Posted into their direct message, creating it if they have never spoken:
+// finding out you were called belongs where you would look anyway, not in a
+// separate list of calls nobody opens.
+func (s *Service) RecordCallEvent(ctx context.Context, orgID, callerID, calleeID uuid.UUID, text string) error {
+	dm, err := s.OpenDirectMessage(ctx, orgID, callerID, calleeID)
+	if err != nil {
+		return fmt.Errorf("find the conversation: %w", err)
+	}
+
+	msg := &Message{
+		ID:        uuid.New(),
+		ChannelID: dm.ID,
+		UserID:    callerID,
+		Content:   text,
+		Kind:      "event",
+		Reactions: map[string][]string{},
+		CreatedAt: time.Now(),
+	}
+	if err := s.createMessage(ctx, msg); err != nil {
+		return err
+	}
+	if s.broadcaster != nil {
+		s.broadcaster.BroadcastToChannel(dm.ID.String(), protocol.NewMessage(
+			protocol.TypeChatMessage, protocol.ChatMessagePayload{Message: s.messageToData(msg)},
+		), "")
+	}
+	return nil
 }
 
 // EnrolInOpenChannels puts a user into every public and announcement channel
@@ -1198,7 +1245,7 @@ func (s *Service) GetMessages(ctx context.Context, channelID uuid.UUID, limit in
 	rows, err := s.db.Query(ctx, `
 		SELECT m.id, m.channel_id, m.user_id, m.content, m.reply_to,
 		       m.created_at, m.edited_at, m.deleted_at,
-		       u.name, COALESCE(u.avatar_url, '')
+		       u.name, COALESCE(u.avatar_url, ''), COALESCE(m.kind, 'user')
 		FROM messages m
 		JOIN users u ON u.id = m.user_id
 		WHERE m.channel_id = $1
@@ -1215,7 +1262,7 @@ func (s *Service) GetMessages(ctx context.Context, channelID uuid.UUID, limit in
 	for rows.Next() {
 		var m Message
 		if err := rows.Scan(&m.ID, &m.ChannelID, &m.UserID, &m.Content, &m.ReplyTo,
-			&m.CreatedAt, &m.EditedAt, &m.DeletedAt, &m.UserName, &m.UserAvatar); err != nil {
+			&m.CreatedAt, &m.EditedAt, &m.DeletedAt, &m.UserName, &m.UserAvatar, &m.Kind); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
 		m.Reactions = map[string][]string{}

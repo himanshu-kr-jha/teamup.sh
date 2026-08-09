@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   Hash, Send, Paperclip, Smile, Bell, Settings, ChevronLeft, MessageSquare, Video, User,
-  Megaphone, MoreVertical, Pencil, Trash2, Eye, Ban, Check, CheckCheck,
+  Megaphone, MoreVertical, Pencil, Trash2, Eye, Ban, Check, CheckCheck, PhoneMissed,
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
@@ -52,6 +52,11 @@ interface Message {
   deletedAt?: string;
   /** How many other people in the channel have read it. */
   readCount?: number;
+  /**
+   * "user" for something somebody wrote, "event" for something that happened
+   * — a missed call, say. Absent on older messages, which are all "user".
+   */
+  kind?: string;
   pending?: boolean;
 }
 
@@ -496,6 +501,15 @@ export function ChatPage() {
                     new Date(msg.createdAt).getTime() - new Date(previous.createdAt).getTime() < 5 * 60 * 1000;
                   const newDay = !previous || !sameDay(previous.createdAt, msg.createdAt);
 
+                  if (msg.kind === 'event') {
+                    return (
+                      <div key={msg.id}>
+                        {newDay && <DaySeparator when={msg.createdAt} />}
+                        <CallEvent message={msg} isOwn={msg.userId === user?.id} />
+                      </div>
+                    );
+                  }
+
                   return (
                     <div key={msg.id}>
                       {newDay && <DaySeparator when={msg.createdAt} />}
@@ -668,6 +682,32 @@ function DaySeparator({ when }: { when: string }) {
       <div className="h-px flex-1 bg-border" />
       <span className="text-xs font-medium text-muted-foreground">{label}</span>
       <div className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
+
+/**
+ * Something that happened rather than something anybody said.
+ *
+ * Centred and unattributed, because a missed call is not a message from the
+ * person who called — it is the conversation telling you what you missed, and
+ * dressing it as their message would have you replying to nobody.
+ */
+function CallEvent({ message, isOwn }: { message: Message; isOwn: boolean }) {
+  return (
+    <div className="flex justify-center py-1.5">
+      <span className="flex items-center gap-2 rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
+        <PhoneMissed className="h-3.5 w-3.5" aria-hidden="true" />
+        {/* The caller knows they called; what they did not know is that it went
+            unanswered. The other person needs to be told it happened at all. */}
+        <span>{isOwn ? 'No answer' : `${message.content} from ${message.userName}`}</span>
+        <span>
+          {new Date(message.createdAt).toLocaleTimeString(undefined, {
+            hour: '2-digit',
+            minute: '2-digit',
+          })}
+        </span>
+      </span>
     </div>
   );
 }

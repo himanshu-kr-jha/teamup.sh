@@ -2,6 +2,7 @@ package websocket
 
 import (
 	"context"
+	"github.com/google/uuid"
 	"time"
 
 	"github.com/teamup/teamup/pkg/protocol"
@@ -45,6 +46,13 @@ type PresenceServiceInterface interface {
 // channel somebody joins, leaves or has created for them while connected.
 type ChannelRosterInterface interface {
 	ChannelMemberIDs(ctx context.Context, channelID string) ([]string, error)
+}
+
+// CallInviteDeliverer rings somebody for any call still waiting on them.
+// Connecting is the moment to do it: whoever called may have been waiting the
+// whole time they were away.
+type CallInviteDeliverer interface {
+	DeliverPendingInvitations(ctx context.Context, userID uuid.UUID)
 }
 
 // AuthServiceInterface defines the interface for auth service

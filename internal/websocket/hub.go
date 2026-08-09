@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/google/uuid"
 	"math/rand"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ type Hub struct {
 	presenceService PresenceServiceInterface
 	authService     AuthServiceInterface
 	roster          ChannelRosterInterface
+	calls           CallInviteDeliverer
 	logger          zerolog.Logger
 
 	mu          sync.RWMutex
@@ -107,6 +109,18 @@ func (h *Hub) Register(conn *Connection) {
 
 	h.presenceService.SetOnline(conn.UserID(), conn.OrgID())
 	h.broadcastPresence(conn.OrgID(), conn.UserID(), "online", "")
+
+	// Anybody who called while they were away may still be waiting, so their
+	// phone rings now rather than never.
+	if h.calls != nil {
+		if userID, err := uuid.Parse(conn.UserID()); err == nil {
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				h.calls.DeliverPendingInvitations(ctx, userID)
+			}()
+		}
+	}
 }
 
 // Unregister removes a connection, announcing the user as offline once their
@@ -139,6 +153,17 @@ func (h *Hub) Unregister(conn *Connection) {
 		h.presenceService.SetOffline(conn.UserID(), conn.OrgID())
 		h.broadcastPresence(conn.OrgID(), conn.UserID(), "offline", "")
 	}
+}
+
+// SetCallInviteDeliverer wires the check for calls waiting on somebody.
+func (h *Hub) SetCallInviteDeliverer(c CallInviteDeliverer) { h.calls = c }
+
+// IsConnected reports whether somebody has a session open, which is what
+// separates a phone that is ringing from one that is merely being called.
+func (h *Hub) IsConnected(userID string) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.userConns[userID]) > 0
 }
 
 // SetChannelRoster wires the lookup that decides who a channel message reaches.

@@ -1471,3 +1471,60 @@ func TestAChannelHasNoCounterpart(t *testing.T) {
 		}
 	}
 }
+
+// A missed call has to land somewhere the person will actually look, and the
+// conversation with whoever called is that place — even if they have never
+// spoken before.
+func TestAMissedCallIsWrittenIntoTheConversationAsAnEvent(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedUser(t, pool, org, "was-away@example.test", "member")
+
+	if err := svc.RecordCallEvent(ctx, org.ID, org.OwnerID, other, "Missed call"); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	dm, err := svc.OpenDirectMessage(ctx, org.ID, other, org.OwnerID)
+	if err != nil {
+		t.Fatalf("open the conversation: %v", err)
+	}
+	history, err := svc.GetMessages(ctx, dm.ID, 10, nil)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("the missed call should be in the conversation, got %d messages", len(history))
+	}
+	if history[0].Content != "Missed call" {
+		t.Errorf("unexpected note: %q", history[0].Content)
+	}
+	// Marked as something that happened, not something the caller said —
+	// otherwise it reads as a message from them and invites a reply.
+	if history[0].Kind != "event" {
+		t.Errorf("a missed call is an event, got kind %q", history[0].Kind)
+	}
+	if history[0].UserID != org.OwnerID {
+		t.Errorf("the note should name who called, got %v", history[0].UserID)
+	}
+}
+
+// Everything written before events existed, and everything anybody types, is
+// an ordinary message. Nothing should come back with an empty kind.
+func TestAnOrdinaryMessageIsNotAnEvent(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	ch := testsupport.SeedChannel(t, pool, org, "general", org.OwnerID)
+
+	if _, err := svc.SendMessage(ctx, org.ID, ch, org.OwnerID, "hello", nil, nil, false); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	history, err := svc.GetMessages(ctx, ch, 10, nil)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	if history[0].Kind != "user" {
+		t.Errorf("something somebody typed is a message, got kind %q", history[0].Kind)
+	}
+}

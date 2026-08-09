@@ -42,6 +42,8 @@ type Broadcaster interface {
 }
 
 type Service struct {
+	reachable     Reachable
+	chat          ChatRecorder
 	db            *pgxpool.Pool
 	cfg           Config
 	logger        zerolog.Logger
@@ -299,6 +301,14 @@ func (s *Service) Ring(ctx context.Context, call *Call, callerID, callerName str
 		}
 		s.broadcaster.BroadcastToUser(invitee.String(), protocol.NewMessage(
 			protocol.TypeCallInvited, payload))
+
+		// Tell whoever is calling whether that reached a phone or an empty
+		// seat, so they see "ringing" or "calling" rather than guessing.
+		s.broadcaster.BroadcastToUser(callerID, protocol.NewMessage("call.reach", map[string]any{
+			"callId":    call.ID.String(),
+			"userId":    invitee.String(),
+			"reachable": s.isReachable(invitee.String()),
+		}))
 	}
 }
 
@@ -737,6 +747,190 @@ func (s *Service) MarkParticipantLeft(ctx context.Context, callID, userID uuid.U
 		callID, userID)
 	if err != nil {
 		return fmt.Errorf("mark left: %w", err)
+	}
+	return nil
+}
+
+// RingWindow is how long a call keeps trying to reach somebody. Past it, a
+// call that was never answered is a missed one, and connecting no longer makes
+// your phone ring for it.
+const RingWindow = 45 * time.Second
+
+// Reachable reports whether somebody has a session open. The caller is shown
+// "ringing" when they do and "calling" when they do not — the difference
+// between a phone making a noise somewhere and a message left in the air.
+type Reachable interface {
+	IsConnected(userID string) bool
+}
+
+// SetReachability wires the check. Without it everybody is treated as
+// reachable, which is how this behaved before.
+func (s *Service) SetReachability(r Reachable) { s.reachable = r }
+
+// ChatRecorder writes a note into the conversation between two people. An
+// interface so calls does not depend on the chat package.
+type ChatRecorder interface {
+	RecordCallEvent(ctx context.Context, orgID, callerID, calleeID uuid.UUID, text string) error
+}
+
+// SetChatRecorder wires where a missed call is written down.
+func (s *Service) SetChatRecorder(c ChatRecorder) { s.chat = c }
+
+// NoteIfMissed writes "missed call" into the conversation when a one-to-one
+// call ends without the other person ever picking up.
+//
+// Only for calls between two people. A call placed from a direct message is
+// one of those even though it carries a channel, because a direct message is
+// the conversation between exactly those two. A call to a real channel that
+// nobody joined is not a missed call — it is a meeting nobody came to, and does
+// not belong in anybody's private conversation.
+func (s *Service) NoteIfMissed(ctx context.Context, callID uuid.UUID) {
+	if s.chat == nil {
+		return
+	}
+
+	var (
+		orgID       uuid.UUID
+		createdBy   uuid.UUID
+		channelKind string
+		answered    bool
+	)
+	if err := s.db.QueryRow(ctx, `
+		SELECT c.org_id, c.created_by, COALESCE(ch.type, ''), COALESCE(c.answered, false)
+		FROM calls c
+		LEFT JOIN channels ch ON ch.id = c.channel_id
+		WHERE c.id = $1
+	`, callID).Scan(&orgID, &createdBy, &channelKind, &answered); err != nil {
+		s.logger.Warn().Err(err).Msg("could not tell whether a call was answered")
+		return
+	}
+	if answered || (channelKind != "" && channelKind != "dm") {
+		return
+	}
+
+	rows, err := s.db.Query(ctx,
+		`SELECT user_id FROM call_participants WHERE call_id = $1 AND user_id <> $2`,
+		callID, createdBy)
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("could not work out who was called")
+		return
+	}
+	defer rows.Close()
+
+	callees := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err == nil {
+			callees = append(callees, id)
+		}
+	}
+	// Exactly one other person: anything else is a group, not a private call.
+	if len(callees) != 1 {
+		return
+	}
+
+	if err := s.chat.RecordCallEvent(ctx, orgID, createdBy, callees[0],
+		"Missed call"); err != nil {
+		s.logger.Warn().Err(err).Msg("could not write a missed call into the conversation")
+	}
+}
+
+func (s *Service) isReachable(userID string) bool {
+	if s.reachable == nil {
+		return true
+	}
+	return s.reachable.IsConnected(userID)
+}
+
+// PendingInvitation is a call still trying to reach somebody.
+type PendingInvitation struct {
+	CallID     uuid.UUID
+	RoomName   string
+	CallerID   uuid.UUID
+	CallerName string
+	CallType   string
+	ChannelID  *uuid.UUID
+}
+
+// PendingInvitationsFor lists calls this person was invited to that are still
+// within the ring window and which they have neither joined nor turned down.
+//
+// Somebody who was away when the phone rang should hear it when they get back,
+// provided whoever called is still waiting.
+func (s *Service) PendingInvitationsFor(ctx context.Context, userID uuid.UUID) ([]PendingInvitation, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT c.id, c.room_name, c.created_by, COALESCE(u.name, u.email, ''), c.call_type, c.channel_id
+		FROM call_participants p
+		JOIN calls c ON c.id = p.call_id
+		LEFT JOIN users u ON u.id = c.created_by
+		WHERE p.user_id = $1
+		  AND p.joined_at IS NULL
+		  AND p.left_at IS NULL
+		  AND c.status = 'active'
+		  AND c.created_by <> $1
+		  AND c.started_at > NOW() - $2::interval
+	`, userID, RingWindow.String())
+	if err != nil {
+		return nil, fmt.Errorf("list pending invitations: %w", err)
+	}
+	defer rows.Close()
+
+	pending := []PendingInvitation{}
+	for rows.Next() {
+		var p PendingInvitation
+		if err := rows.Scan(&p.CallID, &p.RoomName, &p.CallerID, &p.CallerName,
+			&p.CallType, &p.ChannelID); err != nil {
+			return nil, fmt.Errorf("scan pending invitation: %w", err)
+		}
+		pending = append(pending, p)
+	}
+	return pending, rows.Err()
+}
+
+// DeliverPendingInvitations rings somebody for anything still waiting, and
+// tells whoever is calling that their phone is now making a noise.
+func (s *Service) DeliverPendingInvitations(ctx context.Context, userID uuid.UUID) {
+	if s.broadcaster == nil {
+		return
+	}
+	pending, err := s.PendingInvitationsFor(ctx, userID)
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("could not look for calls waiting on somebody")
+		return
+	}
+	for _, p := range pending {
+		token, err := s.GenerateToken(ctx, p.RoomName, userID.String(), s.DisplayName(ctx, userID), true, true)
+		if err != nil {
+			continue
+		}
+		payload := protocol.CallInvitedPayload{
+			CallID:     p.CallID.String(),
+			RoomName:   p.RoomName,
+			CallerID:   p.CallerID.String(),
+			CallerName: p.CallerName,
+			CallType:   p.CallType,
+			Token:      token,
+		}
+		if p.ChannelID != nil {
+			payload.ChannelID = p.ChannelID.String()
+		}
+		s.broadcaster.BroadcastToUser(userID.String(), protocol.NewMessage(protocol.TypeCallInvited, payload))
+
+		// The caller has been watching "calling"; it is ringing now.
+		s.broadcaster.BroadcastToUser(p.CallerID.String(), protocol.NewMessage("call.reach", map[string]any{
+			"callId":    p.CallID.String(),
+			"userId":    userID.String(),
+			"reachable": true,
+		}))
+	}
+}
+
+// MarkAnswered records that somebody other than the caller picked up, which is
+// what separates a short call from a missed one once it is over.
+func (s *Service) MarkAnswered(ctx context.Context, callID uuid.UUID) error {
+	_, err := s.db.Exec(ctx, `UPDATE calls SET answered = TRUE WHERE id = $1`, callID)
+	if err != nil {
+		return fmt.Errorf("mark answered: %w", err)
 	}
 	return nil
 }
