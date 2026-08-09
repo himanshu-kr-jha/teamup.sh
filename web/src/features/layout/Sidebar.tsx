@@ -6,13 +6,7 @@ import { cn } from '@/shared/utils/cn';
 import { useOrganizationAccess } from './useOrganizationAccess';
 
 export function Sidebar() {
-  const { sidebarOpen, toggleSidebar, setSidebarOpen } = useUIStore();
-
-  // On a phone the drawer covers the page, so following a link has to close
-  // it — otherwise you arrive somewhere you cannot see.
-  const closeOnMobile = () => {
-    if (window.innerWidth < 1024) setSidebarOpen(false);
-  };
+  const { sidebarOpen, toggleSidebar } = useUIStore();
   const { user, isAuthenticated, isLoading } = useAuth();
 
   // A member cannot change anything on the Organization screen, so it is not
@@ -30,14 +24,12 @@ export function Sidebar() {
   return (
     <aside
       className={cn(
-        'fixed left-0 top-0 z-50 h-screen border-r border-border bg-card transition-transform duration-200 lg:transition-all',
-        // On a phone it is a drawer: full width off to the side, and out of
-        // the way entirely when closed. On a large screen it is docked and
-        // only narrows.
-        'w-64',
-        sidebarOpen ? 'translate-x-0' : '-translate-x-full',
-        'lg:translate-x-0',
-        sidebarOpen ? 'lg:w-64' : 'lg:w-16'
+        // Not on a phone at all any more. It used to be a drawer that covered
+        // the page, which is what the sections along the bottom replaced; two
+        // ways to the same four places, one of them hiding what you were
+        // looking at, is worse than one.
+        'fixed left-0 top-0 z-50 hidden h-viewport border-r border-border bg-card transition-all duration-200 lg:block',
+        sidebarOpen ? 'w-64' : 'w-16'
       )}
       aria-label="Main navigation"
     >
@@ -65,7 +57,6 @@ export function Sidebar() {
         <nav className="flex-1 overflow-y-auto p-2 space-y-1" aria-label="Main">
           {navItems.map((item) => (
             <NavLink
-              onClick={closeOnMobile}
               key={item.path}
               to={item.path}
               className={({ isActive }) =>

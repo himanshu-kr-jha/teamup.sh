@@ -10,7 +10,7 @@ import { ChatNotifications } from "@/features/chat/ChatNotifications";
 import { cn } from "@/shared/utils/cn";
 
 export function Layout() {
-  const { sidebarOpen, toggleSidebar } = useUIStore();
+  const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   const user = useAuthStore((s) => s.user);
 
   // The API refuses every one of these pages' requests until the password is
@@ -20,21 +20,19 @@ export function Layout() {
 
   return (
     <ActiveCallProvider>
-      <div className="flex h-screen bg-background">
+      <div className="flex h-viewport overflow-hidden bg-background">
         <Sidebar />
         {/* The sidebar is position:fixed, so it is out of the flex flow and the
           content column has to be offset by hand — otherwise every page renders
-          underneath it and its left edge is unclickable. */}
+          underneath it and its left edge is unclickable. Only on a large
+          screen: below that there is no sidebar to make room for. */}
         <div
           className={cn(
-            // The sidebar is fixed, so the content column is offset by hand.
-            // Only on a large screen: on a phone the drawer floats over the
-            // page rather than pushing it.
             "flex min-w-0 flex-1 flex-col overflow-hidden transition-all duration-200",
             sidebarOpen ? "lg:ml-64" : "lg:ml-16",
           )}
         >
-          <Header onMenuClick={toggleSidebar} />
+          <Header />
           {/* Pages render their own header and padding, so main stays bare;
             padding here produced a second layer of chrome. */}
           <main className="min-h-0 flex-1 overflow-hidden">
@@ -50,13 +48,6 @@ export function Layout() {
       {/* A message has to reach you wherever you are too, not only on the
           page that happens to be about chat. */}
       <ChatNotifications />
-        {sidebarOpen && (
-          <div
-            className="fixed inset-0 z-40 bg-black/50 lg:hidden"
-            onClick={toggleSidebar}
-            aria-hidden="true"
-          />
-        )}
       </div>
     </ActiveCallProvider>
   );

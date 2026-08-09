@@ -60,6 +60,21 @@
 }
 
 @layer utilities {
+  /*
+   * As tall as the screen actually is.
+   *
+   * 100vh on a phone means the screen with the browser's address bar counted
+   * as usable, so a page built to fill it is always taller than what you can
+   * see and the whole thing scrolls a little — which is exactly the amount
+   * that made every screen feel loose. 100dvh is the space really there, and
+   * follows the bar as it hides and returns. The 100vh above it is what older
+   * browsers get.
+   */
+  .h-viewport {
+    height: 100vh;
+    height: 100dvh;
+  }
+
   .scrollbar-hide {
     -ms-overflow-style: none;
     scrollbar-width: none;

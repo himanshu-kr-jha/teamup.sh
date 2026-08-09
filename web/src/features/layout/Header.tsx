@@ -1,4 +1,5 @@
-import { Menu, Sun, Moon } from 'lucide-react';
+import { Hash, Sun, Moon } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
 import { usePresence } from '@/features/presence/usePresence';
 import { AvailabilityButton } from '@/features/presence/AvailabilityPicker';
 import { useAuth } from '@/features/auth/AuthProvider';
@@ -8,14 +9,13 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/shared/components/ui/avat
 import { NotificationBell } from '@/features/notifications/NotificationBell';
 import { SearchBox } from '@/features/search/SearchBox';
 import { useState } from 'react';
+import { useOrganizationAccess } from './useOrganizationAccess';
 
-interface HeaderProps {
-  onMenuClick: () => void;
-}
-
-export function Header({ onMenuClick }: HeaderProps) {
+export function Header() {
   const { user, logout } = useAuth();
   const { personOf } = usePresence();
+  const navigate = useNavigate();
+  const { allowed: mayAdminister } = useOrganizationAccess();
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
 
   return (
@@ -24,15 +24,13 @@ export function Header({ onMenuClick }: HeaderProps) {
     // parent no matter what z-index they carried — they came out behind the
     // conversations.
     <header className="sticky top-0 z-50 flex h-16 items-center gap-4 border-b border-border bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/60 md:px-6">
-      <button
-        onClick={onMenuClick}
-        className="lg:hidden p-2 rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"
-        aria-label="Toggle menu"
-      >
-        <Menu className="h-5 w-5" aria-hidden="true" />
-      </button>
-
-      <div className="flex-1 flex items-center gap-4">
+      <div className="flex flex-1 items-center gap-4">
+        {/* Below a large screen there is no sidebar to carry the name, and with
+            the menu button gone this corner was simply empty. */}
+        <Link to="/chat" className="flex items-center gap-2 lg:hidden" aria-label="TeamUp Home">
+          <Hash className="h-6 w-6 text-primary" aria-hidden="true" />
+          <span className="text-lg font-bold">TeamUp</span>
+        </Link>
         <SearchBox />
       </div>
 
@@ -72,8 +70,13 @@ export function Header({ onMenuClick }: HeaderProps) {
               <p className="text-sm text-muted-foreground truncate">{user?.email}</p>
             </div>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => {}}>Profile</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => {}}>Settings</DropdownMenuItem>
+            {/* These did nothing at all before. They are also the only way to
+                the Organization screen on a phone, which no longer has a
+                drawer to hold it. */}
+            <DropdownMenuItem onSelect={() => navigate('/settings')}>Profile</DropdownMenuItem>
+            {mayAdminister && (
+              <DropdownMenuItem onSelect={() => navigate('/organization')}>Organization</DropdownMenuItem>
+            )}
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={logout} className="text-destructive focus:text-destructive">
               Log out
