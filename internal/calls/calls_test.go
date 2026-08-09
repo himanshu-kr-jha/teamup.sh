@@ -3,6 +3,7 @@ package calls
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/teamup/teamup/internal/testsupport"
+	apperrors "github.com/teamup/teamup/pkg/errors"
 )
 
 // newService builds a service with no LiveKit credentials, so CreateCall takes
@@ -592,5 +594,19 @@ func TestACallSomebodyJoinedIsNotDroppedByAnotherDecline(t *testing.T) {
 	}
 	if !joined {
 		t.Error("somebody picked up, so the call is real and must not be dropped")
+	}
+}
+
+// Muting somebody else can only be done by the media server, so with none
+// configured the request has to fail cleanly rather than silently do nothing.
+func TestMutingWithoutAMediaServerSaysSo(t *testing.T) {
+	svc, _ := newService(t)
+	// newService builds a service with no LiveKit client.
+	err := svc.MuteParticipant(context.Background(), "call-abc", "somebody")
+	if err == nil {
+		t.Fatal("muting with no media server should fail")
+	}
+	if apperrors.HTTPStatus(err) != http.StatusBadRequest {
+		t.Errorf("status: got %d want 400", apperrors.HTTPStatus(err))
 	}
 }

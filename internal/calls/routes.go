@@ -31,6 +31,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.POST("/calls/:id/record", h.StartRecording)
 	rg.POST("/calls/:id/end", h.EndCall)
 	rg.POST("/calls/:id/decline", h.DeclineCall)
+	rg.POST("/calls/:id/mute/:userId", h.MuteParticipant)
 	rg.DELETE("/calls/:id/record", h.StopRecording)
 }
 
@@ -230,6 +231,55 @@ func (h *Handler) DeclineCall(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": reason})
 }
 
+// MuteParticipant silences somebody else's microphone. Anybody in the call can
+// do it — a room where only a host can quieten a stuck microphone is a room
+// that stays unusable until the host notices.
+//
+// It only mutes. Nobody can turn somebody else's microphone back on.
+func (h *Handler) MuteParticipant(c *gin.Context) {
+	user := auth.GetUserFromContext(c)
+	orgID, err := uuid.Parse(user.OrgID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+	userID, err := uuid.Parse(user.UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	target := c.Param("userId")
+
+	ctx := c.Request.Context()
+	call, err := h.service.GetCall(ctx, orgID, id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "call not found"})
+		return
+	}
+
+	// You have to be entitled to be in the call to quieten anybody in it.
+	mayJoin, err := h.service.MayJoin(ctx, orgID, id, userID)
+	if err != nil {
+		httpx.Error(c, err, "failed to check call access")
+		return
+	}
+	if !mayJoin && !user.HasAnyRole("owner", "admin") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you are not part of this call"})
+		return
+	}
+
+	if err := h.service.MuteParticipant(ctx, call.RoomName, target); err != nil {
+		httpx.Error(c, err, "failed to mute")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "muted"})
+}
+
 // callerName prefers something a callee will recognise over a bare id.
 func callerName(user *auth.UserContext) string {
 	if user.Email != "" {
@@ -293,7 +343,14 @@ func (h *Handler) GetCallToken(c *gin.Context) {
 		return
 	}
 
-	token, err := h.service.GetToken(c.Request.Context(), call.RoomName, user.UserID, user.Email)
+	// The name here is what labels their panel in the call, so it has to be
+	// the person's name rather than their address — initials taken from an
+	// address read as the domain rather than the person.
+	displayName := h.service.DisplayName(c.Request.Context(), userID)
+	if displayName == "" {
+		displayName = user.Email
+	}
+	token, err := h.service.GetToken(c.Request.Context(), call.RoomName, user.UserID, displayName)
 	if err != nil {
 		httpx.Error(c, err, "failed to generate token")
 		return

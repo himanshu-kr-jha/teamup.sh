@@ -229,6 +229,10 @@ export const callsApi = {
   getToken: (id: string) => api.post(`/calls/${id}/token`),
   startRecording: (id: string) => api.post(`/calls/${id}/record`),
   end: (id: string) => api.post(`/calls/${id}/end`),
+  /** Quietens somebody's microphone. Only the media server can do this, and
+   *  it is one way — nobody turns another person's microphone back on. */
+  muteParticipant: (callId: string, identity: string) =>
+    api.post(`/calls/${callId}/mute/${identity}`),
   /** Turns a call down and tells whoever started it why. */
   decline: (id: string, reason: 'declined' | 'no_answer' = 'declined') =>
     api.post(`/calls/${id}/decline`, { reason }),

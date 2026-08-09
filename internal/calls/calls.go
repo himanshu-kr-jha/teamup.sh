@@ -280,7 +280,8 @@ func (s *Service) Ring(ctx context.Context, call *Call, callerID, callerName str
 		return
 	}
 	for _, invitee := range invitees {
-		token, err := s.GenerateToken(ctx, call.RoomName, invitee.String(), "Participant", true, true)
+		// Their own name, so the panel they arrive on is labelled properly.
+		token, err := s.GenerateToken(ctx, call.RoomName, invitee.String(), s.DisplayName(ctx, invitee), true, true)
 		if err != nil {
 			s.logger.Warn().Err(err).Msg("could not mint a token for a call invitee")
 			continue
@@ -510,7 +511,11 @@ func (s *Service) HandleCallInvite(ctx context.Context, conn websocket.WSConnect
 
 	if s.broadcaster != nil {
 		for _, invitee := range payload.Invitees {
-			inviteeToken, _ := s.GenerateToken(ctx, call.RoomName, invitee, "Participant", true, true)
+			inviteeName := ""
+			if id, err := uuid.Parse(invitee); err == nil {
+				inviteeName = s.DisplayName(ctx, id)
+			}
+			inviteeToken, _ := s.GenerateToken(ctx, call.RoomName, invitee, inviteeName, true, true)
 			s.broadcaster.BroadcastToUser(invitee, protocol.NewMessage(protocol.TypeCallInvited, protocol.CallInvitedPayload{
 				RoomName:   call.RoomName,
 				CallerID:   conn.UserID(),
@@ -532,7 +537,11 @@ func (s *Service) HandleCallAccept(ctx context.Context, conn websocket.WSConnect
 		return
 	}
 
-	token, _ := s.GenerateToken(ctx, payload.RoomName, conn.UserID(), "Participant", true, true)
+	acceptName := ""
+	if id, err := uuid.Parse(conn.UserID()); err == nil {
+		acceptName = s.DisplayName(ctx, id)
+	}
+	token, _ := s.GenerateToken(ctx, payload.RoomName, conn.UserID(), acceptName, true, true)
 
 	if s.broadcaster != nil {
 		s.broadcaster.BroadcastToUser(conn.UserID(), protocol.NewMessage(protocol.TypeCallInvited, protocol.CallInvitedPayload{
@@ -728,6 +737,62 @@ func (s *Service) MarkParticipantLeft(ctx context.Context, callID, userID uuid.U
 		callID, userID)
 	if err != nil {
 		return fmt.Errorf("mark left: %w", err)
+	}
+	return nil
+}
+
+// DisplayName is what to label somebody's panel with in a call. Falls back to
+// the address only when there is no name, because a call full of email
+// addresses tells you very little — and initials taken from one read as the
+// domain rather than the person.
+func (s *Service) DisplayName(ctx context.Context, userID uuid.UUID) string {
+	var name, email string
+	if err := s.db.QueryRow(ctx,
+		`SELECT COALESCE(name, ''), COALESCE(email, '') FROM users WHERE id = $1`,
+		userID).Scan(&name, &email); err != nil {
+		s.logger.Warn().Err(err).Msg("could not load a name for a call participant")
+		return ""
+	}
+	if name != "" {
+		return name
+	}
+	return email
+}
+
+// MuteParticipant silences somebody's microphone in a call.
+//
+// A browser cannot do this: a participant only controls their own tracks, so
+// asking somebody else to be quiet has to go through the media server. It mutes
+// rather than removes, and it cannot unmute — turning a microphone back on is
+// the owner's decision, and a server that could do it would be a server that
+// can listen to a room at will.
+func (s *Service) MuteParticipant(ctx context.Context, roomName, identity string) error {
+	if s.roomService == nil {
+		return apperrors.New(apperrors.CodeBadRequest, "calls are not configured on this installation")
+	}
+
+	participant, err := s.roomService.GetParticipant(ctx, &livekit.RoomParticipantIdentity{
+		Room: roomName, Identity: identity,
+	})
+	if err != nil {
+		return apperrors.New(apperrors.CodeNotFound, "that person is not in this call")
+	}
+
+	var muted int
+	for _, track := range participant.GetTracks() {
+		if track.GetType() != livekit.TrackType_AUDIO || track.GetMuted() {
+			continue
+		}
+		if _, err := s.roomService.MutePublishedTrack(ctx, &livekit.MuteRoomTrackRequest{
+			Room: roomName, Identity: identity, TrackSid: track.GetSid(), Muted: true,
+		}); err != nil {
+			return fmt.Errorf("mute track: %w", err)
+		}
+		muted++
+	}
+	if muted == 0 {
+		// Already quiet. Not an error: the caller wanted silence and has it.
+		s.logger.Debug().Str("identity", identity).Msg("nothing to mute")
 	}
 	return nil
 }

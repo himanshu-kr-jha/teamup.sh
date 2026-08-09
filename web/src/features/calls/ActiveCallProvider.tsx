@@ -11,15 +11,13 @@ import {
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
   ControlBar,
-  GridLayout,
   LiveKitRoom,
-  ParticipantTile,
   RoomAudioRenderer,
   useRemoteParticipants,
   useRoomContext,
-  useTracks,
 } from '@livekit/components-react';
-import { RoomEvent, Track } from 'livekit-client';
+import { RoomEvent } from 'livekit-client';
+import { CallStage } from './CallStage';
 import { AlertTriangle, GripVertical, Maximize2, Minimize2, PhoneOff } from 'lucide-react';
 import '@livekit/components-styles';
 import { Button } from '@/shared/components/ui/button';
@@ -162,8 +160,10 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
           token={activeCall.token}
           serverUrl={liveKitURL()}
           connect
-          video
-          audio
+          // Joining with the camera and microphone off: you turn them on when
+          // you are ready, rather than finding out you were already on.
+          video={false}
+          audio={false}
           data-lk-theme="default"
           onDisconnected={leave}
           onError={(err) => toast.error(err.message || 'Lost connection to the call.')}
@@ -319,7 +319,7 @@ function CallFrame({
           </div>
 
           <div className="min-h-0 flex-1">
-            <CallTiles compact={!expanded} />
+            <CallTiles callId={callId} compact={!expanded} />
           </div>
         </div>
       </div>
@@ -350,9 +350,8 @@ function clamp(value: number, min: number, max: number) {
 }
 
 /** The video itself, plus the controls when there is room for them. */
-function CallTiles({ compact }: { compact: boolean }) {
+function CallTiles({ callId, compact }: { callId: string; compact: boolean }) {
   const room = useRoomContext();
-  const remote = useRemoteParticipants();
   const [mediaError, setMediaError] = useState('');
 
   // Camera and microphone permission is the most common thing to go wrong;
@@ -369,14 +368,6 @@ function CallTiles({ compact }: { compact: boolean }) {
     };
   }, [room]);
 
-  const tracks = useTracks(
-    [
-      { source: Track.Source.Camera, withPlaceholder: true },
-      { source: Track.Source.ScreenShare, withPlaceholder: false },
-    ],
-    { onlySubscribed: false }
-  );
-
   return (
     <div className="flex h-full flex-col">
       {mediaError && !compact && (
@@ -386,15 +377,8 @@ function CallTiles({ compact }: { compact: boolean }) {
         </div>
       )}
 
-      <div className="relative min-h-0 flex-1">
-        <GridLayout tracks={tracks} className="h-full">
-          <ParticipantTile />
-        </GridLayout>
-        {remote.length === 0 && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-2 text-center text-xs text-muted-foreground">
-            Waiting for someone to join…
-          </div>
-        )}
+      <div className="min-h-0 flex-1">
+        <CallStage callId={callId} compact={compact} />
       </div>
 
       {/* The controls need room; the corner window keeps only leave, which
