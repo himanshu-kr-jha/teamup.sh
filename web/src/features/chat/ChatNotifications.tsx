@@ -45,14 +45,30 @@ export function ChatNotifications() {
 
       ping();
 
-      // Unread counts live on the channel list, which is on screen only in
-      // chat — refresh it wherever you are so the badge is right when you
-      // arrive.
-      queryClient.invalidateQueries({ queryKey: ['channels'] });
-
       const watchingThisConversation =
         document.visibilityState === 'visible' &&
         pathnameRef.current === `/chat/${incoming.channelId}`;
+
+      // Unread counts live on the channel list, which is on screen only in
+      // chat, so the badge has to be kept right from wherever you are.
+      //
+      // Counted rather than re-read: this used to refetch the entire list on
+      // every message, for every person connected, which is the single
+      // heaviest thing a busy conversation did — and all of it to move one
+      // number by one. Somebody actually watching the conversation is not
+      // counted at all; it is read as it arrives.
+      if (!watchingThisConversation) {
+        queryClient.setQueryData(['channels'], (old: any) => {
+          if (!old?.data) return old;
+          return {
+            ...old,
+            data: old.data.map((c: any) =>
+              c.id === incoming.channelId ? { ...c, unreadCount: (c.unreadCount ?? 0) + 1 } : c
+            ),
+          };
+        });
+      }
+
       if (watchingThisConversation) return;
 
       const body = incoming.content?.trim()

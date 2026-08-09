@@ -60,10 +60,18 @@ interface Message {
   pending?: boolean;
 }
 
+/**
+ * How long to wait before telling the server how far somebody has read.
+ *
+ * Long enough that a rapid exchange is one call rather than one per message,
+ * short enough that closing the tab straight after reading still records it.
+ */
+const READ_MARKER_DELAY_MS = 1500;
+
 export function ChatPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
-  const { on } = useWebSocket();
+  const { on, state: wsState } = useWebSocket();
   const queryClient = useQueryClient();
   const { activeChannelId, setActiveChannelId } = useUIStore();
   const params = useParams<{ channelId?: string }>();
@@ -87,6 +95,25 @@ export function ChatPage() {
   // What we last told the server was read, per channel, so scrolling or a
   // re-render does not repeat the call.
   const lastReadRef = useRef<Record<string, string>>({});
+  const readTimersRef = useRef<Record<string, number>>({});
+
+  // A pending marker must still be sent if the page is closed first, or the
+  // last thing you read is never recorded as read.
+  useEffect(() => {
+    const timers = readTimersRef.current;
+    const pending = lastReadRef.current;
+    const flush = () => {
+      for (const [id, messageId] of Object.entries(pending)) {
+        window.clearTimeout(timers[id]);
+        channelsApi.markRead(id, messageId).catch(() => {});
+      }
+    };
+    window.addEventListener('pagehide', flush);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      flush();
+    };
+  }, []);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const channelId = params.channelId || activeChannelId;
 
@@ -165,9 +192,10 @@ export function ChatPage() {
         messages.map((m) => (m.id === variables.tempId ? { ...(data.data as Message), pending: false } : m))
       );
     },
-    onSettled: (data, error, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['messages', variables.channelId] });
-    },
+    // Deliberately no onSettled refetch. onSuccess has already replaced the
+    // optimistic copy with the row the server returned, and anything that
+    // arrived meanwhile came over the socket — so re-reading the whole history
+    // after every message bought nothing and cost a round trip each time.
   });
 
   // Handle incoming messages via WebSocket
@@ -189,14 +217,43 @@ export function ChatPage() {
       if (incoming.channelId === channelId) {
         // You are reading it, so it is already read.
         markChannelRead(incoming.channelId, incoming.id);
-      } else {
-        // Otherwise it is unread, and that count lives on the channel list.
-        queryClient.invalidateQueries({ queryKey: ['channels'] });
       }
+      // Anything for another channel is counted by ChatNotifications, which
+      // listens wherever you are — doing it here as well counted it twice.
     });
     return unsubscribe;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channelId, on, queryClient]);
+
+  // Anything sent while the socket was down was never delivered here, so the
+  // history is read once when it comes back.
+  //
+  // Sending used to re-read the whole history every time, which meant a
+  // dropped socket was quietly papered over the next time you happened to say
+  // something. Catching up when the connection returns is both cheaper and
+  // more honest — it does not depend on you being the one to speak next.
+  const socketWasDown = useRef(false);
+  useEffect(() => {
+    if (wsState !== 'ready') {
+      socketWasDown.current = true;
+      return;
+    }
+    if (!socketWasDown.current) return;
+    socketWasDown.current = false;
+    queryClient.invalidateQueries({ queryKey: ['messages'] });
+    queryClient.invalidateQueries({ queryKey: ['channels'] });
+  }, [wsState, queryClient]);
+
+  // Coming back to the tab after a while, likewise: a socket can be alive and
+  // still have missed something while the machine was asleep.
+  useEffect(() => {
+    const catchUp = () => {
+      if (document.visibilityState !== 'visible') return;
+      queryClient.invalidateQueries({ queryKey: ['messages'] });
+    };
+    document.addEventListener('visibilitychange', catchUp);
+    return () => document.removeEventListener('visibilitychange', catchUp);
+  }, [queryClient]);
 
   // Handle sent confirmation
   useEffect(() => {
@@ -227,17 +284,42 @@ export function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channelId, messages[messages.length - 1]?.id]);
 
-  // Best effort: failing to record a read marker must not interrupt reading.
+  /**
+   * Records how far somebody has read.
+   *
+   * Best effort: failing to record a read marker must not interrupt reading.
+   *
+   * Coalesced, because this used to be a request per message per reader, and
+   * then a second one — it re-read the whole channel list afterwards purely to
+   * set a badge to zero, which is something we already know. In a conversation
+   * going back and forth that was the bulk of the traffic, and on a slow link
+   * it is traffic competing with the messages themselves.
+   */
   const markChannelRead = (id: string, messageId: string) => {
     if (lastReadRef.current[id] === messageId) return;
     lastReadRef.current[id] = messageId;
-    channelsApi
-      .markRead(id, messageId)
-      .then(() => queryClient.invalidateQueries({ queryKey: ['channels'] }))
-      .catch(() => {
+
+    // The badge is zero the moment you are looking at it, whatever the server
+    // has got round to storing.
+    queryClient.setQueryData(['channels'], (old: any) => {
+      if (!old?.data) return old;
+      return {
+        ...old,
+        data: old.data.map((c: any) => (c.id === id ? { ...c, unreadCount: 0 } : c)),
+      };
+    });
+
+    // Only the furthest point matters, so a burst becomes one call rather than
+    // one per message.
+    window.clearTimeout(readTimersRef.current[id]);
+    readTimersRef.current[id] = window.setTimeout(() => {
+      const furthest = lastReadRef.current[id];
+      if (!furthest) return;
+      channelsApi.markRead(id, furthest).catch(() => {
         // It will be marked again on the next message.
         delete lastReadRef.current[id];
       });
+    }, READ_MARKER_DELAY_MS);
   };
 
   const handleSend = (e: React.FormEvent) => {

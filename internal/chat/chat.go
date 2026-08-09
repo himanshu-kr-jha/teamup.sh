@@ -1554,7 +1554,14 @@ func (s *Service) SendMessage(ctx context.Context, orgID, channelID, userID uuid
 			protocol.TypeChatMessage, protocol.ChatMessagePayload{Message: s.messageToData(msg)},
 		), userID.String())
 	}
-	s.pushToChannel(ctx, channelID, userID, msg)
+	// Off the request path: this reads the roster and everybody's name, none of
+	// which the sender is waiting for. Detached from the request context so
+	// finishing the response does not cancel delivery.
+	go func() {
+		pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		s.pushToChannel(pushCtx, channelID, userID, msg)
+	}()
 	return msg, nil
 }
 

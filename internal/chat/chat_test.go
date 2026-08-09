@@ -2,6 +2,7 @@ package chat
 
 import (
 	"strings"
+	"sync"
 
 	"context"
 	"github.com/teamup/teamup/pkg/protocol"
@@ -1539,9 +1540,37 @@ func TestAnOrdinaryMessageIsNotAnEvent(t *testing.T) {
 }
 
 // pushedTo records who a message would have reached on their devices.
+//
+// Notifying happens off the request path, so a test has to wait for it rather
+// than read it the instant SendMessage returns.
 type pushedTo struct {
+	mu         sync.Mutex
 	recipients []uuid.UUID
 	payloads   []protocol.Push
+	arrived    chan struct{}
+}
+
+func newPushedTo() *pushedTo {
+	return &pushedTo{arrived: make(chan struct{}, 8)}
+}
+
+// wait blocks until another push has been made, and fails rather than hanging.
+func (p *pushedTo) wait(t *testing.T) protocol.Push {
+	t.Helper()
+	select {
+	case <-p.arrived:
+	case <-time.After(5 * time.Second):
+		t.Fatal("nobody was notified about the message")
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.payloads[len(p.payloads)-1]
+}
+
+func (p *pushedTo) seen() ([]uuid.UUID, []protocol.Push) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]uuid.UUID(nil), p.recipients...), append([]protocol.Push(nil), p.payloads...)
 }
 
 func (p *pushedTo) Notify(context.Context, uuid.UUID, uuid.UUID, string, string, string, map[string]any) error {
@@ -1551,8 +1580,14 @@ func (p *pushedTo) NotifyMany(context.Context, uuid.UUID, []uuid.UUID, string, s
 	return nil
 }
 func (p *pushedTo) PushToUsers(_ context.Context, userIDs []uuid.UUID, payload protocol.Push) {
+	p.mu.Lock()
 	p.recipients = append(p.recipients, userIDs...)
 	p.payloads = append(p.payloads, payload)
+	p.mu.Unlock()
+	select {
+	case p.arrived <- struct{}{}:
+	default:
+	}
 }
 
 // A message that only arrives if you happen to be looking is not a message, so
@@ -1564,24 +1599,24 @@ func TestAMessageReachesEverybodyElseInTheChannel(t *testing.T) {
 	other := testsupport.SeedUser(t, pool, org, "gets-told@example.test", "member")
 	ch := testsupport.SeedChannel(t, pool, org, "general", org.OwnerID, other)
 
-	pushes := &pushedTo{}
+	pushes := newPushedTo()
 	svc.SetNotifier(pushes)
 
 	if _, err := svc.SendMessage(ctx, org.ID, ch, org.OwnerID, "the build is broken", nil, nil, false); err != nil {
 		t.Fatalf("send: %v", err)
 	}
+	got := pushes.wait(t)
 
-	if len(pushes.recipients) != 1 || pushes.recipients[0] != other {
-		t.Fatalf("only the other member should be told, got %v", pushes.recipients)
+	recipients, _ := pushes.seen()
+	if len(recipients) != 1 || recipients[0] != other {
+		t.Fatalf("only the other member should be told, got %v", recipients)
 	}
 	// The sender is looking at what they just wrote.
-	for _, r := range pushes.recipients {
+	for _, r := range recipients {
 		if r == org.OwnerID {
 			t.Error("nobody should be notified about their own message")
 		}
 	}
-
-	got := pushes.payloads[0]
 	if got.Title != "#general" {
 		t.Errorf("a channel message should name the channel, got %q", got.Title)
 	}
@@ -1605,7 +1640,7 @@ func TestADirectMessageIsAnnouncedByWhoSentIt(t *testing.T) {
 	org := testsupport.SeedOrg(t, pool)
 	other := testsupport.SeedUser(t, pool, org, "dm-push@example.test", "member")
 
-	pushes := &pushedTo{}
+	pushes := newPushedTo()
 	svc.SetNotifier(pushes)
 
 	dm, err := svc.OpenDirectMessage(ctx, org.ID, org.OwnerID, other)
@@ -1615,8 +1650,7 @@ func TestADirectMessageIsAnnouncedByWhoSentIt(t *testing.T) {
 	if _, err := svc.SendMessage(ctx, org.ID, dm.ID, org.OwnerID, "are you around?", nil, nil, false); err != nil {
 		t.Fatalf("send: %v", err)
 	}
-
-	got := pushes.payloads[0]
+	got := pushes.wait(t)
 	if strings.HasPrefix(got.Title, "#") {
 		t.Errorf("a direct message is from a person, not a channel: %q", got.Title)
 	}
@@ -1634,14 +1668,14 @@ func TestWhatADeviceIsShownIsShortAndNeverEmpty(t *testing.T) {
 	other := testsupport.SeedUser(t, pool, org, "brevity@example.test", "member")
 	ch := testsupport.SeedChannel(t, pool, org, "general", org.OwnerID, other)
 
-	pushes := &pushedTo{}
+	pushes := newPushedTo()
 	svc.SetNotifier(pushes)
 
 	long := strings.Repeat("a very long thought ", 60)
 	if _, err := svc.SendMessage(ctx, org.ID, ch, org.OwnerID, long, nil, nil, false); err != nil {
 		t.Fatalf("send: %v", err)
 	}
-	summary := pushes.payloads[0].Body
+	summary := pushes.wait(t).Body
 	if len([]rune(summary)) >= len([]rune(long)) {
 		t.Errorf("a wall of text should be cut down, got %d characters", len([]rune(summary)))
 	}
@@ -1655,7 +1689,7 @@ func TestWhatADeviceIsShownIsShortAndNeverEmpty(t *testing.T) {
 		[]uuid.UUID{seedUpload(t, pool, org.ID, ch, org.OwnerID, "notes.txt")}, false); err != nil {
 		t.Fatalf("send a file: %v", err)
 	}
-	last := pushes.payloads[len(pushes.payloads)-1].Body
+	last := pushes.wait(t).Body
 	if !strings.Contains(last, "Sent a file") {
 		t.Errorf("a message that is only a file should say so, got %q", last)
 	}
