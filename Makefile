@@ -34,9 +34,29 @@ help:
 	@echo "  help            Show this help"
 
 # Build frontend
+#
+# Dependencies are installed only when they are missing. Reinstalling on every
+# build is slow, and worse, the two package managers disagree about the shape
+# of node_modules: npm cannot install over a tree pnpm laid out, and pnpm wants
+# to delete one npm made. Whichever put it there, either can run the build.
+#
+# pnpm is preferred when it is genuinely on PATH — it owns the lockfile — but it
+# is usually installed through nvm, which the shell make uses does not see.
 build-frontend:
 	@echo "Building frontend..."
-	cd web && pnpm install --frozen-lockfile && pnpm run build
+	@cd web && \
+	if [ ! -d node_modules ]; then \
+		if command -v pnpm >/dev/null 2>&1; then \
+			echo "  installing with pnpm"; CI=true pnpm install --frozen-lockfile; \
+		elif command -v npm >/dev/null 2>&1; then \
+			echo "  pnpm is not on PATH, installing with npm"; npm install --no-audit --no-fund; \
+		else \
+			echo "Neither pnpm nor npm is on PATH. Install Node.js and try again." >&2; exit 1; \
+		fi; \
+	fi && \
+	if command -v pnpm >/dev/null 2>&1; then pnpm run build; \
+	elif command -v npm >/dev/null 2>&1; then npm run build; \
+	else echo "Neither pnpm nor npm is on PATH." >&2; exit 1; fi
 
 # Build Go binary with embedded frontend
 build: build-frontend

@@ -28,6 +28,17 @@ So there are two shapes of deployment:
 
 ## On your own network, for a phone or a second laptop
 
+The short way — one command, which works out the address and sets everything
+that has to be set together:
+
+```bash
+./start.sh --lan
+```
+
+It prints the address to open on the phone, and says plainly what will not work.
+The rest of this section is what that command does, for when you want to do it
+by hand.
+
 Find this machine's address on the network:
 
 ```bash
