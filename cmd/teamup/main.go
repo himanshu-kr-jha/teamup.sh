@@ -405,6 +405,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// the setup wizard puts them.
 	mailService := mail.NewService(orgService, cfg.BaseURL, logger)
 	tasksService.SetNotifier(notificationsService)
+	// A comment should appear for everybody following the task, not on their
+	// next reload.
+	tasksService.SetBroadcaster(wsHub)
 
 	// Auto-setup if configured. It gets its own deadline: ctx above carries the
 	// short database-ping timeout, which bcrypt hashing plus a multi-statement

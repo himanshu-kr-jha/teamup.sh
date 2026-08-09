@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ChevronLeft, Calendar, MessageSquare, MoreVertical, UserPlus, History } from 'lucide-react';
+import { ChevronLeft, Calendar, MessageSquare, MoreVertical, UserPlus, History, Paperclip } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Textarea } from '@/shared/components/ui/textarea';
@@ -10,12 +10,16 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
 import { formatRelativeTime, formatDate } from '@/shared/utils/cn';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { tasksApi, orgApi } from '@/shared/api/client';
+import { tasksApi, orgApi, filesApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
 import { Label } from '@/shared/components/ui/label';
 import { FormDialog } from '@/shared/components/FormDialog';
 import { useAuth } from '@/features/auth/AuthProvider';
+import { useWebSocket } from '@/features/websocket/WSProvider';
+import { AttachmentChip } from '@/features/files/AttachmentChip';
+import { useUpload, type UploadedFile } from '@/features/files/useUpload';
+import { cn } from '@/shared/utils/cn';
 
 interface Task {
   id: string;
@@ -62,9 +66,15 @@ export function TaskDetailPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const toast = useToast();
+  const { on } = useWebSocket();
   const [editing, setEditing] = useState(false);
   const [showCommentForm, setShowCommentForm] = useState(false);
   const [commentText, setCommentText] = useState('');
+  // Uploaded but not yet posted, so a file arrives with the words that explain
+  // it rather than on its own the moment it finishes uploading.
+  const [staged, setStaged] = useState<UploadedFile[]>([]);
+  const commentFileRef = useRef<HTMLInputElement>(null);
+  const { upload, progress: uploadProgress, error: uploadError } = useUpload('tasks', taskId ?? '');
 
   const { data: taskResponse, isLoading } = useQuery({
     queryKey: ['task', taskId],
@@ -92,17 +102,34 @@ export function TaskDetailPage() {
   });
 
   const addCommentMutation = useMutation({
-    mutationFn: (content: string) => tasksApi.addComment(taskId!, content),
+    mutationFn: ({ content, attachmentIds }: { content: string; attachmentIds: string[] }) =>
+      tasksApi.addComment(taskId!, content, attachmentIds),
     onSuccess: () => {
       // The comment list is its own query; invalidating only the task left the
       // new comment invisible, so posting looked like it had failed.
       queryClient.invalidateQueries({ queryKey: ['task-comments', taskId] });
       queryClient.invalidateQueries({ queryKey: ['task-activities', taskId] });
       setCommentText('');
+      setStaged([]);
       setShowCommentForm(false);
     },
     onError: (err) => toast.error(apiErrorMessage(err, 'Could not post that comment.')),
   });
+
+  // A comment somebody else leaves appears where you are, rather than waiting
+  // for you to reload the page you are already reading.
+  useEffect(() => {
+    return on('task.comment', (msg) => {
+      if ((msg.payload as any)?.taskId !== taskId) return;
+      queryClient.invalidateQueries({ queryKey: ['task-comments', taskId] });
+      queryClient.invalidateQueries({ queryKey: ['task-activities', taskId] });
+    });
+  }, [on, taskId, queryClient]);
+
+  useEffect(() => {
+    if (uploadError) toast.error(uploadError);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uploadError]);
 
   if (isLoading) {
     return <div className="flex h-full items-center justify-center">Loading...</div>;
@@ -340,12 +367,88 @@ export function TaskDetailPage() {
               </CardHeader>
               <CardContent>
                 {showCommentForm && (
-                  <form onSubmit={e => { e.preventDefault(); if (commentText.trim()) { addCommentMutation.mutate(commentText); } }} className="space-y-3 mb-4">
-                    <Textarea value={commentText} onChange={e => setCommentText(e.target.value)} placeholder="Write a comment..." rows={3} />
-                    <div className="flex justify-end gap-2">
-                      <Button variant="outline" type="button" onClick={() => setShowCommentForm(false)}>Cancel</Button>
-                      <Button type="submit" disabled={!commentText.trim() || addCommentMutation.isPending}>
-                        {addCommentMutation.isPending ? 'Posting...' : 'Post Comment'}
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      if (!commentText.trim() && staged.length === 0) return;
+                      addCommentMutation.mutate({
+                        content: commentText,
+                        attachmentIds: staged.map((f) => f.id),
+                      });
+                    }}
+                    className="mb-4 space-y-3"
+                  >
+                    <Textarea
+                      value={commentText}
+                      onChange={(e) => setCommentText(e.target.value)}
+                      placeholder="Write a comment…"
+                      rows={3}
+                    />
+
+                    {staged.length > 0 && (
+                      <div className="flex flex-wrap items-start gap-2">
+                        {staged.map((file) => (
+                          <span key={file.id} className="flex items-start gap-1">
+                            <AttachmentChip attachment={{ ...file, sizeBytes: file.size }} />
+                            <button
+                              type="button"
+                              aria-label={`Remove ${file.filename}`}
+                              className="text-muted-foreground hover:text-foreground"
+                              onClick={() => {
+                                setStaged((all) => all.filter((f) => f.id !== file.id));
+                                filesApi.discard(file.id).catch(() => {
+                                  // The sweep collects it either way.
+                                });
+                              }}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    <input
+                      ref={commentFileRef}
+                      type="file"
+                      className="hidden"
+                      aria-label="Attach a file to this comment"
+                      onChange={async (e) => {
+                        const file = e.target.files?.[0];
+                        e.target.value = '';
+                        if (!file) return;
+                        const uploaded = await upload(file);
+                        if (uploaded) setStaged((all) => [...all, uploaded]);
+                      }}
+                    />
+
+                    <div className="flex flex-wrap justify-end gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="mr-auto"
+                        disabled={uploadProgress !== null}
+                        onClick={() => commentFileRef.current?.click()}
+                      >
+                        {uploadProgress !== null ? (
+                          <span className="text-xs font-medium">{uploadProgress}%</span>
+                        ) : (
+                          <>
+                            <Paperclip className="mr-2 h-4 w-4" />
+                            Attach
+                          </>
+                        )}
+                      </Button>
+                      <Button variant="outline" type="button" onClick={() => setShowCommentForm(false)}>
+                        Cancel
+                      </Button>
+                      <Button
+                        type="submit"
+                        disabled={
+                          (!commentText.trim() && staged.length === 0) || addCommentMutation.isPending
+                        }
+                      >
+                        {addCommentMutation.isPending ? 'Posting…' : 'Post comment'}
                       </Button>
                     </div>
                   </form>
@@ -459,7 +562,16 @@ function CommentList({ taskId }: { taskId: string }) {
               <span className="font-medium">{comment.userName || 'Someone'}</span>{' '}
               <span className="text-muted-foreground">{formatRelativeTime(comment.createdAt)}</span>
             </p>
-            <p className="whitespace-pre-wrap break-words text-sm">{comment.content}</p>
+            {comment.content && (
+              <p className="whitespace-pre-wrap break-words text-sm">{comment.content}</p>
+            )}
+            {comment.attachments?.length > 0 && (
+              <div className={cn('flex flex-wrap gap-2', comment.content && 'mt-2')}>
+                {comment.attachments.map((a: any) => (
+                  <AttachmentChip key={a.id} attachment={a} />
+                ))}
+              </div>
+            )}
           </div>
         </li>
       ))}

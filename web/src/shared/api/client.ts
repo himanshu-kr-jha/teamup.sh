@@ -209,7 +209,8 @@ export const tasksApi = {
   get: (id: string) => api.get(`/tasks/${id}`),
   update: (id: string, data: Partial<{ title: string; description: string; status: string; priority: string; assigneeId: string; dueDate: string; storyPoints: number }>) => api.patch(`/tasks/${id}`, data),
   delete: (id: string) => api.delete(`/tasks/${id}`),
-  addComment: (id: string, content: string) => api.post(`/tasks/${id}/comments`, { content }),
+  addComment: (id: string, content: string, attachmentIds?: string[]) =>
+    api.post(`/tasks/${id}/comments`, { content, attachmentIds }),
   addLabel: (id: string, labelId: string) => api.post(`/tasks/${id}/labels`, { labelId }),
   removeLabel: (id: string, labelId: string) => api.delete(`/tasks/${id}/labels/${labelId}`),
   listWatchers: (id: string) => getList(`/tasks/${id}/watchers`, 'users'),

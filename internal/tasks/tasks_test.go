@@ -297,7 +297,7 @@ func TestActivityTrailRecordsWhatChanged(t *testing.T) {
 		t.Fatalf("update: %v", err)
 	}
 	time.Sleep(2 * time.Millisecond)
-	if _, err := svc.AddComment(ctx, org.ID, task.ID, mate, "on it"); err != nil {
+	if _, err := svc.AddComment(ctx, org.ID, task.ID, mate, "on it", nil); err != nil {
 		t.Fatalf("comment: %v", err)
 	}
 
@@ -356,7 +356,7 @@ func TestCommentsRoundTrip(t *testing.T) {
 	org := testsupport.SeedOrg(t, pool)
 	task := createTask(t, svc, org, "Discuss")
 
-	if _, err := svc.AddComment(ctx, org.ID, task.ID, org.OwnerID, "first thought"); err != nil {
+	if _, err := svc.AddComment(ctx, org.ID, task.ID, org.OwnerID, "first thought", nil); err != nil {
 		t.Fatalf("add comment: %v", err)
 	}
 	comments, err := svc.ListComments(ctx, org.ID, task.ID)
@@ -378,7 +378,7 @@ func TestCommentOnAnotherOrganizationsTaskIsRefused(t *testing.T) {
 	theirs := testsupport.SeedOrg(t, pool)
 
 	theirTask, _ := svc.CreateTask(ctx, theirs.ID, theirs.OwnerID, "Theirs", "", "", "", "", nil, nil, nil, nil, nil, false)
-	if _, err := svc.AddComment(ctx, mine.ID, theirTask.ID, mine.OwnerID, "sneaky"); err == nil {
+	if _, err := svc.AddComment(ctx, mine.ID, theirTask.ID, mine.OwnerID, "sneaky", nil); err == nil {
 		t.Fatal("commenting across organizations must be refused")
 	}
 }
@@ -1046,5 +1046,123 @@ func TestWhoeverCanAddYouToATaskCanTakeYouOff(t *testing.T) {
 		if w.UserID == report {
 			t.Error("they are still on the task")
 		}
+	}
+}
+
+// ── Comment attachments ───────────────────────────────────────────────────
+
+func seedTaskUpload(t *testing.T, pool *pgxpool.Pool, orgID, taskID, uploader uuid.UUID, filename string) uuid.UUID {
+	t.Helper()
+	var id uuid.UUID
+	if err := pool.QueryRow(context.Background(), `
+		INSERT INTO attachments (id, org_id, uploaded_by, category, ref_id, object_key,
+		                         filename, content_type, size_bytes, created_at)
+		VALUES (gen_random_uuid(), $1, $2, 'tasks', $3, $4, $5, 'image/png', 2048, NOW())
+		RETURNING id
+	`, orgID, uploader, taskID.String(), "key/"+uuid.New().String(), filename).Scan(&id); err != nil {
+		t.Fatalf("seed upload: %v", err)
+	}
+	return id
+}
+
+func TestACommentCarriesTheFilesSentWithIt(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	task, err := svc.CreateTask(ctx, org.ID, org.OwnerID, "With a screenshot", "", "", "", "",
+		nil, nil, nil, nil, nil, true)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	upload := seedTaskUpload(t, pool, org.ID, task.ID, org.OwnerID, "screenshot.png")
+
+	comment, err := svc.AddComment(ctx, org.ID, task.ID, org.OwnerID, "See attached",
+		[]uuid.UUID{upload})
+	if err != nil {
+		t.Fatalf("comment: %v", err)
+	}
+	if len(comment.Attachments) != 1 || comment.Attachments[0].Filename != "screenshot.png" {
+		t.Fatalf("the file did not travel with the comment: %+v", comment.Attachments)
+	}
+
+	// And it is still there when the task is reopened.
+	listed, err := svc.ListComments(ctx, org.ID, task.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(listed) != 1 || len(listed[0].Attachments) != 1 {
+		t.Errorf("history lost the attachment: %+v", listed)
+	}
+	if listed[0].Attachments[0].ContentType != "image/png" {
+		t.Errorf("the type is needed to know whether to show it: %q", listed[0].Attachments[0].ContentType)
+	}
+}
+
+func TestAFileAloneIsAComment(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	task, err := svc.CreateTask(ctx, org.ID, org.OwnerID, "Wordless", "", "", "", "",
+		nil, nil, nil, nil, nil, true)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	upload := seedTaskUpload(t, pool, org.ID, task.ID, org.OwnerID, "solo.png")
+
+	if _, err := svc.AddComment(ctx, org.ID, task.ID, org.OwnerID, "", []uuid.UUID{upload}); err != nil {
+		t.Errorf("a file on its own should be a comment: %v", err)
+	}
+	if _, err := svc.AddComment(ctx, org.ID, task.ID, org.OwnerID, "   ", nil); err == nil {
+		t.Error("an empty comment with no file was accepted")
+	}
+}
+
+func TestACommentCannotClaimSomebodyElsesUpload(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedUser(t, pool, org, "other-uploader@example.test", "member")
+
+	task, err := svc.CreateTask(ctx, org.ID, org.OwnerID, "Not yours", "", "", "", "",
+		nil, nil, nil, nil, nil, true)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	theirs := seedTaskUpload(t, pool, org.ID, task.ID, other, "private.png")
+
+	comment, err := svc.AddComment(ctx, org.ID, task.ID, org.OwnerID, "mine now", []uuid.UUID{theirs})
+	if err != nil {
+		t.Fatalf("comment: %v", err)
+	}
+	if len(comment.Attachments) != 0 {
+		t.Errorf("a comment claimed somebody else's upload: %+v", comment.Attachments)
+	}
+}
+
+func TestACommentCannotClaimAnUploadFromAnotherTask(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	mine, err := svc.CreateTask(ctx, org.ID, org.OwnerID, "Here", "", "", "", "",
+		nil, nil, nil, nil, nil, true)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	elsewhere, err := svc.CreateTask(ctx, org.ID, org.OwnerID, "There", "", "", "", "",
+		nil, nil, nil, nil, nil, true)
+	if err != nil {
+		t.Fatalf("create other: %v", err)
+	}
+	upload := seedTaskUpload(t, pool, org.ID, elsewhere.ID, org.OwnerID, "elsewhere.png")
+
+	comment, err := svc.AddComment(ctx, org.ID, mine.ID, org.OwnerID, "look", []uuid.UUID{upload})
+	if err != nil {
+		t.Fatalf("comment: %v", err)
+	}
+	if len(comment.Attachments) != 0 {
+		t.Errorf("a comment pulled in a file from another task: %+v", comment.Attachments)
 	}
 }

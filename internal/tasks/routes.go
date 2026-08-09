@@ -305,13 +305,26 @@ func (h *Handler) AddComment(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Content string `json:"content" binding:"required"`
+		// Not required: a file on its own is a comment.
+		Content       string   `json:"content"`
+		AttachmentIDs []string `json:"attachmentIds"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	comment, err := h.service.AddComment(c.Request.Context(), cl.OrgID, id, cl.UserID, req.Content)
+	attachmentIDs := make([]uuid.UUID, 0, len(req.AttachmentIDs))
+	for _, raw := range req.AttachmentIDs {
+		parsed, err := uuid.Parse(raw)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid attachmentIds"})
+			return
+		}
+		attachmentIDs = append(attachmentIDs, parsed)
+	}
+
+	comment, err := h.service.AddComment(c.Request.Context(), cl.OrgID, id, cl.UserID,
+		req.Content, attachmentIDs)
 	if err != nil {
 		httpx.Error(c, err, "failed to add comment")
 		return

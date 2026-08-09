@@ -12,6 +12,7 @@ import (
 	"github.com/rs/zerolog"
 
 	apperrors "github.com/teamup/teamup/pkg/errors"
+	"github.com/teamup/teamup/pkg/protocol"
 )
 
 // Notifier raises a notification for a user. Kept as an interface so tasks
@@ -21,12 +22,23 @@ type Notifier interface {
 }
 
 type Service struct {
-	db       *pgxpool.Pool
-	logger   zerolog.Logger
-	notifier Notifier
+	db          *pgxpool.Pool
+	logger      zerolog.Logger
+	notifier    Notifier
+	broadcaster Broadcaster
 }
 
 func (s *Service) SetNotifier(n Notifier) { s.notifier = n }
+
+// Broadcaster delivers a message to somebody's open sessions. An interface so
+// tasks does not depend on the websocket package.
+type Broadcaster interface {
+	BroadcastToUser(userID string, msg *protocol.Message)
+}
+
+// SetBroadcaster wires live updates. Without one, a comment still saves; it
+// just does not appear until the page is next loaded.
+func (s *Service) SetBroadcaster(b Broadcaster) { s.broadcaster = b }
 
 // notifyAssignee tells someone they picked up work. Best effort: a failed
 // notification must not fail the assignment that caused it, and nobody is
@@ -75,13 +87,23 @@ type Label struct {
 }
 
 type TaskComment struct {
-	ID        uuid.UUID  `json:"id"`
-	TaskID    uuid.UUID  `json:"taskId"`
-	UserID    uuid.UUID  `json:"userId"`
-	UserName  string     `json:"userName,omitempty"`
-	Content   string     `json:"content"`
-	CreatedAt time.Time  `json:"createdAt"`
-	UpdatedAt *time.Time `json:"updatedAt,omitempty"`
+	ID          uuid.UUID    `json:"id"`
+	TaskID      uuid.UUID    `json:"taskId"`
+	UserID      uuid.UUID    `json:"userId"`
+	UserName    string       `json:"userName,omitempty"`
+	Content     string       `json:"content"`
+	Attachments []Attachment `json:"attachments"`
+	CreatedAt   time.Time    `json:"createdAt"`
+	UpdatedAt   *time.Time   `json:"updatedAt,omitempty"`
+}
+
+// Attachment is a file shared on a comment.
+type Attachment struct {
+	ID          uuid.UUID `json:"id"`
+	Filename    string    `json:"filename"`
+	ContentType string    `json:"contentType"`
+	SizeBytes   int64     `json:"sizeBytes"`
+	ObjectKey   string    `json:"objectKey"`
 }
 
 type TaskActivity struct {
@@ -793,7 +815,11 @@ func (s *Service) DeleteTask(ctx context.Context, orgID, id uuid.UUID) error {
 // AddComment writes the comment and its activity entry in one transaction:
 // splitting them left a committed comment with no history when the second
 // write failed, and returned an error for a comment that actually exists.
-func (s *Service) AddComment(ctx context.Context, orgID, taskID, userID uuid.UUID, content string) (*TaskComment, error) {
+func (s *Service) AddComment(ctx context.Context, orgID, taskID, userID uuid.UUID, content string, attachmentIDs []uuid.UUID) (*TaskComment, error) {
+	// A file on its own is a comment: "here is the screenshot" needs no words.
+	if strings.TrimSpace(content) == "" && len(attachmentIDs) == 0 {
+		return nil, apperrors.New(apperrors.CodeBadRequest, "write something or attach a file")
+	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -815,13 +841,86 @@ func (s *Service) AddComment(ctx context.Context, orgID, taskID, userID uuid.UUI
 		return nil, fmt.Errorf("add comment: %w", err)
 	}
 
+	// Claim the uploads. Only files already filed against this task by this
+	// person are eligible, so a comment cannot pull in somebody else's upload
+	// or one from another task.
+	c.Attachments = []Attachment{}
+	if len(attachmentIDs) > 0 {
+		rows, err := tx.Query(ctx, `
+			UPDATE attachments
+			SET comment_id = $1
+			WHERE id = ANY($2)
+			  AND uploaded_by = $3
+			  AND category = 'tasks'
+			  AND ref_id = $4
+			  AND comment_id IS NULL
+			  AND deleted_at IS NULL
+			RETURNING id, filename, content_type, size_bytes, object_key
+		`, c.ID, attachmentIDs, userID, taskID.String())
+		if err != nil {
+			return nil, fmt.Errorf("attach to comment: %w", err)
+		}
+		for rows.Next() {
+			var a Attachment
+			if err := rows.Scan(&a.ID, &a.Filename, &a.ContentType, &a.SizeBytes, &a.ObjectKey); err != nil {
+				rows.Close()
+				return nil, fmt.Errorf("scan comment attachment: %w", err)
+			}
+			c.Attachments = append(c.Attachments, a)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := recordActivity(ctx, tx, taskID, userID, "comment", "", content); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
+
+	// Everybody following the task sees it appear rather than finding it on
+	// their next reload.
+	s.announceComment(ctx, orgID, taskID, &c)
 	return &c, nil
+}
+
+// announceComment tells everybody involved in a task that something was said.
+// Best effort: a comment that was written must not fail because nobody could
+// be told about it.
+func (s *Service) announceComment(ctx context.Context, orgID, taskID uuid.UUID, c *TaskComment) {
+	if s.broadcaster == nil {
+		return
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT DISTINCT person FROM (
+			SELECT assignee_id AS person FROM tasks WHERE id = $1 AND org_id = $2
+			UNION
+			SELECT reporter_id FROM tasks WHERE id = $1 AND org_id = $2
+			UNION
+			SELECT user_id FROM task_watchers WHERE task_id = $1
+		) involved
+		WHERE person IS NOT NULL AND person <> $3
+	`, taskID, orgID, c.UserID)
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("could not work out who to tell about a comment")
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var userID uuid.UUID
+		if err := rows.Scan(&userID); err != nil {
+			continue
+		}
+		s.broadcaster.BroadcastToUser(userID.String(), protocol.NewMessage("task.comment", map[string]any{
+			"taskId":    taskID.String(),
+			"commentId": c.ID.String(),
+			"userName":  c.UserName,
+		}))
+	}
 }
 
 func (s *Service) ListComments(ctx context.Context, orgID, taskID uuid.UUID) ([]TaskComment, error) {
@@ -845,7 +944,48 @@ func (s *Service) ListComments(ctx context.Context, orgID, taskID uuid.UUID) ([]
 			&c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan comment: %w", err)
 		}
+		c.Attachments = []Attachment{}
 		comments = append(comments, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return s.attachToComments(ctx, comments)
+}
+
+// attachToComments loads every comment's files for a task in one query.
+func (s *Service) attachToComments(ctx context.Context, comments []TaskComment) ([]TaskComment, error) {
+	if len(comments) == 0 {
+		return comments, nil
+	}
+	ids := make([]uuid.UUID, len(comments))
+	at := make(map[uuid.UUID]int, len(comments))
+	for i, c := range comments {
+		ids[i] = c.ID
+		at[c.ID] = i
+	}
+
+	rows, err := s.db.Query(ctx, `
+		SELECT comment_id, id, filename, content_type, size_bytes, object_key
+		FROM attachments
+		WHERE comment_id = ANY($1) AND deleted_at IS NULL
+		ORDER BY created_at
+	`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("load comment attachments: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var commentID uuid.UUID
+		var a Attachment
+		if err := rows.Scan(&commentID, &a.ID, &a.Filename, &a.ContentType,
+			&a.SizeBytes, &a.ObjectKey); err != nil {
+			return nil, fmt.Errorf("scan comment attachment: %w", err)
+		}
+		if i, ok := at[commentID]; ok {
+			comments[i].Attachments = append(comments[i].Attachments, a)
+		}
 	}
 	return comments, rows.Err()
 }

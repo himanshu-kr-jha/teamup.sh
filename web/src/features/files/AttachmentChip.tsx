@@ -1,8 +1,9 @@
-import { useState } from 'react';
-import { FileText, ImageIcon, Loader2 } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Download, FileText, ImageIcon, Loader2 } from 'lucide-react';
 import { filesApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
+import { ImageLightbox, type LightboxImage } from './ImageLightbox';
 
 interface Attachment {
   id: string;
@@ -19,22 +20,61 @@ function humanSize(bytes: number): string {
 }
 
 /**
- * One stored file. Images preview inline; anything else downloads. The URL is
- * fetched on demand because it is presigned and short-lived.
+ * One stored file.
+ *
+ * A picture shows itself, because a filename tells you nothing about what is in
+ * it, and opens full size when clicked. Anything else is a row you can
+ * download. URLs are fetched when needed rather than up front: they are
+ * presigned and expire.
  */
 export function AttachmentChip({ attachment }: { attachment: Attachment }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
-  const [preview, setPreview] = useState('');
+  const [thumbnail, setThumbnail] = useState('');
+  const [enlarged, setEnlarged] = useState<LightboxImage | null>(null);
 
   const isImage = attachment.contentType.startsWith('image/');
 
-  const openFile = async () => {
+  // A picture is fetched as soon as it is on screen: showing a button that
+  // says "image.png" and making somebody click it to find out what it is
+  // wastes the one thing a picture is good at.
+  useEffect(() => {
+    if (!isImage || thumbnail) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await filesApi.getDownloadUrl(
+          attachment.objectKey,
+          attachment.filename,
+          true
+        );
+        if (!cancelled) setThumbnail(data.downloadUrl);
+      } catch {
+        // Falls back to the row below, which can still be downloaded.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isImage, thumbnail, attachment.objectKey, attachment.filename]);
+
+  const open = async () => {
     setBusy(true);
     try {
-      const { data } = await filesApi.getDownloadUrl(attachment.objectKey, attachment.filename, isImage);
-      if (isImage) setPreview(data.downloadUrl);
-      else window.open(data.downloadUrl, '_blank', 'noopener');
+      const { data } = await filesApi.getDownloadUrl(
+        attachment.objectKey,
+        attachment.filename,
+        isImage
+      );
+      if (isImage) {
+        setEnlarged({
+          objectKey: attachment.objectKey,
+          filename: attachment.filename,
+          url: data.downloadUrl,
+        });
+      } else {
+        window.open(data.downloadUrl, '_blank', 'noopener');
+      }
     } catch (err) {
       toast.error(apiErrorMessage(err, 'Could not open that file.'));
     } finally {
@@ -42,31 +82,47 @@ export function AttachmentChip({ attachment }: { attachment: Attachment }) {
     }
   };
 
-  if (preview) {
+  if (isImage && thumbnail) {
     return (
-      <img
-        src={preview}
-        alt={attachment.filename}
-        className="max-h-40 rounded-lg border border-border object-cover"
-      />
+      <>
+        <button
+          onClick={open}
+          className="group/image relative overflow-hidden rounded-lg border border-border"
+          aria-label={`Open ${attachment.filename}`}
+        >
+          <img
+            src={thumbnail}
+            alt={attachment.filename}
+            className="max-h-48 max-w-full object-cover"
+          />
+          <span className="pointer-events-none absolute inset-0 flex items-center justify-center bg-black/0 transition-colors group-hover/image:bg-black/20" />
+        </button>
+        <ImageLightbox image={enlarged} onClose={() => setEnlarged(null)} />
+      </>
     );
   }
 
   return (
-    <button
-      onClick={openFile}
-      disabled={busy}
-      className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-left text-sm hover:bg-accent"
-    >
-      {busy ? (
-        <Loader2 className="h-4 w-4 animate-spin" />
-      ) : isImage ? (
-        <ImageIcon className="h-4 w-4 text-muted-foreground" />
-      ) : (
-        <FileText className="h-4 w-4 text-muted-foreground" />
-      )}
-      <span className="max-w-40 truncate">{attachment.filename}</span>
-      <span className="text-xs text-muted-foreground">{humanSize(attachment.sizeBytes)}</span>
-    </button>
+    <>
+      <button
+        onClick={open}
+        disabled={busy}
+        className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-left text-sm hover:bg-accent"
+      >
+        {busy ? (
+          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+        ) : isImage ? (
+          <ImageIcon className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+        ) : (
+          <FileText className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+        )}
+        <span className="max-w-40 truncate">{attachment.filename}</span>
+        <span className="shrink-0 text-xs text-muted-foreground">
+          {humanSize(attachment.sizeBytes)}
+        </span>
+        <Download className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+      </button>
+      <ImageLightbox image={enlarged} onClose={() => setEnlarged(null)} />
+    </>
   );
 }
