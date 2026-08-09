@@ -44,8 +44,8 @@ install by hand.
 ### Run it
 
 ```bash
-git clone https://github.com/teamup/teamup.git
-cd teamup
+git clone https://github.com/himanshu-kr-jha/teamup.sh.git
+cd teamup.sh
 cp .env.example .env
 ./start.sh
 ```
