@@ -102,6 +102,14 @@ type Filters struct {
 	ProjectID  *uuid.UUID
 	LabelID    *uuid.UUID
 	Search     string
+	// ManagedBy narrows the list to work assigned to somebody on a team this
+	// user manages, so a manager can see what their people are doing.
+	ManagedBy *uuid.UUID
+	// TeamID narrows further to a single one of those teams.
+	TeamID *uuid.UUID
+	// Involving narrows to this person's own work: assigned to them, or raised
+	// by them, so a task they created and have not handed out is still theirs.
+	Involving *uuid.UUID
 }
 
 func NewService(db *pgxpool.Pool) *Service {
@@ -167,6 +175,32 @@ func (s *Service) ListTasks(ctx context.Context, orgID uuid.UUID, f Filters) ([]
 	if f.LabelID != nil {
 		add("EXISTS (SELECT 1 FROM task_labels tl WHERE tl.task_id = t.id AND tl.label_id = $%d)", *f.LabelID)
 	}
+	if f.Involving != nil {
+		args = append(args, *f.Involving)
+		where = append(where, fmt.Sprintf("(t.assignee_id = $%d OR t.reporter_id = $%d)", len(args), len(args)))
+	}
+	if f.ManagedBy != nil {
+		// Walks down from every team this person manages, so a team lead who
+		// also runs a sub-team of interns sees both.
+		args = append(args, *f.ManagedBy, orgID)
+		manager, org := len(args)-1, len(args)
+		clause := fmt.Sprintf(`t.assignee_id IN (
+			WITH RECURSIVE managed AS (
+				SELECT tm.id FROM teams tm
+				WHERE tm.manager_id = $%d AND tm.org_id = $%d AND tm.deleted_at IS NULL
+				UNION
+				SELECT child.id FROM teams child
+				JOIN managed ON child.parent_id = managed.id
+				WHERE child.deleted_at IS NULL
+			)
+			SELECT member.user_id FROM team_members member
+			JOIN managed ON managed.id = member.team_id`, manager, org)
+		if f.TeamID != nil {
+			args = append(args, *f.TeamID)
+			clause += fmt.Sprintf(" WHERE member.team_id = $%d", len(args))
+		}
+		where = append(where, clause+")")
+	}
 
 	query := taskColumns + " WHERE " + strings.Join(where, " AND ") +
 		" ORDER BY t.position, t.created_at DESC"
@@ -194,6 +228,78 @@ func (s *Service) ListTasks(ctx context.Context, orgID uuid.UUID, f Filters) ([]
 		return nil, err
 	}
 	return s.attachLabels(ctx, tasks)
+}
+
+// ManagedTeam is a team somebody runs, with the people on it. Backs the team
+// view of the task board and the filter that narrows it to one person.
+type ManagedTeam struct {
+	ID      uuid.UUID     `json:"id"`
+	Name    string        `json:"name"`
+	Members []TeamMemberT `json:"members"`
+}
+
+type TeamMemberT struct {
+	UserID uuid.UUID `json:"userId"`
+	Name   string    `json:"name"`
+	Email  string    `json:"email"`
+}
+
+// ManagedTeams lists the teams this person manages, each with its members,
+// including teams nested beneath the ones they manage directly.
+func (s *Service) ManagedTeams(ctx context.Context, orgID, userID uuid.UUID) ([]ManagedTeam, error) {
+	rows, err := s.db.Query(ctx, `
+		WITH RECURSIVE managed AS (
+			SELECT t.id, t.name FROM teams t
+			WHERE t.manager_id = $1 AND t.org_id = $2 AND t.deleted_at IS NULL
+			UNION
+			SELECT child.id, child.name FROM teams child
+			JOIN managed ON child.parent_id = managed.id
+			WHERE child.deleted_at IS NULL
+		)
+		SELECT managed.id, managed.name, u.id, u.name, u.email
+		FROM managed
+		LEFT JOIN team_members tm ON tm.team_id = managed.id
+		LEFT JOIN users u ON u.id = tm.user_id AND u.deleted_at IS NULL
+		ORDER BY managed.name, u.name
+	`, userID, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("list managed teams: %w", err)
+	}
+	defer rows.Close()
+
+	teams := []ManagedTeam{}
+	at := map[uuid.UUID]int{}
+	for rows.Next() {
+		var teamID uuid.UUID
+		var teamName string
+		var memberID *uuid.UUID
+		var memberName, memberEmail *string
+		if err := rows.Scan(&teamID, &teamName, &memberID, &memberName, &memberEmail); err != nil {
+			return nil, fmt.Errorf("scan managed team: %w", err)
+		}
+		i, seen := at[teamID]
+		if !seen {
+			teams = append(teams, ManagedTeam{ID: teamID, Name: teamName, Members: []TeamMemberT{}})
+			i = len(teams) - 1
+			at[teamID] = i
+		}
+		// A team with nobody on it still belongs in the list.
+		if memberID != nil {
+			teams[i].Members = append(teams[i].Members, TeamMemberT{
+				UserID: *memberID,
+				Name:   derefOr(memberName, ""),
+				Email:  derefOr(memberEmail, ""),
+			})
+		}
+	}
+	return teams, rows.Err()
+}
+
+func derefOr(p *string, fallback string) string {
+	if p == nil {
+		return fallback
+	}
+	return *p
 }
 
 // attachLabels loads the labels for a whole page in one query so a board does

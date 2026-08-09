@@ -26,6 +26,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	h := NewHandler(service)
 
 	rg.GET("/tasks", h.ListTasks)
+	rg.GET("/tasks/managed-teams", h.ManagedTeams)
 	rg.POST("/tasks", h.CreateTask)
 	rg.GET("/tasks/:id", h.GetTask)
 	rg.PATCH("/tasks/:id", h.UpdateTask)
@@ -88,18 +89,44 @@ func (h *Handler) ListTasks(c *gin.Context) {
 	if !ok {
 		return
 	}
-	tasks, err := h.service.ListTasks(c.Request.Context(), cl.OrgID, Filters{
+	filters := Filters{
 		Status:     c.Query("status"),
 		AssigneeID: queryUUID(c, "assigneeId"),
 		ProjectID:  queryUUID(c, "projectId"),
 		LabelID:    queryUUID(c, "labelId"),
 		Search:     c.Query("search"),
-	})
+		TeamID:     queryUUID(c, "teamId"),
+	}
+	// scope=team asks for the work of the people this caller manages. It is
+	// always the caller — you cannot ask to see somebody else's reports.
+	switch c.Query("scope") {
+	case "team":
+		filters.ManagedBy = &cl.UserID
+	case "mine":
+		filters.Involving = &cl.UserID
+	}
+
+	tasks, err := h.service.ListTasks(c.Request.Context(), cl.OrgID, filters)
 	if err != nil {
 		httpx.Error(c, err, "failed to list tasks")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"tasks": tasks})
+}
+
+// ManagedTeams answers with the teams the caller runs and who is on them, so
+// the team view can offer a filter per person.
+func (h *Handler) ManagedTeams(c *gin.Context) {
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	teams, err := h.service.ManagedTeams(c.Request.Context(), cl.OrgID, cl.UserID)
+	if err != nil {
+		httpx.Error(c, err, "failed to list managed teams")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"teams": teams})
 }
 
 func (h *Handler) CreateTask(c *gin.Context) {

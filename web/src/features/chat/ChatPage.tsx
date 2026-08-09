@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { Hash, Send, Paperclip, Smile, Bell, Settings, ChevronLeft, MessageSquare, Video } from 'lucide-react';
+import { Hash, Send, Paperclip, Smile, Bell, Settings, ChevronLeft, MessageSquare, Video, User } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Avatar, AvatarFallback } from '@/shared/components/ui/avatar';
@@ -8,12 +8,13 @@ import { cn } from '@/shared/utils/cn';
 import { formatRelativeTime } from '@/shared/utils/cn';
 import { useWebSocket } from '@/features/websocket/WSProvider';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { channelsApi, filesApi } from '@/shared/api/client';
-import { useUpload } from '@/features/files/useUpload';
+import { callsApi, channelsApi } from '@/shared/api/client';
+import { useUpload, type UploadedFile } from '@/features/files/useUpload';
 import { useToast } from '@/shared/hooks/useToast';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { AttachmentChip } from '@/features/files/AttachmentChip';
 import { ChannelSettingsDialog } from './ChannelSettingsDialog';
+import { NewDirectMessageDialog } from './NewDirectMessageDialog';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { useUIStore } from '@/shared/store';
 import { CreateChannelDialog } from './CreateChannelDialog';
@@ -47,6 +48,12 @@ export function ChatPage() {
   const [showSidebar, setShowSidebar] = useState(true);
   const [createChannelOpen, setCreateChannelOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  // Uploaded but not yet sent. A file used to appear in the channel the instant
+  // it finished uploading; now it waits here until you press Send, so it can go
+  // on its own or alongside a message.
+  const [staged, setStaged] = useState<UploadedFile[]>([]);
+  const [newChatOpen, setNewChatOpen] = useState(false);
+  const [startingCall, setStartingCall] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const channelId = params.channelId || activeChannelId;
 
@@ -75,14 +82,6 @@ export function ChatPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { upload, progress, error: uploadError } = useUpload('chat', channelId || '');
 
-  // Files already attached to this channel.
-  const { data: attachmentsData } = useQuery({
-    queryKey: ['attachments', channelId],
-    queryFn: () => filesApi.list('chat', channelId!),
-    enabled: !!channelId,
-  });
-  const attachments = attachmentsData?.data ?? [];
-
   useEffect(() => {
     if (uploadError) toast.error(uploadError);
     // toast is rebuilt each render; the error is the real trigger.
@@ -102,7 +101,8 @@ export function ChatPage() {
     );
 
   const sendMessageMutation = useMutation({
-    mutationFn: (data: { channelId: string; content: string; tempId: string }) => channelsApi.sendMessage(data.channelId, data),
+    mutationFn: (data: { channelId: string; content: string; tempId: string; attachmentIds?: string[] }) =>
+      channelsApi.sendMessage(data.channelId, data),
     onMutate: async (variables) => {
       await queryClient.cancelQueries({ queryKey: ['messages', variables.channelId] });
       const previous = queryClient.getQueryData(['messages', variables.channelId]);
@@ -112,7 +112,7 @@ export function ChatPage() {
         userId: user?.id || '',
         userName: user?.name || 'You',
         content: variables.content,
-        attachments: [],
+        attachments: variables.attachmentIds?.length ? staged : [],
         reactions: {},
         createdAt: new Date().toISOString(),
         pending: true,
@@ -168,10 +168,39 @@ export function ChatPage() {
 
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!message.trim() || !channelId) return;
+    if (!channelId) return;
+    // A file on its own is a message, so an empty box is fine if something is
+    // attached.
+    if (!message.trim() && staged.length === 0) return;
     const tempId = `temp-${Date.now()}`;
-    sendMessageMutation.mutate({ channelId, content: message, tempId });
+    sendMessageMutation.mutate({
+      channelId,
+      content: message,
+      tempId,
+      attachmentIds: staged.map((f) => f.id),
+    });
     setMessage('');
+    setStaged([]);
+  };
+
+  // Calls the whole channel: everybody in it is rung. A public channel has the
+  // whole organization in it, a private one only its members, so the channel
+  // decides who can be reached without a separate rule here.
+  const startCall = async () => {
+    if (!channelId || startingCall) return;
+    setStartingCall(true);
+    try {
+      const { data: call } = await callsApi.create({
+        channelId,
+        callType: 'video',
+        title: activeChannel?.name ?? undefined,
+      });
+      navigate(`/calls/${call.id}`);
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not start that call.'));
+    } finally {
+      setStartingCall(false);
+    }
   };
 
   const handleChannelClick = (id: string) => {
@@ -222,7 +251,11 @@ export function ChatPage() {
                       : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
                   )}
                 >
-                  <MessageSquare className="h-5 w-5 flex-shrink-0" />
+                  {channel.type === 'dm' ? (
+                    <User className="h-5 w-5 flex-shrink-0" />
+                  ) : (
+                    <MessageSquare className="h-5 w-5 flex-shrink-0" />
+                  )}
                   <span className="truncate flex-1">{channel.name || 'Unnamed'}</span>
                   {channel.unreadCount > 0 && (
                     <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-primary/20 px-1.5 text-xs font-medium text-primary-foreground">
@@ -234,7 +267,11 @@ export function ChatPage() {
             </div>
 
             {/* New channel button */}
-            <div className="p-2 border-t border-border">
+            <div className="space-y-2 p-2 border-t border-border">
+              <Button variant="outline" className="w-full" onClick={() => setNewChatOpen(true)}>
+                <User className="mr-2 h-4 w-4" />
+                New chat
+              </Button>
               <Button variant="outline" className="w-full" onClick={() => setCreateChannelOpen(true)}>
                 <MessageSquare className="mr-2 h-4 w-4" />
                 New Channel
@@ -260,7 +297,15 @@ export function ChatPage() {
             </div>
             <div className="flex-1" />
             <div className="flex items-center gap-2">
-              <Button variant="ghost" size="icon"><Video className="h-5 w-5" /></Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="Start a call"
+                disabled={!activeChannel || startingCall}
+                onClick={startCall}
+              >
+                <Video className="h-5 w-5" />
+              </Button>
               <Button variant="ghost" size="icon" aria-label="Notifications"><Bell className="h-5 w-5" /></Button>
               <Button
                 variant="ghost"
@@ -295,12 +340,22 @@ export function ChatPage() {
           </div>
 
           {/* Message input */}
-          {attachments.length > 0 && (
+          {staged.length > 0 && (
             <div className="border-t border-border px-4 py-2">
-              <p className="mb-1 text-xs font-medium text-muted-foreground">Files in this channel</p>
+              <p className="mb-1 text-xs font-medium text-muted-foreground">Attached — press Send</p>
               <div className="flex flex-wrap gap-2">
-                {attachments.map((a: any) => (
-                  <AttachmentChip key={a.id} attachment={a} />
+                {staged.map((file) => (
+                  <span key={file.id} className="flex items-center gap-1">
+                    <AttachmentChip attachment={{ ...file, sizeBytes: file.size }} />
+                    <button
+                      type="button"
+                      onClick={() => setStaged((all) => all.filter((f) => f.id !== file.id))}
+                      aria-label={`Remove ${file.filename}`}
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      ×
+                    </button>
+                  </span>
                 ))}
               </div>
             </div>
@@ -318,10 +373,7 @@ export function ChatPage() {
                   e.target.value = '';
                   if (!file || !channelId) return;
                   const uploaded = await upload(file);
-                  if (uploaded) {
-                    queryClient.invalidateQueries({ queryKey: ['attachments', channelId] });
-                    toast.success(`${uploaded.filename} attached.`);
-                  }
+                  if (uploaded) setStaged((all) => [...all, uploaded]);
                 }}
               />
               <Button
@@ -356,7 +408,12 @@ export function ChatPage() {
                   <Button variant="ghost" size="icon" type="button"><Smile className="h-5 w-5" /></Button>
                 </div>
               </div>
-              <Button type="submit" size="icon" disabled={!message.trim()} className="shrink-0">
+              <Button
+                type="submit"
+                size="icon"
+                disabled={!message.trim() && staged.length === 0}
+                className="shrink-0"
+              >
                 <Send className="h-5 w-5" />
               </Button>
             </div>
@@ -368,6 +425,16 @@ export function ChatPage() {
         open={createChannelOpen}
         onOpenChange={setCreateChannelOpen}
         onCreated={(id) => {
+          setActiveChannelId(id);
+          navigate(`/chat/${id}`);
+        }}
+      />
+
+      <NewDirectMessageDialog
+        open={newChatOpen}
+        onOpenChange={setNewChatOpen}
+        onOpened={(id) => {
+          queryClient.invalidateQueries({ queryKey: ['channels'] });
           setActiveChannelId(id);
           navigate(`/chat/${id}`);
         }}
@@ -406,7 +473,14 @@ function MessageBubble({
           'rounded-2xl px-4 py-2 max-w-[80%]',
           isOwn ? 'bg-primary text-primary-foreground rounded-tr-none' : 'bg-secondary text-secondary-foreground rounded-tl-none'
         )}>
-          <p className="whitespace-pre-wrap">{message.content}</p>
+          {message.content && <p className="whitespace-pre-wrap">{message.content}</p>}
+          {message.attachments?.length > 0 && (
+            <div className={cn('flex flex-wrap gap-2', message.content && 'mt-2')}>
+              {message.attachments.map((a: any) => (
+                <AttachmentChip key={a.id} attachment={a} />
+              ))}
+            </div>
+          )}
           <p className={cn('text-xs mt-1 opacity-70', isOwn ? 'text-primary-foreground/70' : 'text-muted-foreground')}>
             {formatRelativeTime(message.createdAt)}
           </p>

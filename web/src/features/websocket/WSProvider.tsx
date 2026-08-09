@@ -13,6 +13,13 @@ interface WSContextType {
 
 const WSContext = createContext<WSContextType | undefined>(undefined);
 
+/** Same host as the page unless told otherwise, so this works behind a proxy. */
+function wsOrigin() {
+  if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL;
+  const scheme = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${scheme}//${window.location.host}`;
+}
+
 export function WSProvider({ children }: { children: ReactNode }) {
   const { isAuthenticated } = useAuthStore();
   const wsRef = useRef<WebSocket | null>(null);
@@ -27,10 +34,11 @@ export function WSProvider({ children }: { children: ReactNode }) {
   const connect = useCallback(() => {
     if (!isAuthenticated) return;
 
-    const token = document.cookie.split('; ').find(c => c.startsWith('at='))?.split('=')[1];
-    if (!token) return;
-
-    const wsUrl = `${import.meta.env.VITE_WS_URL || 'ws://localhost:8080'}/ws?token=${token}`;
+    // The access token is in an HttpOnly cookie, so document.cookie cannot see
+    // it — reading it here always came back undefined and the socket was never
+    // opened. The browser sends the cookie with the handshake by itself, and
+    // the server now reads it from there, so no token goes in the URL.
+    const wsUrl = `${wsOrigin()}/ws`;
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -39,7 +47,7 @@ export function WSProvider({ children }: { children: ReactNode }) {
       ws.send(JSON.stringify({
         id: crypto.randomUUID(),
         type: 'conn.init',
-        payload: { token, clientInfo: { platform: navigator.platform, version: import.meta.env.VITE_APP_VERSION } },
+        payload: { clientInfo: { platform: navigator.platform, version: import.meta.env.VITE_APP_VERSION } },
       }));
     };
 

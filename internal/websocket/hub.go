@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,10 +87,14 @@ func (h *Hub) Run() {
 	}
 }
 
+// Register adds a connection and announces the user as online.
+//
+// The announcement happens after the lock is released. sync.RWMutex is not
+// reentrant, so calling broadcastPresence — which takes a read lock — while
+// still holding the write lock deadlocked the hub permanently on the very
+// first connection, taking presence, live messages and call ringing with it.
 func (h *Hub) Register(conn *Connection) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	h.connections[conn.ID] = conn
 
 	if h.userConns[conn.UserID()] == nil {
@@ -98,23 +103,25 @@ func (h *Hub) Register(conn *Connection) {
 	h.userConns[conn.UserID()][conn.ID] = conn
 
 	h.subscribeToUserChannels(conn)
+	h.mu.Unlock()
 
 	h.presenceService.SetOnline(conn.UserID(), conn.OrgID())
 	h.broadcastPresence(conn.UserID(), "online", "")
 }
 
+// Unregister removes a connection, announcing the user as offline once their
+// last one has gone. As in Register, the announcement is made after the lock is
+// released.
 func (h *Hub) Unregister(conn *Connection) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
-
 	delete(h.connections, conn.ID)
 
+	wentOffline := false
 	if userConns, ok := h.userConns[conn.UserID()]; ok {
 		delete(userConns, conn.ID)
 		if len(userConns) == 0 {
 			delete(h.userConns, conn.UserID())
-			h.presenceService.SetOffline(conn.UserID(), conn.OrgID())
-			h.broadcastPresence(conn.UserID(), "offline", "")
+			wentOffline = true
 		}
 	}
 
@@ -125,6 +132,12 @@ func (h *Hub) Unregister(conn *Connection) {
 				delete(h.channelSubs, channelID)
 			}
 		}
+	}
+	h.mu.Unlock()
+
+	if wentOffline {
+		h.presenceService.SetOffline(conn.UserID(), conn.OrgID())
+		h.broadcastPresence(conn.UserID(), "offline", "")
 	}
 }
 
@@ -331,7 +344,23 @@ func (c *Connection) writeJSON(ctx context.Context, msg *protocol.Message) error
 // WSHandler upgrades HTTP to WebSocket
 func WSHandler(hub *Hub, authService AuthServiceInterface) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		token := c.Query("token")
+		// The access token lives in an HttpOnly cookie, so a browser cannot
+		// read it to put in the query string — which is why the socket never
+		// connected from the app at all, taking presence, live messages and
+		// call ringing down with it. Prefer the cookie the browser already
+		// sends; the query parameter stays for non-browser clients.
+		token := ""
+		if cookie, err := c.Request.Cookie("at"); err == nil {
+			token = cookie.Value
+		}
+		if token == "" {
+			if header := c.GetHeader("Authorization"); strings.HasPrefix(header, "Bearer ") {
+				token = strings.TrimPrefix(header, "Bearer ")
+			}
+		}
+		if token == "" {
+			token = c.Query("token")
+		}
 		if token == "" {
 			c.JSON(401, gin.H{"error": "missing token"})
 			return

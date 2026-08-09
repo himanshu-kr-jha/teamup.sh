@@ -66,19 +66,68 @@ func (h *Handler) CreateCall(c *gin.Context) {
 		return
 	}
 
+	ctx := c.Request.Context()
+
 	var channelID *uuid.UUID
+	invitees := req.Invitees
 	if req.ChannelID != nil {
-		id, _ := uuid.Parse(*req.ChannelID)
+		id, err := uuid.Parse(*req.ChannelID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid channelId"})
+			return
+		}
 		channelID = &id
+
+		// A channel's call belongs to that channel. Anybody in the
+		// organization is a member of a public channel, so this is what keeps
+		// a private channel's call private.
+		member, err := h.service.IsChannelMember(ctx, orgID, id, userID)
+		if err != nil {
+			httpx.Error(c, err, "failed to start call")
+			return
+		}
+		if !member {
+			c.JSON(http.StatusForbidden, gin.H{"error": "you are not a member of this channel"})
+			return
+		}
+
+		// Everybody in the channel is called, so a caller does not have to
+		// name them one at a time.
+		members, err := h.service.ChannelMembersFor(ctx, orgID, id, userID)
+		if err != nil {
+			httpx.Error(c, err, "failed to start call")
+			return
+		}
+		invitees = make([]string, 0, len(members))
+		for _, m := range members {
+			invitees = append(invitees, m.String())
+		}
 	}
 
-	call, err := h.service.CreateCall(c.Request.Context(), orgID, userID, req.Title, req.CallType, channelID, req.Invitees)
+	call, err := h.service.CreateCall(ctx, orgID, userID, req.Title, req.CallType, channelID, invitees)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create call"})
+		httpx.Error(c, err, "failed to create call")
 		return
 	}
 
+	// Ring them. Without this a call existed but nobody was ever told.
+	inviteeIDs := make([]uuid.UUID, 0, len(invitees))
+	for _, raw := range invitees {
+		if id, err := uuid.Parse(raw); err == nil {
+			inviteeIDs = append(inviteeIDs, id)
+		}
+	}
+	h.service.Ring(ctx, call, user.UserID, callerName(user), inviteeIDs)
+
 	c.JSON(http.StatusCreated, call)
+}
+
+// callerName prefers something a callee will recognise over a bare id.
+func callerName(user *auth.UserContext) string {
+	if user.Email != "" {
+		return user.Email
+	}
+	return "Somebody"
 }
 
 func (h *Handler) GetCall(c *gin.Context) {

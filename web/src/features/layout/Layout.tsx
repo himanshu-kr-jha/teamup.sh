@@ -3,6 +3,7 @@ import { Sidebar } from './Sidebar';
 import { Header } from './Header';
 import { useUIStore } from '@/shared/store';
 import { useAuthStore } from '@/shared/store/authStore';
+import { IncomingCallDialog } from '@/features/calls/IncomingCallDialog';
 import { cn } from '@/shared/utils/cn';
 
 export function Layout() {
@@ -32,6 +33,8 @@ export function Layout() {
           <Outlet />
         </main>
       </div>
+      {/* A call has to reach you wherever you are, not only on the calls page. */}
+      <IncomingCallDialog />
       {sidebarOpen && (
         <div
           className="fixed inset-0 z-40 bg-black/50 lg:hidden"

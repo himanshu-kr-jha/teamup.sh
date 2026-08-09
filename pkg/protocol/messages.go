@@ -203,11 +203,17 @@ type CallInvitePayload struct {
 }
 
 type CallInvitedPayload struct {
+	// CallID is what the callee needs to join: the call page resolves a token
+	// by call id, not by room name.
+	CallID     string `json:"callId"`
 	RoomName   string `json:"roomName"`
 	CallerID   string `json:"callerId"`
 	CallerName string `json:"callerName"`
 	CallType   string `json:"callType"`
 	Token      string `json:"token"` // LiveKit token
+	// ChannelID names where the call came from, so a callee can tell a team
+	// call from a one-to-one one.
+	ChannelID string `json:"channelId,omitempty"`
 }
 
 type CallAcceptPayload struct {

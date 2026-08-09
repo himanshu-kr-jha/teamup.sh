@@ -23,7 +23,7 @@ func TestSearchFindsMatchingMessages(t *testing.T) {
 		"lunch is at noon",
 		"we should document the deployment steps",
 	} {
-		if _, err := svc.SendMessage(ctx, org.ID, ch, org.OwnerID, body, nil, false); err != nil {
+		if _, err := svc.SendMessage(ctx, org.ID, ch, org.OwnerID, body, nil, nil, false); err != nil {
 			t.Fatalf("seed message: %v", err)
 		}
 	}
@@ -52,7 +52,7 @@ func TestSearchMatchesWordStems(t *testing.T) {
 	org := testsupport.SeedOrg(t, pool)
 	ch := testsupport.SeedChannel(t, pool, org, "general", org.OwnerID)
 
-	if _, err := svc.SendMessage(ctx, org.ID, ch, org.OwnerID, "we should document the steps", nil, false); err != nil {
+	if _, err := svc.SendMessage(ctx, org.ID, ch, org.OwnerID, "we should document the steps", nil, nil, false); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -73,7 +73,7 @@ func TestSearchOnlyReturnsReadableChannels(t *testing.T) {
 	outsider := testsupport.SeedUser(t, pool, org, "outsider@example.test", "member")
 
 	private := testsupport.SeedChannel(t, pool, org, "private", org.OwnerID)
-	if _, err := svc.SendMessage(ctx, org.ID, private, org.OwnerID, "confidential runway numbers", nil, false); err != nil {
+	if _, err := svc.SendMessage(ctx, org.ID, private, org.OwnerID, "confidential runway numbers", nil, nil, false); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -105,7 +105,7 @@ func TestSearchIncludesPublicChannelsForNonMembers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create public: %v", err)
 	}
-	if _, err := svc.SendMessage(ctx, org.ID, ch.ID, org.OwnerID, "all hands on friday", nil, false); err != nil {
+	if _, err := svc.SendMessage(ctx, org.ID, ch.ID, org.OwnerID, "all hands on friday", nil, nil, false); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -125,7 +125,7 @@ func TestSearchNeverCrossesOrganizations(t *testing.T) {
 	theirs := testsupport.SeedOrg(t, pool)
 
 	ch := testsupport.SeedChannel(t, pool, theirs, "theirs", theirs.OwnerID)
-	if _, err := svc.SendMessage(ctx, theirs.ID, ch, theirs.OwnerID, "their secret plans", nil, false); err != nil {
+	if _, err := svc.SendMessage(ctx, theirs.ID, ch, theirs.OwnerID, "their secret plans", nil, nil, false); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
@@ -146,10 +146,10 @@ func TestSearchCanBeNarrowedToAChannelAndAuthor(t *testing.T) {
 	a := testsupport.SeedChannel(t, pool, org, "alpha", org.OwnerID, mate)
 	b := testsupport.SeedChannel(t, pool, org, "beta", org.OwnerID, mate)
 
-	if _, err := svc.SendMessage(ctx, org.ID, a, org.OwnerID, "release notes for alpha", nil, false); err != nil {
+	if _, err := svc.SendMessage(ctx, org.ID, a, org.OwnerID, "release notes for alpha", nil, nil, false); err != nil {
 		t.Fatalf("seed a: %v", err)
 	}
-	if _, err := svc.SendMessage(ctx, org.ID, b, mate, "release notes for beta", nil, false); err != nil {
+	if _, err := svc.SendMessage(ctx, org.ID, b, mate, "release notes for beta", nil, nil, false); err != nil {
 		t.Fatalf("seed b: %v", err)
 	}
 
@@ -176,7 +176,7 @@ func TestSearchExcludesDeletedMessages(t *testing.T) {
 	org := testsupport.SeedOrg(t, pool)
 	ch := testsupport.SeedChannel(t, pool, org, "general", org.OwnerID)
 
-	msg, err := svc.SendMessage(ctx, org.ID, ch, org.OwnerID, "regrettable thing", nil, false)
+	msg, err := svc.SendMessage(ctx, org.ID, ch, org.OwnerID, "regrettable thing", nil, nil, false)
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -210,7 +210,7 @@ func TestSearchIsPaged(t *testing.T) {
 	ch := testsupport.SeedChannel(t, pool, org, "general", org.OwnerID)
 
 	for i := 0; i < 5; i++ {
-		if _, err := svc.SendMessage(ctx, org.ID, ch, org.OwnerID, "repeated keyword here", nil, false); err != nil {
+		if _, err := svc.SendMessage(ctx, org.ID, ch, org.OwnerID, "repeated keyword here", nil, nil, false); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
 	}
@@ -245,7 +245,7 @@ func TestSearchHighlightDoesNotEmitHTML(t *testing.T) {
 	ch := testsupport.SeedChannel(t, pool, org, "general", org.OwnerID)
 
 	if _, err := svc.SendMessage(ctx, org.ID, ch, org.OwnerID,
-		`<script>alert("xss")</script> deployment notes`, nil, false); err != nil {
+		`<script>alert("xss")</script> deployment notes`, nil, nil, false); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 

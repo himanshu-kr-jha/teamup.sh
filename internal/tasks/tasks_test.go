@@ -635,3 +635,199 @@ func TestAManagerCannotAssignToAnOrganizationAdminOnTheirTeam(t *testing.T) {
 		t.Errorf("a manager could not assign to an ordinary report: %v", err)
 	}
 }
+
+// ── The manager's view of their team's work ───────────────────────────────
+
+func TestTeamScopeShowsWhatTheManagersPeopleAreWorkingOn(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	manager := testsupport.SeedUser(t, pool, org, "lead@example.test", "manager")
+	alice := testsupport.SeedUser(t, pool, org, "alice4@example.test", "member")
+	stranger := testsupport.SeedUser(t, pool, org, "stranger4@example.test", "member")
+
+	testsupport.SeedTeam(t, pool, org, "photon", &manager, nil, alice)
+	testsupport.SeedTeam(t, pool, org, "other", nil, nil, stranger)
+
+	if _, err := svc.CreateTask(ctx, org.ID, manager, "Alice's job", "", "", "", "",
+		nil, &alice, nil, nil, nil, false); err != nil {
+		t.Fatalf("assign to alice: %v", err)
+	}
+	if _, err := svc.CreateTask(ctx, org.ID, org.OwnerID, "Somebody else's job", "", "", "", "",
+		nil, &stranger, nil, nil, nil, true); err != nil {
+		t.Fatalf("assign to stranger: %v", err)
+	}
+
+	tasks, err := svc.ListTasks(ctx, org.ID, Filters{ManagedBy: &manager})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Title != "Alice's job" {
+		t.Fatalf("team scope returned the wrong work: %+v", titlesOf(tasks))
+	}
+}
+
+func TestTeamScopeReachesTeamsNestedUnderneath(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	lead := testsupport.SeedUser(t, pool, org, "lead5@example.test", "manager")
+	intern := testsupport.SeedUser(t, pool, org, "intern5@example.test", "member")
+
+	// An employee who runs a team of interns beneath their own.
+	parent := testsupport.SeedTeam(t, pool, org, "engineering", &lead, nil)
+	testsupport.SeedTeam(t, pool, org, "interns", nil, &parent, intern)
+
+	if _, err := svc.CreateTask(ctx, org.ID, lead, "Intern work", "", "", "", "",
+		nil, &intern, nil, nil, nil, false); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+
+	tasks, err := svc.ListTasks(ctx, org.ID, Filters{ManagedBy: &lead})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(tasks) != 1 {
+		t.Errorf("a sub-team's work is missing: %+v", titlesOf(tasks))
+	}
+}
+
+func TestTeamScopeCoversEveryTeamSomebodyManagesAndCanNarrowToOne(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	manager := testsupport.SeedUser(t, pool, org, "two@example.test", "manager")
+	first := testsupport.SeedUser(t, pool, org, "first@example.test", "member")
+	second := testsupport.SeedUser(t, pool, org, "second@example.test", "member")
+
+	teamA := testsupport.SeedTeam(t, pool, org, "alpha", &manager, nil, first)
+	testsupport.SeedTeam(t, pool, org, "beta", &manager, nil, second)
+
+	for _, who := range []uuid.UUID{first, second} {
+		if _, err := svc.CreateTask(ctx, org.ID, manager, "job for "+who.String()[:4], "", "", "", "",
+			nil, &who, nil, nil, nil, false); err != nil {
+			t.Fatalf("assign: %v", err)
+		}
+	}
+
+	both, err := svc.ListTasks(ctx, org.ID, Filters{ManagedBy: &manager})
+	if err != nil {
+		t.Fatalf("list both: %v", err)
+	}
+	if len(both) != 2 {
+		t.Errorf("managing two teams should show both: %+v", titlesOf(both))
+	}
+
+	// Narrowed to one of the two teams.
+	justAlpha, err := svc.ListTasks(ctx, org.ID, Filters{ManagedBy: &manager, TeamID: &teamA})
+	if err != nil {
+		t.Fatalf("list alpha: %v", err)
+	}
+	if len(justAlpha) != 1 {
+		t.Errorf("filtering to one team did not narrow: %+v", titlesOf(justAlpha))
+	}
+
+	// And narrowed to one person.
+	justSecond, err := svc.ListTasks(ctx, org.ID, Filters{ManagedBy: &manager, AssigneeID: &second})
+	if err != nil {
+		t.Fatalf("list person: %v", err)
+	}
+	if len(justSecond) != 1 {
+		t.Errorf("filtering to one person did not narrow: %+v", titlesOf(justSecond))
+	}
+}
+
+func TestSomebodyWhoManagesNothingSeesNoTeamWork(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	plain := testsupport.SeedUser(t, pool, org, "plain6@example.test", "member")
+
+	if _, err := svc.CreateTask(ctx, org.ID, org.OwnerID, "Not theirs", "", "", "", "",
+		nil, &plain, nil, nil, nil, true); err != nil {
+		t.Fatalf("assign: %v", err)
+	}
+
+	tasks, err := svc.ListTasks(ctx, org.ID, Filters{ManagedBy: &plain})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(tasks) != 0 {
+		t.Errorf("somebody who manages nobody saw team work: %+v", titlesOf(tasks))
+	}
+}
+
+func TestManagedTeamsListsEachTeamAndItsPeople(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	manager := testsupport.SeedUser(t, pool, org, "mt@example.test", "manager")
+	alice := testsupport.SeedUser(t, pool, org, "mt-alice@example.test", "member")
+	intern := testsupport.SeedUser(t, pool, org, "mt-intern@example.test", "member")
+	outside := testsupport.SeedUser(t, pool, org, "mt-outside@example.test", "member")
+
+	parent := testsupport.SeedTeam(t, pool, org, "engineering", &manager, nil, alice)
+	testsupport.SeedTeam(t, pool, org, "interns", nil, &parent, intern)
+	testsupport.SeedTeam(t, pool, org, "sales", nil, nil, outside)
+
+	teams, err := svc.ManagedTeams(ctx, org.ID, manager)
+	if err != nil {
+		t.Fatalf("managed teams: %v", err)
+	}
+	if len(teams) != 2 {
+		t.Fatalf("teams: got %d want 2 (own plus nested): %+v", len(teams), teams)
+	}
+	seen := map[string][]string{}
+	for _, team := range teams {
+		for _, m := range team.Members {
+			seen[team.Name] = append(seen[team.Name], m.Name)
+		}
+	}
+	if len(seen["engineering"]) != 1 || len(seen["interns"]) != 1 {
+		t.Errorf("wrong membership: %+v", seen)
+	}
+	for _, team := range teams {
+		if team.Name == "sales" {
+			t.Error("a team they do not manage appeared")
+		}
+	}
+}
+
+func titlesOf(tasks []Task) []string {
+	out := make([]string, len(tasks))
+	for i, t := range tasks {
+		out[i] = t.Title
+	}
+	return out
+}
+
+// "My tasks" has to include work somebody raised but has not handed out yet,
+// otherwise creating a task makes it disappear from your own view.
+func TestMyTasksCoversWorkAssignedToMeAndWorkIRaised(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	me := testsupport.SeedUser(t, pool, org, "me7@example.test", "member")
+	somebody := testsupport.SeedUser(t, pool, org, "them7@example.test", "member")
+
+	if _, err := svc.CreateTask(ctx, org.ID, org.OwnerID, "Given to me", "", "", "", "",
+		nil, &me, nil, nil, nil, true); err != nil {
+		t.Fatalf("assign to me: %v", err)
+	}
+	if _, err := svc.CreateTask(ctx, org.ID, me, "Raised by me, unassigned", "", "", "", "",
+		nil, nil, nil, nil, nil, false); err != nil {
+		t.Fatalf("raised by me: %v", err)
+	}
+	if _, err := svc.CreateTask(ctx, org.ID, org.OwnerID, "Nothing to do with me", "", "", "", "",
+		nil, &somebody, nil, nil, nil, true); err != nil {
+		t.Fatalf("someone else: %v", err)
+	}
+
+	mine, err := svc.ListTasks(ctx, org.ID, Filters{Involving: &me})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(mine) != 2 {
+		t.Errorf("my tasks: got %+v", titlesOf(mine))
+	}
+}

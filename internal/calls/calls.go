@@ -200,6 +200,77 @@ func (s *Service) CreateCall(ctx context.Context, orgID, createdBy uuid.UUID, ti
 	return call, nil
 }
 
+// ChannelMembersFor lists everybody in a channel apart from one person, which
+// is who a channel call has to reach.
+func (s *Service) ChannelMembersFor(ctx context.Context, orgID, channelID, except uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT cm.user_id
+		FROM channel_members cm
+		JOIN channels c ON c.id = cm.channel_id
+		WHERE cm.channel_id = $1 AND c.org_id = $2 AND cm.user_id <> $3
+	`, channelID, orgID, except)
+	if err != nil {
+		return nil, fmt.Errorf("list channel members for call: %w", err)
+	}
+	defer rows.Close()
+
+	ids := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan channel member: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// IsChannelMember gates starting a call on a channel: a private channel's call
+// belongs to its members, and a public channel's to the organization, which is
+// the same test now that everybody is a member of an open channel.
+func (s *Service) IsChannelMember(ctx context.Context, orgID, channelID, userID uuid.UUID) (bool, error) {
+	var ok bool
+	err := s.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM channel_members cm
+			JOIN channels c ON c.id = cm.channel_id
+			WHERE cm.channel_id = $1 AND cm.user_id = $2 AND c.org_id = $3
+			  AND c.deleted_at IS NULL)
+	`, channelID, userID, orgID).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("check channel membership for call: %w", err)
+	}
+	return ok, nil
+}
+
+// Ring tells each invitee that a call is waiting. The callee's client decides
+// how long to keep ringing; the server just says who is calling and where.
+func (s *Service) Ring(ctx context.Context, call *Call, callerID, callerName string, invitees []uuid.UUID) {
+	if s.broadcaster == nil {
+		return
+	}
+	for _, invitee := range invitees {
+		token, err := s.GenerateToken(ctx, call.RoomName, invitee.String(), "Participant", true, true)
+		if err != nil {
+			s.logger.Warn().Err(err).Msg("could not mint a token for a call invitee")
+			continue
+		}
+		payload := protocol.CallInvitedPayload{
+			CallID:     call.ID.String(),
+			RoomName:   call.RoomName,
+			CallerID:   callerID,
+			CallerName: callerName,
+			CallType:   call.CallType,
+			Token:      token,
+		}
+		if call.ChannelID != nil {
+			payload.ChannelID = call.ChannelID.String()
+		}
+		s.broadcaster.BroadcastToUser(invitee.String(), protocol.NewMessage(
+			protocol.TypeCallInvited, payload))
+	}
+}
+
 func (s *Service) GetToken(ctx context.Context, callID, userID, userName string) (string, error) {
 	return s.GenerateToken(ctx, callID, userID, userName, true, true)
 }

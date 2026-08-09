@@ -565,7 +565,13 @@ func (s *Service) ListChannels(ctx context.Context, orgID, userID uuid.UUID) ([]
 		       (SELECT COUNT(*) FROM messages msg
 		          WHERE msg.channel_id = c.id AND msg.deleted_at IS NULL
 		            AND msg.user_id <> $2
-		            AND msg.created_at > COALESCE(cm.last_read_at, 'epoch'::timestamptz))
+		            AND msg.created_at > COALESCE(cm.last_read_at, 'epoch'::timestamptz)),
+		       -- A direct message has no name of its own; each side sees the
+		       -- other person.
+		       (SELECT u.name FROM channel_members other
+		          JOIN users u ON u.id = other.user_id
+		          WHERE other.channel_id = c.id AND other.user_id <> $2
+		          LIMIT 1)
 		FROM channels c
 		LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.user_id = $2
 		WHERE c.org_id = $1 AND c.deleted_at IS NULL AND COALESCE(c.is_archived, false) = false
@@ -580,10 +586,14 @@ func (s *Service) ListChannels(ctx context.Context, orgID, userID uuid.UUID) ([]
 	channels := []Channel{}
 	for rows.Next() {
 		var c Channel
+		var counterpart *string
 		if err := rows.Scan(&c.ID, &c.OrgID, &c.TeamID, &c.Name, &c.Type, &c.Description,
 			&c.CreatedBy, &c.IsArchived, &c.IsPrivate, &c.MaxMembers,
-			&c.CreatedAt, &c.UpdatedAt, &c.MemberCount, &c.UnreadCount); err != nil {
+			&c.CreatedAt, &c.UpdatedAt, &c.MemberCount, &c.UnreadCount, &counterpart); err != nil {
 			return nil, fmt.Errorf("scan channel: %w", err)
+		}
+		if c.Type == "dm" && counterpart != nil {
+			c.Name = counterpart
 		}
 		channels = append(channels, c)
 	}
@@ -730,6 +740,77 @@ func (s *Service) EnsureMember(ctx context.Context, orgID, channelID, userID uui
 		return false, fmt.Errorf("join open channel: %w", err)
 	}
 	return tag.RowsAffected() > 0, nil
+}
+
+// OpenDirectMessage finds the one-to-one conversation between two people, or
+// starts it. There is exactly one per pair, so opening a chat with somebody
+// twice returns the same history rather than a second empty conversation.
+//
+// A DM has no name: both sides see the other person, which ListChannels fills
+// in per viewer.
+func (s *Service) OpenDirectMessage(ctx context.Context, orgID, userID, otherID uuid.UUID) (*Channel, error) {
+	if userID == otherID {
+		return nil, apperrors.New(apperrors.CodeBadRequest, "you cannot start a conversation with yourself")
+	}
+
+	var otherExists bool
+	if err := s.db.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL)`,
+		otherID, orgID).Scan(&otherExists); err != nil {
+		return nil, fmt.Errorf("check other party: %w", err)
+	}
+	if !otherExists {
+		return nil, apperrors.New(apperrors.CodeNotFound, "that person is not in this organization")
+	}
+
+	// A direct channel with exactly these two people in it.
+	var existing uuid.UUID
+	err := s.db.QueryRow(ctx, `
+		SELECT c.id
+		FROM channels c
+		JOIN channel_members mine ON mine.channel_id = c.id AND mine.user_id = $2
+		JOIN channel_members theirs ON theirs.channel_id = c.id AND theirs.user_id = $3
+		WHERE c.org_id = $1 AND c.type = 'dm' AND c.deleted_at IS NULL
+		  AND (SELECT COUNT(*) FROM channel_members m WHERE m.channel_id = c.id) = 2
+		LIMIT 1
+	`, orgID, userID, otherID).Scan(&existing)
+	if err == nil {
+		return s.GetChannel(ctx, orgID, existing)
+	}
+	if err != pgx.ErrNoRows {
+		return nil, fmt.Errorf("find direct message: %w", err)
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var c Channel
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO channels (id, org_id, name, type, created_by, is_private, created_at, updated_at)
+		VALUES (gen_random_uuid(), $1, NULL, 'dm', $2, TRUE, NOW(), NOW())
+		RETURNING id, org_id, team_id, name, type, description, created_by,
+		          COALESCE(is_archived, false), COALESCE(is_private, true),
+		          COALESCE(max_members, 1000), created_at, updated_at
+	`, orgID, userID).Scan(&c.ID, &c.OrgID, &c.TeamID, &c.Name, &c.Type, &c.Description,
+		&c.CreatedBy, &c.IsArchived, &c.IsPrivate, &c.MaxMembers, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		return nil, fmt.Errorf("create direct message: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO channel_members (channel_id, user_id, role, joined_at)
+		VALUES ($1, $2, 'owner', NOW()), ($1, $3, 'owner', NOW())
+	`, c.ID, userID, otherID); err != nil {
+		return nil, fmt.Errorf("add direct message members: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	c.MemberCount = 2
+	return &c, nil
 }
 
 // EnrolInOpenChannels puts a user into every public and announcement channel
@@ -952,7 +1033,86 @@ func (s *Service) GetMessages(ctx context.Context, channelID uuid.UUID, limit in
 	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
 		messages[i], messages[j] = messages[j], messages[i]
 	}
-	return s.attachReactions(ctx, messages)
+	withReactions, err := s.attachReactions(ctx, messages)
+	if err != nil {
+		return nil, err
+	}
+	return s.attachFiles(ctx, withReactions)
+}
+
+// attachFiles loads each message's attachments for a page in one query.
+// History used to come back with none at all, so a file sent with a message
+// vanished from the conversation as soon as the page reloaded.
+func (s *Service) attachFiles(ctx context.Context, messages []Message) ([]Message, error) {
+	if len(messages) == 0 {
+		return messages, nil
+	}
+	ids := make([]uuid.UUID, len(messages))
+	index := make(map[uuid.UUID]int, len(messages))
+	for i, m := range messages {
+		ids[i] = m.ID
+		index[m.ID] = i
+		messages[i].Attachments = []Attachment{}
+	}
+
+	rows, err := s.db.Query(ctx, `
+		SELECT message_id, id, filename, content_type, size_bytes, object_key, thumbnail_key
+		FROM attachments
+		WHERE message_id = ANY($1) AND deleted_at IS NULL
+		ORDER BY created_at
+	`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("load message attachments: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var messageID uuid.UUID
+		var a Attachment
+		if err := rows.Scan(&messageID, &a.ID, &a.Filename, &a.ContentType,
+			&a.SizeBytes, &a.ObjectKey, &a.ThumbnailKey); err != nil {
+			return nil, fmt.Errorf("scan message attachment: %w", err)
+		}
+		if i, ok := index[messageID]; ok {
+			messages[i].Attachments = append(messages[i].Attachments, a)
+		}
+	}
+	return messages, rows.Err()
+}
+
+// bindAttachments claims uploads for a message. Only files already filed
+// against this channel by this user are eligible, so a message cannot pull in
+// somebody else's upload or one from another channel.
+func (s *Service) bindAttachments(ctx context.Context, msg *Message, attachmentIDs []uuid.UUID) error {
+	if len(attachmentIDs) == 0 {
+		return nil
+	}
+	rows, err := s.db.Query(ctx, `
+		UPDATE attachments
+		SET message_id = $1
+		WHERE id = ANY($2)
+		  AND uploaded_by = $3
+		  AND category = 'chat'
+		  AND ref_id = $4
+		  AND message_id IS NULL
+		  AND deleted_at IS NULL
+		RETURNING id, filename, content_type, size_bytes, object_key, thumbnail_key
+	`, msg.ID, attachmentIDs, msg.UserID, msg.ChannelID.String())
+	if err != nil {
+		return fmt.Errorf("bind attachments: %w", err)
+	}
+	defer rows.Close()
+
+	msg.Attachments = []Attachment{}
+	for rows.Next() {
+		var a Attachment
+		if err := rows.Scan(&a.ID, &a.Filename, &a.ContentType, &a.SizeBytes,
+			&a.ObjectKey, &a.ThumbnailKey); err != nil {
+			return fmt.Errorf("scan bound attachment: %w", err)
+		}
+		msg.Attachments = append(msg.Attachments, a)
+	}
+	return rows.Err()
 }
 
 // attachReactions loads reactions for a page in one query rather than per row.
@@ -1014,9 +1174,14 @@ func (s *Service) RemoveReaction(ctx context.Context, messageID, userID uuid.UUI
 
 // SendMessage is the HTTP path onto the same storage the WebSocket uses, so a
 // client without a live socket still gets a persisted, broadcast message.
-func (s *Service) SendMessage(ctx context.Context, orgID, channelID, userID uuid.UUID, content string, replyTo *uuid.UUID, isOrgAdmin bool) (*Message, error) {
+func (s *Service) SendMessage(ctx context.Context, orgID, channelID, userID uuid.UUID, content string, replyTo *uuid.UUID, attachmentIDs []uuid.UUID, isOrgAdmin bool) (*Message, error) {
 	if err := s.AuthorizePost(ctx, orgID, channelID, userID, isOrgAdmin); err != nil {
 		return nil, err
+	}
+	// A message with nothing in it is not worth sending, but a file on its own
+	// is: the attachment is the message.
+	if strings.TrimSpace(content) == "" && len(attachmentIDs) == 0 {
+		return nil, apperrors.New(apperrors.CodeBadRequest, "write something or attach a file")
 	}
 	msg := &Message{
 		ID:        uuid.New(),
@@ -1028,6 +1193,9 @@ func (s *Service) SendMessage(ctx context.Context, orgID, channelID, userID uuid
 		CreatedAt: time.Now(),
 	}
 	if err := s.createMessage(ctx, msg); err != nil {
+		return nil, err
+	}
+	if err := s.bindAttachments(ctx, msg, attachmentIDs); err != nil {
 		return nil, err
 	}
 	if s.broadcaster != nil {

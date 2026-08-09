@@ -343,3 +343,70 @@ func TestChannelMembersMayJoinAChannelCall(t *testing.T) {
 		t.Error("someone outside the channel must not join its call")
 	}
 }
+
+// ── Calls started from a channel ──────────────────────────────────────────
+
+func TestOnlyAChannelsMembersCanStartItsCall(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	outsider := testsupport.SeedUser(t, pool, org, "call-outsider@example.test", "member")
+
+	channelID := testsupport.SeedChannel(t, pool, org, "private-call", org.OwnerID)
+
+	member, err := svc.IsChannelMember(ctx, org.ID, channelID, org.OwnerID)
+	if err != nil {
+		t.Fatalf("member check: %v", err)
+	}
+	if !member {
+		t.Error("the channel's own member was refused")
+	}
+
+	stranger, err := svc.IsChannelMember(ctx, org.ID, channelID, outsider)
+	if err != nil {
+		t.Fatalf("outsider check: %v", err)
+	}
+	if stranger {
+		t.Error("somebody outside a private channel could start its call")
+	}
+}
+
+func TestAChannelCallReachesEverybodyElseInTheChannel(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	second := testsupport.SeedUser(t, pool, org, "call-b@example.test", "member")
+	third := testsupport.SeedUser(t, pool, org, "call-c@example.test", "member")
+
+	channelID := testsupport.SeedChannel(t, pool, org, "group-call", org.OwnerID, second, third)
+
+	invitees, err := svc.ChannelMembersFor(ctx, org.ID, channelID, org.OwnerID)
+	if err != nil {
+		t.Fatalf("members: %v", err)
+	}
+	if len(invitees) != 2 {
+		t.Fatalf("invitees: got %d want 2", len(invitees))
+	}
+	for _, id := range invitees {
+		if id == org.OwnerID {
+			t.Error("the caller was invited to their own call")
+		}
+	}
+}
+
+func TestAChannelRosterIsScopedToTheOrganization(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	theirs := testsupport.SeedOrg(t, pool)
+
+	channelID := testsupport.SeedChannel(t, pool, org, "ours-call", org.OwnerID)
+
+	invitees, err := svc.ChannelMembersFor(ctx, theirs.ID, channelID, theirs.OwnerID)
+	if err != nil {
+		t.Fatalf("members: %v", err)
+	}
+	if len(invitees) != 0 {
+		t.Errorf("another organization read our channel roster: %d", len(invitees))
+	}
+}

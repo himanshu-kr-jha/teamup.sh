@@ -26,6 +26,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 
 	rg.GET("/channels", h.ListChannels)
 	rg.POST("/channels", h.CreateChannel)
+	rg.POST("/channels/direct", h.OpenDirectMessage)
 	rg.GET("/channels/:id", h.GetChannel)
 	rg.PATCH("/channels/:id", h.UpdateChannel)
 	rg.DELETE("/channels/:id", h.DeleteChannel)
@@ -218,6 +219,34 @@ func (h *Handler) CreateChannel(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, channel)
+}
+
+// OpenDirectMessage starts, or reopens, the one-to-one conversation with
+// somebody. Idempotent: asking twice returns the same conversation.
+func (h *Handler) OpenDirectMessage(c *gin.Context) {
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		UserID string `json:"userId" binding:"required,uuid"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	otherID, err := uuid.Parse(req.UserID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid userId"})
+		return
+	}
+
+	channel, err := h.service.OpenDirectMessage(c.Request.Context(), cl.OrgID, cl.UserID, otherID)
+	if err != nil {
+		httpx.Error(c, err, "failed to open that conversation")
+		return
+	}
+	c.JSON(http.StatusOK, channel)
 }
 
 func (h *Handler) GetChannel(c *gin.Context) {
@@ -414,8 +443,10 @@ func (h *Handler) SendMessage(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Content string  `json:"content" binding:"required"`
-		ReplyTo *string `json:"replyTo"`
+		// Not required: an attachment on its own is a message.
+		Content       string   `json:"content"`
+		ReplyTo       *string  `json:"replyTo"`
+		AttachmentIDs []string `json:"attachmentIds"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -432,8 +463,19 @@ func (h *Handler) SendMessage(c *gin.Context) {
 		replyTo = &id
 	}
 
+	attachmentIDs := make([]uuid.UUID, 0, len(req.AttachmentIDs))
+	for _, raw := range req.AttachmentIDs {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid attachmentIds"})
+			return
+		}
+		attachmentIDs = append(attachmentIDs, id)
+	}
+
 	isOrgAdmin := auth.GetUserFromContext(c).HasAnyRole("owner", "admin")
-	msg, err := h.service.SendMessage(c.Request.Context(), cl.OrgID, channelID, cl.UserID, req.Content, replyTo, isOrgAdmin)
+	msg, err := h.service.SendMessage(c.Request.Context(), cl.OrgID, channelID, cl.UserID,
+		req.Content, replyTo, attachmentIDs, isOrgAdmin)
 	if err != nil {
 		httpx.Error(c, err, "failed to send message")
 		return

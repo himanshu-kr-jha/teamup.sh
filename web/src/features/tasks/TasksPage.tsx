@@ -6,7 +6,9 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Badge } from '@/shared/components/ui/badge';
 import { cn } from '@/shared/utils/cn';
 import { formatRelativeTime } from '@/shared/utils/cn';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
+import { Tabs, TabsList, TabsTrigger } from '@/shared/components/ui/tabs';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
 import { tasksApi } from '@/shared/api/client';
 import { CreateTaskDialog } from './CreateTaskDialog';
 
@@ -49,10 +51,41 @@ export function TasksPage() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [viewMode, setViewMode] = useState<'list' | 'board'>('board');
   const [createOpen, setCreateOpen] = useState(false);
+  const [scope, setScope] = useState<'mine' | 'team'>('mine');
+  const [teamId, setTeamId] = useState('all');
+  const [assigneeId, setAssigneeId] = useState('all');
 
+  // Only somebody who actually manages a team gets the team view.
+  const { data: managedData } = useQuery({
+    queryKey: ['managed-teams'],
+    queryFn: () => tasksApi.managedTeams(),
+  });
+  const managedTeams = managedData?.data ?? [];
+  const managesSomebody = managedTeams.length > 0;
+
+  // Narrowing to a team narrows who you can pick; "all teams" offers everyone
+  // across every team they run, deduplicated.
+  const peopleInScope = (() => {
+    const teams = teamId === 'all' ? managedTeams : managedTeams.filter((t) => t.id === teamId);
+    const byId = new Map<string, { userId: string; name: string }>();
+    teams.forEach((t) => t.members.forEach((m) => byId.set(m.userId, m)));
+    return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
+  })();
+
+  // The search term is applied in the browser, so it must not be part of the
+  // key: putting it there made every keystroke a brand-new query, which flipped
+  // isLoading back to true, replaced the page with the spinner and tore the
+  // search box out of the DOM — losing focus after each letter.
   const { data: tasksResponse, isLoading } = useQuery({
-    queryKey: ['tasks', { search: searchQuery, status: statusFilter }],
-    queryFn: () => tasksApi.list({ status: statusFilter !== 'all' ? statusFilter : undefined }),
+    queryKey: ['tasks', { status: statusFilter, scope, teamId, assigneeId }],
+    queryFn: () =>
+      tasksApi.list({
+        status: statusFilter !== 'all' ? statusFilter : undefined,
+        scope,
+        teamId: scope === 'team' && teamId !== 'all' ? teamId : undefined,
+        assigneeId: scope === 'team' && assigneeId !== 'all' ? assigneeId : undefined,
+      }),
+    placeholderData: keepPreviousData,
   });
 
   const tasks = tasksResponse?.data || [];
@@ -86,6 +119,14 @@ export function TasksPage() {
       <div className="flex h-16 items-center justify-between px-4 md:px-6 border-b border-border">
         <div className="flex items-center gap-4">
           <h1 className="text-2xl font-bold">Tasks</h1>
+          {managesSomebody && (
+            <Tabs value={scope} onValueChange={(v) => setScope(v as 'mine' | 'team')}>
+              <TabsList>
+                <TabsTrigger value="mine">My tasks</TabsTrigger>
+                <TabsTrigger value="team">Team tasks</TabsTrigger>
+              </TabsList>
+            </Tabs>
+          )}
           <div className="hidden sm:flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={() => setViewMode('list')}>
               <span className="h-4 w-4" /> List
@@ -122,6 +163,28 @@ export function TasksPage() {
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
+          {scope === 'team' && managedTeams.length > 1 && (
+            <Select value={teamId} onValueChange={(v) => { setTeamId(v); setAssigneeId('all'); }}>
+              <SelectTrigger className="w-40"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All teams</SelectItem>
+                {managedTeams.map((t) => (
+                  <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          {scope === 'team' && (
+            <Select value={assigneeId} onValueChange={setAssigneeId}>
+              <SelectTrigger className="w-44"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">Everyone</SelectItem>
+                {peopleInScope.map((m) => (
+                  <SelectItem key={m.userId} value={m.userId}>{m.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
           <Button onClick={() => setCreateOpen(true)}>New Task</Button>
         </div>
       </div>

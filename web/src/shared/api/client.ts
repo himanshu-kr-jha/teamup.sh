@@ -128,6 +128,8 @@ async function getList<T = any>(url: string, key: string, params?: unknown) {
 export const channelsApi = {
   list: (params?: { orgId?: string }) => getList('/channels', 'channels', params),
   create: (data: { name?: string; type: string; description?: string; teamId?: string }) => api.post('/channels', data),
+  /** Opens the one-to-one conversation with somebody, creating it if needed. */
+  openDirect: (userId: string) => api.post<{ id: string; name?: string; type: string }>('/channels/direct', { userId }),
   get: (id: string) => api.get(`/channels/${id}`),
   update: (id: string, data: Partial<{ name: string; description: string; isPrivate: boolean }>) => api.patch(`/channels/${id}`, data),
   delete: (id: string) => api.delete(`/channels/${id}`),
@@ -136,7 +138,8 @@ export const channelsApi = {
   removeMember: (id: string, userId: string) => api.delete(`/channels/${id}/members/${userId}`),
   markRead: (id: string, messageId: string) => api.post(`/channels/${id}/read`, { messageId }),
   getMessages: (id: string, params?: { limit?: number; before?: string; after?: string }) => getList(`/channels/${id}/messages`, 'messages', params),
-  sendMessage: (id: string, data: { content: string; tempId: string; replyTo?: string; attachments?: any[] }) => api.post(`/channels/${id}/messages`, data),
+  sendMessage: (id: string, data: { content: string; tempId: string; replyTo?: string; attachmentIds?: string[] }) =>
+    api.post(`/channels/${id}/messages`, data),
   editMessage: (messageId: string, content: string) => api.patch(`/messages/${messageId}`, { content }),
   deleteMessage: (messageId: string) => api.delete(`/messages/${messageId}`),
   addReaction: (messageId: string, emoji: string) => api.post(`/messages/${messageId}/reactions`, { emoji }),
@@ -155,7 +158,20 @@ export const presenceApi = {
 };
 
 export const tasksApi = {
-  list: (params?: { projectId?: string; assigneeId?: string; status?: string; labelIds?: string[] }) => getList('/tasks', 'tasks', params),
+  list: (params?: {
+    projectId?: string;
+    assigneeId?: string;
+    status?: string;
+    labelIds?: string[];
+    /** 'mine' is the caller's own work; 'team' is their reports'. */
+    scope?: 'mine' | 'team';
+    teamId?: string;
+  }) => getList('/tasks', 'tasks', params),
+  managedTeams: () =>
+    getList<{ id: string; name: string; members: { userId: string; name: string; email: string }[] }>(
+      '/tasks/managed-teams',
+      'teams'
+    ),
   create: (data: { title: string; description?: string; projectId?: string; assigneeId?: string; priority?: string; taskType?: string; dueDate?: string; labels?: string[] }) => api.post('/tasks', data),
   get: (id: string) => api.get(`/tasks/${id}`),
   update: (id: string, data: Partial<{ title: string; description: string; status: string; priority: string; assigneeId: string; dueDate: string; storyPoints: number }>) => api.patch(`/tasks/${id}`, data),
@@ -174,7 +190,8 @@ export const tasksApi = {
 
 export const callsApi = {
   list: (params?: { status?: string; channelId?: string }) => getList('/calls', 'calls', params),
-  create: (data: { title?: string; channelId?: string; callType: 'video' | 'audio'; invitees?: string[] }) => api.post('/calls', data),
+  create: (data: { title?: string; channelId?: string; callType: 'video' | 'audio'; invitees?: string[] }) =>
+    api.post<{ id: string; roomName: string }>('/calls', data),
   get: (id: string) => api.get(`/calls/${id}`),
   getToken: (id: string) => api.post(`/calls/${id}/token`),
   startRecording: (id: string) => api.post(`/calls/${id}/record`),
@@ -185,7 +202,10 @@ export const filesApi = {
   getUploadUrl: (data: { category: string; refId: string; filename: string; contentType: string; size: number }) => api.post('/files/upload-url', data),
   // Registers a finished upload; without this the file has no record.
   record: (data: { category: string; refId: string; objectKey: string; filename: string; contentType: string; size: number }) =>
-    api.post('/files/record', data),
+    api.post<{ id: string; filename: string; contentType: string; sizeBytes: number; objectKey: string }>(
+      '/files/record',
+      data
+    ),
   list: (category: string, refId: string) => getList('/files', 'attachments', { category, refId }),
   initiateMultipart: (data: { category: string; refId: string; filename: string; contentType: string; size: number }) => api.post('/files/multipart/initiate', data),
   completeMultipart: (data: { objectKey: string; uploadId: string; parts: { partNumber: number; etag: string }[] }) => api.post('/files/multipart/complete', data),

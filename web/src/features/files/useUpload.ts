@@ -3,6 +3,8 @@ import { filesApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 
 export interface UploadedFile {
+  /** The attachment row's id — what binds the file to a message when sent. */
+  id: string;
   objectKey: string;
   filename: string;
   contentType: string;
@@ -33,7 +35,7 @@ export function useUpload(category: string, refId: string) {
 
       await putWithProgress(presigned.uploadUrl, file, presigned.headers, setProgress);
 
-      await filesApi.record({
+      const { data: recorded } = await filesApi.record({
         category,
         refId,
         objectKey: presigned.objectKey,
@@ -43,6 +45,7 @@ export function useUpload(category: string, refId: string) {
       });
 
       return {
+        id: recorded.id,
         objectKey: presigned.objectKey,
         filename: file.name,
         contentType: file.type || 'application/octet-stream',

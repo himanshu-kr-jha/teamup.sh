@@ -1,0 +1,141 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { Phone, PhoneOff, Video } from 'lucide-react';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/shared/components/ui/dialog';
+import { Button } from '@/shared/components/ui/button';
+import { useWebSocket } from '@/features/websocket/WSProvider';
+
+interface IncomingCall {
+  callId: string;
+  callerName: string;
+  callType: string;
+  channelId?: string;
+}
+
+/** How long to keep ringing before treating it as missed. */
+const RING_FOR_MS = 45_000;
+/** Gap between rings — a repeated ring, not one continuous tone. */
+const RING_EVERY_MS = 3_000;
+
+/**
+ * Rings when somebody calls. Mounted once, above the whole app, so a call
+ * reaches you wherever you are rather than only on the calls page.
+ *
+ * The tone is synthesised rather than loaded from a file so there is no asset
+ * to ship, and it is best effort: a browser will refuse to play audio until the
+ * page has been interacted with, so the dialog is the part that always works.
+ */
+export function IncomingCallDialog() {
+  const navigate = useNavigate();
+  const { on } = useWebSocket();
+  const [call, setCall] = useState<IncomingCall | null>(null);
+
+  const audioRef = useRef<AudioContext | null>(null);
+  const ringTimerRef = useRef<ReturnType<typeof setInterval>>();
+  const giveUpTimerRef = useRef<ReturnType<typeof setTimeout>>();
+
+  const stopRinging = useCallback(() => {
+    clearInterval(ringTimerRef.current);
+    clearTimeout(giveUpTimerRef.current);
+    audioRef.current?.close().catch(() => {
+      // Already closed; nothing to do.
+    });
+    audioRef.current = null;
+  }, []);
+
+  const ringOnce = useCallback(() => {
+    try {
+      const Ctor = window.AudioContext ?? (window as any).webkitAudioContext;
+      if (!Ctor) return;
+      if (!audioRef.current) audioRef.current = new Ctor();
+      const ctx = audioRef.current;
+      if (ctx.state === 'suspended') void ctx.resume();
+
+      const now = ctx.currentTime;
+      const gain = ctx.createGain();
+      gain.connect(ctx.destination);
+      // Two short bursts, the shape of a telephone ring.
+      [0, 0.4].forEach((offset) => {
+        const osc = ctx.createOscillator();
+        osc.type = 'sine';
+        osc.frequency.value = 480;
+        osc.connect(gain);
+        osc.start(now + offset);
+        osc.stop(now + offset + 0.3);
+      });
+      gain.gain.setValueAtTime(0.0001, now);
+      gain.gain.exponentialRampToValueAtTime(0.15, now + 0.05);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.75);
+    } catch {
+      // No audio available — the dialog still shows.
+    }
+  }, []);
+
+  useEffect(() => {
+    return on('call.invited', (msg) => {
+      const payload = msg.payload as any;
+      // Your own call comes back to you so the caller lands in the room; there
+      // is nothing to answer.
+      if (!payload?.callId || !payload?.callerName) return;
+      setCall({
+        callId: payload.callId,
+        callerName: payload.callerName,
+        callType: payload.callType ?? 'video',
+        channelId: payload.channelId,
+      });
+    });
+  }, [on]);
+
+  useEffect(() => {
+    if (!call) {
+      stopRinging();
+      return;
+    }
+    ringOnce();
+    ringTimerRef.current = setInterval(ringOnce, RING_EVERY_MS);
+    // It rings for a while and then gives up rather than for ever.
+    giveUpTimerRef.current = setTimeout(() => setCall(null), RING_FOR_MS);
+    return stopRinging;
+  }, [call, ringOnce, stopRinging]);
+
+  const answer = () => {
+    const id = call!.callId;
+    setCall(null);
+    navigate(`/calls/${id}`);
+  };
+
+  return (
+    <Dialog open={!!call} onOpenChange={(open) => !open && setCall(null)}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            {call?.callType === 'audio' ? (
+              <Phone className="h-5 w-5 text-primary" aria-hidden="true" />
+            ) : (
+              <Video className="h-5 w-5 text-primary" aria-hidden="true" />
+            )}
+            Incoming {call?.callType === 'audio' ? 'call' : 'video call'}
+          </DialogTitle>
+          <DialogDescription>{call?.callerName} is calling.</DialogDescription>
+        </DialogHeader>
+        <DialogFooter className="gap-2 sm:justify-center">
+          <Button variant="outline" onClick={() => setCall(null)}>
+            <PhoneOff className="mr-2 h-4 w-4" />
+            Decline
+          </Button>
+          <Button onClick={answer}>
+            <Phone className="mr-2 h-4 w-4" />
+            Answer
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
