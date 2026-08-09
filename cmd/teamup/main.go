@@ -7,6 +7,8 @@ import (
 	"io/fs"
 	"log"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -500,6 +502,33 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// WebSocket endpoint
 	router.GET("/ws", websocket.WSHandler(wsHub, authService, cfg.AllowedWSOrigins))
 
+	// LiveKit's signalling socket, served from this origin.
+	//
+	// A page served over HTTPS cannot open a plain ws:// connection to
+	// LiveKit's own port, so behind TLS — a tunnel, or a reverse proxy — the
+	// browser asks for /livekit here instead. Without this the app would need
+	// nginx in front of it before a call could work at all.
+	if target := liveKitProxyTarget(cfg.LiveKitURL); target != nil {
+		proxy := httputil.NewSingleHostReverseProxy(target)
+		director := proxy.Director
+		proxy.Director = func(r *http.Request) {
+			director(r)
+			r.URL.Path = strings.TrimPrefix(r.URL.Path, "/livekit")
+			if r.URL.Path == "" {
+				r.URL.Path = "/"
+			}
+			// LiveKit checks the Host it was reached on; passing the tunnel's
+			// host through makes it reject the handshake.
+			r.Host = target.Host
+		}
+		proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
+			logger.Warn().Err(err).Msg("could not reach LiveKit")
+			http.Error(w, "the call server is unavailable", http.StatusBadGateway)
+		}
+		router.Any("/livekit", gin.WrapH(proxy))
+		router.Any("/livekit/*path", gin.WrapH(proxy))
+	}
+
 	// SPA fallback: serve index.html for non-API routes (only for paths without
 	// file extensions). /wizard/* is deliberately NOT excluded — it is a
 	// client-side route, and 404ing it made the setup wizard unreachable by
@@ -683,6 +712,28 @@ func setupDataFromConfig(cfg Config) wizard.Data {
 		SMTPPass: cfg.SMTPPassword,
 		SMTPFrom: cfg.SMTPFrom,
 	}
+}
+
+// liveKitProxyTarget turns the configured LiveKit address into something to
+// proxy to. The setting is written as a websocket or an http address depending
+// on who wrote it; both mean the same host.
+func liveKitProxyTarget(raw string) *url.URL {
+	if raw == "" {
+		return nil
+	}
+	target, err := url.Parse(raw)
+	if err != nil || target.Host == "" {
+		return nil
+	}
+	switch target.Scheme {
+	case "ws", "http":
+		target.Scheme = "http"
+	case "wss", "https":
+		target.Scheme = "https"
+	default:
+		return nil
+	}
+	return target
 }
 
 func runAutoSetup(ctx context.Context, wizardService *wizard.Service, cfg Config) error {

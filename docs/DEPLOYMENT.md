@@ -92,17 +92,49 @@ export TEAMUP_LIVEKIT_NODE_IP=192.168.0.121
 docker compose up -d livekit
 ```
 
-For the HTTPS half, the least painful route is a tunnel, which hands you a real
-certificate without touching your network:
+For the HTTPS half, the least painful route is a tunnel. It hands you a real
+certificate without touching your network, your router, or DNS.
+
+```bash
+# Once, to install it
+curl -fL -o cloudflared \
+  https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+chmod +x cloudflared && sudo mv cloudflared /usr/local/bin/
+```
+
+On macOS, `brew install cloudflared` instead.
+
+Then, with TeamUp already running on port 8080, in a second terminal:
 
 ```bash
 cloudflared tunnel --url http://localhost:8080
 ```
 
-It prints an `https://something.trycloudflare.com` address. Set
-`TEAMUP_BASE_URL` to it, leave `TEAMUP_INSECURE_COOKIES` **off**, and open that
-address on the phone. Everything works, including calls and notifications,
-because the browser sees a proper certificate.
+It prints an address like `https://some-words-here.trycloudflare.com`. No
+Cloudflare account is needed for this; the address is temporary and changes each
+time you start it.
+
+Restart TeamUp pointed at that address:
+
+```bash
+set -a; . ./.env; set +a
+export TEAMUP_BASE_URL="https://some-words-here.trycloudflare.com"
+./bin/teamup server
+```
+
+Leave `TEAMUP_INSECURE_COOKIES` **off** — the tunnel is HTTPS, so the cookie
+should stay Secure. Then open that address on the phone. It does not need to be
+on your Wi-Fi any more; the tunnel reaches it from anywhere.
+
+Everything works this way, calls included: the app proxies LiveKit's signalling
+socket at `/livekit`, so it travels through the same tunnel and inherits its
+certificate.
+
+Two things to know. The address is public while the tunnel is open — anybody
+who has it can reach your login page — so stop the tunnel when you are done. And
+media still needs a route between the two devices; if a call connects but nobody
+can hear anything, `TEAMUP_LIVEKIT_NODE_IP` is likely still pointing somewhere
+the other side cannot reach.
 
 ---
 
