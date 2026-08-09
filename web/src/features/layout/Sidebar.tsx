@@ -3,6 +3,7 @@ import { MessageSquare, Video, CheckSquare, Settings, Users, ChevronLeft, Chevro
 import { useUIStore } from '@/shared/store';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { cn } from '@/shared/utils/cn';
+import { useOrganizationAccess } from './useOrganizationAccess';
 
 export function Sidebar() {
   const { sidebarOpen, toggleSidebar, setSidebarOpen } = useUIStore();
@@ -14,11 +15,15 @@ export function Sidebar() {
   };
   const { user, isAuthenticated, isLoading } = useAuth();
 
+  // A member cannot change anything on the Organization screen, so it is not
+  // offered to them; administrators and whoever runs a team still have it.
+  const { allowed: mayAdminister } = useOrganizationAccess();
+
   const navItems = [
     { path: '/chat', label: 'Chat', icon: MessageSquare },
     { path: '/calls', label: 'Calls', icon: Video },
     { path: '/tasks', label: 'Tasks', icon: CheckSquare },
-    { path: '/organization', label: 'Organization', icon: Users },
+    ...(mayAdminister ? [{ path: '/organization', label: 'Organization', icon: Users }] : []),
     { path: '/settings', label: 'Settings', icon: Settings },
   ];
 

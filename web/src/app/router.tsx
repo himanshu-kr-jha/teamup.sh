@@ -11,6 +11,7 @@ import { AdminPage } from '@/features/admin/AdminPage';
 import { CallViewPage } from '@/features/calls/CallViewPage';
 import { TaskDetailPage } from '@/features/tasks/TaskDetailPage';
 import { useAuthStore } from '@/shared/store/authStore';
+import { useOrganizationAccess } from '@/features/layout/useOrganizationAccess';
 
 const requireAuth = async () => {
   const { isAuthenticated } = useAuthStore.getState();
@@ -77,10 +78,25 @@ export const router = createBrowserRouter([
       { path: 'tasks', element: <TasksPage /> },
       { path: 'tasks/:taskId', element: <TaskDetailPage /> },
       { path: 'settings', element: <SettingsPage /> },
-      { path: 'organization', element: <AdminPage /> },
+      { path: 'organization', element: <OnlyForAdministrators /> },
     ],
   },
 ]);
+
+/**
+ * Taking the link out of the navigation is not the same as closing the door:
+ * the address still works, and anybody who has been there once has it in their
+ * history. Turned away rather than hidden.
+ *
+ * Nothing is decided until the answer is in, or a team's manager arriving from
+ * a bookmark would be bounced before we knew they belonged there.
+ */
+function OnlyForAdministrators() {
+  const { allowed, resolved } = useOrganizationAccess();
+  if (!resolved) return null;
+  if (!allowed) return <Navigate to="/chat" replace />;
+  return <AdminPage />;
+}
 
 function ErrorPage() {
   return (

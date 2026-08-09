@@ -1,5 +1,6 @@
 import { Navigate, Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
+import { BottomNav } from "./BottomNav";
 import { Header } from "./Header";
 import { useUIStore } from "@/shared/store";
 import { useAuthStore } from "@/shared/store/authStore";
@@ -36,9 +37,13 @@ export function Layout() {
           <Header onMenuClick={toggleSidebar} />
           {/* Pages render their own header and padding, so main stays bare;
             padding here produced a second layer of chrome. */}
-          <main className="flex-1 overflow-hidden">
+          <main className="min-h-0 flex-1 overflow-hidden">
             <Outlet />
           </main>
+          {/* On a phone the four sections sit along the bottom. It is a sibling
+              of the page rather than something floating over it, so a page that
+              fills the screen still ends above it. */}
+          <BottomNav />
         </div>
         {/* A call has to reach you wherever you are, not only on the calls page. */}
         <IncomingCallDialog />
