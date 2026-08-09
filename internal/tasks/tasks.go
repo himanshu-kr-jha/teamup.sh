@@ -230,6 +230,67 @@ func (s *Service) ListTasks(ctx context.Context, orgID uuid.UUID, f Filters) ([]
 	return s.attachLabels(ctx, tasks)
 }
 
+// AssignableUsers lists the people this caller may put work on: themselves,
+// anybody on a team they manage, and — for an organization administrator —
+// everybody. The create form offers these, so somebody does not fill in a task
+// only to be refused on submit.
+func (s *Service) AssignableUsers(ctx context.Context, orgID, userID uuid.UUID, isOrgAdmin bool) ([]TeamMemberT, error) {
+	query := `
+		SELECT u.id, u.name, u.email
+		FROM users u
+		WHERE u.org_id = $1 AND u.deleted_at IS NULL AND COALESCE(u.is_active, true)
+		ORDER BY u.name`
+	args := []any{orgID}
+
+	if !isOrgAdmin {
+		query = `
+			WITH RECURSIVE managed AS (
+				SELECT t.id FROM teams t
+				WHERE t.manager_id = $2 AND t.org_id = $1 AND t.deleted_at IS NULL
+				UNION
+				SELECT child.id FROM teams child
+				JOIN managed ON child.parent_id = managed.id
+				WHERE child.deleted_at IS NULL
+			)
+			SELECT u.id, u.name, u.email
+			FROM users u
+			WHERE u.org_id = $1 AND u.deleted_at IS NULL AND COALESCE(u.is_active, true)
+			  AND (
+			    u.id = $2
+			    OR (
+			      EXISTS (SELECT 1 FROM team_members tm
+			              JOIN managed ON managed.id = tm.team_id
+			              WHERE tm.user_id = u.id)
+			      -- Somebody who administers the organization is above the
+			      -- chart even when they sit on a team.
+			      AND NOT COALESCE(u.is_admin, false)
+			      AND u.role NOT IN ('owner', 'admin')
+			      AND NOT EXISTS (
+			          SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+			          WHERE ur.user_id = u.id AND r.name IN ('owner', 'admin'))
+			    )
+			  )
+			ORDER BY u.name`
+		args = append(args, userID)
+	}
+
+	rows, err := s.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list assignable users: %w", err)
+	}
+	defer rows.Close()
+
+	people := []TeamMemberT{}
+	for rows.Next() {
+		var m TeamMemberT
+		if err := rows.Scan(&m.UserID, &m.Name, &m.Email); err != nil {
+			return nil, fmt.Errorf("scan assignable user: %w", err)
+		}
+		people = append(people, m)
+	}
+	return people, rows.Err()
+}
+
 // ManagedTeam is a team somebody runs, with the people on it. Backs the team
 // view of the task board and the filter that narrows it to one person.
 type ManagedTeam struct {

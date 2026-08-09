@@ -113,3 +113,52 @@ func drain(conn *Connection) {
 		}
 	}
 }
+
+// Presence used to be announced to every connected client on the server,
+// whichever organization they belonged to.
+func TestPresenceStaysInsideTheOrganization(t *testing.T) {
+	hub := NewHub(nil, stubPresence{}, nil, zerolog.Nop())
+
+	mine := testConnection(hub, "conn-mine", "user-mine", "org-a")
+	theirs := testConnection(hub, "conn-theirs", "user-theirs", "org-b")
+	hub.Register(mine)
+	hub.Register(theirs)
+	drain(mine)
+	drain(theirs)
+
+	hub.broadcastPresence("org-a", "user-mine", "online", "")
+
+	select {
+	case msg := <-mine.SendCh:
+		if msg.Type != protocol.TypePresenceChanged {
+			t.Errorf("wrong message: %s", msg.Type)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the organization's own member was not told")
+	}
+
+	select {
+	case msg := <-theirs.SendCh:
+		t.Errorf("another organization was told about our presence: %s", msg.Type)
+	default:
+	}
+}
+
+// Registering a second organization's connection must not announce it to the
+// first, which is the path that leaked in practice.
+func TestConnectingDoesNotAnnounceAcrossOrganizations(t *testing.T) {
+	hub := NewHub(nil, stubPresence{}, nil, zerolog.Nop())
+
+	mine := testConnection(hub, "conn-mine", "user-mine", "org-a")
+	hub.Register(mine)
+	drain(mine)
+
+	theirs := testConnection(hub, "conn-theirs", "user-theirs", "org-b")
+	hub.Register(theirs)
+
+	select {
+	case msg := <-mine.SendCh:
+		t.Errorf("we were told somebody in another organization came online: %s", msg.Type)
+	case <-time.After(200 * time.Millisecond):
+	}
+}

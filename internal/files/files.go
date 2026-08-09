@@ -457,6 +457,75 @@ func (s *Service) ListAttachments(ctx context.Context, orgID uuid.UUID, category
 	return out, rows.Err()
 }
 
+// DiscardUpload removes an upload that was never sent, both the row and the
+// object. Only the person who uploaded it can discard it, and only while it is
+// still unattached — once it belongs to a message it is part of the
+// conversation and this refuses.
+func (s *Service) DiscardUpload(ctx context.Context, orgID, userID, attachmentID uuid.UUID) error {
+	var objectKey string
+	err := s.db.QueryRow(ctx, `
+		DELETE FROM attachments
+		WHERE id = $1 AND org_id = $2 AND uploaded_by = $3 AND message_id IS NULL
+		RETURNING object_key
+	`, attachmentID, orgID, userID).Scan(&objectKey)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return apperrors.New(apperrors.CodeNotFound, "no unsent upload with that id")
+		}
+		return fmt.Errorf("discard upload: %w", err)
+	}
+	s.removeObject(ctx, objectKey)
+	return nil
+}
+
+// SweepAbandonedUploads deletes chat uploads that were never sent with a
+// message. Staging an attachment and then navigating away leaves the bytes in
+// object storage and a row pointing at them for ever; nothing else ever
+// reclaims them.
+//
+// Returns how many were removed.
+func (s *Service) SweepAbandonedUploads(ctx context.Context, olderThan time.Duration) (int, error) {
+	rows, err := s.db.Query(ctx, `
+		DELETE FROM attachments
+		WHERE category = 'chat'
+		  AND message_id IS NULL
+		  AND created_at < NOW() - $1::interval
+		RETURNING object_key
+	`, olderThan.String())
+	if err != nil {
+		return 0, fmt.Errorf("sweep abandoned uploads: %w", err)
+	}
+	defer rows.Close()
+
+	keys := []string{}
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			return 0, fmt.Errorf("scan abandoned upload: %w", err)
+		}
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	for _, key := range keys {
+		s.removeObject(ctx, key)
+	}
+	return len(keys), nil
+}
+
+// removeObject deletes the stored bytes. Best effort: the row is already gone,
+// and a leftover object is wasted space rather than a correctness problem.
+func (s *Service) removeObject(ctx context.Context, objectKey string) {
+	if s.client == nil {
+		return
+	}
+	if err := s.client.RemoveObject(ctx, s.bucketName, objectKey, minio.RemoveObjectOptions{}); err != nil {
+		s.logger.Warn().Err(err).Str("object", objectKey).Msg("could not remove stored object")
+	}
+}
+
 // RequireParentAccess exposes the parent entitlement check for callers that
 // need it without issuing a URL, such as listing a parent's attachments.
 func (s *Service) RequireParentAccess(ctx context.Context, orgID uuid.UUID, userID, category, refID string) error {

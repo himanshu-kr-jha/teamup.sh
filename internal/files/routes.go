@@ -27,6 +27,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.GET("/files/download-url", h.GetDownloadURL)
 	rg.POST("/files/record", h.RecordAttachment)
 	rg.GET("/files", h.ListAttachments)
+	rg.DELETE("/files/:id", h.DiscardUpload)
 }
 
 // RecordAttachment is what the client calls once its upload has finished.
@@ -67,6 +68,33 @@ func (h *Handler) RecordAttachment(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusCreated, attachment)
+}
+
+// DiscardUpload throws away an upload that was staged and then removed before
+// it was sent, so it does not sit in storage for ever.
+func (h *Handler) DiscardUpload(c *gin.Context) {
+	user := auth.GetUserFromContext(c)
+	orgID, err := uuid.Parse(user.OrgID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+	userID, err := uuid.Parse(user.UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+	attachmentID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+
+	if err := h.service.DiscardUpload(c.Request.Context(), orgID, userID, attachmentID); err != nil {
+		httpx.Error(c, err, "failed to discard upload")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "discarded"})
 }
 
 func (h *Handler) ListAttachments(c *gin.Context) {

@@ -831,3 +831,88 @@ func TestMyTasksCoversWorkAssignedToMeAndWorkIRaised(t *testing.T) {
 		t.Errorf("my tasks: got %+v", titlesOf(mine))
 	}
 }
+
+// The create form should only offer people the org chart will accept, so
+// nobody fills in a task and is refused on submit.
+func TestAssignableUsersMatchesWhoMayActuallyBeAssigned(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	manager := testsupport.SeedUser(t, pool, org, "assignable-mgr@example.test", "manager")
+	report := testsupport.SeedUser(t, pool, org, "assignable-report@example.test", "member")
+	admin := testsupport.SeedUser(t, pool, org, "assignable-admin@example.test", "admin")
+	outsider := testsupport.SeedUser(t, pool, org, "assignable-outsider@example.test", "member")
+
+	testsupport.SeedTeam(t, pool, org, "photon", &manager, nil, report, admin)
+	testsupport.SeedTeam(t, pool, org, "sales", nil, nil, outsider)
+
+	people, err := svc.AssignableUsers(ctx, org.ID, manager, false)
+	if err != nil {
+		t.Fatalf("assignable: %v", err)
+	}
+	got := map[uuid.UUID]bool{}
+	for _, p := range people {
+		got[p.UserID] = true
+	}
+
+	if !got[manager] {
+		t.Error("you can always assign work to yourself")
+	}
+	if !got[report] {
+		t.Error("a report on the managed team is missing")
+	}
+	if got[admin] {
+		t.Error("an organization admin on the team was offered")
+	}
+	if got[outsider] {
+		t.Error("somebody on another team was offered")
+	}
+
+	// And every name offered really is accepted.
+	for _, p := range people {
+		mayAssign, err := svc.MayAssign(ctx, org.ID, manager, p.UserID, false)
+		if err != nil {
+			t.Fatalf("may assign: %v", err)
+		}
+		if !mayAssign {
+			t.Errorf("%s was offered but would be refused", p.Name)
+		}
+	}
+}
+
+func TestAnOrgAdminIsOfferedEverybody(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	somebody := testsupport.SeedUser(t, pool, org, "anyone@example.test", "member")
+
+	people, err := svc.AssignableUsers(ctx, org.ID, org.OwnerID, true)
+	if err != nil {
+		t.Fatalf("assignable: %v", err)
+	}
+	var found bool
+	for _, p := range people {
+		if p.UserID == somebody {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("an organization admin should be able to assign to anybody")
+	}
+}
+
+func TestSomebodyWhoManagesNothingIsOfferedOnlyThemselves(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	plain := testsupport.SeedUser(t, pool, org, "plain-assign@example.test", "member")
+	testsupport.SeedUser(t, pool, org, "other-assign@example.test", "member")
+
+	people, err := svc.AssignableUsers(ctx, org.ID, plain, false)
+	if err != nil {
+		t.Fatalf("assignable: %v", err)
+	}
+	if len(people) != 1 || people[0].UserID != plain {
+		t.Errorf("expected only themselves, got %+v", people)
+	}
+}

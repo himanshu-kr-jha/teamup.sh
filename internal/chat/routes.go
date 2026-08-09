@@ -27,6 +27,8 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.GET("/channels", h.ListChannels)
 	rg.POST("/channels", h.CreateChannel)
 	rg.POST("/channels/direct", h.OpenDirectMessage)
+	rg.GET("/channels/browse", h.BrowseChannels)
+	rg.POST("/channels/:id/join", h.JoinChannel)
 	rg.GET("/channels/:id", h.GetChannel)
 	rg.PATCH("/channels/:id", h.UpdateChannel)
 	rg.DELETE("/channels/:id", h.DeleteChannel)
@@ -247,6 +249,38 @@ func (h *Handler) OpenDirectMessage(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, channel)
+}
+
+// BrowseChannels lists the org-wide channels the caller is not in, which is
+// how somebody finds a channel they left.
+func (h *Handler) BrowseChannels(c *gin.Context) {
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	channels, err := h.service.BrowsableChannels(c.Request.Context(), cl.OrgID, cl.UserID)
+	if err != nil {
+		httpx.Error(c, err, "failed to list channels")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"channels": channels})
+}
+
+// JoinChannel puts the caller back into an org-wide channel they had left.
+func (h *Handler) JoinChannel(c *gin.Context) {
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	channelID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.service.RejoinChannel(c.Request.Context(), cl.OrgID, channelID, cl.UserID); err != nil {
+		httpx.Error(c, err, "failed to join channel")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "joined"})
 }
 
 func (h *Handler) GetChannel(c *gin.Context) {

@@ -297,6 +297,7 @@ func (s *Service) ValidateAccessToken(ctx context.Context, tokenString string) (
 		AuthProvider:       claims.AuthProvider,
 		IDToken:            claims.IDToken,
 		MustChangePassword: claims.MustChangePassword,
+		ExpiresAt:          claims.RegisteredClaims.ExpiresAt.Time,
 	}, nil
 }
 

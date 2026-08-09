@@ -106,7 +106,7 @@ func (h *Hub) Register(conn *Connection) {
 	h.mu.Unlock()
 
 	h.presenceService.SetOnline(conn.UserID(), conn.OrgID())
-	h.broadcastPresence(conn.UserID(), "online", "")
+	h.broadcastPresence(conn.OrgID(), conn.UserID(), "online", "")
 }
 
 // Unregister removes a connection, announcing the user as offline once their
@@ -137,7 +137,7 @@ func (h *Hub) Unregister(conn *Connection) {
 
 	if wentOffline {
 		h.presenceService.SetOffline(conn.UserID(), conn.OrgID())
-		h.broadcastPresence(conn.UserID(), "offline", "")
+		h.broadcastPresence(conn.OrgID(), conn.UserID(), "offline", "")
 	}
 }
 
@@ -218,7 +218,13 @@ func (h *Hub) BroadcastToOrg(orgID string, msg *protocol.Message, excludeUserID 
 	}
 }
 
-func (h *Hub) broadcastPresence(userID, status, customStatus string) {
+// broadcastPresence tells one organization that somebody's status changed.
+//
+// It used to tell every connected client on the server, whichever tenant they
+// belonged to, leaking user ids and their online and offline timing across
+// organizations. Nothing surfaced it because no browser could open a socket at
+// all, so the loop never had anybody to send to.
+func (h *Hub) broadcastPresence(orgID, userID, status, customStatus string) {
 	msg := protocol.NewMessage(protocol.TypePresenceChanged, protocol.PresenceChangedPayload{
 		UserID:       userID,
 		Status:       status,
@@ -230,7 +236,9 @@ func (h *Hub) broadcastPresence(userID, status, customStatus string) {
 
 	for _, userConns := range h.userConns {
 		for _, conn := range userConns {
-			conn.Enqueue(msg)
+			if conn.OrgID() == orgID {
+				conn.Enqueue(msg)
+			}
 		}
 	}
 }
@@ -341,8 +349,12 @@ func (c *Connection) writeJSON(ctx context.Context, msg *protocol.Message) error
 	return c.WS.Write(ctx, websocket.MessageText, data)
 }
 
-// WSHandler upgrades HTTP to WebSocket
-func WSHandler(hub *Hub, authService AuthServiceInterface) gin.HandlerFunc {
+// WSHandler upgrades HTTP to WebSocket.
+//
+// allowedOrigins are extra hosts permitted to open a socket, for deployments
+// where the app is served from somewhere other than this server. Same-origin
+// is always allowed and is the normal case.
+func WSHandler(hub *Hub, authService AuthServiceInterface, allowedOrigins []string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// The access token lives in an HttpOnly cookie, so a browser cannot
 		// read it to put in the query string — which is why the socket never
@@ -372,8 +384,12 @@ func WSHandler(hub *Hub, authService AuthServiceInterface) gin.HandlerFunc {
 			return
 		}
 
+		// The handshake authenticates with a cookie the browser attaches by
+		// itself, so without an Origin check any site could open a socket as
+		// whoever is logged in. Accept checks same-origin by default; skipping
+		// it left SameSite on the cookie as the only thing in the way.
 		wsConn, err := websocket.Accept(c.Writer, c.Request, &websocket.AcceptOptions{
-			InsecureSkipVerify: true,
+			OriginPatterns: allowedOrigins,
 		})
 		if err != nil {
 			hub.logger.Error().Err(err).Msg("WS upgrade failed")
@@ -392,6 +408,23 @@ func WSHandler(hub *Hub, authService AuthServiceInterface) gin.HandlerFunc {
 			cancel:        cancel,
 			hub:           hub,
 			logger:        hub.logger,
+		}
+
+		// A socket must not outlive the token that opened it: it is checked
+		// once here and the connection then lives for hours, so a revoked or
+		// expired session would keep receiving messages.
+		if !claims.ExpiresAt.IsZero() {
+			if remaining := time.Until(claims.ExpiresAt); remaining > 0 {
+				time.AfterFunc(remaining, func() {
+					conn.logger.Debug().Str("user", conn.UserID()).Msg("closing socket: access token expired")
+					conn.cancel()
+					_ = wsConn.Close(websocket.StatusPolicyViolation, "token expired")
+				})
+			} else {
+				_ = wsConn.Close(websocket.StatusPolicyViolation, "token expired")
+				cancel()
+				return
+			}
 		}
 
 		hub.Register(conn)

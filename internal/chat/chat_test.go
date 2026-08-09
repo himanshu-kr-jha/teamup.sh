@@ -954,3 +954,154 @@ func TestYouCannotStartAConversationAcrossOrganizations(t *testing.T) {
 		t.Error("opened a conversation with another tenant's user")
 	}
 }
+
+// Both sides of a direct message are its owners, so either could have added a
+// third person — which breaks the pair and makes the next "new chat" between
+// them start a second conversation.
+func TestADirectMessageCannotBeTurnedIntoAGroup(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedUser(t, pool, org, "dm-pair@example.test", "member")
+	third := testsupport.SeedUser(t, pool, org, "dm-third@example.test", "member")
+
+	dm, err := svc.OpenDirectMessage(ctx, org.ID, org.OwnerID, other)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+
+	if err := svc.AddMember(ctx, org.ID, dm.ID, third, "member"); err == nil {
+		t.Fatal("a third person was added to a direct message")
+	}
+
+	// And the pair still resolves to the same conversation.
+	again, err := svc.OpenDirectMessage(ctx, org.ID, org.OwnerID, other)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	if again.ID != dm.ID {
+		t.Error("the conversation was split in two")
+	}
+}
+
+// Leaving a public channel used to be undone the moment you looked at it
+// again, because opening an org-wide channel joins you to it.
+func TestLeavingAPublicChannelSticks(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	member := testsupport.SeedUser(t, pool, org, "leaver@example.test", "member")
+
+	name := "leavable"
+	ch, err := svc.CreateChannel(ctx, org.ID, org.OwnerID, &name, "public", nil, nil)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if !svc.isMember(ctx, ch.ID, member) {
+		t.Fatal("they should start in an org-wide channel")
+	}
+
+	if err := svc.RemoveMember(ctx, org.ID, ch.ID, member); err != nil {
+		t.Fatalf("leave: %v", err)
+	}
+
+	// The automatic join must respect the decision.
+	joined, err := svc.EnsureMember(ctx, org.ID, ch.ID, member)
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if joined || svc.isMember(ctx, ch.ID, member) {
+		t.Error("touching the channel put them straight back in")
+	}
+
+	// And it is gone from their sidebar.
+	channels, err := svc.ListChannels(ctx, org.ID, member)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, c := range channels {
+		if c.ID == ch.ID {
+			t.Error("a channel they left is still listed")
+		}
+	}
+}
+
+func TestAChannelYouLeftCanBeFoundAndRejoined(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	member := testsupport.SeedUser(t, pool, org, "rejoiner@example.test", "member")
+
+	name := "rejoinable"
+	ch, err := svc.CreateChannel(ctx, org.ID, org.OwnerID, &name, "public", nil, nil)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := svc.RemoveMember(ctx, org.ID, ch.ID, member); err != nil {
+		t.Fatalf("leave: %v", err)
+	}
+
+	browsable, err := svc.BrowsableChannels(ctx, org.ID, member)
+	if err != nil {
+		t.Fatalf("browse: %v", err)
+	}
+	var found bool
+	for _, c := range browsable {
+		if c.ID == ch.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("a channel they left cannot be found again")
+	}
+
+	if err := svc.RejoinChannel(ctx, org.ID, ch.ID, member); err != nil {
+		t.Fatalf("rejoin: %v", err)
+	}
+	if !svc.isMember(ctx, ch.ID, member) {
+		t.Error("rejoining did not put them back")
+	}
+	if _, err := svc.SendMessage(ctx, org.ID, ch.ID, member, "back", nil, nil, false); err != nil {
+		t.Errorf("they cannot post after rejoining: %v", err)
+	}
+}
+
+// Somebody still in a channel has no business seeing it in the browse list.
+func TestBrowseOnlyOffersChannelsYouAreNotIn(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	name := "already-in"
+	ch, err := svc.CreateChannel(ctx, org.ID, org.OwnerID, &name, "public", nil, nil)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	private := "not-yours"
+	priv, err := svc.CreateChannel(ctx, org.ID, org.OwnerID, &private, "group", nil, nil)
+	if err != nil {
+		t.Fatalf("create private: %v", err)
+	}
+	outsider := testsupport.SeedUser(t, pool, org, "browser@example.test", "member")
+
+	browsable, err := svc.BrowsableChannels(ctx, org.ID, org.OwnerID)
+	if err != nil {
+		t.Fatalf("browse: %v", err)
+	}
+	for _, c := range browsable {
+		if c.ID == ch.ID {
+			t.Error("a channel they are already in was offered")
+		}
+	}
+
+	// A private channel is never browsable, whoever asks.
+	theirs, err := svc.BrowsableChannels(ctx, org.ID, outsider)
+	if err != nil {
+		t.Fatalf("browse outsider: %v", err)
+	}
+	for _, c := range theirs {
+		if c.ID == priv.ID {
+			t.Error("a private channel was offered for browsing")
+		}
+	}
+}

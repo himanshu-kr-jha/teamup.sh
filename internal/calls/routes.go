@@ -1,6 +1,7 @@
 package calls
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -27,6 +28,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.POST("/calls/:id/token", h.GetCallToken)
 	rg.POST("/calls/:id/record", h.StartRecording)
 	rg.POST("/calls/:id/end", h.EndCall)
+	rg.POST("/calls/:id/decline", h.DeclineCall)
 	rg.DELETE("/calls/:id/record", h.StopRecording)
 }
 
@@ -70,6 +72,7 @@ func (h *Handler) CreateCall(c *gin.Context) {
 
 	var channelID *uuid.UUID
 	invitees := req.Invitees
+	notInvited := 0
 	if req.ChannelID != nil {
 		id, err := uuid.Parse(*req.ChannelID)
 		if err != nil {
@@ -92,12 +95,13 @@ func (h *Handler) CreateCall(c *gin.Context) {
 		}
 
 		// Everybody in the channel is called, so a caller does not have to
-		// name them one at a time.
-		members, err := h.service.ChannelMembersFor(ctx, orgID, id, userID)
+		// name them one at a time — up to what a room can hold.
+		members, total, err := h.service.ChannelMembersFor(ctx, orgID, id, userID)
 		if err != nil {
 			httpx.Error(c, err, "failed to start call")
 			return
 		}
+		notInvited = total - len(members)
 		invitees = make([]string, 0, len(members))
 		for _, m := range members {
 			invitees = append(invitees, m.String())
@@ -111,15 +115,73 @@ func (h *Handler) CreateCall(c *gin.Context) {
 	}
 
 	// Ring them. Without this a call existed but nobody was ever told.
+	// Detached from the request: the caller should not wait on a token and a
+	// frame per invitee, and the call is already made either way.
 	inviteeIDs := make([]uuid.UUID, 0, len(invitees))
 	for _, raw := range invitees {
 		if id, err := uuid.Parse(raw); err == nil {
 			inviteeIDs = append(inviteeIDs, id)
 		}
 	}
-	h.service.Ring(ctx, call, user.UserID, callerName(user), inviteeIDs)
+	ringCtx := context.WithoutCancel(ctx)
+	name := callerName(user)
+	go h.service.Ring(ringCtx, call, user.UserID, name, inviteeIDs)
+
+	// Say so rather than quietly reaching a subset.
+	call.NotInvited = notInvited
 
 	c.JSON(http.StatusCreated, call)
+}
+
+// DeclineCall turns a call down and says so, so the caller finds out rather
+// than watching it ring out.
+func (h *Handler) DeclineCall(c *gin.Context) {
+	user := auth.GetUserFromContext(c)
+	orgID, err := uuid.Parse(user.OrgID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+	userID, err := uuid.Parse(user.UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	call, err := h.service.GetCall(ctx, orgID, id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "call not found"})
+		return
+	}
+
+	// Only somebody who was actually called can decline it.
+	invited, err := h.service.IsParticipant(ctx, id, userID)
+	if err != nil {
+		httpx.Error(c, err, "failed to decline call")
+		return
+	}
+	if !invited {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you were not called"})
+		return
+	}
+
+	if err := h.service.MarkParticipantLeft(ctx, id, userID); err != nil {
+		httpx.Error(c, err, "failed to decline call")
+		return
+	}
+
+	// Tell the person who started it, not everybody: one person turning it
+	// down does not end the call for the rest.
+	go h.service.AnnounceCallOver(context.WithoutCancel(ctx), call, "declined", callerName(user),
+		[]string{call.CreatedBy.String()})
+
+	c.JSON(http.StatusOK, gin.H{"message": "declined"})
 }
 
 // callerName prefers something a callee will recognise over a bare id.
@@ -273,6 +335,12 @@ func (h *Handler) EndCall(c *gin.Context) {
 	if err := h.service.MarkCallEnded(c.Request.Context(), orgID, id); err != nil {
 		httpx.Error(c, err, "failed to end call")
 		return
+	}
+
+	// Anybody still being rung has to be told, or their phone keeps ringing
+	// after the caller has already hung up.
+	if others, err := h.service.Participants(c.Request.Context(), id, user.UserID); err == nil {
+		go h.service.AnnounceCallOver(context.WithoutCancel(c.Request.Context()), call, "ended", "", others)
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "call ended"})

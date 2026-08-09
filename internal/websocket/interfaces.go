@@ -53,8 +53,12 @@ type Claims struct {
 	Roles              []string
 	SessionID          string
 	MustChangePassword bool
-	AuthProvider       string
-	IDToken            string
+	// ExpiresAt is when the access token stops being valid. A socket is
+	// authenticated once at the handshake and then lives for hours, so it has
+	// to be closed at this point rather than outliving the token.
+	ExpiresAt    time.Time
+	AuthProvider string
+	IDToken      string
 }
 
 // Presence represents user presence

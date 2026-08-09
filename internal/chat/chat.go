@@ -29,6 +29,9 @@ type Broadcaster interface {
 // depend on the notifications package.
 type Notifier interface {
 	Notify(ctx context.Context, orgID, userID uuid.UUID, kind, title, body string, data map[string]any) error
+	// NotifyMany writes one notification per recipient in a single statement,
+	// for announcements that reach the whole organization.
+	NotifyMany(ctx context.Context, orgID uuid.UUID, userIDs []uuid.UUID, kind, title, body string, data map[string]any) error
 }
 
 type Service struct {
@@ -575,7 +578,10 @@ func (s *Service) ListChannels(ctx context.Context, orgID, userID uuid.UUID) ([]
 		FROM channels c
 		LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.user_id = $2
 		WHERE c.org_id = $1 AND c.deleted_at IS NULL AND COALESCE(c.is_archived, false) = false
-		  AND (cm.user_id IS NOT NULL OR c.type IN ('public', 'announcement'))
+		  AND (cm.user_id IS NOT NULL OR (
+		        c.type IN ('public', 'announcement')
+		        AND NOT EXISTS (SELECT 1 FROM channel_departures d
+		                        WHERE d.channel_id = c.id AND d.user_id = $2)))
 		ORDER BY c.created_at
 	`, orgID, userID)
 	if err != nil {
@@ -734,6 +740,10 @@ func (s *Service) EnsureMember(ctx context.Context, orgID, channelID, userID uui
 		  AND c.type IN ('public', 'announcement')
 		  AND c.deleted_at IS NULL AND u.deleted_at IS NULL
 		  AND COALESCE(c.is_archived, false) = false
+		  -- Somebody who left stays out until they ask to rejoin.
+		  AND NOT EXISTS (
+		      SELECT 1 FROM channel_departures d
+		      WHERE d.channel_id = c.id AND d.user_id = u.id)
 		ON CONFLICT (channel_id, user_id) DO NOTHING
 	`, channelID, userID, orgID)
 	if err != nil {
@@ -823,6 +833,9 @@ func (s *Service) EnrolInOpenChannels(ctx context.Context, orgID, userID uuid.UU
 		FROM channels c
 		WHERE c.org_id = $1 AND c.type IN ('public', 'announcement')
 		  AND c.deleted_at IS NULL AND COALESCE(c.is_archived, false) = false
+		  AND NOT EXISTS (
+		      SELECT 1 FROM channel_departures d
+		      WHERE d.channel_id = c.id AND d.user_id = $2)
 		ON CONFLICT (channel_id, user_id) DO NOTHING
 	`, orgID, userID)
 	if err != nil {
@@ -868,9 +881,28 @@ func (s *Service) AuthorizePost(ctx context.Context, orgID, channelID, userID uu
 }
 
 // AddMember is idempotent and refuses users from another organization.
+//
+// A direct message is a pair and stays one. Both sides are owners of it, so
+// either could otherwise add a third person — after which the conversation no
+// longer matches the two people it belongs to, and the next "new chat" between
+// them starts a second one, splitting the history in half.
 func (s *Service) AddMember(ctx context.Context, orgID, channelID, userID uuid.UUID, role string) error {
 	if role == "" {
 		role = "member"
+	}
+
+	var channelType string
+	if err := s.db.QueryRow(ctx,
+		`SELECT type FROM channels WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
+		channelID, orgID).Scan(&channelType); err != nil {
+		if err == pgx.ErrNoRows {
+			return apperrors.New(apperrors.CodeNotFound, "channel or user not found in this organization")
+		}
+		return fmt.Errorf("load channel: %w", err)
+	}
+	if channelType == "dm" {
+		return apperrors.New(apperrors.CodeBadRequest,
+			"a direct message is between two people; start a group channel to include somebody else")
 	}
 	tag, err := s.db.Exec(ctx, `
 		INSERT INTO channel_members (channel_id, user_id, role, joined_at)
@@ -968,27 +1000,109 @@ func (s *Service) NotifyAnnouncement(ctx context.Context, msg *Message) {
 	}
 	defer rows.Close()
 
+	recipients := []uuid.UUID{}
+	var orgID uuid.UUID
+	var channelName string
 	for rows.Next() {
-		var userID, orgID uuid.UUID
-		var channelName string
+		var userID uuid.UUID
 		if err := rows.Scan(&userID, &orgID, &channelName); err != nil {
 			continue
 		}
-		if err := s.notifier.Notify(ctx, orgID, userID, "chat.announcement",
-			channelName, msg.Content,
-			map[string]any{"channelId": msg.ChannelID.String(), "messageId": msg.ID.String()}); err != nil {
-			s.logger.Warn().Err(err).Msg("announcement notification failed")
-		}
+		recipients = append(recipients, userID)
+	}
+	if err := rows.Err(); err != nil {
+		s.logger.Warn().Err(err).Msg("announcement recipient scan failed")
+		return
+	}
+	if len(recipients) == 0 {
+		return
+	}
+
+	// One statement rather than a round trip per person: an announcement
+	// reaches everybody in the organization.
+	if err := s.notifier.NotifyMany(ctx, orgID, recipients, "chat.announcement",
+		channelName, msg.Content,
+		map[string]any{"channelId": msg.ChannelID.String(), "messageId": msg.ID.String()}); err != nil {
+		s.logger.Warn().Err(err).Msg("announcement notification failed")
 	}
 }
 
+// RemoveMember takes somebody out of a channel and, for the org-wide kinds,
+// records that they went so the automatic join does not put them straight back.
 func (s *Service) RemoveMember(ctx context.Context, orgID, channelID, userID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, `
 		DELETE FROM channel_members cm USING channels c
 		WHERE cm.channel_id = c.id AND cm.channel_id = $1 AND cm.user_id = $2 AND c.org_id = $3
-	`, channelID, userID, orgID)
-	if err != nil {
+	`, channelID, userID, orgID); err != nil {
 		return fmt.Errorf("remove channel member: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO channel_departures (channel_id, user_id, left_at)
+		SELECT c.id, $2, NOW() FROM channels c
+		WHERE c.id = $1 AND c.org_id = $3 AND c.type IN ('public', 'announcement')
+		ON CONFLICT (channel_id, user_id) DO UPDATE SET left_at = NOW()
+	`, channelID, userID, orgID); err != nil {
+		return fmt.Errorf("record channel departure: %w", err)
+	}
+
+	return tx.Commit(ctx)
+}
+
+// BrowsableChannels lists the org-wide channels somebody is not currently in,
+// so a channel they left can be found again.
+func (s *Service) BrowsableChannels(ctx context.Context, orgID, userID uuid.UUID) ([]Channel, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT c.id, c.org_id, c.team_id, c.name, c.type, c.description, c.created_by,
+		       COALESCE(c.is_archived, false), COALESCE(c.is_private, true),
+		       COALESCE(c.max_members, 1000), c.created_at, c.updated_at,
+		       (SELECT COUNT(*) FROM channel_members m WHERE m.channel_id = c.id)
+		FROM channels c
+		WHERE c.org_id = $1 AND c.deleted_at IS NULL
+		  AND COALESCE(c.is_archived, false) = false
+		  AND c.type IN ('public', 'announcement')
+		  AND NOT EXISTS (SELECT 1 FROM channel_members cm
+		                  WHERE cm.channel_id = c.id AND cm.user_id = $2)
+		ORDER BY c.name
+	`, orgID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("list browsable channels: %w", err)
+	}
+	defer rows.Close()
+
+	channels := []Channel{}
+	for rows.Next() {
+		var c Channel
+		if err := rows.Scan(&c.ID, &c.OrgID, &c.TeamID, &c.Name, &c.Type, &c.Description,
+			&c.CreatedBy, &c.IsArchived, &c.IsPrivate, &c.MaxMembers,
+			&c.CreatedAt, &c.UpdatedAt, &c.MemberCount); err != nil {
+			return nil, fmt.Errorf("scan browsable channel: %w", err)
+		}
+		channels = append(channels, c)
+	}
+	return channels, rows.Err()
+}
+
+// RejoinChannel undoes a departure and puts somebody back into an org-wide
+// channel, which is how they get back in after leaving.
+func (s *Service) RejoinChannel(ctx context.Context, orgID, channelID, userID uuid.UUID) error {
+	if _, err := s.db.Exec(ctx,
+		`DELETE FROM channel_departures WHERE channel_id = $1 AND user_id = $2`,
+		channelID, userID); err != nil {
+		return fmt.Errorf("clear channel departure: %w", err)
+	}
+	joined, err := s.EnsureMember(ctx, orgID, channelID, userID)
+	if err != nil {
+		return err
+	}
+	if !joined && !s.isMember(ctx, channelID, userID) {
+		return apperrors.New(apperrors.CodeNotFound, "channel not found in this organization")
 	}
 	return nil
 }

@@ -11,6 +11,7 @@ import {
 } from '@/shared/components/ui/dialog';
 import { Button } from '@/shared/components/ui/button';
 import { useWebSocket } from '@/features/websocket/WSProvider';
+import { callsApi } from '@/shared/api/client';
 
 interface IncomingCall {
   callId: string;
@@ -35,7 +36,14 @@ const RING_EVERY_MS = 3_000;
 export function IncomingCallDialog() {
   const navigate = useNavigate();
   const { on } = useWebSocket();
-  const [call, setCall] = useState<IncomingCall | null>(null);
+  // A queue rather than one slot: two people calling at once used to overwrite
+  // each other, so the first call vanished without ever being answered.
+  const [queue, setQueue] = useState<IncomingCall[]>([]);
+  const call = queue[0] ?? null;
+
+  const dismiss = useCallback((callId: string) => {
+    setQueue((all) => all.filter((c) => c.callId !== callId));
+  }, []);
 
   const audioRef = useRef<AudioContext | null>(null);
   const ringTimerRef = useRef<ReturnType<typeof setInterval>>();
@@ -84,14 +92,30 @@ export function IncomingCallDialog() {
       // Your own call comes back to you so the caller lands in the room; there
       // is nothing to answer.
       if (!payload?.callId || !payload?.callerName) return;
-      setCall({
-        callId: payload.callId,
-        callerName: payload.callerName,
-        callType: payload.callType ?? 'video',
-        channelId: payload.channelId,
-      });
+      setQueue((all) =>
+        all.some((c) => c.callId === payload.callId)
+          ? all
+          : [
+              ...all,
+              {
+                callId: payload.callId,
+                callerName: payload.callerName,
+                callType: payload.callType ?? 'video',
+                channelId: payload.channelId,
+              },
+            ]
+      );
     });
   }, [on]);
+
+  // The caller hung up, or the call was ended: stop ringing rather than
+  // carrying on until the timeout.
+  useEffect(() => {
+    return on('call.ended', (msg) => {
+      const payload = msg.payload as any;
+      if (payload?.callId) dismiss(payload.callId);
+    });
+  }, [on, dismiss]);
 
   useEffect(() => {
     if (!call) {
@@ -101,18 +125,28 @@ export function IncomingCallDialog() {
     ringOnce();
     ringTimerRef.current = setInterval(ringOnce, RING_EVERY_MS);
     // It rings for a while and then gives up rather than for ever.
-    giveUpTimerRef.current = setTimeout(() => setCall(null), RING_FOR_MS);
+    const missed = call.callId;
+    giveUpTimerRef.current = setTimeout(() => dismiss(missed), RING_FOR_MS);
     return stopRinging;
-  }, [call, ringOnce, stopRinging]);
+  }, [call, ringOnce, stopRinging, dismiss]);
 
   const answer = () => {
     const id = call!.callId;
-    setCall(null);
+    dismiss(id);
     navigate(`/calls/${id}`);
   };
 
+  const decline = () => {
+    const id = call!.callId;
+    dismiss(id);
+    // Tell whoever rang, so they are not left watching it ring out.
+    callsApi.decline(id).catch(() => {
+      // They will see it time out instead.
+    });
+  };
+
   return (
-    <Dialog open={!!call} onOpenChange={(open) => !open && setCall(null)}>
+    <Dialog open={!!call} onOpenChange={(open) => !open && call && decline()}>
       <DialogContent className="max-w-sm">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
@@ -126,7 +160,7 @@ export function IncomingCallDialog() {
           <DialogDescription>{call?.callerName} is calling.</DialogDescription>
         </DialogHeader>
         <DialogFooter className="gap-2 sm:justify-center">
-          <Button variant="outline" onClick={() => setCall(null)}>
+          <Button variant="outline" onClick={decline}>
             <PhoneOff className="mr-2 h-4 w-4" />
             Decline
           </Button>

@@ -226,8 +226,15 @@ type CallDeclinePayload struct {
 }
 
 type CallEndedPayload struct {
+	// CallID identifies which call stopped, so a client that is ringing for it
+	// knows to stop. Room name alone is not what the ringing dialog holds.
+	CallID   string `json:"callId"`
 	RoomName string `json:"roomName"`
 	Duration int    `json:"duration"` // seconds
+	// Reason distinguishes a call that was hung up from one somebody declined.
+	Reason string `json:"reason,omitempty"`
+	// DeclinedBy names who turned it down, for the caller's benefit.
+	DeclinedBy string `json:"declinedBy,omitempty"`
 }
 
 type CallSignalingPayload struct {

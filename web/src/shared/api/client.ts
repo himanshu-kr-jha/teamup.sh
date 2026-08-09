@@ -167,6 +167,9 @@ export const tasksApi = {
     scope?: 'mine' | 'team';
     teamId?: string;
   }) => getList('/tasks', 'tasks', params),
+  /** The people this caller may actually assign work to, per the org chart. */
+  assignableUsers: () =>
+    getList<{ userId: string; name: string; email: string }>('/tasks/assignable-users', 'users'),
   managedTeams: () =>
     getList<{ id: string; name: string; members: { userId: string; name: string; email: string }[] }>(
       '/tasks/managed-teams',
@@ -196,6 +199,8 @@ export const callsApi = {
   getToken: (id: string) => api.post(`/calls/${id}/token`),
   startRecording: (id: string) => api.post(`/calls/${id}/record`),
   end: (id: string) => api.post(`/calls/${id}/end`),
+  /** Turns a call down and tells whoever started it. */
+  decline: (id: string) => api.post(`/calls/${id}/decline`),
 };
 
 export const filesApi = {
@@ -207,6 +212,8 @@ export const filesApi = {
       data
     ),
   list: (category: string, refId: string) => getList('/files', 'attachments', { category, refId }),
+  /** Throws away an upload that was staged and then removed before sending. */
+  discard: (id: string) => api.delete(`/files/${id}`),
   initiateMultipart: (data: { category: string; refId: string; filename: string; contentType: string; size: number }) => api.post('/files/multipart/initiate', data),
   completeMultipart: (data: { objectKey: string; uploadId: string; parts: { partNumber: number; etag: string }[] }) => api.post('/files/multipart/complete', data),
   getDownloadUrl: (objectKey: string, filename?: string, inline?: boolean) => api.get('/files/download-url', { params: { objectKey, filename, inline } }),

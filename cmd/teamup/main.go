@@ -137,6 +137,11 @@ type Config struct {
 	// Base URL for redirects
 	BaseURL string `env:"TEAMUP_BASE_URL" envDefault:"http://localhost:8080"`
 
+	// Hosts other than this server that may open a WebSocket, for setups where
+	// the app is served separately (a Vite dev server, say). Same-origin always
+	// works and needs no entry here.
+	AllowedWSOrigins []string `env:"TEAMUP_ALLOWED_WS_ORIGINS" envSeparator:","`
+
 	// OIDC Providers (configured via wizard)
 	GoogleClientID     string `env:"TEAMUP_GOOGLE_CLIENT_ID"`
 	GoogleClientSecret string `env:"TEAMUP_GOOGLE_CLIENT_SECRET"`
@@ -477,7 +482,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 
 	// WebSocket endpoint
-	router.GET("/ws", websocket.WSHandler(wsHub, authService))
+	router.GET("/ws", websocket.WSHandler(wsHub, authService, cfg.AllowedWSOrigins))
 
 	// SPA fallback: serve index.html for non-API routes (only for paths without
 	// file extensions). /wizard/* is deliberately NOT excluded — it is a
@@ -507,6 +512,34 @@ func runServer(cmd *cobra.Command, args []string) error {
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  120 * time.Second,
 	}
+
+	// Uploads that were staged and never sent would otherwise sit in object
+	// storage for ever. Nothing else reclaims them.
+	sweepCtx, stopSweep := context.WithCancel(context.Background())
+	defer stopSweep()
+	go func() {
+		const (
+			every   = time.Hour
+			keepFor = 24 * time.Hour
+		)
+		ticker := time.NewTicker(every)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-sweepCtx.Done():
+				return
+			case <-ticker.C:
+				removed, err := filesService.SweepAbandonedUploads(sweepCtx, keepFor)
+				if err != nil {
+					logger.Warn().Err(err).Msg("could not sweep abandoned uploads")
+					continue
+				}
+				if removed > 0 {
+					logger.Info().Int("count", removed).Msg("removed uploads that were never sent")
+				}
+			}
+		}
+	}()
 
 	// Graceful shutdown
 	go func() {

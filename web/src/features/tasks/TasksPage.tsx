@@ -51,7 +51,7 @@ export function TasksPage() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [viewMode, setViewMode] = useState<'list' | 'board'>('board');
   const [createOpen, setCreateOpen] = useState(false);
-  const [scope, setScope] = useState<'mine' | 'team'>('mine');
+  const [scope, setScope] = useState<'mine' | 'team' | 'all'>('mine');
   const [teamId, setTeamId] = useState('all');
   const [assigneeId, setAssigneeId] = useState('all');
 
@@ -81,7 +81,9 @@ export function TasksPage() {
     queryFn: () =>
       tasksApi.list({
         status: statusFilter !== 'all' ? statusFilter : undefined,
-        scope,
+        // 'all' is everything in the organization, which is what the board
+        // showed before the subtabs existed; the server takes no scope for it.
+        scope: scope === 'all' ? undefined : scope,
         teamId: scope === 'team' && teamId !== 'all' ? teamId : undefined,
         assigneeId: scope === 'team' && assigneeId !== 'all' ? assigneeId : undefined,
       }),
@@ -119,14 +121,13 @@ export function TasksPage() {
       <div className="flex h-16 items-center justify-between px-4 md:px-6 border-b border-border">
         <div className="flex items-center gap-4">
           <h1 className="text-2xl font-bold">Tasks</h1>
-          {managesSomebody && (
-            <Tabs value={scope} onValueChange={(v) => setScope(v as 'mine' | 'team')}>
-              <TabsList>
-                <TabsTrigger value="mine">My tasks</TabsTrigger>
-                <TabsTrigger value="team">Team tasks</TabsTrigger>
-              </TabsList>
-            </Tabs>
-          )}
+          <Tabs value={scope} onValueChange={(v) => setScope(v as 'mine' | 'team' | 'all')}>
+            <TabsList>
+              <TabsTrigger value="mine">My tasks</TabsTrigger>
+              {managesSomebody && <TabsTrigger value="team">Team tasks</TabsTrigger>}
+              <TabsTrigger value="all">All tasks</TabsTrigger>
+            </TabsList>
+          </Tabs>
           <div className="hidden sm:flex items-center gap-2">
             <Button variant="outline" size="sm" onClick={() => setViewMode('list')}>
               <span className="h-4 w-4" /> List

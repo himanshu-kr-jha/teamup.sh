@@ -276,3 +276,41 @@ func TestListNotificationsRejectsAnInvalidUser(t *testing.T) {
 		t.Logf("unread count for nil uuid: %v", err)
 	}
 }
+
+// An announcement reaches everybody in the organization, so the notifications
+// are written in one statement rather than one round trip per person.
+func TestNotifyManyWritesOneRowPerRecipient(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	second := testsupport.SeedUser(t, pool, org, "many-b@example.test", "member")
+	third := testsupport.SeedUser(t, pool, org, "many-c@example.test", "member")
+
+	recipients := []uuid.UUID{org.OwnerID, second, third}
+	if err := svc.NotifyMany(ctx, org.ID, recipients, "chat.announcement",
+		"All hands", "Friday at three", map[string]any{"channelId": "abc"}); err != nil {
+		t.Fatalf("notify many: %v", err)
+	}
+
+	for _, who := range recipients {
+		var count int
+		if err := pool.QueryRow(ctx,
+			`SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND type = 'chat.announcement'`,
+			who).Scan(&count); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		if count != 1 {
+			t.Errorf("recipient %s got %d notifications, want 1", who, count)
+		}
+	}
+}
+
+func TestNotifyManyWithNobodyToTellIsHarmless(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	if err := svc.NotifyMany(ctx, org.ID, nil, "chat.announcement", "Nobody", "there", nil); err != nil {
+		t.Errorf("notifying nobody should be a no-op: %v", err)
+	}
+}

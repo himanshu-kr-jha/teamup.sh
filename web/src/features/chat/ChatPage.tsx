@@ -8,7 +8,7 @@ import { cn } from '@/shared/utils/cn';
 import { formatRelativeTime } from '@/shared/utils/cn';
 import { useWebSocket } from '@/features/websocket/WSProvider';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { callsApi, channelsApi } from '@/shared/api/client';
+import { callsApi, channelsApi, filesApi } from '@/shared/api/client';
 import { useUpload, type UploadedFile } from '@/features/files/useUpload';
 import { useToast } from '@/shared/hooks/useToast';
 import { apiErrorMessage } from '@/shared/api/errors';
@@ -349,7 +349,14 @@ export function ChatPage() {
                     <AttachmentChip attachment={{ ...file, sizeBytes: file.size }} />
                     <button
                       type="button"
-                      onClick={() => setStaged((all) => all.filter((f) => f.id !== file.id))}
+                      onClick={() => {
+                        setStaged((all) => all.filter((f) => f.id !== file.id));
+                        // Throw the bytes away too, rather than leaving them
+                        // in storage for the sweep to find a day later.
+                        filesApi.discard(file.id).catch(() => {
+                          // Best effort: the sweep collects it either way.
+                        });
+                      }}
                       aria-label={`Remove ${file.filename}`}
                       className="text-muted-foreground hover:text-foreground"
                     >

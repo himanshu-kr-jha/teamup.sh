@@ -69,6 +69,10 @@ type Call struct {
 	CreatedBy       uuid.UUID  `json:"createdBy"`
 	CreatedAt       time.Time  `json:"createdAt"`
 	UpdatedAt       time.Time  `json:"updatedAt"`
+	// NotInvited counts channel members a call could not reach because a room
+	// holds only so many. Response-only, so the caller can say so rather than
+	// quietly ringing a subset.
+	NotInvited int `json:"notInvited,omitempty"`
 }
 
 type CallParticipant struct {
@@ -137,7 +141,7 @@ func (s *Service) CreateCall(ctx context.Context, orgID, createdBy uuid.UUID, ti
 		room, err := s.roomService.CreateRoom(ctx, &livekit.CreateRoomRequest{
 			Name:            roomName,
 			EmptyTimeout:    300, // 5 minutes
-			MaxParticipants: 50,
+			MaxParticipants: maxCallParticipants,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create LiveKit room: %w", err)
@@ -200,17 +204,39 @@ func (s *Service) CreateCall(ctx context.Context, orgID, createdBy uuid.UUID, ti
 	return call, nil
 }
 
+// maxCallParticipants is what a LiveKit room is created with, and therefore
+// how many people a call can actually hold.
+const maxCallParticipants = 50
+
+// MaxChannelCallInvites bounds who gets rung when a call starts in a channel.
+// Every member of a public channel is the whole organization, so without a
+// bound one click in a busy channel rings everybody and writes a row each.
+const MaxChannelCallInvites = maxCallParticipants - 1
+
 // ChannelMembersFor lists everybody in a channel apart from one person, which
-// is who a channel call has to reach.
-func (s *Service) ChannelMembersFor(ctx context.Context, orgID, channelID, except uuid.UUID) ([]uuid.UUID, error) {
+// is who a channel call has to reach. Capped: it reports whether there were
+// more so the caller can say so rather than silently reaching a subset.
+func (s *Service) ChannelMembersFor(ctx context.Context, orgID, channelID, except uuid.UUID) ([]uuid.UUID, int, error) {
+	var total int
+	if err := s.db.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM channel_members cm
+		JOIN channels c ON c.id = cm.channel_id
+		WHERE cm.channel_id = $1 AND c.org_id = $2 AND cm.user_id <> $3
+	`, channelID, orgID, except).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count channel members for call: %w", err)
+	}
+
 	rows, err := s.db.Query(ctx, `
 		SELECT cm.user_id
 		FROM channel_members cm
 		JOIN channels c ON c.id = cm.channel_id
 		WHERE cm.channel_id = $1 AND c.org_id = $2 AND cm.user_id <> $3
-	`, channelID, orgID, except)
+		ORDER BY cm.joined_at
+		LIMIT $4
+	`, channelID, orgID, except, MaxChannelCallInvites)
 	if err != nil {
-		return nil, fmt.Errorf("list channel members for call: %w", err)
+		return nil, 0, fmt.Errorf("list channel members for call: %w", err)
 	}
 	defer rows.Close()
 
@@ -218,11 +244,11 @@ func (s *Service) ChannelMembersFor(ctx context.Context, orgID, channelID, excep
 	for rows.Next() {
 		var id uuid.UUID
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan channel member: %w", err)
+			return nil, 0, fmt.Errorf("scan channel member: %w", err)
 		}
 		ids = append(ids, id)
 	}
-	return ids, rows.Err()
+	return ids, total, rows.Err()
 }
 
 // IsChannelMember gates starting a call on a channel: a private channel's call
@@ -245,6 +271,10 @@ func (s *Service) IsChannelMember(ctx context.Context, orgID, channelID, userID 
 
 // Ring tells each invitee that a call is waiting. The callee's client decides
 // how long to keep ringing; the server just says who is calling and where.
+//
+// Runs off the request: minting a token and enqueuing a frame per invitee is
+// work the caller should not wait on, and none of it affects whether the call
+// was created.
 func (s *Service) Ring(ctx context.Context, call *Call, callerID, callerName string, invitees []uuid.UUID) {
 	if s.broadcaster == nil {
 		return
@@ -268,6 +298,47 @@ func (s *Service) Ring(ctx context.Context, call *Call, callerID, callerName str
 		}
 		s.broadcaster.BroadcastToUser(invitee.String(), protocol.NewMessage(
 			protocol.TypeCallInvited, payload))
+	}
+}
+
+// Participants lists everybody on a call, optionally skipping one person.
+func (s *Service) Participants(ctx context.Context, callID uuid.UUID, except string) ([]string, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT user_id FROM call_participants WHERE call_id = $1`, callID)
+	if err != nil {
+		return nil, fmt.Errorf("list call participants: %w", err)
+	}
+	defer rows.Close()
+
+	ids := []string{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan call participant: %w", err)
+		}
+		if id.String() == except {
+			continue
+		}
+		ids = append(ids, id.String())
+	}
+	return ids, rows.Err()
+}
+
+// AnnounceCallOver tells everybody still ringing that the call has stopped, so
+// a phone does not keep ringing after the caller has hung up or somebody has
+// turned it down.
+func (s *Service) AnnounceCallOver(ctx context.Context, call *CallModel, reason, declinedBy string, recipients []string) {
+	if s.broadcaster == nil {
+		return
+	}
+	msg := protocol.NewMessage(protocol.TypeCallEnded, protocol.CallEndedPayload{
+		CallID:     call.ID.String(),
+		RoomName:   call.RoomName,
+		Reason:     reason,
+		DeclinedBy: declinedBy,
+	})
+	for _, userID := range recipients {
+		s.broadcaster.BroadcastToUser(userID, msg)
 	}
 }
 

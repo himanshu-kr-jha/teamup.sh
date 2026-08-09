@@ -290,6 +290,40 @@ func (s *Service) CreateNotification(ctx context.Context, notif *Notification) e
 
 // Notify is the convenience entry point used by the features that raise
 // notifications: it records the in-app item and fans out a web push.
+// NotifyMany raises the same notification for a set of people in one
+// statement. An announcement reaches everybody in the organization, so doing it
+// one insert at a time cost a round trip per person.
+func (s *Service) NotifyMany(ctx context.Context, orgID uuid.UUID, userIDs []uuid.UUID, kind, title, body string, data map[string]any) error {
+	if len(userIDs) == 0 {
+		return nil
+	}
+	raw, err := json.Marshal(data)
+	if err != nil {
+		raw = []byte(`{}`)
+	}
+	if _, err := s.db.Exec(ctx, `
+		INSERT INTO notifications (id, org_id, user_id, type, title, body, data, created_at)
+		SELECT gen_random_uuid(), $1, recipient, $2, $3, $4, $5, NOW()
+		FROM UNNEST($6::uuid[]) AS recipient
+	`, orgID, kind, title, body, raw, userIDs); err != nil {
+		return fmt.Errorf("create notifications: %w", err)
+	}
+
+	// Push is best effort and slow enough that it must not hold up the post.
+	go func() {
+		pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
+		defer cancel()
+		for _, userID := range userIDs {
+			if err := s.SendToUser(pushCtx, userID.String(), PushPayload{
+				Title: title, Body: body, Tag: kind, Data: data,
+			}); err != nil {
+				s.logger.Debug().Err(err).Msg("push delivery failed")
+			}
+		}
+	}()
+	return nil
+}
+
 func (s *Service) Notify(ctx context.Context, orgID, userID uuid.UUID, kind, title, body string, data map[string]any) error {
 	raw, err := json.Marshal(data)
 	if err != nil {

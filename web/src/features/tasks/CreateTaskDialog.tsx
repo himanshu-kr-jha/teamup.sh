@@ -5,7 +5,7 @@ import { Label } from '@/shared/components/ui/label';
 import { Textarea } from '@/shared/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
 import { FormDialog } from '@/shared/components/FormDialog';
-import { tasksApi, orgApi } from '@/shared/api/client';
+import { tasksApi } from '@/shared/api/client';
 
 interface Props {
   open: boolean;
@@ -24,10 +24,11 @@ export function CreateTaskDialog({ open, onOpenChange, onCreated }: Props) {
   const [assigneeId, setAssigneeId] = useState(UNASSIGNED);
   const [dueDate, setDueDate] = useState('');
 
-  // Only fetched while the dialog is open; the board does not need it.
+  // Only the people the org chart will actually accept: offering everybody
+  // meant filling in the whole form and being refused on submit.
   const { data: usersData } = useQuery({
-    queryKey: ['users'],
-    queryFn: () => orgApi.listUsers(),
+    queryKey: ['assignable-users'],
+    queryFn: () => tasksApi.assignableUsers(),
     enabled: open,
   });
   const users = usersData?.data ?? [];
@@ -109,7 +110,7 @@ export function CreateTaskDialog({ open, onOpenChange, onCreated }: Props) {
             <SelectContent>
               <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
               {users.map((u: any) => (
-                <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>
+                <SelectItem key={u.userId} value={u.userId}>{u.name}</SelectItem>
               ))}
             </SelectContent>
           </Select>

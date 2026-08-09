@@ -2,6 +2,7 @@ package calls
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -380,7 +381,7 @@ func TestAChannelCallReachesEverybodyElseInTheChannel(t *testing.T) {
 
 	channelID := testsupport.SeedChannel(t, pool, org, "group-call", org.OwnerID, second, third)
 
-	invitees, err := svc.ChannelMembersFor(ctx, org.ID, channelID, org.OwnerID)
+	invitees, _, err := svc.ChannelMembersFor(ctx, org.ID, channelID, org.OwnerID)
 	if err != nil {
 		t.Fatalf("members: %v", err)
 	}
@@ -402,11 +403,42 @@ func TestAChannelRosterIsScopedToTheOrganization(t *testing.T) {
 
 	channelID := testsupport.SeedChannel(t, pool, org, "ours-call", org.OwnerID)
 
-	invitees, err := svc.ChannelMembersFor(ctx, theirs.ID, channelID, theirs.OwnerID)
+	invitees, _, err := svc.ChannelMembersFor(ctx, theirs.ID, channelID, theirs.OwnerID)
 	if err != nil {
 		t.Fatalf("members: %v", err)
 	}
 	if len(invitees) != 0 {
 		t.Errorf("another organization read our channel roster: %d", len(invitees))
+	}
+}
+
+// A public channel holds the whole organization, so a call started in one must
+// not try to ring everybody: a room only holds so many, and each invite is a
+// row and a frame.
+func TestAChannelCallInviteListIsBounded(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	members := []uuid.UUID{}
+	for i := 0; i < MaxChannelCallInvites+5; i++ {
+		members = append(members,
+			testsupport.SeedUser(t, pool, org, fmt.Sprintf("crowd%d@example.test", i), "member"))
+	}
+	channelID := testsupport.SeedChannel(t, pool, org, "crowded", append([]uuid.UUID{org.OwnerID}, members...)...)
+
+	invitees, total, err := svc.ChannelMembersFor(ctx, org.ID, channelID, org.OwnerID)
+	if err != nil {
+		t.Fatalf("members: %v", err)
+	}
+	if len(invitees) != MaxChannelCallInvites {
+		t.Errorf("invitees: got %d want the cap of %d", len(invitees), MaxChannelCallInvites)
+	}
+	// The true size is reported so the caller can be told who was left out.
+	if total != len(members) {
+		t.Errorf("total: got %d want %d", total, len(members))
+	}
+	if total-len(invitees) != 5 {
+		t.Errorf("uninvited: got %d want 5", total-len(invitees))
 	}
 }

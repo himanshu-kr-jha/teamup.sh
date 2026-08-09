@@ -27,6 +27,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 
 	rg.GET("/tasks", h.ListTasks)
 	rg.GET("/tasks/managed-teams", h.ManagedTeams)
+	rg.GET("/tasks/assignable-users", h.AssignableUsers)
 	rg.POST("/tasks", h.CreateTask)
 	rg.GET("/tasks/:id", h.GetTask)
 	rg.PATCH("/tasks/:id", h.UpdateTask)
@@ -127,6 +128,22 @@ func (h *Handler) ManagedTeams(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"teams": teams})
+}
+
+// AssignableUsers answers with the people this caller may assign work to, so
+// the create form only offers names that will be accepted.
+func (h *Handler) AssignableUsers(c *gin.Context) {
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	people, err := h.service.AssignableUsers(c.Request.Context(), cl.OrgID, cl.UserID,
+		auth.GetUserFromContext(c).HasAnyRole("owner", "admin"))
+	if err != nil {
+		httpx.Error(c, err, "failed to list assignable users")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"users": people})
 }
 
 func (h *Handler) CreateTask(c *gin.Context) {
