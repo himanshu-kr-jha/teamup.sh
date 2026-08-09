@@ -732,6 +732,32 @@ func (s *Service) MarkParticipantLeft(ctx context.Context, callID, userID uuid.U
 	return nil
 }
 
+// StillOccupiedBySomebodyElse reports whether anybody other than this person is
+// currently in the room.
+//
+// LiveKit is the authority: the database records who was invited and who
+// joined, but nothing tells it when somebody closes their laptop, so it cannot
+// answer this. Ending a call is only allowed when nobody else is in it, which
+// is a question only the media server can settle.
+//
+// With no room service configured — the stub setup used in development — this
+// reports false, because there is no room to be in.
+func (s *Service) StillOccupiedBySomebodyElse(ctx context.Context, roomName, identity string) (bool, error) {
+	if s.roomService == nil {
+		return false, nil
+	}
+	res, err := s.roomService.ListParticipants(ctx, &livekit.ListParticipantsRequest{Room: roomName})
+	if err != nil {
+		return false, fmt.Errorf("list call participants: %w", err)
+	}
+	for _, participant := range res.GetParticipants() {
+		if participant.GetIdentity() != identity {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 // AnybodyLeftToAnswer reports whether the call still has somebody who was
 // invited, has not joined and has not left. When nobody does, a call that was
 // never picked up should stop rather than leave the caller sitting in an empty

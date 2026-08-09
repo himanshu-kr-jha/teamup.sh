@@ -374,6 +374,21 @@ func (h *Handler) EndCall(c *gin.Context) {
 		return
 	}
 
+	// A call ends when the last person leaves, and not before. Nobody hangs up
+	// on everybody else, so this closes the record only once the room is empty
+	// apart from whoever is asking.
+	occupied, err := h.service.StillOccupiedBySomebodyElse(c.Request.Context(), call.RoomName, user.UserID)
+	if err != nil {
+		httpx.Error(c, err, "failed to end call")
+		return
+	}
+	if occupied {
+		c.JSON(http.StatusConflict, gin.H{
+			"error": "somebody else is still in this call; leave it instead",
+		})
+		return
+	}
+
 	if err := h.service.EndCall(c.Request.Context(), call.RoomName); err != nil {
 		// The room may already be gone; the record still has to be closed.
 		h.service.logger.Warn().Err(err).Str("room", call.RoomName).Msg("LiveKit room teardown failed")

@@ -187,27 +187,25 @@ function CallFrame({
   const [asking, setAsking] = useState(false);
   const dragState = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
 
-  // Leaving is just leaving: anybody else in the call carries on.
+  // Leaving is always just leaving. Anybody still in the call carries on, and
+  // the call itself is closed only by whoever turns out to be last out — there
+  // is deliberately no way to hang up on everybody else.
   const hangUp = useCallback(async () => {
+    const lastOut = remote.length === 0;
     try {
+      if (lastOut) {
+        // Nobody is left, so the call is over rather than merely empty. Left
+        // open it would sit "active" in everybody's history until the room
+        // timed out.
+        await callsApi.end(callId).catch(() => {
+          // The room's own timeout closes it if this does not.
+        });
+      }
       await room.disconnect();
     } finally {
       onLeave();
     }
-  }, [room, onLeave]);
-
-  // Dropping an empty call closes it for good. Nobody else is in it by
-  // definition, so there is nothing to interrupt, and leaving it open would
-  // keep a room alive that nobody is coming back to.
-  const dropEmptyCall = useCallback(async () => {
-    try {
-      await callsApi.end(callId);
-    } catch {
-      // The record will be closed when the room times out instead.
-    } finally {
-      await hangUp();
-    }
-  }, [callId, hangUp]);
+  }, [room, onLeave, remote.length, callId]);
 
   // Sitting alone is usually a call that is already over. Ask, and if there is
   // no answer, drop it rather than leaving a room open indefinitely.
@@ -224,10 +222,10 @@ function CallFrame({
     if (!asking) return;
     const drop = setTimeout(() => {
       toast.toast('You were the only one here, so the call was ended.');
-      void dropEmptyCall();
+      void hangUp();
     }, ANSWER_WINDOW_MS);
     return () => clearTimeout(drop);
-  }, [asking, dropEmptyCall, toast]);
+  }, [asking, hangUp, toast]);
 
   // Dragging the minimised window. Pointer events cover mouse and touch, and
   // capture keeps it following the pointer outside the window.
@@ -309,7 +307,7 @@ function CallFrame({
           </div>
 
           <div className="min-h-0 flex-1">
-            <CallTiles callId={callId} compact={!expanded} />
+            <CallTiles compact={!expanded} />
           </div>
         </div>
       </div>
@@ -324,7 +322,7 @@ function CallFrame({
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="gap-2 sm:justify-center">
-            <Button variant="outline" onClick={dropEmptyCall}>
+            <Button variant="outline" onClick={hangUp}>
               Leave the call
             </Button>
             <Button onClick={() => setAsking(false)}>Stay</Button>
@@ -340,9 +338,8 @@ function clamp(value: number, min: number, max: number) {
 }
 
 /** The video itself, plus the controls when there is room for them. */
-function CallTiles({ callId, compact }: { callId: string; compact: boolean }) {
+function CallTiles({ compact }: { compact: boolean }) {
   const room = useRoomContext();
-  const toast = useToast();
   const remote = useRemoteParticipants();
   const [mediaError, setMediaError] = useState('');
 
@@ -368,16 +365,6 @@ function CallTiles({ callId, compact }: { callId: string; compact: boolean }) {
     { onlySubscribed: false }
   );
 
-  const endForEveryone = async () => {
-    try {
-      await callsApi.end(callId);
-    } catch (err) {
-      toast.error(apiErrorMessage(err, 'Could not end the call for everyone.'));
-    } finally {
-      await room.disconnect();
-    }
-  };
-
   return (
     <div className="flex h-full flex-col">
       {mediaError && !compact && (
@@ -401,12 +388,8 @@ function CallTiles({ callId, compact }: { callId: string; compact: boolean }) {
       {/* The controls need room; the corner window keeps only leave, which
           lives in its title bar. */}
       {!compact && (
-        <div className="flex items-center justify-between gap-4 border-t border-border p-3">
+        <div className="flex items-center justify-center border-t border-border p-3">
           <ControlBar variation="minimal" controls={{ leave: false }} />
-          <Button variant="destructive" onClick={endForEveryone}>
-            <PhoneOff className="mr-2 h-4 w-4" />
-            End for everyone
-          </Button>
         </div>
       )}
     </div>

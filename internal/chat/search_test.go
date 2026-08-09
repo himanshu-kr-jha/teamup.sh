@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"strings"
 	"testing"
 
@@ -261,5 +262,192 @@ func TestSearchHighlightDoesNotEmitHTML(t *testing.T) {
 	}
 	if !strings.Contains(results[0].Highlight, HighlightStart) {
 		t.Errorf("expected the sentinel delimiter, got %q", results[0].Highlight)
+	}
+}
+
+// ── Forgiving search ──────────────────────────────────────────────────────
+
+// Full-text search only matches whole words, so a typo found nothing at all.
+func TestSearchToleratesATypo(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	ch := testsupport.SeedChannel(t, pool, org, "general", org.OwnerID)
+
+	if _, err := svc.SendMessage(ctx, org.ID, ch, org.OwnerID,
+		"the deployment finished cleanly", nil, nil, false); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	results, err := svc.SearchMessages(ctx, org.ID, org.OwnerID, SearchQuery{Text: "deploment"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("a single letter missing found nothing")
+	}
+}
+
+// And a fragment of a word, which whole-word matching also misses.
+func TestSearchMatchesPartOfAWord(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	ch := testsupport.SeedChannel(t, pool, org, "general", org.OwnerID)
+
+	if _, err := svc.SendMessage(ctx, org.ID, ch, org.OwnerID,
+		"look at the authentication middleware", nil, nil, false); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	results, err := svc.SearchMessages(ctx, org.ID, org.OwnerID, SearchQuery{Text: "authent"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) == 0 {
+		t.Error("part of a word found nothing")
+	}
+}
+
+// Being forgiving must not mean matching everything.
+func TestSearchStillMissesSomethingUnrelated(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	ch := testsupport.SeedChannel(t, pool, org, "general", org.OwnerID)
+
+	if _, err := svc.SendMessage(ctx, org.ID, ch, org.OwnerID,
+		"the deployment finished cleanly", nil, nil, false); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	results, err := svc.SearchMessages(ctx, org.ID, org.OwnerID, SearchQuery{Text: "quarterly budget"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("matched something unrelated: %+v", results)
+	}
+}
+
+// An exact hit should still come first.
+func TestAnExactMatchOutranksAnApproximateOne(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	ch := testsupport.SeedChannel(t, pool, org, "general", org.OwnerID)
+
+	if _, err := svc.SendMessage(ctx, org.ID, ch, org.OwnerID,
+		"deploymentation notes", nil, nil, false); err != nil {
+		t.Fatalf("seed approximate: %v", err)
+	}
+	if _, err := svc.SendMessage(ctx, org.ID, ch, org.OwnerID,
+		"deployment", nil, nil, false); err != nil {
+		t.Fatalf("seed exact: %v", err)
+	}
+
+	results, err := svc.SearchMessages(ctx, org.ID, org.OwnerID, SearchQuery{Text: "deployment"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) < 2 {
+		t.Fatalf("expected both, got %d", len(results))
+	}
+	if results[0].Content != "deployment" {
+		t.Errorf("the exact match should be first, got %q", results[0].Content)
+	}
+}
+
+// ── File search ───────────────────────────────────────────────────────────
+
+func seedSharedFile(t *testing.T, pool *pgxpool.Pool, orgID, channelID, uploader uuid.UUID, filename string) uuid.UUID {
+	t.Helper()
+	var id uuid.UUID
+	if err := pool.QueryRow(context.Background(), `
+		INSERT INTO attachments (id, org_id, uploaded_by, category, ref_id, object_key,
+		                         filename, content_type, size_bytes, created_at)
+		VALUES (gen_random_uuid(), $1, $2, 'chat', $3, $4, $5, 'application/pdf', 100, NOW())
+		RETURNING id
+	`, orgID, uploader, channelID.String(), "key/"+uuid.New().String(), filename).Scan(&id); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	return id
+}
+
+func TestFilesCanBeFoundByName(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	ch := testsupport.SeedChannel(t, pool, org, "general", org.OwnerID)
+
+	seedSharedFile(t, pool, org.ID, ch, org.OwnerID, "Q3-budget-review.pdf")
+	seedSharedFile(t, pool, org.ID, ch, org.OwnerID, "holiday-photos.zip")
+
+	results, err := svc.SearchFiles(ctx, org.ID, org.OwnerID, SearchQuery{Text: "budget"})
+	if err != nil {
+		t.Fatalf("search files: %v", err)
+	}
+	if len(results) != 1 || results[0].Filename != "Q3-budget-review.pdf" {
+		t.Fatalf("wrong files: %+v", results)
+	}
+	if results[0].ChannelName != "general" {
+		t.Errorf("a result should say where it came from, got %q", results[0].ChannelName)
+	}
+
+	// Forgiving here too.
+	typo, err := svc.SearchFiles(ctx, org.ID, org.OwnerID, SearchQuery{Text: "budgt"})
+	if err != nil {
+		t.Fatalf("search files: %v", err)
+	}
+	if len(typo) == 0 {
+		t.Error("a typo in a filename found nothing")
+	}
+}
+
+// A file shared in a private channel belongs to that channel.
+func TestFileSearchRespectsWhoCanSeeTheChannel(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	outsider := testsupport.SeedUser(t, pool, org, "outsider-files@example.test", "member")
+
+	private := "private"
+	ch, err := svc.CreateChannel(ctx, org.ID, org.OwnerID, &private, "group", nil, nil)
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	seedSharedFile(t, pool, org.ID, ch.ID, org.OwnerID, "salary-bands.pdf")
+
+	mine, err := svc.SearchFiles(ctx, org.ID, org.OwnerID, SearchQuery{Text: "salary"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(mine) != 1 {
+		t.Errorf("a member of the channel cannot find its file: %+v", mine)
+	}
+
+	theirs, err := svc.SearchFiles(ctx, org.ID, outsider, SearchQuery{Text: "salary"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(theirs) != 0 {
+		t.Errorf("somebody outside the channel found its file: %+v", theirs)
+	}
+}
+
+func TestFileSearchNeverCrossesOrganizations(t *testing.T) {
+	svc, pool := newService(t)
+	mine := testsupport.SeedOrg(t, pool)
+	theirs := testsupport.SeedOrg(t, pool)
+
+	ch := testsupport.SeedChannel(t, pool, theirs, "theirs", theirs.OwnerID)
+	seedSharedFile(t, pool, theirs.ID, ch, theirs.OwnerID, "their-secret-plan.pdf")
+
+	results, err := svc.SearchFiles(context.Background(), mine.ID, mine.OwnerID, SearchQuery{Text: "secret"})
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("found another organization's file: %+v", results)
 	}
 }

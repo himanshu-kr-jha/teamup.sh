@@ -151,6 +151,19 @@ export const channelsApi = {
 export const messagesApi = {
   search: (params: { q: string; channelId?: string; userId?: string; dateFrom?: string; dateTo?: string; limit?: number; offset?: number }) =>
     getList('/search/messages', 'results', params),
+  /** Files shared in channels the caller can read, matched on name. */
+  searchFiles: (params: { q: string; channelId?: string; limit?: number; offset?: number }) =>
+    getList<{
+      id: string;
+      filename: string;
+      contentType: string;
+      sizeBytes: number;
+      objectKey: string;
+      channelId: string;
+      channelName: string;
+      uploaderName: string;
+      createdAt: string;
+    }>('/search/files', 'results', params),
 };
 
 export const presenceApi = {

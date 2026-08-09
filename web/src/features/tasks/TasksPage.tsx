@@ -7,6 +7,7 @@ import { Badge } from '@/shared/components/ui/badge';
 import { cn } from '@/shared/utils/cn';
 import { formatRelativeTime } from '@/shared/utils/cn';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
+import { Link } from 'react-router-dom';
 import { Tabs, TabsList, TabsTrigger } from '@/shared/components/ui/tabs';
 import { StandupView } from './StandupView';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
@@ -231,9 +232,16 @@ export function TasksPage() {
 
 function TaskCard({ task, onUpdate }: { task: Task; onUpdate: (data: { id: string; data: any }) => void }) {
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-lg border border-border p-4 shadow-sm hover:shadow-md transition-shadow">
-      <div className="flex items-start justify-between gap-2 mb-2">
-        <h3 className="font-medium text-sm flex-1">{task.title}</h3>
+    <div className="rounded-lg border border-border bg-card p-4 shadow-sm transition-shadow hover:shadow-md">
+      <div className="mb-2 flex items-start justify-between gap-2">
+        {/* The card had no way into the task at all, so the detail page —
+            comments, history, members — was unreachable from the board. */}
+        <Link
+          to={`/tasks/${task.id}`}
+          className="flex-1 text-sm font-medium hover:underline"
+        >
+          {task.title}
+        </Link>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon" className="h-6 w-6">
@@ -245,7 +253,9 @@ function TaskCard({ task, onUpdate }: { task: Task; onUpdate: (data: { id: strin
             <DropdownMenuItem onSelect={() => onUpdate({ id: task.id, data: { status: 'in_progress' } })}>Move to In Progress</DropdownMenuItem>
             <DropdownMenuItem onSelect={() => onUpdate({ id: task.id, data: { status: 'done' } })}>Mark Done</DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem className="text-destructive" onSelect={() => {}}>Delete</DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <Link to={`/tasks/${task.id}`}>Open</Link>
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>

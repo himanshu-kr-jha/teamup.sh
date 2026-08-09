@@ -16,7 +16,11 @@ export function Header({ onMenuClick }: HeaderProps) {
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
 
   return (
-    <header className="sticky top-0 z-30 flex h-16 items-center gap-4 border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 px-4 md:px-6">
+    // z-50, above the channel list: sticky positioning makes this a stacking
+    // context, so the search results inside it could never rise above their
+    // parent no matter what z-index they carried — they came out behind the
+    // conversations.
+    <header className="sticky top-0 z-50 flex h-16 items-center gap-4 border-b border-border bg-background/95 px-4 backdrop-blur supports-[backdrop-filter]:bg-background/60 md:px-6">
       <button
         onClick={onMenuClick}
         className="lg:hidden p-2 rounded-md text-muted-foreground hover:bg-accent hover:text-accent-foreground"

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Search, Loader2 } from 'lucide-react';
+import { Search, Loader2, Paperclip } from 'lucide-react';
 import { Input } from '@/shared/components/ui/input';
 import { messagesApi } from '@/shared/api/client';
 import { formatRelativeTime, cn } from '@/shared/utils/cn';
@@ -66,7 +66,18 @@ export function SearchBox() {
     queryFn: () => messagesApi.search({ q: debounced, limit: 12 }),
     enabled: debounced.length > 1,
   });
+  // Files are matched by name from the same box: looking for something
+  // somebody shared is the same act as looking for what they said about it.
+  const { data: fileData, isFetching: fetchingFiles } = useQuery({
+    queryKey: ['search-files', debounced],
+    queryFn: () => messagesApi.searchFiles({ q: debounced, limit: 6 }),
+    enabled: debounced.length > 1,
+  });
+
   const results: Result[] = data?.data ?? [];
+  const files = fileData?.data ?? [];
+  const searching = isFetching || fetchingFiles;
+  const nothing = results.length === 0 && files.length === 0;
 
   return (
     <div ref={containerRef} className="relative hidden md:block md:w-96">
@@ -78,16 +89,49 @@ export function SearchBox() {
           setOpen(true);
         }}
         onFocus={() => setOpen(true)}
-        placeholder="Search messages…"
-        aria-label="Search messages"
+        placeholder="Search messages and files…"
+        aria-label="Search messages and files"
         className="pl-10"
       />
-      {isFetching && <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />}
+      {searching && <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />}
 
       {open && debounced.length > 1 && (
         <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-96 overflow-y-auto rounded-lg border border-border bg-popover shadow-lg">
-          {results.length === 0 && !isFetching && (
-            <p className="p-4 text-sm text-muted-foreground">No messages match “{debounced}”.</p>
+          {nothing && !searching && (
+            <p className="p-4 text-sm text-muted-foreground">Nothing matches “{debounced}”.</p>
+          )}
+
+          {files.length > 0 && (
+            <div className="border-b border-border">
+              <p className="px-3 pt-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Files
+              </p>
+              {files.map((f: any) => (
+                <button
+                  key={f.id}
+                  onClick={() => {
+                    setOpen(false);
+                    setTerm('');
+                    navigate(`/chat/${f.channelId}`);
+                  }}
+                  className="flex w-full items-center gap-2 p-3 text-left hover:bg-accent focus:bg-accent focus:outline-none"
+                >
+                  <Paperclip className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm">{f.filename}</span>
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {f.channelName || 'channel'} · {f.uploaderName} · {formatRelativeTime(f.createdAt)}
+                    </span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {results.length > 0 && files.length > 0 && (
+            <p className="px-3 pt-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Messages
+            </p>
           )}
           {results.map((r) => (
             <button

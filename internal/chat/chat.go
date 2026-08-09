@@ -1419,6 +1419,75 @@ func (s *Service) MarkRead(ctx context.Context, channelID, userID, messageID uui
 	return s.updateLastRead(ctx, channelID, userID, messageID)
 }
 
+// FileResult is a file somebody shared, with enough context to open it and to
+// see where it came from.
+type FileResult struct {
+	ID           uuid.UUID  `json:"id"`
+	Filename     string     `json:"filename"`
+	ContentType  string     `json:"contentType"`
+	SizeBytes    int64      `json:"sizeBytes"`
+	ObjectKey    string     `json:"objectKey"`
+	ChannelID    uuid.UUID  `json:"channelId"`
+	ChannelName  string     `json:"channelName"`
+	MessageID    *uuid.UUID `json:"messageId,omitempty"`
+	UploadedBy   uuid.UUID  `json:"uploadedBy"`
+	UploaderName string     `json:"uploaderName"`
+	CreatedAt    time.Time  `json:"createdAt"`
+}
+
+// SearchFiles finds shared files by name, in channels the caller can read.
+// Names are short, so trigram similarity does the work on its own: an exact
+// substring first, then anything close enough to be what was meant.
+func (s *Service) SearchFiles(ctx context.Context, orgID, userID uuid.UUID, q SearchQuery) ([]FileResult, error) {
+	text := strings.TrimSpace(q.Text)
+	if text == "" {
+		return []FileResult{}, nil
+	}
+	if q.Limit <= 0 || q.Limit > 100 {
+		q.Limit = 25
+	}
+	if q.Offset < 0 {
+		q.Offset = 0
+	}
+
+	rows, err := s.db.Query(ctx, `
+		SELECT a.id, a.filename, a.content_type, a.size_bytes, a.object_key,
+		       c.id, COALESCE(c.name, ''), a.message_id,
+		       a.uploaded_by, COALESCE(u.name, ''), a.created_at
+		FROM attachments a
+		JOIN channels c ON c.id = a.ref_id::uuid
+		LEFT JOIN users u ON u.id = a.uploaded_by
+		LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.user_id = $3
+		WHERE a.org_id = $1
+		  AND a.category = 'chat'
+		  AND a.deleted_at IS NULL
+		  AND c.deleted_at IS NULL
+		  AND (cm.user_id IS NOT NULL OR c.type = 'public')
+		  AND (a.filename ILIKE '%' || $2 || '%' OR word_similarity($2, a.filename) >= 0.4)
+		  AND ($4::uuid IS NULL OR c.id = $4)
+		ORDER BY (a.filename ILIKE '%' || $2 || '%') DESC,
+		         word_similarity($2, a.filename) DESC,
+		         a.created_at DESC
+		LIMIT $5 OFFSET $6
+	`, orgID, text, userID, q.ChannelID, q.Limit, q.Offset)
+	if err != nil {
+		return nil, fmt.Errorf("search files: %w", err)
+	}
+	defer rows.Close()
+
+	results := []FileResult{}
+	for rows.Next() {
+		var r FileResult
+		if err := rows.Scan(&r.ID, &r.Filename, &r.ContentType, &r.SizeBytes, &r.ObjectKey,
+			&r.ChannelID, &r.ChannelName, &r.MessageID,
+			&r.UploadedBy, &r.UploaderName, &r.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan file result: %w", err)
+		}
+		results = append(results, r)
+	}
+	return results, rows.Err()
+}
+
 // ── Message search ────────────────────────────────────────────────────────
 
 // SearchQuery narrows a full-text search. Text is required; everything else
@@ -1471,11 +1540,15 @@ func (s *Service) SearchMessages(ctx context.Context, orgID, userID uuid.UUID, q
 		q.Offset = 0
 	}
 
+	// Whole-word matching first, then trigram similarity for everything it
+	// misses — a typo, a partial word, a name spelled slightly differently.
+	// Exact matches still sort above approximate ones.
 	rows, err := s.db.Query(ctx, `
 		SELECT m.id, m.channel_id, COALESCE(c.name, ''), m.user_id, u.name, m.content,
 		       ts_headline('english', m.content, websearch_to_tsquery('english', $2),
 		                   'StartSel=' || chr(2) || ', StopSel=' || chr(3) || ', MaxFragments=2, MaxWords=18, MinWords=5'),
-		       m.created_at
+		       m.created_at,
+		       (m.content_search @@ websearch_to_tsquery('english', $2)) AS exact
 		FROM messages m
 		JOIN channels c ON c.id = m.channel_id
 		JOIN users u ON u.id = m.user_id
@@ -1484,10 +1557,16 @@ func (s *Service) SearchMessages(ctx context.Context, orgID, userID uuid.UUID, q
 		  AND m.deleted_at IS NULL
 		  AND c.deleted_at IS NULL
 		  AND (cm.user_id IS NOT NULL OR c.type = 'public')
-		  AND m.content_search @@ websearch_to_tsquery('english', $2)
+		  AND (
+		        m.content_search @@ websearch_to_tsquery('english', $2)
+		        OR m.content ILIKE '%' || $2 || '%'
+		        OR word_similarity($2, m.content) >= 0.4
+		      )
 		  AND ($4::uuid IS NULL OR m.channel_id = $4)
 		  AND ($5::uuid IS NULL OR m.user_id = $5)
-		ORDER BY ts_rank_cd(m.content_search, websearch_to_tsquery('english', $2), 32) DESC,
+		ORDER BY (m.content_search @@ websearch_to_tsquery('english', $2)) DESC,
+		         ts_rank_cd(m.content_search, websearch_to_tsquery('english', $2), 32) DESC,
+		         word_similarity($2, m.content) DESC,
 		         m.created_at DESC
 		LIMIT $6 OFFSET $7
 	`, orgID, text, userID, q.ChannelID, q.UserID, q.Limit, q.Offset)
@@ -1499,9 +1578,16 @@ func (s *Service) SearchMessages(ctx context.Context, orgID, userID uuid.UUID, q
 	results := []SearchResult{}
 	for rows.Next() {
 		var r SearchResult
+		var exact bool
 		if err := rows.Scan(&r.ID, &r.ChannelID, &r.ChannelName, &r.UserID, &r.UserName,
-			&r.Content, &r.Highlight, &r.CreatedAt); err != nil {
+			&r.Content, &r.Highlight, &r.CreatedAt, &exact); err != nil {
 			return nil, fmt.Errorf("scan search result: %w", err)
+		}
+		// ts_headline only marks up what the query actually matched, so an
+		// approximate hit comes back with nothing highlighted. Show the message
+		// rather than an empty fragment.
+		if !exact {
+			r.Highlight = ""
 		}
 		results = append(results, r)
 	}
