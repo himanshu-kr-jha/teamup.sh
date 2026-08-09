@@ -1,10 +1,27 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { Hash, Send, Paperclip, Smile, Bell, Settings, ChevronLeft, MessageSquare, Video, User, Megaphone } from 'lucide-react';
+import {
+  Hash, Send, Paperclip, Smile, Bell, Settings, ChevronLeft, MessageSquare, Video, User,
+  Megaphone, MoreVertical, Pencil, Trash2, Eye, Ban, Check, CheckCheck,
+} from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Avatar, AvatarFallback } from '@/shared/components/ui/avatar';
-import { cn } from '@/shared/utils/cn';
+import { cn, formatRelativeTime } from '@/shared/utils/cn';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/shared/components/ui/dropdown-menu';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/shared/components/ui/dialog';
 import { useWebSocket } from '@/features/websocket/WSProvider';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { callsApi, channelsApi, filesApi } from '@/shared/api/client';
@@ -33,6 +50,8 @@ interface Message {
   createdAt: string;
   editedAt?: string;
   deletedAt?: string;
+  /** How many other people in the channel have read it. */
+  readCount?: number;
   pending?: boolean;
 }
 
@@ -81,7 +100,7 @@ export function ChatPage() {
   const messages = useMemo(() => messagesResponse?.data || [], [messagesResponse]);
 
   const activeChannel = channels.find((c) => c.id === channelId);
-  const { statusOf } = usePresence();
+  const { statusOf, personOf } = usePresence();
   const toast = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { upload, progress, error: uploadError } = useUpload('chat', channelId || '');
@@ -450,7 +469,9 @@ export function ChatPage() {
                         message={msg}
                         isOwn={msg.userId === user?.id}
                         status={statusOf(msg.userId)}
+                        note={personOf(msg.userId)?.note}
                         grouped={sameAuthor && closeInTime && !newDay}
+                        channelId={channelId!}
                       />
                     </div>
                   );
@@ -621,77 +642,298 @@ function MessageBubble({
   message,
   isOwn,
   status,
+  note,
   grouped,
+  channelId,
 }: {
   message: Message;
   isOwn: boolean;
   status: PresenceStatus;
+  note?: string;
   /** Part of a run from the same person: no repeated name or picture. */
   grouped: boolean;
+  channelId: string;
 }) {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(message.content);
+  const [showingReads, setShowingReads] = useState(false);
+
+  const deleted = !!message.deletedAt;
   const time = new Date(message.createdAt).toLocaleTimeString(undefined, {
     hour: '2-digit',
     minute: '2-digit',
   });
+  // Editing closes five minutes after sending, so a conversation people have
+  // already read does not change underneath them.
+  const withinEditWindow =
+    Date.now() - new Date(message.createdAt).getTime() < 5 * 60 * 1000;
+
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['messages', channelId] });
+
+  const saveEdit = async () => {
+    const content = draft.trim();
+    if (!content || content === message.content) {
+      setEditing(false);
+      return;
+    }
+    try {
+      await channelsApi.editMessage(message.id, content);
+      setEditing(false);
+      refresh();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not edit that message.'));
+    }
+  };
+
+  const remove = async () => {
+    try {
+      await channelsApi.deleteMessage(message.id);
+      refresh();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not delete that message.'));
+    }
+  };
 
   return (
-    <div
-      className={cn(
-        'group flex w-full items-end gap-2',
-        isOwn ? 'justify-end' : 'justify-start',
-        grouped ? 'mt-0.5' : 'mt-3'
-      )}
-    >
-      {!isOwn &&
-        (grouped ? (
-          // Keeps the run aligned with the first message above it.
-          <div className="w-8 shrink-0" aria-hidden="true" />
-        ) : (
-          <div className="relative shrink-0">
-            <Avatar className="h-8 w-8">
-              <AvatarFallback className="text-xs">
-                {(message.userName || '?').charAt(0).toUpperCase()}
-              </AvatarFallback>
-            </Avatar>
-            <PresenceDot status={status} className="absolute -bottom-0.5 -right-0.5" />
-          </div>
-        ))}
-
-      <div className={cn('relative flex min-w-0 max-w-[75%] flex-col', isOwn ? 'items-end' : 'items-start')}>
-        {!isOwn && !grouped && (
-          <p className="mb-1 px-1 text-xs font-medium text-muted-foreground">{message.userName}</p>
+    <>
+      <div
+        className={cn(
+          'group flex w-full items-end gap-2',
+          isOwn ? 'justify-end' : 'justify-start',
+          grouped ? 'mt-0.5' : 'mt-3'
         )}
-        <div
-          className={cn(
-            'w-fit max-w-full break-words rounded-2xl px-3.5 py-2 text-sm shadow-sm',
-            isOwn
-              ? 'bg-primary text-primary-foreground'
-              : 'bg-muted text-foreground',
-            // Only the first of a run gets the tail.
-            !grouped && (isOwn ? 'rounded-tr-sm' : 'rounded-tl-sm'),
-            message.pending && 'opacity-60'
-          )}
-        >
-          {message.content && <p className="whitespace-pre-wrap">{message.content}</p>}
-          {message.attachments?.length > 0 && (
-            <div className={cn('flex flex-wrap gap-2', message.content && 'mt-2')}>
-              {message.attachments.map((a: any) => (
-                <AttachmentChip key={a.id} attachment={a} />
-              ))}
+      >
+        {!isOwn &&
+          (grouped ? (
+            <div className="w-8 shrink-0" aria-hidden="true" />
+          ) : (
+            <div className="relative shrink-0">
+              <Avatar className="h-8 w-8">
+                <AvatarFallback className="text-xs">
+                  {(message.userName || '?').charAt(0).toUpperCase()}
+                </AvatarFallback>
+              </Avatar>
+              <PresenceDot status={status} note={note} className="absolute -bottom-0.5 -right-0.5" />
             </div>
+          ))}
+
+        <div className={cn('relative flex min-w-0 max-w-[75%] flex-col', isOwn ? 'items-end' : 'items-start')}>
+          {!isOwn && !grouped && (
+            <p className="mb-1 px-1 text-xs font-medium text-muted-foreground">{message.userName}</p>
           )}
+
+          <div className="flex items-end gap-1">
+            {/* The menu sits on the side the message came from, so it never
+                covers the text. */}
+            {isOwn && !deleted && (
+              <MessageMenu
+                canEdit={withinEditWindow}
+                canDelete
+                onEdit={() => {
+                  setDraft(message.content);
+                  setEditing(true);
+                }}
+                onDelete={remove}
+                onShowReads={() => setShowingReads(true)}
+              />
+            )}
+
+            <div
+              className={cn(
+                'w-fit max-w-full break-words rounded-2xl px-3.5 py-2 text-sm shadow-sm',
+                deleted
+                  ? 'border border-dashed border-border bg-transparent italic text-muted-foreground'
+                  : isOwn
+                    ? 'bg-primary text-primary-foreground'
+                    : 'bg-muted text-foreground',
+                !grouped && !deleted && (isOwn ? 'rounded-tr-sm' : 'rounded-tl-sm'),
+                message.pending && 'opacity-60'
+              )}
+            >
+              {deleted ? (
+                <span className="flex items-center gap-1.5">
+                  <Ban className="h-3.5 w-3.5" aria-hidden="true" />
+                  This message was deleted
+                </span>
+              ) : editing ? (
+                <div className="space-y-2">
+                  <Input
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    aria-label="Edit message"
+                    className="h-8 bg-background text-foreground"
+                    autoFocus
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        void saveEdit();
+                      }
+                      if (e.key === 'Escape') setEditing(false);
+                    }}
+                  />
+                  <div className="flex justify-end gap-1">
+                    <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => setEditing(false)}>
+                      Cancel
+                    </Button>
+                    <Button size="sm" className="h-6 text-xs" onClick={saveEdit}>
+                      Save
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {message.content && <p className="whitespace-pre-wrap">{message.content}</p>}
+                  {message.attachments?.length > 0 && (
+                    <div className={cn('flex flex-wrap gap-2', message.content && 'mt-2')}>
+                      {message.attachments.map((a: any) => (
+                        <AttachmentChip key={a.id} attachment={a} />
+                      ))}
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {!isOwn && !deleted && (
+              <MessageMenu
+                canEdit={false}
+                canDelete={false}
+                onShowReads={() => setShowingReads(true)}
+              />
+            )}
+          </div>
+
+          {/* Out of the flow: shown on hover without moving anything. */}
+          <span
+            className={cn(
+              'pointer-events-none absolute bottom-0 flex items-center gap-1 whitespace-nowrap text-[0.7rem] text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100',
+              isOwn ? 'right-full mr-2' : 'left-full ml-2',
+              (message.pending || (isOwn && !deleted)) && 'opacity-100'
+            )}
+          >
+            {message.pending ? (
+              'Sending…'
+            ) : (
+              <>
+                {time}
+                {message.editedAt && !deleted && <span>· edited</span>}
+                {/* Only the sender is told whether it landed; showing it to
+                    everybody would just be noise. */}
+                {isOwn && !deleted && (
+                  <span title={message.readCount ? `Read by ${message.readCount}` : 'Not read yet'}>
+                    {message.readCount ? (
+                      <CheckCheck className="h-3.5 w-3.5 text-primary" aria-label="Read" />
+                    ) : (
+                      <Check className="h-3.5 w-3.5" aria-label="Sent" />
+                    )}
+                  </span>
+                )}
+              </>
+            )}
+          </span>
         </div>
-        {/* Out of the flow: shown on hover without moving anything. */}
-        <span
-          className={cn(
-            'pointer-events-none absolute bottom-0 whitespace-nowrap text-[0.7rem] text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100',
-            isOwn ? 'right-full mr-2' : 'left-full ml-2',
-            message.pending && 'opacity-100'
-          )}
-        >
-          {message.pending ? 'Sending…' : time}
-        </span>
       </div>
-    </div>
+
+      <ReadByDialog
+        messageId={showingReads ? message.id : null}
+        onClose={() => setShowingReads(false)}
+      />
+    </>
+  );
+}
+
+/** The actions available on a single message. */
+function MessageMenu({
+  canEdit,
+  canDelete,
+  onEdit,
+  onDelete,
+  onShowReads,
+}: {
+  canEdit: boolean;
+  canDelete: boolean;
+  onEdit?: () => void;
+  onDelete?: () => void;
+  onShowReads: () => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Message actions"
+          className="h-6 w-6 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
+        >
+          <MoreVertical className="h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end">
+        <DropdownMenuItem onSelect={onShowReads}>
+          <Eye className="mr-2 h-4 w-4" />
+          Who has read this
+        </DropdownMenuItem>
+        {onEdit && (
+          <DropdownMenuItem
+            onSelect={onEdit}
+            disabled={!canEdit}
+            // Saying why it is unavailable is more use than an item that
+            // simply does nothing.
+            title={canEdit ? undefined : 'Messages can only be edited for five minutes'}
+          >
+            <Pencil className="mr-2 h-4 w-4" />
+            Edit
+          </DropdownMenuItem>
+        )}
+        {canDelete && onDelete && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem className="text-destructive" onSelect={onDelete}>
+              <Trash2 className="mr-2 h-4 w-4" />
+              Delete for everyone
+            </DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/** Who has read a message, in the order they read it. */
+function ReadByDialog({ messageId, onClose }: { messageId: string | null; onClose: () => void }) {
+  const { data, isLoading } = useQuery({
+    queryKey: ['message-reads', messageId],
+    queryFn: () => channelsApi.messageReads(messageId!),
+    enabled: !!messageId,
+  });
+  const reads = data?.data ?? [];
+
+  return (
+    <Dialog open={!!messageId} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>Read by</DialogTitle>
+          <DialogDescription>
+            Everybody in this conversation who has read as far as this message.
+          </DialogDescription>
+        </DialogHeader>
+        {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+        {!isLoading && reads.length === 0 && (
+          <p className="text-sm text-muted-foreground">Nobody has read it yet.</p>
+        )}
+        <ul className="max-h-64 space-y-1 overflow-y-auto">
+          {reads.map((r: any) => (
+            <li key={r.userId} className="flex items-center justify-between gap-3 text-sm">
+              <span className="truncate">{r.name}</span>
+              <span className="shrink-0 text-xs text-muted-foreground">
+                {formatRelativeTime(r.readAt)}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </DialogContent>
+    </Dialog>
   );
 }

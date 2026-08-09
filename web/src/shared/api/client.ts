@@ -137,6 +137,9 @@ export const channelsApi = {
   delete: (id: string) => api.delete(`/channels/${id}`),
   listMembers: (id: string) => getList(`/channels/${id}/members`, 'members'),
   addMember: (id: string, userId: string, role?: string) => api.post(`/channels/${id}/members`, { userId, role }),
+  /** Who has read a particular message. */
+  messageReads: (messageId: string) =>
+    getList<{ userId: string; name: string; readAt: string }>(`/messages/${messageId}/reads`, 'reads'),
   removeMember: (id: string, userId: string) => api.delete(`/channels/${id}/members/${userId}`),
   markRead: (id: string, messageId: string) => api.post(`/channels/${id}/read`, { messageId }),
   getMessages: (id: string, params?: { limit?: number; before?: string; after?: string }) => getList(`/channels/${id}/messages`, 'messages', params),
@@ -168,6 +171,18 @@ export const messagesApi = {
 
 export const presenceApi = {
   listOnline: () => getList('/presence/org/online', 'users'),
+  /** Everybody in the organization, whether or not they are connected. */
+  listAvailability: () =>
+    getList<{
+      userId: string;
+      name: string;
+      status: string;
+      note?: string;
+      until?: string;
+    }>('/presence/availability', 'people'),
+  /** What the caller has chosen to say about themselves. */
+  setAvailability: (data: { status: string; note?: string; until?: string | null }) =>
+    api.put('/presence/availability', data),
   get: (userId: string) => api.get(`/presence/${userId}`),
   update: (status: string) => api.patch('/presence', { status }),
 };

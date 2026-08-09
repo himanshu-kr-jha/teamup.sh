@@ -17,7 +17,7 @@ import {
   DialogTitle,
 } from '@/shared/components/ui/dialog';
 import { FormDialog } from '@/shared/components/FormDialog';
-import { orgApi } from '@/shared/api/client';
+import { orgApi, tasksApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
 import { useAuth } from '@/features/auth/AuthProvider';
@@ -32,6 +32,13 @@ export function AdminPage() {
   const { user } = useAuth();
   const [tab, setTab] = useState('members');
   const isAdmin = user?.roles?.some((r) => r === 'owner' || r === 'admin') ?? false;
+  // Somebody who runs a team can manage that team without administering the
+  // organization, so the notice has to allow for it.
+  const { data: managedData } = useQuery({
+    queryKey: ['managed-teams'],
+    queryFn: () => tasksApi.managedTeams(),
+  });
+  const managedTeamIds = new Set<string>((managedData?.data ?? []).map((t: any) => String(t.id)));
 
   return (
     <div className="flex h-full flex-col bg-background">
@@ -41,7 +48,9 @@ export function AdminPage() {
 
       {!isAdmin && (
         <div className="border-b border-border bg-muted/40 px-4 py-2 text-sm text-muted-foreground md:px-6">
-          You can see who is here, but only an administrator can make changes.
+          {managedTeamIds.size > 0
+            ? 'You can see who is here, and manage the teams you run.'
+            : 'You can see who is here, but only an administrator can make changes.'}
         </div>
       )}
 
@@ -59,7 +68,7 @@ export function AdminPage() {
           <RolesTab isAdmin={isAdmin} />
         </TabsContent>
         <TabsContent value="teams" className="p-4 md:p-6">
-          <TeamsTab isAdmin={isAdmin} />
+          <TeamsTab isAdmin={isAdmin} managedTeamIds={managedTeamIds} />
         </TabsContent>
       </Tabs>
     </div>
@@ -513,7 +522,14 @@ function RolesTab({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
-function TeamsTab({ isAdmin }: { isAdmin: boolean }) {
+function TeamsTab({
+  isAdmin,
+  managedTeamIds,
+}: {
+  isAdmin: boolean;
+  /** Teams this person runs, which they may add to without being an admin. */
+  managedTeamIds: Set<string>;
+}) {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
@@ -522,6 +538,7 @@ function TeamsTab({ isAdmin }: { isAdmin: boolean }) {
   const [addTo, setAddTo] = useState<any | null>(null);
   const [memberId, setMemberId] = useState('');
   const [managerFor, setManagerFor] = useState<any | null>(null);
+  const [viewing, setViewing] = useState<any | null>(null);
   const [managerId, setManagerId] = useState('');
 
   const { data, isLoading } = useQuery({ queryKey: ['teams'], queryFn: () => orgApi.listTeams() });
@@ -566,19 +583,30 @@ function TeamsTab({ isAdmin }: { isAdmin: boolean }) {
                   Manager: {users.find((u: any) => u.id === t.managerId)?.name ?? 'nobody yet'}
                 </p>
               </div>
-              {isAdmin && (
+              {(isAdmin || managedTeamIds.has(t.id)) && (
                 <div className="flex gap-2">
-                  <Button variant="outline" size="sm" onClick={() => setManagerFor(t)}>Set manager</Button>
+                  {isAdmin && (
+                    <Button variant="outline" size="sm" onClick={() => setManagerFor(t)}>Set manager</Button>
+                  )}
                   <Button variant="outline" size="sm" onClick={() => setAddTo(t)}>Add member</Button>
-                  <Button variant="ghost" size="sm" onClick={() => remove(t.id)}>
-                    <Trash2 className="h-4 w-4" />
-                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setViewing(t)}>Members</Button>
+                  {isAdmin && (
+                    <Button variant="ghost" size="sm" onClick={() => remove(t.id)}>
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  )}
                 </div>
               )}
             </div>
           ))}
         </CardContent>
       </Card>
+
+      <TeamMembersDialog
+        team={viewing}
+        canRemove={isAdmin || (viewing ? managedTeamIds.has(viewing.id) : false)}
+        onClose={() => setViewing(null)}
+      />
 
       <FormDialog
         open={!!managerFor}
@@ -673,5 +701,89 @@ function TeamsTab({ isAdmin }: { isAdmin: boolean }) {
         </div>
       </FormDialog>
     </>
+  );
+}
+
+/** Who is on a team. A manager needs to see their own people, not just a count. */
+function TeamMembersDialog({
+  team,
+  canRemove,
+  onClose,
+}: {
+  team: any | null;
+  canRemove: boolean;
+  onClose: () => void;
+}) {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const { statusOf, personOf } = usePresence();
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['team-members', team?.id],
+    queryFn: () => orgApi.listTeamMembers(team.id),
+    enabled: !!team,
+  });
+  const members = data?.data ?? [];
+
+  const remove = async (userId: string) => {
+    try {
+      await orgApi.removeTeamMember(team.id, userId);
+      queryClient.invalidateQueries({ queryKey: ['team-members', team.id] });
+      queryClient.invalidateQueries({ queryKey: ['teams'] });
+      toast.success('Removed from the team.');
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not remove them.'));
+    }
+  };
+
+  return (
+    <Dialog open={!!team} onOpenChange={(open) => !open && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>{team?.name ?? 'Team'}</DialogTitle>
+          <DialogDescription>
+            Everybody on this team, and whether they are around.
+          </DialogDescription>
+        </DialogHeader>
+
+        {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+        {!isLoading && members.length === 0 && (
+          <p className="text-sm text-muted-foreground">Nobody is on this team yet.</p>
+        )}
+        <ul className="max-h-72 space-y-1 overflow-y-auto">
+          {members.map((m: any) => (
+            <li key={m.id} className="flex items-center gap-3 rounded-md p-2 hover:bg-accent">
+              <div className="relative shrink-0">
+                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10">
+                  <span className="text-sm font-medium text-primary">
+                    {(m.name || '?').charAt(0).toUpperCase()}
+                  </span>
+                </div>
+                <PresenceDot
+                  status={statusOf(m.id)}
+                  note={personOf(m.id)?.note}
+                  className="absolute -bottom-0.5 -right-0.5"
+                />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium">{m.name}</p>
+                <p className="truncate text-xs text-muted-foreground">
+                  {personOf(m.id)?.note || m.email}
+                </p>
+              </div>
+              {canRemove && (
+                <button
+                  onClick={() => remove(m.id)}
+                  aria-label={`Remove ${m.name} from the team`}
+                  className="shrink-0 text-muted-foreground hover:text-foreground"
+                >
+                  ×
+                </button>
+              )}
+            </li>
+          ))}
+        </ul>
+      </DialogContent>
+    </Dialog>
   );
 }

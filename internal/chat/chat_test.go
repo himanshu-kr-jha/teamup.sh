@@ -246,7 +246,10 @@ func TestEditMessageIsLimitedToItsAuthor(t *testing.T) {
 	}
 }
 
-func TestDeleteMessageRemovesItFromHistory(t *testing.T) {
+// A deleted message keeps its place and loses its contents. It used to vanish
+// outright, which left a silent hole where it had been — and a reply pointing
+// at nothing.
+func TestDeleteMessageTakesItsContentsButNotItsPlace(t *testing.T) {
 	svc, pool := newService(t)
 	ctx := context.Background()
 	org := testsupport.SeedOrg(t, pool)
@@ -257,8 +260,14 @@ func TestDeleteMessageRemovesItFromHistory(t *testing.T) {
 		t.Fatalf("delete: %v", err)
 	}
 	history, _ := svc.GetMessages(ctx, ch, 10, nil)
-	if len(history) != 0 {
-		t.Errorf("deleted message still in history: %+v", history)
+	if len(history) != 1 {
+		t.Fatalf("the message should keep its place: %+v", history)
+	}
+	if history[0].DeletedAt == nil {
+		t.Error("it should be marked deleted")
+	}
+	if history[0].Content != "" {
+		t.Errorf("its contents should be gone, got %q", history[0].Content)
 	}
 }
 
@@ -1221,5 +1230,178 @@ func TestAReadMarkerIsPerChannel(t *testing.T) {
 	}
 	if got := unreadFor(t, svc, org.ID, reader, mine.ID); got != 1 {
 		t.Errorf("a message from another channel cleared this one: got %d want 1", got)
+	}
+}
+
+// ── Read receipts, editing and deleting ───────────────────────────────────
+
+func TestAMessageSaysHowManyPeopleHaveReadIt(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	reader := testsupport.SeedUser(t, pool, org, "receipt-reader@example.test", "member")
+
+	name := "receipts"
+	ch, err := svc.CreateChannel(ctx, org.ID, org.OwnerID, &name, "public", nil, nil)
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	msg, err := svc.SendMessage(ctx, org.ID, ch.ID, org.OwnerID, "did you see this", nil, nil, false)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	history, err := svc.GetMessages(ctx, ch.ID, 50, nil)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	if history[0].ReadCount != 0 {
+		t.Errorf("nobody has read it yet, got %d", history[0].ReadCount)
+	}
+
+	if err := svc.MarkRead(ctx, ch.ID, reader, msg.ID); err != nil {
+		t.Fatalf("mark read: %v", err)
+	}
+	history, err = svc.GetMessages(ctx, ch.ID, 50, nil)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	if history[0].ReadCount != 1 {
+		t.Errorf("read count: got %d want 1", history[0].ReadCount)
+	}
+
+	who, err := svc.ReadBy(ctx, org.ID, msg.ID)
+	if err != nil {
+		t.Fatalf("read by: %v", err)
+	}
+	if len(who) != 1 || who[0].UserID != reader {
+		t.Fatalf("wrong readers: %+v", who)
+	}
+	if who[0].Name == "" {
+		t.Error("a reader should be named")
+	}
+}
+
+// You have obviously read your own message; counting yourself would make every
+// message look read the moment it was sent.
+func TestTheAuthorIsNotCountedAsHavingReadTheirOwnMessage(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	name := "self-read"
+	ch, err := svc.CreateChannel(ctx, org.ID, org.OwnerID, &name, "public", nil, nil)
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	msg, err := svc.SendMessage(ctx, org.ID, ch.ID, org.OwnerID, "hello", nil, nil, false)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if err := svc.MarkRead(ctx, ch.ID, org.OwnerID, msg.ID); err != nil {
+		t.Fatalf("mark read: %v", err)
+	}
+
+	who, err := svc.ReadBy(ctx, org.ID, msg.ID)
+	if err != nil {
+		t.Fatalf("read by: %v", err)
+	}
+	if len(who) != 0 {
+		t.Errorf("the author was counted: %+v", who)
+	}
+}
+
+func TestADeletedMessageKeepsItsPlaceWithoutItsContents(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	name := "deletions"
+	ch, err := svc.CreateChannel(ctx, org.ID, org.OwnerID, &name, "public", nil, nil)
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	msg, err := svc.SendMessage(ctx, org.ID, ch.ID, org.OwnerID, "something regrettable", nil, nil, false)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if err := svc.DeleteMessage(ctx, msg.ID, org.OwnerID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	history, err := svc.GetMessages(ctx, ch.ID, 50, nil)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("a deleted message should keep its place, got %d messages", len(history))
+	}
+	if history[0].DeletedAt == nil {
+		t.Error("it should be marked as deleted")
+	}
+	if history[0].Content != "" {
+		t.Errorf("the contents should be gone, got %q", history[0].Content)
+	}
+}
+
+func TestAMessageCanBeEditedForAWhileAndThenNot(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	name := "edits"
+	ch, err := svc.CreateChannel(ctx, org.ID, org.OwnerID, &name, "public", nil, nil)
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	msg, err := svc.SendMessage(ctx, org.ID, ch.ID, org.OwnerID, "teh typo", nil, nil, false)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	if err := svc.EditMessage(ctx, msg.ID, org.OwnerID, "the typo"); err != nil {
+		t.Fatalf("edit straight away: %v", err)
+	}
+	history, err := svc.GetMessages(ctx, ch.ID, 50, nil)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	if history[0].Content != "the typo" {
+		t.Errorf("the edit did not take: %q", history[0].Content)
+	}
+	if history[0].EditedAt == nil {
+		t.Error("an edited message should say so")
+	}
+
+	// Once the window has passed, the conversation stops changing underneath
+	// the people who have already read it.
+	if _, err := pool.Exec(ctx,
+		`UPDATE messages SET created_at = NOW() - INTERVAL '10 minutes' WHERE id = $1`, msg.ID); err != nil {
+		t.Fatalf("age the message: %v", err)
+	}
+	if err := svc.EditMessage(ctx, msg.ID, org.OwnerID, "too late"); err == nil {
+		t.Error("an old message was edited")
+	}
+}
+
+func TestADeletedMessageCannotBeEdited(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	name := "edit-deleted"
+	ch, err := svc.CreateChannel(ctx, org.ID, org.OwnerID, &name, "public", nil, nil)
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	msg, err := svc.SendMessage(ctx, org.ID, ch.ID, org.OwnerID, "gone", nil, nil, false)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if err := svc.DeleteMessage(ctx, msg.ID, org.OwnerID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if err := svc.EditMessage(ctx, msg.ID, org.OwnerID, "back again"); err == nil {
+		t.Error("a deleted message was edited back into existence")
 	}
 }

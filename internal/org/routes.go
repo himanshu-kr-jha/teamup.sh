@@ -68,12 +68,50 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service, options ...func(*Hand
 	rg.PATCH("/teams/:id", h.requireAdmin, h.UpdateTeam)
 	rg.DELETE("/teams/:id", h.requireAdmin, h.DeleteTeam)
 	rg.GET("/teams/:id/members", h.ListTeamMembers)
-	rg.POST("/teams/:id/members", h.requireAdmin, h.AddTeamMember)
-	rg.DELETE("/teams/:id/members/:userId", h.requireAdmin, h.RemoveTeamMember)
+	// Deciding who is on a team belongs to whoever runs it, as well as to the
+	// organization's administrators.
+	rg.POST("/teams/:id/members", h.requireTeamManager, h.AddTeamMember)
+	rg.DELETE("/teams/:id/members/:userId", h.requireTeamManager, h.RemoveTeamMember)
 }
 
 // requireAdmin gates the mutations that change who can do what. Without it any
 // member could grant themselves the owner role.
+// requireTeamManager admits the organization's administrators and the person
+// who runs this particular team. A manager needs to be able to put somebody on
+// their own team without being given the run of the organization.
+func (h *Handler) requireTeamManager(c *gin.Context) {
+	if auth.GetUserFromContext(c).HasAnyRole("owner", "admin") {
+		return
+	}
+	orgID, ok := callerOrg(c)
+	if !ok {
+		c.Abort()
+		return
+	}
+	teamID, ok := pathUUID(c, "id")
+	if !ok {
+		c.Abort()
+		return
+	}
+	userID, err := uuid.Parse(auth.GetUserFromContext(c).UserID)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+
+	manages, err := h.service.ManagesTeam(c.Request.Context(), orgID, teamID, userID)
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "failed to check team access"})
+		return
+	}
+	if !manages {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+			"error": "you do not manage this team",
+		})
+		return
+	}
+}
+
 func (h *Handler) requireAdmin(c *gin.Context) {
 	user := auth.GetUserFromContext(c)
 	if !user.HasAnyRole("owner", "admin") {

@@ -157,3 +157,114 @@ func TestAddMemberEndpointRejectsAnAddressThatIsNotAnEmail(t *testing.T) {
 		t.Fatalf("want 400, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// ── Who may put somebody on a team ────────────────────────────────────────
+
+func TestATeamsManagerCanAddSomebodyToIt(t *testing.T) {
+	svc, _ := newService(t)
+	ctx := context.Background()
+
+	org, err := svc.CreateOrganization(ctx, "Managed Co", "managed-co", nil)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	seedDefaultRoles(t, svc, org.ID)
+
+	manager, _, err := svc.AddMember(ctx, org.ID, "Manager", "manager@managed.test", "member")
+	if err != nil {
+		t.Fatalf("add manager: %v", err)
+	}
+	newcomer, _, err := svc.AddMember(ctx, org.ID, "Newcomer", "newcomer@managed.test", "member")
+	if err != nil {
+		t.Fatalf("add newcomer: %v", err)
+	}
+
+	team, err := svc.CreateTeam(ctx, org.ID, "Squad", "", nil, &manager.ID)
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+
+	manages, err := svc.ManagesTeam(ctx, org.ID, team.ID, manager.ID)
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if !manages {
+		t.Fatal("the person set as manager does not manage the team")
+	}
+
+	// Somebody else on the team does not get to decide who else is on it.
+	stranger, err := svc.ManagesTeam(ctx, org.ID, team.ID, newcomer.ID)
+	if err != nil {
+		t.Fatalf("check stranger: %v", err)
+	}
+	if stranger {
+		t.Error("an ordinary member was treated as running the team")
+	}
+}
+
+func TestManagingATeamReachesTeamsBeneathIt(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+
+	org, err := svc.CreateOrganization(ctx, "Nested Co", "nested-co", nil)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	seedDefaultRoles(t, svc, org.ID)
+
+	head, _, err := svc.AddMember(ctx, org.ID, "Head", "head@nested.test", "member")
+	if err != nil {
+		t.Fatalf("add head: %v", err)
+	}
+
+	parent, err := svc.CreateTeam(ctx, org.ID, "Engineering", "", nil, &head.ID)
+	if err != nil {
+		t.Fatalf("create parent: %v", err)
+	}
+	var childID uuid.UUID
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO teams (id, org_id, parent_id, name, created_at, updated_at)
+		VALUES (gen_random_uuid(), $1, $2, 'Interns', NOW(), NOW()) RETURNING id
+	`, org.ID, parent.ID).Scan(&childID); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	manages, err := svc.ManagesTeam(ctx, org.ID, childID, head.ID)
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if !manages {
+		t.Error("running a team should reach the teams beneath it")
+	}
+}
+
+func TestManagingATeamDoesNotReachOtherTeams(t *testing.T) {
+	svc, _ := newService(t)
+	ctx := context.Background()
+
+	org, err := svc.CreateOrganization(ctx, "Separate Co", "separate-co", nil)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	seedDefaultRoles(t, svc, org.ID)
+
+	manager, _, err := svc.AddMember(ctx, org.ID, "Manager", "mgr@separate.test", "member")
+	if err != nil {
+		t.Fatalf("add manager: %v", err)
+	}
+	if _, err := svc.CreateTeam(ctx, org.ID, "Theirs", "", nil, &manager.ID); err != nil {
+		t.Fatalf("create their team: %v", err)
+	}
+	somebodyElses, err := svc.CreateTeam(ctx, org.ID, "Sales", "", nil, nil)
+	if err != nil {
+		t.Fatalf("create other team: %v", err)
+	}
+
+	manages, err := svc.ManagesTeam(ctx, org.ID, somebodyElses.ID, manager.ID)
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if manages {
+		t.Error("running one team should not confer control of another")
+	}
+}

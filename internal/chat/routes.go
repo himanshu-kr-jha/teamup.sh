@@ -39,6 +39,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.POST("/channels/:id/messages", h.SendMessage)
 	rg.PATCH("/messages/:id", h.EditMessage)
 	rg.DELETE("/messages/:id", h.DeleteMessage)
+	rg.GET("/messages/:id/reads", h.MessageReads)
 	rg.POST("/messages/:id/reactions", h.AddReaction)
 	rg.DELETE("/messages/:id/reactions/:emoji", h.RemoveReaction)
 	rg.POST("/channels/:id/read", h.MarkRead)
@@ -587,6 +588,35 @@ func (h *Handler) DeleteMessage(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+}
+
+// MessageReads answers who has read a message. Anybody in the channel can ask;
+// it is the same information they could work out by watching the read markers.
+func (h *Handler) MessageReads(c *gin.Context) {
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	messageID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	channelID, err := h.service.messageChannel(c.Request.Context(), messageID)
+	if err != nil {
+		httpx.Error(c, err, "message not found")
+		return
+	}
+	if !h.requireMembership(c, cl, channelID, false) {
+		return
+	}
+
+	receipts, err := h.service.ReadBy(c.Request.Context(), cl.OrgID, messageID)
+	if err != nil {
+		httpx.Error(c, err, "failed to list who has read this")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"reads": receipts})
 }
 
 func (h *Handler) AddReaction(c *gin.Context) {

@@ -31,7 +31,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/shared/components/ui/dialog';
-import { callsApi } from '@/shared/api/client';
+import { callsApi, presenceApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
 import { useWebSocket } from '@/features/websocket/WSProvider';
@@ -132,6 +132,18 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
       });
     });
   }, [on, toast]);
+
+  // Being in a call is observed rather than chosen, so it sets itself and
+  // clears when the call ends however it ends.
+  useEffect(() => {
+    if (!activeCall) return;
+    presenceApi.update('in_call').catch(() => {
+      // Cosmetic; not worth interrupting the call for.
+    });
+    return () => {
+      presenceApi.update('online').catch(() => {});
+    };
+  }, [activeCall]);
 
   // Full size on that call's own page; a corner window everywhere else.
   const expanded = !!activeCall && location.pathname === `/calls/${activeCall.callId}`;

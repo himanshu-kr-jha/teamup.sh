@@ -475,6 +475,28 @@ func (s *Service) ListTeams(ctx context.Context, orgID uuid.UUID) ([]Team, error
 	return teams, rows.Err()
 }
 
+// ManagesTeam reports whether this person runs the team, directly or through
+// a team above it. Running a team is what entitles somebody to decide who is
+// on it, without making them an administrator of the whole organization.
+func (s *Service) ManagesTeam(ctx context.Context, orgID, teamID, userID uuid.UUID) (bool, error) {
+	var ok bool
+	err := s.db.QueryRow(ctx, `
+		WITH RECURSIVE managed AS (
+			SELECT t.id FROM teams t
+			WHERE t.manager_id = $3 AND t.org_id = $1 AND t.deleted_at IS NULL
+			UNION
+			SELECT child.id FROM teams child
+			JOIN managed ON child.parent_id = managed.id
+			WHERE child.deleted_at IS NULL
+		)
+		SELECT EXISTS (SELECT 1 FROM managed WHERE id = $2)
+	`, orgID, teamID, userID).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("check team management: %w", err)
+	}
+	return ok, nil
+}
+
 func (s *Service) UpdateTeam(ctx context.Context, orgID, teamID uuid.UUID, name, description *string, managerID *uuid.UUID) (*Team, error) {
 	if err := s.requireSameOrgUser(ctx, orgID, managerID); err != nil {
 		return nil, err

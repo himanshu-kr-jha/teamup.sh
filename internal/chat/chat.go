@@ -110,9 +110,12 @@ type Message struct {
 	ReplyTo     *uuid.UUID          `json:"replyTo,omitempty"`
 	Attachments []Attachment        `json:"attachments"`
 	Reactions   map[string][]string `json:"reactions"`
-	CreatedAt   time.Time           `json:"createdAt"`
-	EditedAt    *time.Time          `json:"editedAt,omitempty"`
-	DeletedAt   *time.Time          `json:"deletedAt,omitempty"`
+	// ReadCount is how many other people in the channel have read this, so a
+	// sender can tell whether their message landed.
+	ReadCount int        `json:"readCount"`
+	CreatedAt time.Time  `json:"createdAt"`
+	EditedAt  *time.Time `json:"editedAt,omitempty"`
+	DeletedAt *time.Time `json:"deletedAt,omitempty"`
 }
 
 type Attachment struct {
@@ -1187,7 +1190,7 @@ func (s *Service) GetMessages(ctx context.Context, channelID uuid.UUID, limit in
 		       u.name, COALESCE(u.avatar_url, '')
 		FROM messages m
 		JOIN users u ON u.id = m.user_id
-		WHERE m.channel_id = $1 AND m.deleted_at IS NULL
+		WHERE m.channel_id = $1
 		  AND ($2::timestamptz IS NULL OR m.created_at < $2)
 		ORDER BY m.created_at DESC
 		LIMIT $3
@@ -1205,6 +1208,13 @@ func (s *Service) GetMessages(ctx context.Context, channelID uuid.UUID, limit in
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
 		m.Reactions = map[string][]string{}
+		// A deleted message keeps its place in the conversation but not its
+		// contents: replies still have something to point at, and the gap is
+		// visible rather than silent.
+		if m.DeletedAt != nil {
+			m.Content = ""
+			m.Attachments = nil
+		}
 		messages = append(messages, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -1219,7 +1229,11 @@ func (s *Service) GetMessages(ctx context.Context, channelID uuid.UUID, limit in
 	if err != nil {
 		return nil, err
 	}
-	return s.attachFiles(ctx, withReactions)
+	withFiles, err := s.attachFiles(ctx, withReactions)
+	if err != nil {
+		return nil, err
+	}
+	return s.attachReadCounts(ctx, channelID, withFiles)
 }
 
 // attachFiles loads each message's attachments for a page in one query.
@@ -1260,6 +1274,97 @@ func (s *Service) attachFiles(ctx context.Context, messages []Message) ([]Messag
 		}
 	}
 	return messages, rows.Err()
+}
+
+// ReadReceipt is one person who has read up to a message.
+type ReadReceipt struct {
+	UserID uuid.UUID `json:"userId"`
+	Name   string    `json:"name"`
+	ReadAt time.Time `json:"readAt"`
+}
+
+// ReadBy lists who has read a message, derived from how far each member has
+// read rather than from a row per message per person — the read marker already
+// says everything needed and costs nothing to keep.
+//
+// The author is left out: you have obviously read your own message.
+func (s *Service) ReadBy(ctx context.Context, orgID, messageID uuid.UUID) ([]ReadReceipt, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT cm.user_id, u.name, cm.last_read_at
+		FROM messages m
+		JOIN channels c ON c.id = m.channel_id
+		JOIN channel_members cm ON cm.channel_id = m.channel_id
+		JOIN users u ON u.id = cm.user_id
+		WHERE m.id = $1
+		  AND c.org_id = $2
+		  AND cm.user_id <> m.user_id
+		  AND cm.last_read_at IS NOT NULL
+		  AND cm.last_read_at >= m.created_at
+		ORDER BY cm.last_read_at
+	`, messageID, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("list who has read a message: %w", err)
+	}
+	defer rows.Close()
+
+	receipts := []ReadReceipt{}
+	for rows.Next() {
+		var r ReadReceipt
+		if err := rows.Scan(&r.UserID, &r.Name, &r.ReadAt); err != nil {
+			return nil, fmt.Errorf("scan read receipt: %w", err)
+		}
+		receipts = append(receipts, r)
+	}
+	return receipts, rows.Err()
+}
+
+// attachReadCounts records, for each message, how many other people in the
+// channel have read it — enough for a sender to see at a glance whether their
+// message landed.
+func (s *Service) attachReadCounts(ctx context.Context, channelID uuid.UUID, messages []Message) ([]Message, error) {
+	if len(messages) == 0 {
+		return messages, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT m.id, COUNT(cm.user_id)
+		FROM messages m
+		JOIN channel_members cm
+		  ON cm.channel_id = m.channel_id
+		 AND cm.user_id <> m.user_id
+		 AND cm.last_read_at IS NOT NULL
+		 AND cm.last_read_at >= m.created_at
+		WHERE m.channel_id = $1 AND m.id = ANY($2)
+		GROUP BY m.id
+	`, channelID, messageIDs(messages))
+	if err != nil {
+		return nil, fmt.Errorf("count reads: %w", err)
+	}
+	defer rows.Close()
+
+	counts := map[uuid.UUID]int{}
+	for rows.Next() {
+		var id uuid.UUID
+		var n int
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, fmt.Errorf("scan read count: %w", err)
+		}
+		counts[id] = n
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	for i := range messages {
+		messages[i].ReadCount = counts[messages[i].ID]
+	}
+	return messages, nil
+}
+
+func messageIDs(messages []Message) []uuid.UUID {
+	ids := make([]uuid.UUID, len(messages))
+	for i, m := range messages {
+		ids[i] = m.ID
+	}
+	return ids
 }
 
 // bindAttachments claims uploads for a message. Only files already filed
@@ -1390,13 +1495,33 @@ func (s *Service) SendMessage(ctx context.Context, orgID, channelID, userID uuid
 
 // EditMessage and DeleteMessage enforce authorship (or channel moderation)
 // before touching the row.
+// EditWindow is how long a message stays editable. A conversation people have
+// already read should not change underneath them, so corrections are for typos
+// noticed straight away rather than for rewriting history.
+const EditWindow = 5 * time.Minute
+
 func (s *Service) EditMessage(ctx context.Context, messageID, userID uuid.UUID, content string) error {
-	owner, err := s.getMessageOwner(ctx, messageID)
+	var owner uuid.UUID
+	var createdAt time.Time
+	var deletedAt *time.Time
+	err := s.db.QueryRow(ctx,
+		`SELECT user_id, created_at, deleted_at FROM messages WHERE id = $1`, messageID).
+		Scan(&owner, &createdAt, &deletedAt)
 	if err != nil {
-		return err
+		if err == pgx.ErrNoRows {
+			return apperrors.ErrNotFound
+		}
+		return fmt.Errorf("load message: %w", err)
 	}
 	if owner != userID {
 		return apperrors.New(apperrors.CodeForbidden, "you can only edit your own messages")
+	}
+	if deletedAt != nil {
+		return apperrors.New(apperrors.CodeBadRequest, "that message was deleted")
+	}
+	if time.Since(createdAt) > EditWindow {
+		return apperrors.New(apperrors.CodeForbidden,
+			"messages can only be edited for five minutes after sending")
 	}
 	now := time.Now()
 	return s.updateMessage(ctx, messageID, content, &now)

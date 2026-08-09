@@ -354,6 +354,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	filesService.SetDB(dbPool)
 	notificationsService := notifications.NewService(dbPool, redisClient, cfg.NotificationsConfig())
 	presenceService := presence.NewService(redisClient)
+	presenceService.SetDB(dbPool)
 	tasksService := tasks.NewService(dbPool)
 	wizardService := wizard.NewService(dbPool, redisClient, &authCfg, logger)
 

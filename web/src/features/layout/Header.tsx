@@ -1,4 +1,6 @@
 import { Menu, Sun, Moon } from 'lucide-react';
+import { usePresence } from '@/features/presence/usePresence';
+import { AvailabilityButton } from '@/features/presence/AvailabilityPicker';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { Button } from '@/shared/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/shared/components/ui/dropdown-menu';
@@ -13,6 +15,7 @@ interface HeaderProps {
 
 export function Header({ onMenuClick }: HeaderProps) {
   const { user, logout } = useAuth();
+  const { personOf } = usePresence();
   const [theme, setTheme] = useState<'light' | 'dark'>('light');
 
   return (
@@ -34,6 +37,7 @@ export function Header({ onMenuClick }: HeaderProps) {
       </div>
 
       <div className="flex items-center gap-2">
+        <AvailabilityButton current={personOf(user?.id)} />
         {/* Theme toggle */}
         <Button
           variant="ghost"
