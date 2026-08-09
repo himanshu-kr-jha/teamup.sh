@@ -1105,3 +1105,121 @@ func TestBrowseOnlyOffersChannelsYouAreNotIn(t *testing.T) {
 		}
 	}
 }
+
+// ── Unread counts ─────────────────────────────────────────────────────────
+
+func unreadFor(t *testing.T, svc *Service, orgID, userID, channelID uuid.UUID) int {
+	t.Helper()
+	channels, err := svc.ListChannels(context.Background(), orgID, userID)
+	if err != nil {
+		t.Fatalf("list channels: %v", err)
+	}
+	for _, c := range channels {
+		if c.ID == channelID {
+			return c.UnreadCount
+		}
+	}
+	t.Fatalf("channel %s not listed for %s", channelID, userID)
+	return 0
+}
+
+// Nothing in the app ever marked a channel read, so last_read_at stayed null
+// and every message ever sent counted as unread for ever.
+func TestReadingAChannelClearsItsUnreadCount(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	reader := testsupport.SeedUser(t, pool, org, "reader@example.test", "member")
+
+	name := "unread"
+	ch, err := svc.CreateChannel(ctx, org.ID, org.OwnerID, &name, "public", nil, nil)
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+
+	first, err := svc.SendMessage(ctx, org.ID, ch.ID, org.OwnerID, "one", nil, nil, false)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if _, err := svc.SendMessage(ctx, org.ID, ch.ID, org.OwnerID, "two", nil, nil, false); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	if got := unreadFor(t, svc, org.ID, reader, ch.ID); got != 2 {
+		t.Errorf("unread before reading: got %d want 2", got)
+	}
+
+	// Reading up to the first message clears only that one.
+	if err := svc.MarkRead(ctx, ch.ID, reader, first.ID); err != nil {
+		t.Fatalf("mark read: %v", err)
+	}
+	if got := unreadFor(t, svc, org.ID, reader, ch.ID); got != 1 {
+		t.Errorf("unread after reading the first: got %d want 1", got)
+	}
+
+	latest, err := svc.SendMessage(ctx, org.ID, ch.ID, org.OwnerID, "three", nil, nil, false)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if err := svc.MarkRead(ctx, ch.ID, reader, latest.ID); err != nil {
+		t.Fatalf("mark read: %v", err)
+	}
+	if got := unreadFor(t, svc, org.ID, reader, ch.ID); got != 0 {
+		t.Errorf("unread after reading everything: got %d want 0", got)
+	}
+}
+
+// Your own messages are not news to you.
+func TestYourOwnMessagesAreNeverUnread(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	name := "self"
+	ch, err := svc.CreateChannel(ctx, org.ID, org.OwnerID, &name, "public", nil, nil)
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	if _, err := svc.SendMessage(ctx, org.ID, ch.ID, org.OwnerID, "talking to myself", nil, nil, false); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	if got := unreadFor(t, svc, org.ID, org.OwnerID, ch.ID); got != 0 {
+		t.Errorf("own message counted as unread: got %d", got)
+	}
+}
+
+// A read marker must not be advanced by a message from somewhere else.
+func TestAReadMarkerIsPerChannel(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	reader := testsupport.SeedUser(t, pool, org, "per-channel@example.test", "member")
+
+	here := "here"
+	mine, err := svc.CreateChannel(ctx, org.ID, org.OwnerID, &here, "public", nil, nil)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	there := "there"
+	other, err := svc.CreateChannel(ctx, org.ID, org.OwnerID, &there, "public", nil, nil)
+	if err != nil {
+		t.Fatalf("create other: %v", err)
+	}
+
+	if _, err := svc.SendMessage(ctx, org.ID, mine.ID, org.OwnerID, "unread here", nil, nil, false); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	elsewhere, err := svc.SendMessage(ctx, org.ID, other.ID, org.OwnerID, "read there", nil, nil, false)
+	if err != nil {
+		t.Fatalf("send elsewhere: %v", err)
+	}
+
+	// Reading the other channel must leave this one untouched.
+	if err := svc.MarkRead(ctx, mine.ID, reader, elsewhere.ID); err != nil {
+		t.Fatalf("mark read: %v", err)
+	}
+	if got := unreadFor(t, svc, org.ID, reader, mine.ID); got != 1 {
+		t.Errorf("a message from another channel cleared this one: got %d want 1", got)
+	}
+}

@@ -55,6 +55,9 @@ export function ChatPage() {
   const [newChatOpen, setNewChatOpen] = useState(false);
   const [startingCall, setStartingCall] = useState(false);
   const { ping } = useChime();
+  // What we last told the server was read, per channel, so scrolling or a
+  // re-render does not repeat the call.
+  const lastReadRef = useRef<Record<string, string>>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const channelId = params.channelId || activeChannelId;
 
@@ -71,6 +74,8 @@ export function ChatPage() {
     queryKey: ['messages', channelId],
     queryFn: () => channelsApi.getMessages(channelId!),
     enabled: !!channelId,
+    staleTime: 0,
+    refetchOnMount: 'always',
   });
 
   // Memoised so the fallback [] doesn't produce a new array every render and
@@ -148,13 +153,15 @@ export function ChatPage() {
       // your own coming back is not.
       if (incoming.userId !== user?.id) ping();
 
-      if (incoming.channelId === channelId && channelId) {
-        writeMessages(channelId, (messages) =>
-          messages.some((m) => m.id === incoming.id) ? messages : [...messages, incoming]
-        );
+      writeMessages(incoming.channelId, (messages) =>
+        messages.some((m) => m.id === incoming.id) ? messages : [...messages, incoming]
+      );
+
+      if (incoming.channelId === channelId) {
+        // You are reading it, so it is already read.
+        markChannelRead(incoming.channelId, incoming.id);
       } else {
-        // A message for a channel you are not looking at only changes its
-        // unread count, which lives on the channel list.
+        // Otherwise it is unread, and that count lives on the channel list.
         queryClient.invalidateQueries({ queryKey: ['channels'] });
       }
     });
@@ -179,6 +186,30 @@ export function ChatPage() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
+
+  // Reading a conversation marks it read. Nothing used to call this, so
+  // last_read_at was never set and every message ever sent stayed unread.
+  useEffect(() => {
+    if (!channelId || messages.length === 0) return;
+    const latest = messages[messages.length - 1];
+    if (!latest?.id || latest.pending) return;
+    markChannelRead(channelId, latest.id);
+    // Keyed on the last message so re-reading the same history is one call.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelId, messages[messages.length - 1]?.id]);
+
+  // Best effort: failing to record a read marker must not interrupt reading.
+  const markChannelRead = (id: string, messageId: string) => {
+    if (lastReadRef.current[id] === messageId) return;
+    lastReadRef.current[id] = messageId;
+    channelsApi
+      .markRead(id, messageId)
+      .then(() => queryClient.invalidateQueries({ queryKey: ['channels'] }))
+      .catch(() => {
+        // It will be marked again on the next message.
+        delete lastReadRef.current[id];
+      });
+  };
 
   const handleSend = (e: React.FormEvent) => {
     e.preventDefault();
