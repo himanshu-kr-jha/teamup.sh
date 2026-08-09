@@ -324,6 +324,38 @@ func (s *Service) NotifyMany(ctx context.Context, orgID uuid.UUID, userIDs []uui
 	return nil
 }
 
+// PushToUsers delivers to devices without recording anything in the bell.
+//
+// For the things that happen constantly — every message in every channel — an
+// item per person per message would bury the notifications list under exactly
+// the traffic the list exists to summarise. The conversation is already the
+// record; this is only the tap on the shoulder.
+//
+// Best effort and detached: delivery takes seconds per device and must never
+// hold up the thing that caused it.
+func (s *Service) PushToUsers(ctx context.Context, userIDs []uuid.UUID, push protocol.Push) {
+	if !s.HasVAPIDKeys() || len(userIDs) == 0 {
+		return
+	}
+	payload := PushPayload{
+		Title:              push.Title,
+		Body:               push.Body,
+		Tag:                push.Tag,
+		Renotify:           push.Renotify,
+		Data:               push.Data,
+		RequireInteraction: push.RequireInteraction,
+	}
+	pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
+	go func() {
+		defer cancel()
+		for _, userID := range userIDs {
+			if err := s.SendToUser(pushCtx, userID.String(), payload); err != nil {
+				s.logger.Debug().Err(err).Msg("push delivery failed")
+			}
+		}
+	}()
+}
+
 func (s *Service) Notify(ctx context.Context, orgID, userID uuid.UUID, kind, title, body string, data map[string]any) error {
 	raw, err := json.Marshal(data)
 	if err != nil {

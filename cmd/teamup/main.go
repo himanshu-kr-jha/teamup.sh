@@ -399,6 +399,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 	wsHub.SetCallInviteDeliverer(callsService)
 	callsService.SetReachability(wsHub)
 	callsService.SetChatRecorder(chatService)
+	// A call has to ring the phone, not only a browser tab that happens to be
+	// open, or somebody with the app closed is simply unreachable.
+	callsService.SetNotifier(notificationsService)
 	callsService.SetBroadcaster(wsHub)
 
 	// Notifications reach the browser over the same socket, and the features
@@ -459,12 +462,20 @@ func runServer(cmd *cobra.Command, args []string) error {
 	iconsFS, _ := fs.Sub(subFS, "icons")
 	router.StaticFS("/assets", http.FS(assetsFS))
 	router.StaticFS("/icons", http.FS(iconsFS))
-	// Serve root-level static files using StaticFileFS
-	router.StaticFileFS("/manifest.webmanifest", "manifest.webmanifest", http.FS(subFS))
-	router.StaticFileFS("/sw.js", "sw.js", http.FS(subFS))
-	router.StaticFileFS("/workbox-2eb6b95d.js", "workbox-2eb6b95d.js", http.FS(subFS))
-	router.StaticFileFS("/workbox-2eb6b95d.js.map", "workbox-2eb6b95d.js.map", http.FS(subFS))
-	router.StaticFileFS("/index.html", "index.html", http.FS(subFS))
+	// Every file the build puts at the root, served by whatever it is called.
+	//
+	// These used to be listed by hand, one route per filename — including
+	// Workbox's, whose name carries a content hash. Anything the build added or
+	// renamed was served as the SPA's index.html instead of itself, which for a
+	// service worker means a script that silently is not there.
+	if entries, err := fs.ReadDir(subFS, "."); err == nil {
+		for _, entry := range entries {
+			if entry.IsDir() {
+				continue
+			}
+			router.StaticFileFS("/"+entry.Name(), entry.Name(), http.FS(subFS))
+		}
+	}
 
 	// SPA fallback: serve index.html for root and non-API routes. Read once at
 	// startup — if the embedded frontend is missing, fail loudly here instead

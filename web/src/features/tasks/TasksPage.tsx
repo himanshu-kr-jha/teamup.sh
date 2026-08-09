@@ -361,7 +361,7 @@ function TaskCard({ task, onUpdate }: { task: Task; onUpdate: (data: { id: strin
             comments, history, members — was unreachable from the board. */}
         <Link
           to={`/tasks/${task.id}`}
-          className="flex-1 text-sm font-medium hover:underline"
+          className="min-w-0 flex-1 break-anywhere text-sm font-medium hover:underline"
         >
           {task.title}
         </Link>
@@ -383,7 +383,7 @@ function TaskCard({ task, onUpdate }: { task: Task; onUpdate: (data: { id: strin
         </DropdownMenu>
       </div>
 
-      {task.description && <p className="mb-2 line-clamp-2 text-sm text-muted-foreground md:mb-3">{task.description}</p>}
+      {task.description && <p className="mb-2 line-clamp-2 break-anywhere text-sm text-muted-foreground md:mb-3">{task.description}</p>}
 
       <div className={cn('flex flex-wrap items-center gap-2', hasFooter ? 'mb-2 md:mb-3' : '')}>
         {/* The status is the column you are looking at, so on a phone repeating

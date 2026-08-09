@@ -75,6 +75,21 @@
     height: 100dvh;
   }
 
+  /*
+   * Breaks anywhere it has to, including inside a word.
+   *
+   * `break-words` only breaks a word once the line is already full, which does
+   * nothing for the width a flex item asks for: an unbroken 300-character run
+   * still demands 300 characters of room, and the bubble containing it pushes
+   * the conversation wider than the screen. `anywhere` is the one value that
+   * shrinks that demand, so a pasted URL or a wall of keyboard-mashing wraps
+   * instead of breaking the page.
+   */
+  .break-anywhere {
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+
   .scrollbar-hide {
     -ms-overflow-style: none;
     scrollbar-width: none;

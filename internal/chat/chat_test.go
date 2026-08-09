@@ -1,7 +1,10 @@
 package chat
 
 import (
+	"strings"
+
 	"context"
+	"github.com/teamup/teamup/pkg/protocol"
 	"testing"
 	"time"
 
@@ -1532,5 +1535,128 @@ func TestAnOrdinaryMessageIsNotAnEvent(t *testing.T) {
 	}
 	if history[0].Kind != "user" {
 		t.Errorf("something somebody typed is a message, got kind %q", history[0].Kind)
+	}
+}
+
+// pushedTo records who a message would have reached on their devices.
+type pushedTo struct {
+	recipients []uuid.UUID
+	payloads   []protocol.Push
+}
+
+func (p *pushedTo) Notify(context.Context, uuid.UUID, uuid.UUID, string, string, string, map[string]any) error {
+	return nil
+}
+func (p *pushedTo) NotifyMany(context.Context, uuid.UUID, []uuid.UUID, string, string, string, map[string]any) error {
+	return nil
+}
+func (p *pushedTo) PushToUsers(_ context.Context, userIDs []uuid.UUID, payload protocol.Push) {
+	p.recipients = append(p.recipients, userIDs...)
+	p.payloads = append(p.payloads, payload)
+}
+
+// A message that only arrives if you happen to be looking is not a message, so
+// everybody else in the conversation is reached on their devices.
+func TestAMessageReachesEverybodyElseInTheChannel(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedUser(t, pool, org, "gets-told@example.test", "member")
+	ch := testsupport.SeedChannel(t, pool, org, "general", org.OwnerID, other)
+
+	pushes := &pushedTo{}
+	svc.SetNotifier(pushes)
+
+	if _, err := svc.SendMessage(ctx, org.ID, ch, org.OwnerID, "the build is broken", nil, nil, false); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	if len(pushes.recipients) != 1 || pushes.recipients[0] != other {
+		t.Fatalf("only the other member should be told, got %v", pushes.recipients)
+	}
+	// The sender is looking at what they just wrote.
+	for _, r := range pushes.recipients {
+		if r == org.OwnerID {
+			t.Error("nobody should be notified about their own message")
+		}
+	}
+
+	got := pushes.payloads[0]
+	if got.Title != "#general" {
+		t.Errorf("a channel message should name the channel, got %q", got.Title)
+	}
+	if !strings.Contains(got.Body, "the build is broken") {
+		t.Errorf("the message should be quoted, got %q", got.Body)
+	}
+	// One notification per conversation, replaced as it goes on.
+	if got.Tag != "chat-"+ch.String() {
+		t.Errorf("unexpected tag %q", got.Tag)
+	}
+	if got.Data["url"] != "/chat/"+ch.String() {
+		t.Errorf("tapping it should open the conversation, got %v", got.Data["url"])
+	}
+}
+
+// In a direct message the person is the conversation, so naming the channel
+// would say "#" and nothing else.
+func TestADirectMessageIsAnnouncedByWhoSentIt(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedUser(t, pool, org, "dm-push@example.test", "member")
+
+	pushes := &pushedTo{}
+	svc.SetNotifier(pushes)
+
+	dm, err := svc.OpenDirectMessage(ctx, org.ID, org.OwnerID, other)
+	if err != nil {
+		t.Fatalf("open dm: %v", err)
+	}
+	if _, err := svc.SendMessage(ctx, org.ID, dm.ID, org.OwnerID, "are you around?", nil, nil, false); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	got := pushes.payloads[0]
+	if strings.HasPrefix(got.Title, "#") {
+		t.Errorf("a direct message is from a person, not a channel: %q", got.Title)
+	}
+	if got.Body != "are you around?" {
+		t.Errorf("it should not repeat the name in the body, got %q", got.Body)
+	}
+}
+
+// A wall of text does not belong on a lock screen, and a file on its own still
+// has to say something.
+func TestWhatADeviceIsShownIsShortAndNeverEmpty(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedUser(t, pool, org, "brevity@example.test", "member")
+	ch := testsupport.SeedChannel(t, pool, org, "general", org.OwnerID, other)
+
+	pushes := &pushedTo{}
+	svc.SetNotifier(pushes)
+
+	long := strings.Repeat("a very long thought ", 60)
+	if _, err := svc.SendMessage(ctx, org.ID, ch, org.OwnerID, long, nil, nil, false); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	summary := pushes.payloads[0].Body
+	if len([]rune(summary)) >= len([]rune(long)) {
+		t.Errorf("a wall of text should be cut down, got %d characters", len([]rune(summary)))
+	}
+	// Saying it was cut, rather than stopping mid-word as though that was all.
+	if !strings.HasSuffix(summary, "…") {
+		t.Errorf("a shortened message should show that it was: %q", summary)
+	}
+
+	// A file on its own is a message, and an empty notification says nothing.
+	if _, err := svc.SendMessage(ctx, org.ID, ch, org.OwnerID, "", nil,
+		[]uuid.UUID{seedUpload(t, pool, org.ID, ch, org.OwnerID, "notes.txt")}, false); err != nil {
+		t.Fatalf("send a file: %v", err)
+	}
+	last := pushes.payloads[len(pushes.payloads)-1].Body
+	if !strings.Contains(last, "Sent a file") {
+		t.Errorf("a message that is only a file should say so, got %q", last)
 	}
 }

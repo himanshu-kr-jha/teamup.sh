@@ -32,6 +32,9 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        // Push handling, pulled into the worker Workbox generates. Building our
+        // own worker instead would mean reimplementing everything below.
+        importScripts: ['/push-sw.js'],
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/.*\/api\/(channels|messages|tasks|users|presence)/,

@@ -300,3 +300,15 @@ func generateID() string {
 func randUint32() uint32 { return uint32(time.Now().UnixNano()) }
 func randUint16() uint16 { return uint16(time.Now().UnixNano() >> 16) }
 func randUint48() uint64 { return uint64(time.Now().UnixNano()) & 0xFFFFFFFFFFFF }
+
+// Push is a notification delivered to a device, including one whose browser is
+// closed. Declared here because the features that raise one and the service
+// that sends it must both be able to name it without depending on each other.
+type Push struct {
+	Title              string         `json:"title"`
+	Body               string         `json:"body"`
+	Tag                string         `json:"tag,omitempty"`
+	Renotify           bool           `json:"renotify,omitempty"`
+	Data               map[string]any `json:"data,omitempty"`
+	RequireInteraction bool           `json:"requireInteraction,omitempty"`
+}

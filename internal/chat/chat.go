@@ -32,6 +32,9 @@ type Notifier interface {
 	// NotifyMany writes one notification per recipient in a single statement,
 	// for announcements that reach the whole organization.
 	NotifyMany(ctx context.Context, orgID uuid.UUID, userIDs []uuid.UUID, kind, title, body string, data map[string]any) error
+	// PushToUsers reaches devices without recording anything in the bell, for
+	// the things that happen too often to list.
+	PushToUsers(ctx context.Context, userIDs []uuid.UUID, payload protocol.Push)
 }
 
 type Service struct {
@@ -1551,7 +1554,83 @@ func (s *Service) SendMessage(ctx context.Context, orgID, channelID, userID uuid
 			protocol.TypeChatMessage, protocol.ChatMessagePayload{Message: s.messageToData(msg)},
 		), userID.String())
 	}
+	s.pushToChannel(ctx, channelID, userID, msg)
 	return msg, nil
+}
+
+// pushSummary is as much of a message as belongs on a lock screen: enough to
+// know whether it is worth opening, and no more.
+const pushSummary = 140
+
+// pushToChannel taps everybody else in the conversation on the shoulder.
+//
+// Reaching somebody whose browser is closed is the whole point — a message that
+// only arrives if you happen to be looking is not a message, it is a page you
+// have to remember to check. The worker suppresses it for anybody who is
+// actually looking at the conversation, which is why this does not try to work
+// out who that is.
+func (s *Service) pushToChannel(ctx context.Context, channelID, senderID uuid.UUID, msg *Message) {
+	if s.notifier == nil {
+		return
+	}
+
+	var channelName, channelKind, senderName string
+	if err := s.db.QueryRow(ctx, `
+		SELECT COALESCE(c.name, ''), c.type, COALESCE(u.name, u.email, '')
+		FROM channels c, users u
+		WHERE c.id = $1 AND u.id = $2
+	`, channelID, senderID).Scan(&channelName, &channelKind, &senderName); err != nil {
+		s.logger.Debug().Err(err).Msg("could not describe a message for notifying")
+		return
+	}
+
+	members, err := s.ChannelMemberIDs(ctx, channelID.String())
+	if err != nil {
+		s.logger.Debug().Err(err).Msg("could not work out who to notify about a message")
+		return
+	}
+	recipients := make([]uuid.UUID, 0, len(members))
+	for _, m := range members {
+		id, err := uuid.Parse(m)
+		if err != nil || id == senderID {
+			continue
+		}
+		recipients = append(recipients, id)
+	}
+	if len(recipients) == 0 {
+		return
+	}
+
+	// A file on its own is a message with nothing to quote.
+	body := strings.TrimSpace(msg.Content)
+	if body == "" {
+		body = "Sent a file"
+	}
+	if len([]rune(body)) > pushSummary {
+		body = string([]rune(body)[:pushSummary]) + "…"
+	}
+
+	// In a direct message the person is the conversation; in a channel the
+	// channel is, and the person has to be said.
+	title := senderName
+	if channelKind != "dm" {
+		title = "#" + channelName
+		body = senderName + ": " + body
+	}
+
+	s.notifier.PushToUsers(ctx, recipients, protocol.Push{
+		Title: title,
+		Body:  body,
+		// One notification per conversation, replaced as it goes on, rather
+		// than a stack of them. Renotify so a replacement is still noticed.
+		Tag:      "chat-" + channelID.String(),
+		Renotify: true,
+		Data: map[string]any{
+			"kind":      "chat.message",
+			"url":       "/chat/" + channelID.String(),
+			"channelId": channelID.String(),
+		},
+	})
 }
 
 // EditMessage and DeleteMessage enforce authorship (or channel moderation)

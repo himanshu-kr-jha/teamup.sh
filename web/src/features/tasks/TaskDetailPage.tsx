@@ -175,10 +175,10 @@ export function TaskDetailPage() {
         <div className="flex-1 overflow-auto p-4 md:p-6">
           <div className="max-w-4xl mx-auto space-y-6">
             {/* Main task info */}
-            <div className="flex flex-col md:flex-row md:items-start gap-6">
-              <div className="flex-1 space-y-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
+            <div className="flex min-w-0 flex-col gap-6 md:flex-row md:items-start">
+              <div className="min-w-0 flex-1 space-y-4">
+                <div className="flex min-w-0 items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
                     {editing ? (
                       <Input
                         defaultValue={task.title}
@@ -197,7 +197,7 @@ export function TaskDetailPage() {
                         }}
                       />
                     ) : (
-                      <h1 className="text-2xl font-bold">{task.title}</h1>
+                      <h1 className="break-anywhere text-2xl font-bold">{task.title}</h1>
                     )}
                   </div>
                   <div className="flex items-center gap-2">
@@ -240,7 +240,9 @@ export function TaskDetailPage() {
                       }}
                     />
                   ) : (
-                    <div className="prose prose-sm max-w-none">{task.description || <span className="text-muted-foreground">No description</span>}</div>
+                    <div className="prose prose-sm max-w-none whitespace-pre-wrap break-anywhere">
+                      {task.description || <span className="text-muted-foreground">No description</span>}
+                    </div>
                   )}
                 </div>
 
@@ -563,7 +565,7 @@ function CommentList({ taskId }: { taskId: string }) {
               <span className="text-muted-foreground">{formatRelativeTime(comment.createdAt)}</span>
             </p>
             {comment.content && (
-              <p className="whitespace-pre-wrap break-words text-sm">{comment.content}</p>
+              <p className="whitespace-pre-wrap break-anywhere text-sm">{comment.content}</p>
             )}
             {comment.attachments?.length > 0 && (
               <div className={cn('flex flex-wrap gap-2', comment.content && 'mt-2')}>
@@ -598,12 +600,12 @@ function ActivityList({ taskId }: { taskId: string }) {
       {activities.map((a: any) => (
         <li key={a.id} className="flex items-start gap-3 text-sm">
           <History className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-          <div className="min-w-0">
-            <p>
+          <div className="min-w-0 flex-1">
+            <p className="break-anywhere">
               <span className="font-medium">{a.userName || 'Someone'}</span> changed{' '}
               <span className="font-medium">{a.field}</span>
-              {a.oldValue ? <> from <span className="text-muted-foreground">{a.oldValue}</span></> : null}
-              {a.newValue ? <> to <span className="text-muted-foreground">{a.newValue}</span></> : null}
+              {a.oldValue ? <> from <span className="text-muted-foreground">{shorten(a.oldValue)}</span></> : null}
+              {a.newValue ? <> to <span className="text-muted-foreground">{shorten(a.newValue)}</span></> : null}
             </p>
             <p className="text-xs text-muted-foreground">{formatRelativeTime(a.createdAt)}</p>
           </div>
@@ -611,6 +613,18 @@ function ActivityList({ taskId }: { taskId: string }) {
       ))}
     </ul>
   );
+}
+
+/**
+ * As much of a changed value as belongs in a one-line history entry.
+ *
+ * The whole value was printed, so changing a comment put the entire comment in
+ * the history twice — once as it was and once as it now is. Long enough to
+ * recognise which change this was, short enough to stay one line.
+ */
+function shorten(value: string): string {
+  const flat = String(value).replace(/\s+/g, ' ').trim();
+  return flat.length > 60 ? flat.slice(0, 60) + '…' : flat;
 }
 
 /** Who is on this task. Anybody can put themselves on it; putting somebody

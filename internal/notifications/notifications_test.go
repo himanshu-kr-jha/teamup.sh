@@ -1,7 +1,18 @@
 package notifications
 
 import (
+	"bytes"
+	"crypto/ecdh"
+	"crypto/rand"
+	"encoding/base64"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"time"
+
 	"context"
+	"github.com/teamup/teamup/internal/auth"
 	"sync"
 	"testing"
 
@@ -312,5 +323,109 @@ func TestNotifyManyWithNobodyToTellIsHarmless(t *testing.T) {
 
 	if err := svc.NotifyMany(ctx, org.ID, nil, "chat.announcement", "Nobody", "there", nil); err != nil {
 		t.Errorf("notifying nobody should be a no-op: %v", err)
+	}
+}
+
+// realSubscription builds keys a push service would have handed the browser, so
+// the encryption in delivery is exercised rather than stubbed.
+func realSubscription(t *testing.T, endpoint string) *PushSubscription {
+	t.Helper()
+	priv, err := ecdh.P256().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate subscription key: %v", err)
+	}
+	auth := make([]byte, 16)
+	if _, err := rand.Read(auth); err != nil {
+		t.Fatalf("generate auth secret: %v", err)
+	}
+	return &PushSubscription{
+		Endpoint: endpoint,
+		P256DH:   base64.RawURLEncoding.EncodeToString(priv.PublicKey().Bytes()),
+		Auth:     base64.RawURLEncoding.EncodeToString(auth),
+	}
+}
+
+// The whole delivery path, as far as it can be taken without a real push
+// service: a stored subscription is signed for, encrypted, and posted to the
+// endpoint the browser gave us.
+func TestAPushIsDeliveredToTheEndpointTheBrowserGaveUs(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	received := make(chan *http.Request, 1)
+	var body []byte
+	push := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		received <- r
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer push.Close()
+
+	public, private, err := auth.GenerateVAPIDKeys()
+	if err != nil {
+		t.Fatalf("generate VAPID keys: %v", err)
+	}
+	svc.SetVAPIDKeys(public, private)
+
+	if err := svc.SaveSubscription(ctx, org.OwnerID.String(), org.ID.String(),
+		realSubscription(t, push.URL+"/send")); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	if err := svc.SendToUser(ctx, org.OwnerID.String(), PushPayload{
+		Title: "QA Bob", Body: "are you around?", Tag: "chat-1",
+	}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	select {
+	case r := <-received:
+		// Signed as us, so the push service will accept it at all.
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "vapid") {
+			t.Errorf("a push has to be signed, got %q", r.Header.Get("Authorization"))
+		}
+		// Encrypted to the subscription's key: the push service must not be
+		// able to read what it is carrying.
+		if r.Header.Get("Content-Encoding") != "aes128gcm" {
+			t.Errorf("payload should be encrypted, got %q", r.Header.Get("Content-Encoding"))
+		}
+		if bytes.Contains(body, []byte("are you around?")) {
+			t.Error("the message went out in the clear")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("nothing was delivered")
+	}
+}
+
+// A subscription the browser has thrown away answers 410, and keeping it means
+// writing to it forever.
+func TestADeadSubscriptionIsForgotten(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	gone := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusGone)
+	}))
+	defer gone.Close()
+
+	public, private, err := auth.GenerateVAPIDKeys()
+	if err != nil {
+		t.Fatalf("generate VAPID keys: %v", err)
+	}
+	svc.SetVAPIDKeys(public, private)
+
+	if err := svc.SaveSubscription(ctx, org.OwnerID.String(), org.ID.String(),
+		realSubscription(t, gone.URL+"/send")); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := svc.SendToUser(ctx, org.OwnerID.String(), PushPayload{Title: "x", Body: "y"}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	subs, _ := svc.getSubscriptions(ctx, org.OwnerID.String())
+	if len(subs) != 0 {
+		t.Errorf("a dead subscription should be dropped, got %d", len(subs))
 	}
 }

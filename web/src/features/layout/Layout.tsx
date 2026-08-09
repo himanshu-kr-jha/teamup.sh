@@ -7,10 +7,15 @@ import { useAuthStore } from "@/shared/store/authStore";
 import { IncomingCallDialog } from "@/features/calls/IncomingCallDialog";
 import { ActiveCallProvider } from "@/features/calls/ActiveCallProvider";
 import { ChatNotifications } from "@/features/chat/ChatNotifications";
+import { usePushSubscription } from "@/features/notifications/usePushSubscription";
 import { cn } from "@/shared/utils/cn";
 
 export function Layout() {
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
+  // A push subscription can be dropped by the browser at any time, and going
+  // silently deaf is the worst way for notifications to fail. Somebody who has
+  // already agreed to them is re-registered here on every load.
+  usePushSubscription();
   const user = useAuthStore((s) => s.user);
 
   // The API refuses every one of these pages' requests until the password is

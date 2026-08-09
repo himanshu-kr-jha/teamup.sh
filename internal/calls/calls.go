@@ -44,6 +44,7 @@ type Broadcaster interface {
 type Service struct {
 	reachable     Reachable
 	chat          ChatRecorder
+	notifier      Notifier
 	db            *pgxpool.Pool
 	cfg           Config
 	logger        zerolog.Logger
@@ -278,6 +279,10 @@ func (s *Service) IsChannelMember(ctx context.Context, orgID, channelID, userID 
 // work the caller should not wait on, and none of it affects whether the call
 // was created.
 func (s *Service) Ring(ctx context.Context, call *Call, callerID, callerName string, invitees []uuid.UUID) {
+	// Devices first, and regardless of whether anything is open: somebody with
+	// no tab is exactly who this reaches.
+	s.ringDevices(ctx, call, callerName, invitees)
+
 	if s.broadcaster == nil {
 		return
 	}
@@ -337,8 +342,21 @@ func (s *Service) Participants(ctx context.Context, callID uuid.UUID, except str
 
 // AnnounceCallOver tells everybody still ringing that the call has stopped, so
 // a phone does not keep ringing after the caller has hung up or somebody has
-// turned it down.
+// turned it down. Devices too, not only open tabs — a notification left on a
+// lock screen is a phone still ringing as far as anybody can tell.
 func (s *Service) AnnounceCallOver(ctx context.Context, call *CallModel, reason, declinedBy string, recipients []string) {
+	// Whoever was being rung has the notification taken off their screen. Done
+	// before the socket message and whatever the broadcaster is, because it is
+	// the people with nothing open who would otherwise be left with a phone
+	// apparently still ringing.
+	ids := make([]uuid.UUID, 0, len(recipients))
+	for _, userID := range recipients {
+		if id, err := uuid.Parse(userID); err == nil {
+			ids = append(ids, id)
+		}
+	}
+	s.stopRinging(ctx, call.ID, ids)
+
 	if s.broadcaster == nil {
 		return
 	}
@@ -775,6 +793,57 @@ type ChatRecorder interface {
 
 // SetChatRecorder wires where a missed call is written down.
 func (s *Service) SetChatRecorder(c ChatRecorder) { s.chat = c }
+
+// Notifier reaches somebody's devices, including ones with nothing open.
+type Notifier interface {
+	PushToUsers(ctx context.Context, userIDs []uuid.UUID, payload protocol.Push)
+}
+
+// SetNotifier wires how a phone is made to ring when nobody is looking.
+func (s *Service) SetNotifier(n Notifier) { s.notifier = n }
+
+// ringDevices makes the phone itself ring, rather than only a browser tab that
+// happens to still be open.
+//
+// A call is the one thing here that is worthless late: a message read an hour
+// on is still the message, but a call nobody was told about is just a missed
+// one. It holds the screen until it is dealt with, and its tag lets it be taken
+// away again when the caller gives up.
+func (s *Service) ringDevices(ctx context.Context, call *Call, callerName string, invitees []uuid.UUID) {
+	if s.notifier == nil || len(invitees) == 0 {
+		return
+	}
+	what := "video call"
+	if call.CallType == "audio" {
+		what = "call"
+	}
+	s.notifier.PushToUsers(ctx, invitees, protocol.Push{
+		Title: callerName,
+		Body:  "Incoming " + what,
+		Tag:   "call-" + call.ID.String(),
+		// It waits to be answered rather than sliding away unseen.
+		RequireInteraction: true,
+		Data: map[string]any{
+			"kind":   "call.incoming",
+			"url":    "/calls/" + call.ID.String(),
+			"callId": call.ID.String(),
+		},
+	})
+}
+
+// stopRinging takes back a notification for a call that is over. Without it a
+// phone that was in a pocket shows somebody calling long after they gave up.
+func (s *Service) stopRinging(ctx context.Context, callID uuid.UUID, invitees []uuid.UUID) {
+	if s.notifier == nil || len(invitees) == 0 {
+		return
+	}
+	s.notifier.PushToUsers(ctx, invitees, protocol.Push{
+		Title: "Call ended",
+		Body:  "",
+		Tag:   "call-" + callID.String(),
+		Data:  map[string]any{"kind": "call.cancelled"},
+	})
+}
 
 // NoteIfMissed writes "missed call" into the conversation when a one-to-one
 // call ends without the other person ever picking up.

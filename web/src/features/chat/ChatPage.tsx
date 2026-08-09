@@ -798,7 +798,7 @@ function MessageBubble({
             <p className="mb-1 px-1 text-xs font-medium text-muted-foreground">{message.userName}</p>
           )}
 
-          <div className="flex items-end gap-1">
+          <div className="flex min-w-0 max-w-full items-end gap-1">
             {/* The menu sits on the side the message came from, so it never
                 covers the text. */}
             {isOwn && !deleted && (
@@ -816,7 +816,7 @@ function MessageBubble({
 
             <div
               className={cn(
-                'w-fit max-w-full break-words rounded-2xl px-3.5 py-2 text-sm shadow-sm',
+                'w-fit max-w-full break-anywhere rounded-2xl px-3.5 py-2 text-sm shadow-sm',
                 deleted
                   ? 'border border-dashed border-border bg-transparent italic text-muted-foreground'
                   : isOwn
@@ -858,7 +858,9 @@ function MessageBubble({
                 </div>
               ) : (
                 <>
-                  {message.content && <p className="whitespace-pre-wrap">{message.content}</p>}
+                  {message.content && (
+                    <p className="whitespace-pre-wrap break-anywhere">{message.content}</p>
+                  )}
                   {message.attachments?.length > 0 && (
                     <div className={cn('flex flex-wrap gap-2', message.content && 'mt-2')}>
                       {message.attachments.map((a: any) => (

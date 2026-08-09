@@ -12,6 +12,7 @@ import (
 
 	"github.com/teamup/teamup/internal/testsupport"
 	apperrors "github.com/teamup/teamup/pkg/errors"
+	"github.com/teamup/teamup/pkg/protocol"
 )
 
 // newService builds a service with no LiveKit credentials, so CreateCall takes
@@ -801,5 +802,67 @@ func TestADeclinedCallSaysSoRatherThanCallingItMissed(t *testing.T) {
 
 	if len(recorder.notes) != 1 || recorder.notes[0] != "Call declined" {
 		t.Errorf("a declined call should say so, got %+v", recorder.notes)
+	}
+}
+
+// rungDevices records what would have been put on somebody's lock screen.
+type rungDevices struct {
+	payloads []protocol.Push
+}
+
+func (r *rungDevices) PushToUsers(_ context.Context, _ []uuid.UUID, payload protocol.Push) {
+	r.payloads = append(r.payloads, payload)
+}
+
+// A call is the one thing that is worthless late, so it has to reach the phone
+// itself rather than only a browser tab that happens to still be open.
+func TestACallRingsTheDeviceAndStopsWhenItIsOver(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	callee := testsupport.SeedUser(t, pool, org, "rings@example.test", "member")
+
+	rung := &rungDevices{}
+	svc.SetNotifier(rung)
+
+	call, err := svc.CreateCall(ctx, org.ID, org.OwnerID, nil, "video", nil, []string{callee.String()})
+	if err != nil {
+		t.Fatalf("create call: %v", err)
+	}
+	svc.Ring(ctx, call, org.OwnerID.String(), "QA Alice", []uuid.UUID{callee})
+
+	if len(rung.payloads) != 1 {
+		t.Fatalf("the phone should have rung, got %+v", rung.payloads)
+	}
+	ringing := rung.payloads[0]
+	if ringing.Title != "QA Alice" {
+		t.Errorf("it should say who is calling, got %q", ringing.Title)
+	}
+	// It waits to be answered rather than sliding away unseen.
+	if !ringing.RequireInteraction {
+		t.Error("a call should hold the screen until it is dealt with")
+	}
+	if ringing.Data["url"] != "/calls/"+call.ID.String() {
+		t.Errorf("answering it should open the call, got %v", ringing.Data["url"])
+	}
+
+	// And it has to be taken back, or a phone in a pocket shows somebody
+	// calling long after they gave up.
+	loaded, err := svc.GetCall(ctx, org.ID, call.ID)
+	if err != nil {
+		t.Fatalf("get call: %v", err)
+	}
+	svc.AnnounceCallOver(ctx, loaded, "no_answer", "", []string{callee.String()})
+
+	if len(rung.payloads) != 2 {
+		t.Fatalf("the ringing should have been called off, got %+v", rung.payloads)
+	}
+	cancelled := rung.payloads[1]
+	if cancelled.Tag != ringing.Tag {
+		t.Errorf("it has to name the same notification to replace it: %q vs %q",
+			cancelled.Tag, ringing.Tag)
+	}
+	if cancelled.Data["kind"] != "call.cancelled" {
+		t.Errorf("the device is told to take it away, got %v", cancelled.Data["kind"])
 	}
 }

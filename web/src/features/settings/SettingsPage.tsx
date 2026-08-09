@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui
 import { Label } from '@/shared/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs';
+import { PushSettings } from '@/features/notifications/PushSettings';
 import { Separator } from '@/shared/components/ui/separator';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { authApi, orgApi } from '@/shared/api/client';
@@ -86,15 +87,7 @@ export function SettingsPage() {
         </TabsContent>
 
         <TabsContent value="notifications" className="p-4 md:p-6 space-y-6 max-w-2xl">
-          <Card>
-            <CardHeader><CardTitle>Notifications</CardTitle></CardHeader>
-            <CardContent>
-              <p className="text-sm text-muted-foreground">
-                You are notified in the app when someone assigns you a task or mentions you in a
-                channel. Browser notifications can be enabled from the bell menu.
-              </p>
-            </CardContent>
-          </Card>
+          <PushSettings />
         </TabsContent>
 
         <TabsContent value="security" className="p-4 md:p-6 space-y-6 max-w-2xl">
