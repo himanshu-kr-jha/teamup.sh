@@ -121,11 +121,13 @@ export function TasksPage() {
   return (
     <div className="flex h-full flex-col bg-background">
       {/* Header */}
-      <div className="flex h-16 items-center justify-between px-4 md:px-6 border-b border-border">
-        <div className="flex items-center gap-4">
-          <h1 className="text-2xl font-bold">Tasks</h1>
-          <Tabs value={scope} onValueChange={(v) => setScope(v as typeof scope)}>
-            <TabsList>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-2 md:h-16 md:flex-nowrap md:py-0 md:px-6">
+        {/* On a phone the title and the tabs each get their own line; four tabs
+            do not fit beside a heading. */}
+        <div className="flex w-full min-w-0 flex-col gap-2 md:w-auto md:flex-row md:items-center md:gap-3">
+          <h1 className="text-xl font-bold md:text-2xl">Tasks</h1>
+          <Tabs value={scope} onValueChange={(v) => setScope(v as typeof scope)} className="min-w-0">
+            <TabsList className="w-full justify-start overflow-x-auto md:w-auto">
               <TabsTrigger value="mine">My tasks</TabsTrigger>
               {managesSomebody && <TabsTrigger value="team">Team tasks</TabsTrigger>}
               {managesSomebody && <TabsTrigger value="standup">Standup</TabsTrigger>}
@@ -141,7 +143,7 @@ export function TasksPage() {
             </Button>
           </div>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center gap-2">
           <div className="relative hidden sm:block">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
@@ -199,9 +201,12 @@ export function TasksPage() {
         {scope === 'standup' ? (
           <StandupView teamId={teamId} assigneeId={assigneeId} />
         ) : viewMode === 'board' ? (
-          <div className="flex gap-4 h-full min-h-[calc(100vh-200px)]">
+          <div className="flex h-full min-h-[calc(100vh-220px)] snap-x snap-mandatory gap-4 overflow-x-auto pb-2">
             {columns.map((column) => (
-              <div key={column.id} className="flex flex-col w-72 flex-shrink-0">
+              <div
+                key={column.id}
+                className="flex w-[85vw] max-w-xs flex-shrink-0 snap-start flex-col sm:w-72"
+              >
                 <div className={cn('rounded-t-lg px-3 py-2 text-sm font-medium', column.color)}>
                   {column.title}
                   <span className="ml-2 text-xs opacity-70">

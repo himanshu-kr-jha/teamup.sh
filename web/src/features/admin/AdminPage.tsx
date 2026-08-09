@@ -117,7 +117,7 @@ function MembersTab({ isAdmin, currentUserId }: { isAdmin: boolean; currentUserI
   return (
     <>
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0">
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0">
           <CardTitle>Members</CardTitle>
           {isAdmin && (
             <Button size="sm" onClick={() => setAdding(true)}>
@@ -129,9 +129,9 @@ function MembersTab({ isAdmin, currentUserId }: { isAdmin: boolean; currentUserI
         <CardContent className="space-y-2">
           {users.length === 0 && <p className="text-sm text-muted-foreground">No members yet.</p>}
           {users.map((u: any) => (
-            <div key={u.id} className="flex flex-wrap items-center gap-3 rounded-lg border border-border p-3">
+            <div key={u.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border p-3">
               <PresenceDot status={statusOf(u.id)} />
-              <div className="min-w-0 flex-1">
+              <div className="min-w-[10rem] flex-1 basis-full sm:basis-auto">
                 <p className="truncate font-medium">{u.name}</p>
                 <p className="truncate text-sm text-muted-foreground">{u.email}</p>
               </div>
@@ -572,8 +572,8 @@ function TeamsTab({
         <CardContent className="space-y-2">
           {teams.length === 0 && <p className="text-sm text-muted-foreground">No teams yet.</p>}
           {teams.map((t: any) => (
-            <div key={t.id} className="flex items-center gap-3 rounded-lg border border-border p-3">
-              <div className="min-w-0 flex-1">
+            <div key={t.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border p-3">
+              <div className="min-w-[10rem] flex-1 basis-full sm:basis-auto">
                 <p className="truncate font-medium">{t.name}</p>
                 <p className="truncate text-sm text-muted-foreground">
                   {t.memberCount} {t.memberCount === 1 ? 'member' : 'members'}

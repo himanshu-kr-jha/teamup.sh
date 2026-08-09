@@ -9,7 +9,9 @@ interface UIState {
 }
 
 export const useUIStore = create<UIState>((set) => ({
-  sidebarOpen: true,
+  // Docked beside the content on a large screen, and off to the side on a
+  // small one — where it covers everything, so it must not start open.
+  sidebarOpen: typeof window === 'undefined' ? true : window.innerWidth >= 1024,
   toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
   setSidebarOpen: (open) => set({ sidebarOpen: open }),
   activeChannelId: null,

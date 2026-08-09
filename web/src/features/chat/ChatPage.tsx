@@ -63,7 +63,14 @@ export function ChatPage() {
   const { activeChannelId, setActiveChannelId } = useUIStore();
   const params = useParams<{ channelId?: string }>();
   const [message, setMessage] = useState('');
-  const [showSidebar, setShowSidebar] = useState(true);
+  // There is not room for the list and the conversation at once on a phone,
+  // so it shows one: the list until you pick something, the conversation after.
+  const [showSidebar, setShowSidebar] = useState(() => {
+    if (typeof window === 'undefined' || window.innerWidth >= 1024) return true;
+    // Arriving at a conversation by its address should show the conversation,
+    // not the list you did not ask for.
+    return !params.channelId;
+  });
   const [createChannelOpen, setCreateChannelOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   // Uploaded but not yet sent. A file used to appear in the channel the instant
@@ -282,6 +289,8 @@ export function ChatPage() {
   const handleChannelClick = (id: string) => {
     setActiveChannelId(id);
     navigate(`/chat/${id}`);
+    // On a phone, picking a conversation is how you get to it.
+    if (window.innerWidth < 1024) setShowSidebar(false);
   };
 
   if (channelsLoading) {
@@ -290,20 +299,14 @@ export function ChatPage() {
 
   return (
     <div className="flex h-full flex-col bg-background">
-      {/* Mobile sidebar toggle */}
-      <button
-        className="lg:hidden fixed bottom-4 right-4 z-50 p-2 rounded-full bg-primary text-primary-foreground shadow-lg"
-        onClick={() => setShowSidebar(!showSidebar)}
-        aria-label="Toggle sidebar"
-      >
-        {showSidebar ? <ChevronLeft className="h-6 w-6" /> : <MessageSquare className="h-6 w-6" />}
-      </button>
 
-      <div className={cn('flex h-full', showSidebar ? 'lg:flex-row' : 'lg:flex-col')}>
+      <div className="flex h-full min-w-0">
         {/* Sidebar */}
         <aside className={cn(
-          'fixed inset-y-0 left-0 z-40 w-72 bg-card border-r border-border transition-transform duration-200 lg:relative lg:translate-x-0',
-          !showSidebar && '-translate-x-full lg:translate-x-0'
+          'z-30 w-full shrink-0 border-r border-border bg-card lg:relative lg:w-72',
+          // On a phone this is the whole screen, and only one of the two is
+          // shown at a time.
+          showSidebar ? 'block' : 'hidden lg:block'
         )}>
           <div className="flex h-full flex-col">
             {/* Header */}
@@ -402,10 +405,22 @@ export function ChatPage() {
         </aside>
 
         {/* Main chat area */}
-        <div className="flex-1 flex flex-col min-w-0">
+        <div className={cn(
+          'flex min-w-0 flex-1 flex-col',
+          showSidebar ? 'hidden lg:flex' : 'flex'
+        )}>
           {/* Channel header */}
           <div className="flex h-16 items-center gap-4 px-4 border-b border-border">
-            <div className="flex min-w-0 items-center gap-3">
+            <div className="flex min-w-0 items-center gap-2">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="shrink-0 lg:hidden"
+                aria-label="Back to conversations"
+                onClick={() => setShowSidebar(true)}
+              >
+                <ChevronLeft className="h-5 w-5" />
+              </Button>
               <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10">
                 {activeChannel?.type === 'dm' ? (
                   <User className="h-5 w-5 text-primary" />

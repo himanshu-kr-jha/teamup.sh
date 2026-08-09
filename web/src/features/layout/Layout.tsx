@@ -26,7 +26,10 @@ export function Layout() {
           underneath it and its left edge is unclickable. */}
         <div
           className={cn(
-            "flex flex-1 flex-col overflow-hidden transition-all duration-200",
+            // The sidebar is fixed, so the content column is offset by hand.
+            // Only on a large screen: on a phone the drawer floats over the
+            // page rather than pushing it.
+            "flex min-w-0 flex-1 flex-col overflow-hidden transition-all duration-200",
             sidebarOpen ? "lg:ml-64" : "lg:ml-16",
           )}
         >

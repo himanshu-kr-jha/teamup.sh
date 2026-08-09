@@ -5,7 +5,13 @@ import { useAuth } from '@/features/auth/AuthProvider';
 import { cn } from '@/shared/utils/cn';
 
 export function Sidebar() {
-  const { sidebarOpen, toggleSidebar } = useUIStore();
+  const { sidebarOpen, toggleSidebar, setSidebarOpen } = useUIStore();
+
+  // On a phone the drawer covers the page, so following a link has to close
+  // it — otherwise you arrive somewhere you cannot see.
+  const closeOnMobile = () => {
+    if (window.innerWidth < 1024) setSidebarOpen(false);
+  };
   const { user, isAuthenticated, isLoading } = useAuth();
 
   const navItems = [
@@ -19,8 +25,14 @@ export function Sidebar() {
   return (
     <aside
       className={cn(
-        'fixed left-0 top-0 z-50 h-screen bg-card border-r border-border transition-all duration-200',
-        sidebarOpen ? 'w-64' : 'w-16'
+        'fixed left-0 top-0 z-50 h-screen border-r border-border bg-card transition-transform duration-200 lg:transition-all',
+        // On a phone it is a drawer: full width off to the side, and out of
+        // the way entirely when closed. On a large screen it is docked and
+        // only narrows.
+        'w-64',
+        sidebarOpen ? 'translate-x-0' : '-translate-x-full',
+        'lg:translate-x-0',
+        sidebarOpen ? 'lg:w-64' : 'lg:w-16'
       )}
       aria-label="Main navigation"
     >
@@ -48,6 +60,7 @@ export function Sidebar() {
         <nav className="flex-1 overflow-y-auto p-2 space-y-1" aria-label="Main">
           {navItems.map((item) => (
             <NavLink
+              onClick={closeOnMobile}
               key={item.path}
               to={item.path}
               className={({ isActive }) =>

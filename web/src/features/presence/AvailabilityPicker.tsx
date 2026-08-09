@@ -135,7 +135,9 @@ export function AvailabilityButton({
         aria-label="Set your availability"
       >
         <PresenceDot status={current?.status ?? 'available'} note={current?.note} />
-        <span className="text-xs text-muted-foreground">Availability</span>
+        {/* The dot carries the meaning; the word is only there when there is
+            room for it. */}
+        <span className="hidden text-xs text-muted-foreground sm:inline">Availability</span>
       </Button>
       {/* Remounted each time so it opens showing where you actually are. */}
       {open && <AvailabilityPicker open={open} onOpenChange={setOpen} current={current} />}
