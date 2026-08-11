@@ -258,11 +258,7 @@ func parseTime(s string) time.Time {
 
 func (s *Service) HandlePresenceUpdate(ctx context.Context, conn websocket.WSConnection, msg *protocol.Message) {
 	var payload protocol.PresenceUpdatePayload
-	payloadBytes, ok := msg.Payload.([]byte)
-	if !ok {
-		return
-	}
-	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return
 	}
 

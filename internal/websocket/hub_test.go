@@ -2,12 +2,17 @@ package websocket
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
+	"nhooyr.io/websocket"
 
 	"github.com/teamup/teamup/pkg/protocol"
 )
@@ -260,6 +265,192 @@ func (r *mutableRoster) ChannelMemberIDs(context.Context, string) ([]string, err
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.members...), nil
+}
+
+// BroadcastToUser used to take the read lock only long enough to fetch the
+// user's inner connection map, release it, and then range over that very map.
+// A concurrent Register or Unregister writing the same map makes that
+// `fatal error: concurrent map iteration and map write` — a runtime throw
+// gin.Recovery cannot catch, so the whole process dies. The trigger is
+// ordinary: ringing somebody whose socket is opening or closing, which is what
+// a page refresh during a call looks like.
+func TestBroadcastingToSomebodyWhoIsReconnecting(t *testing.T) {
+	hub := NewHub(nil, stubPresence{}, nil, zerolog.Nop())
+
+	const userID = "user-1"
+	// One connection stays, so there is always a map to iterate.
+	hub.Register(testConnection(hub, "conn-resident", userID, "org-1"))
+
+	msg := protocol.NewMessage(protocol.TypeCallInvited, map[string]string{"callId": "abc"})
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	// A page refresh: the same person's other sockets opening and closing.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			conn := testConnection(hub, fmt.Sprintf("conn-%d", i), userID, "org-1")
+			hub.Register(conn)
+			hub.Unregister(conn)
+		}
+	}()
+
+	// Somebody placing a call to them, which is how this was first hit.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer close(stop)
+		for i := 0; i < 5000; i++ {
+			hub.BroadcastToUser(userID, msg)
+		}
+	}()
+
+	wg.Wait()
+}
+
+// The whole organization is broadcast to on the same maps. This passed before
+// BroadcastToUser was fixed — BroadcastToOrg held the read lock across its
+// whole body — so it is the audit of the other broadcast paths written down,
+// not a reproduction.
+func TestBroadcastingToAnOrganizationWhilePeopleReconnect(t *testing.T) {
+	hub := NewHub(nil, stubPresence{}, nil, zerolog.Nop())
+	hub.Register(testConnection(hub, "conn-resident", "user-resident", "org-1"))
+
+	msg := protocol.NewMessage(protocol.TypeChatMessage, map[string]string{"content": "hello"})
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			conn := testConnection(hub, fmt.Sprintf("conn-%d", i), fmt.Sprintf("user-%d", i), "org-1")
+			hub.Register(conn)
+			hub.Unregister(conn)
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer close(stop)
+		for i := 0; i < 5000; i++ {
+			hub.BroadcastToOrg("org-1", msg, "")
+		}
+	}()
+
+	wg.Wait()
+}
+
+// sockets hands out connections with a real WebSocket behind them, so a test
+// can run the actual ReadLoop and its cleanup rather than a copy of it.
+type sockets struct {
+	server *httptest.Server
+	accept chan *websocket.Conn
+}
+
+func newSockets(t *testing.T) *sockets {
+	t.Helper()
+
+	s := &sockets{accept: make(chan *websocket.Conn, 1)}
+	s.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		s.accept <- conn
+	}))
+	t.Cleanup(s.server.Close)
+	return s
+}
+
+// open returns a hub connection and the client end of its socket.
+func (s *sockets) open(t *testing.T, hub *Hub, id, userID, orgID string) (*Connection, *websocket.Conn) {
+	t.Helper()
+
+	dialCtx, cancelDial := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelDial()
+	client, _, err := websocket.Dial(dialCtx, "ws"+strings.TrimPrefix(s.server.URL, "http"), nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	return &Connection{
+		ID:            id,
+		userID:        userID,
+		orgID:         orgID,
+		WS:            <-s.accept,
+		SendCh:        make(chan *protocol.Message, 8),
+		Subscriptions: map[string]bool{},
+		ctx:           ctx,
+		cancel:        cancel,
+		hub:           hub,
+		logger:        zerolog.Nop(),
+	}, client
+}
+
+// ReadLoop's cleanup used to close SendCh, but every broadcast path enqueues to
+// connection pointers it took from the hub maps before releasing the lock, so
+// nothing orders "this connection is finished" against "somebody is sending to
+// it". A select with a default arm does not make that safe: `send on closed
+// channel` panics whatever the default says, and the nearest producers —
+// Ring, DeliverPendingInvitations, the chat handlers — run in goroutines with
+// no recover, so the panic takes the process down.
+func TestBroadcastingToAConnectionThatIsClosing(t *testing.T) {
+	pool := newSockets(t)
+	msg := protocol.NewMessage(protocol.TypeCallInvited, map[string]string{"callId": "abc"})
+
+	for round := 0; round < 50; round++ {
+		hub := NewHub(nil, stubPresence{}, nil, zerolog.Nop())
+		conn, client := pool.open(t, hub, fmt.Sprintf("conn-%d", round), "user-1", "org-1")
+		hub.Register(conn)
+		go conn.ReadLoop()
+
+		stop := make(chan struct{})
+		var wg sync.WaitGroup
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				hub.BroadcastToUser("user-1", msg)
+			}
+		}()
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer close(stop)
+			// Closing the far end is what ends a session in practice: a tab
+			// closing, a refresh, a phone changing network.
+			_ = client.Close(websocket.StatusNormalClosure, "")
+			time.Sleep(2 * time.Millisecond)
+		}()
+
+		wg.Wait()
+		hub.Unregister(conn)
+	}
 }
 
 // stubDeliverer records who the hub tried to ring when they connected.
