@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -95,6 +96,28 @@ func (s *Service) SetLogger(l zerolog.Logger) {
 
 func (s *Service) SetDB(db *pgxpool.Pool) {
 	s.db = db
+}
+
+// Ping reports whether object storage can actually serve this instance's
+// uploads: the endpoint is reachable, the credentials are accepted, and the
+// configured bucket is there. It backs the readiness probe, which is what
+// keeps a replica that cannot reach MinIO out of the load balancer instead of
+// letting it answer 500 to every upload.
+func (s *Service) Ping(ctx context.Context) error {
+	if s.initErr != nil {
+		return fmt.Errorf("object storage is misconfigured: %w", s.initErr)
+	}
+	if s.client == nil {
+		return errors.New("object storage is not configured")
+	}
+	exists, err := s.client.BucketExists(ctx, s.bucketName)
+	if err != nil {
+		return fmt.Errorf("object storage at %s is unreachable: %w", s.cfg.Endpoint, err)
+	}
+	if !exists {
+		return fmt.Errorf("bucket %q does not exist at %s", s.bucketName, s.cfg.Endpoint)
+	}
+	return nil
 }
 
 func (s *Service) GenerateUploadURL(ctx context.Context, req UploadRequest) (*UploadResponse, error) {

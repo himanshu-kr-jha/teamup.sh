@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -131,6 +132,13 @@ type Config struct {
 	Port        string `env:"TEAMUP_PORT" envDefault:"8080"`
 	Environment string `env:"TEAMUP_ENV" envDefault:"development"`
 	LogLevel    string `env:"TEAMUP_LOG_LEVEL" envDefault:"info"`
+
+	// How long SIGTERM is given to finish in-flight requests and close
+	// WebSocket sessions before the process leaves regardless. Keep it below
+	// the orchestrator's own kill deadline — Kubernetes'
+	// terminationGracePeriodSeconds, Docker's `stop_grace_period` — or the
+	// drain is cut short by a SIGKILL instead of finishing.
+	ShutdownGracePeriod time.Duration `env:"TEAMUP_SHUTDOWN_GRACE" envDefault:"30s"`
 
 	// Redis
 	RedisURL string `env:"TEAMUP_REDIS_URL,required"`
@@ -477,7 +485,21 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// Health endpoints (no auth). /healthz and /readyz are the canonical paths;
 	// the /healthz/* forms are kept because nginx.conf and the production
 	// compose healthcheck already probe them.
-	readyHandler := observability.ReadyHandler(dbPool, redisClient)
+	//
+	// Readiness covers every dependency a request can need, not only the two
+	// the process refuses to boot without. An instance that cannot reach object
+	// storage answers 500 to uploads, and one that cannot reach LiveKit answers
+	// 500 to call creation; both must stay out of the load balancer until they
+	// can. Liveness stays deliberately dependency-free — see LiveHandler.
+	readyDeps := []observability.Dependency{
+		observability.PingCheck("database", dbPool),
+		observability.PingCheck("redis", redisPinger{redisClient}),
+		observability.PingCheck("minio", filesService),
+	}
+	if target := liveKitProxyTarget(cfg.LiveKitURL); target != nil {
+		readyDeps = append(readyDeps, observability.HTTPCheck("livekit", target.String()))
+	}
+	readyHandler := observability.ReadyHandler(readyDeps...)
 	router.GET("/healthz", observability.LiveHandler)
 	router.GET("/readyz", readyHandler)
 	router.GET("/healthz/live", observability.LiveHandler)
@@ -546,8 +568,10 @@ func runServer(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// WebSocket endpoint
-	router.GET("/ws", websocket.WSHandler(wsHub, authService, cfg.AllowedWSOrigins))
+	// WebSocket endpoint. Sessions are tracked so shutdown can close them; see
+	// wsSessions for why http.Server cannot do it.
+	sessions := newWSSessions()
+	router.GET("/ws", sessions.Track(websocket.WSHandler(wsHub, authService, cfg.AllowedWSOrigins)))
 
 	// LiveKit's signalling socket, served from this origin.
 	//
@@ -633,26 +657,71 @@ func runServer(cmd *cobra.Command, args []string) error {
 		}
 	}()
 
-	// Graceful shutdown
+	// Graceful shutdown.
+	//
+	// The signal is armed before the listener opens, so a SIGTERM that arrives
+	// during a slow start is not missed.
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(quit)
+
+	serving := make(chan error, 1)
 	go func() {
-		quit := make(chan os.Signal, 1)
-		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-		<-quit
-		logger.Info().Msg("Shutting down server...")
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		if err := srv.Shutdown(ctx); err != nil {
-			logger.Error().Err(err).Msg("Server forced to shutdown")
+		logger.Info().Str("port", cfg.Port).Msg("Server starting")
+		err := srv.ListenAndServe()
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
 		}
+		serving <- err
 	}()
 
-	logger.Info().Str("port", cfg.Port).Msg("Server starting")
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		return fmt.Errorf("server: %w", err)
+	select {
+	case err := <-serving:
+		// The listener died on its own — a bound port, say. Nothing to drain.
+		if err != nil {
+			return fmt.Errorf("server: %w", err)
+		}
+		logger.Info().Msg("Server stopped")
+		return nil
+	case sig := <-quit:
+		logger.Info().
+			Str("signal", sig.String()).
+			Dur("grace", cfg.ShutdownGracePeriod).
+			Msg("Shutting down server...")
+	}
+
+	// One deadline for the whole drain. Everything below runs inside it, and
+	// runServer does not return — so the deferred dbPool.Close, redisClient.Close
+	// and stopSweep do not run — until the drain is finished or the deadline has
+	// passed. Handing srv.Shutdown to a goroutine nobody joined is what used to
+	// tear the pool out from under in-flight requests a few milliseconds after
+	// SIGTERM.
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), cfg.ShutdownGracePeriod)
+	defer cancelDrain()
+
+	// WebSocket sessions first, and while the database and Redis are still
+	// open: ending a session unregisters it from the hub, which writes the
+	// user's presence and tells their colleagues they have gone.
+	if closed := sessions.CloseAll(); closed > 0 {
+		logger.Info().Int("sessions", closed).Msg("Closing WebSocket sessions")
+	}
+
+	shutdownErr := srv.Shutdown(drainCtx)
+	if shutdownErr != nil {
+		logger.Error().Err(shutdownErr).Msg("Drain did not finish within the grace period")
+	}
+
+	// ListenAndServe has returned by now; take its error so nothing is lost.
+	if err := <-serving; err != nil {
+		logger.Error().Err(err).Msg("Server error during shutdown")
+	}
+
+	if err := sessions.Wait(drainCtx); err != nil {
+		logger.Warn().Err(err).Msg("WebSocket sessions did not all close within the grace period")
 	}
 
 	logger.Info().Msg("Server stopped")
-	return nil
+	return shutdownErr
 }
 
 func runMigrate(cmd *cobra.Command, args []string) error {
@@ -868,6 +937,12 @@ func connectRedis(url string) (*redis.Client, error) {
 	}
 	return client, nil
 }
+
+// redisPinger adapts go-redis, whose Ping returns a command rather than an
+// error, to the plain Ping the readiness probe consults.
+type redisPinger struct{ client *redis.Client }
+
+func (p redisPinger) Ping(ctx context.Context) error { return p.client.Ping(ctx).Err() }
 
 // loadStoredVAPIDKeys reads the keypair the setup wizard persisted with the
 // organization and hands it to the notifications service. Single-tenant, so
