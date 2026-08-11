@@ -93,3 +93,6 @@ web/playwright-report/
 # TypeScript
 *.tsbuildinfo
 next-env.d.ts
+
+# Agent worktrees are git-managed checkouts, not repository content.
+.claude/worktrees/
