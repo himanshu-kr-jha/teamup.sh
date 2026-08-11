@@ -1,0 +1,55 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "teamup.configMapName" . }}
+  labels:
+    {{- include "teamup.labels" . | nindent 4 }}
+data:
+  TEAMUP_ENV: {{ .Values.config.env | quote }}
+  TEAMUP_PORT: {{ .Values.config.port | quote }}
+  TEAMUP_LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  TEAMUP_BASE_URL: {{ .Values.config.baseURL | quote }}
+  TEAMUP_INSECURE_COOKIES: {{ .Values.config.insecureCookies | quote }}
+  TEAMUP_AUTH_ISSUER: {{ .Values.config.auth.issuer | quote }}
+  TEAMUP_AUTH_AUDIENCE: {{ .Values.config.auth.audience | quote }}
+  {{- with .Values.config.allowedWSOrigins }}
+  TEAMUP_ALLOWED_WS_ORIGINS: {{ join "," . | quote }}
+  {{- end }}
+  {{- if .Values.config.minio.endpoint }}
+  TEAMUP_MINIO_ENDPOINT: {{ .Values.config.minio.endpoint | quote }}
+  {{- end }}
+  {{- if .Values.config.minio.bucket }}
+  TEAMUP_MINIO_BUCKET: {{ .Values.config.minio.bucket | quote }}
+  {{- end }}
+  TEAMUP_MINIO_SECURE: {{ .Values.config.minio.secure | quote }}
+  {{- if .Values.config.livekit.url }}
+  TEAMUP_LIVEKIT_URL: {{ .Values.config.livekit.url | quote }}
+  {{- end }}
+  {{- with .Values.config.smtp.host }}
+  TEAMUP_SMTP_HOST: {{ . | quote }}
+  TEAMUP_SMTP_PORT: {{ $.Values.config.smtp.port | quote }}
+  {{- end }}
+  {{- with .Values.config.smtp.user }}
+  TEAMUP_SMTP_USER: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.smtp.from }}
+  TEAMUP_SMTP_FROM: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.vapid.subject }}
+  TEAMUP_VAPID_SUBJECT: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.oidc.googleClientID }}
+  TEAMUP_GOOGLE_CLIENT_ID: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.oidc.entraClientID }}
+  TEAMUP_ENTRA_CLIENT_ID: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.oidc.entraTenantID }}
+  TEAMUP_ENTRA_TENANT_ID: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.oidc.customIssuer }}
+  TEAMUP_CUSTOM_ISSUER: {{ . | quote }}
+  {{- end }}
+  {{- with .Values.config.oidc.customClientID }}
+  TEAMUP_CUSTOM_CLIENT_ID: {{ . | quote }}
+  {{- end }}

@@ -1,9 +1,17 @@
 apiVersion: v2
 name: teamup
-description: A self-hosted collaboration platform Helm chart
+description: |
+  TeamUp, a self-hosted collaboration platform: chat, video calls, tasks and
+  files. This chart deploys the TeamUp server only — PostgreSQL, Redis, an
+  S3-compatible object store and LiveKit are prerequisites you point it at.
 type: application
 version: 1.0.0
 appVersion: "1.0.0"
+# networking.k8s.io/v1 Ingress and autoscaling/v2 HPA.
+kubeVersion: ">=1.23.0-0"
+home: https://github.com/himanshu-kr-jha/teamup.sh
+sources:
+  - https://github.com/himanshu-kr-jha/teamup.sh
 keywords:
   - collaboration
   - chat

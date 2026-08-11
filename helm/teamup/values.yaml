@@ -1,13 +1,19 @@
-# Default values for TeamUp Helm chart
-# This is a YAML-formatted file.
-# Declare variables to be passed into your templates.
+# Default values for the TeamUp chart.
+#
+# This chart deploys the TeamUp server and nothing else. PostgreSQL, Redis,
+# MinIO (or any S3-compatible store) and LiveKit are prerequisites you point it
+# at — see the "Prerequisites" note at the bottom of this file for why they are
+# not subcharts.
+#
+# Every key here is read by a template. If you add one, wire it up.
 
 replicaCount: 1
 
 image:
   repository: ghcr.io/himanshu-kr-jha/teamup.sh
   pullPolicy: IfNotPresent
-  tag: "latest"
+  # Empty follows the chart's appVersion.
+  tag: ""
 
 imagePullSecrets: []
 nameOverride: ""
@@ -21,6 +27,8 @@ serviceAccount:
 podAnnotations: {}
 podLabels: {}
 
+# The published image is gcr.io/distroless/static-debian12:nonroot, which runs
+# as uid/gid 65532.
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65532
@@ -31,29 +39,33 @@ securityContext:
   allowPrivilegeEscalation: false
   capabilities:
     drop:
-    - ALL
+      - ALL
   readOnlyRootFilesystem: true
 
 service:
   type: ClusterIP
   port: 8080
-  targetPort: 8080
+  annotations: {}
 
 ingress:
   enabled: false
   className: "nginx"
   annotations:
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
     nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    # TeamUp holds a WebSocket open for the lifetime of a session. The default
+    # 60s proxy read timeout tears those down once a minute.
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
   hosts:
     - host: teamup.example.com
       paths:
         - path: /
           pathType: Prefix
-  tls:
-    - secretName: teamup-tls
-      hosts:
-        - teamup.example.com
+  tls: []
+  # tls:
+  #   - secretName: teamup-tls
+  #     hosts:
+  #       - teamup.example.com
 
 resources:
   limits:
@@ -63,182 +75,186 @@ resources:
     cpu: 250m
     memory: 512Mi
 
+# Probe paths are fixed by the server: /healthz is unconditional liveness,
+# /readyz checks its backing services. /readyz applies a 2s internal timeout,
+# so a readiness timeoutSeconds below that never sees the negative answer.
+#
+# Caveat: /readyz currently checks PostgreSQL and Redis only. A pod whose MinIO
+# or LiveKit is unreachable still reports ready and still takes traffic
+# (tracked separately as issue 39).
+startupProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  periodSeconds: 2
+  failureThreshold: 30
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  periodSeconds: 10
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# The server drains with a 30s deadline on SIGTERM.
+terminationGracePeriodSeconds: 40
+
 autoscaling:
   enabled: false
   minReplicas: 1
   maxReplicas: 3
   targetCPUUtilizationPercentage: 80
+  # targetMemoryUtilizationPercentage: 80
+
+# `teamup migrate up`, run as a pre-install/pre-upgrade hook. The schema has to
+# exist before the first server pod starts.
+migrations:
+  enabled: true
+  backoffLimit: 3
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
 
 nodeSelector: {}
-
 tolerations: []
-
 affinity: {}
+topologySpreadConstraints: []
 
-# TeamUp configuration
+# Non-secret TEAMUP_* variables. These are rendered into a ConfigMap.
 config:
   env: production
   logLevel: info
   port: 8080
+  # Used to build OIDC redirect URLs and links in outbound mail. Must match the
+  # address users actually reach, scheme included.
   baseURL: "https://teamup.example.com"
-
-  database:
-    host: postgresql
-    port: 5432
-    name: teamup
-    user: teamup
-    # password: set via secret
-    sslmode: disable
-    maxConns: 20
-
-  redis:
-    host: redis-master
-    port: 6379
-    # password: set via secret
-    db: 0
-
-  minio:
-    endpoint: minio:9000
-    accessKey: minioadmin
-    secretKey: minioadmin
-    bucket: teamup-files
-    secure: false
-
-  livekit:
-    url: http://livekit:7880
-    apiKey: changeme
-    apiSecret: changeme
+  # Extra origins allowed to open a WebSocket. Same-origin always works.
+  allowedWSOrigins: []
+  # Drops the Secure flag from auth cookies. Plain-HTTP LAN access only —
+  # never on anything reachable from the internet.
+  insecureCookies: false
 
   auth:
     issuer: teamup
     audience: teamup-api
-    accessTokenTTL: 15m
-    refreshTokenTTL: 720h
 
-  # OIDC providers (configured via wizard)
-  # google:
-  #   clientId: ""
-  #   clientSecret: ""
-  # entra:
-  #   clientId: ""
-  #   clientSecret: ""
-  #   tenantId: ""
-  # custom:
-  #   issuer: ""
-  #   clientId: ""
-  #   clientSecret: ""
+  minio:
+    # host:port of the S3-compatible endpoint, no scheme.
+    endpoint: minio:9000
+    bucket: teamup-files
+    # Set true when the endpoint terminates TLS.
+    secure: false
+
+  livekit:
+    url: http://livekit:7880
+
+  # Optional. Without SMTP, invited members are never sent their password.
+  smtp:
+    host: ""
+    port: 587
+    user: ""
+    from: ""
+
+  # Optional. Web Push is inert without a VAPID keypair; the private half goes
+  # in `secrets.vapidPrivateKey`.
+  vapid:
+    subject: "mailto:admin@teamup.local"
+
+  # Optional OIDC providers. Client secrets live under `secrets`.
+  oidc:
+    googleClientID: ""
+    entraClientID: ""
+    entraTenantID: ""
+    customIssuer: ""
+    customClientID: ""
+
+# Credential-bearing TEAMUP_* variables.
+#
+# Set `existingSecret` to the name of a Secret you manage yourself (via
+# External Secrets, Sealed Secrets, or by hand) whose keys are the TEAMUP_*
+# variable names verbatim. When it is set, nothing below is rendered and the
+# chart creates no Secret.
+#
+# Otherwise the values below are written into a chart-managed Secret. They are
+# empty by default and this chart ships no defaults for them: a credential
+# committed to a values file is a credential everyone has.
+#
+# Anything left empty is omitted from the Secret rather than written as "".
+# The server's `required` check is satisfied by an empty variable, so an empty
+# string would hide the startup error instead of producing it.
+secrets:
+  existingSecret: ""
+
+  # Required. Full DSNs, credentials included.
+  #   postgres://teamup:PASSWORD@postgres:5432/teamup?sslmode=require
+  #   redis://:PASSWORD@redis-master:6379/0
+  databaseURL: ""
+  redisURL: ""
+
+  # Required.
+  minioAccessKey: ""
+  minioSecretKey: ""
+  livekitAPIKey: ""
+  livekitAPISecret: ""
+
+  # Strongly recommended, and effectively required from the release that
+  # persists the JWT signing key: TEAMUP_AUTH_SECRET is the key that wraps it
+  # in the database. Lose or change this value and every existing session and
+  # refresh token stops verifying — everyone is logged out.
+  #
+  # Generate one with: openssl rand -base64 48
+  authSecret: ""
+
+  # Optional.
+  vapidPublicKey: ""
+  vapidPrivateKey: ""
+  smtpPassword: ""
+  googleClientSecret: ""
+  entraClientSecret: ""
+  customClientSecret: ""
 
 monitoring:
-  enabled: true
   serviceMonitor:
-    enabled: true
+    # Requires the Prometheus Operator's CRDs in the cluster.
+    enabled: false
     interval: 30s
-    path: /metrics
-  prometheusRule:
-    enabled: true
+    scrapeTimeout: 10s
+    labels: {}
 
-# Dependencies
-postgresql:
-  enabled: true
-  auth:
-    postgresPassword: changeme
-    username: teamup
-    password: changeme
-    database: teamup
-  primary:
-    persistence:
-      size: 20Gi
-    resources:
-      limits:
-        cpu: 500m
-        memory: 1Gi
-      requests:
-        cpu: 100m
-        memory: 256Mi
-
-redis:
-  enabled: true
-  architecture: standalone
-  auth:
-    enabled: true
-    password: changeme
-  master:
-    persistence:
-      size: 5Gi
-    resources:
-      limits:
-        cpu: 250m
-        memory: 512Mi
-      requests:
-        cpu: 50m
-        memory: 128Mi
-
-minio:
-  enabled: true
-  mode: standalone
-  rootUser: minioadmin
-  rootPassword: minioadmin
-  buckets:
-    - name: teamup-files
-      policy: none
-  persistence:
-    size: 50Gi
-  resources:
-    limits:
-      cpu: 500m
-      memory: 1Gi
-    requests:
-      cpu: 100m
-      memory: 256Mi
-
-livekit:
-  enabled: true
-  replicaCount: 1
-  image:
-    repository: livekit/livekit-server
-    tag: latest
-  config:
-    port: 7880
-    rtc:
-      tcpPort: 7881
-      portRangeStart: 50000
-      portRangeEnd: 60000
-      useExternalIP: true
-    keys:
-      "changeme": "changeme"
-  resources:
-    limits:
-      cpu: 1000m
-      memory: 2Gi
-    requests:
-      cpu: 250m
-      memory: 512Mi
-  service:
-    type: ClusterIP
-    ports:
-      - port: 7880
-        name: http
-      - port: 7881
-        name: rtc-tcp
-      - port: 7882
-        name: rtc-udp
-        protocol: UDP
-
-# Secrets (will be created from these values)
-secrets:
-  database:
-    password: ""
-  redis:
-    password: ""
-  minio:
-    accessKey: ""
-    secretKey: ""
-  livekit:
-    apiKey: ""
-    apiSecret: ""
-  auth:
-    secret: ""
-  vapid:
-    publicKey: ""
-    privateKey: ""
-    subject: "mailto:admin@teamup.local"
+# ── Prerequisites ────────────────────────────────────────────────────────────
+#
+# PostgreSQL, Redis, MinIO and LiveKit are NOT subcharts of this chart. Bring
+# your own and point the values above at them. The reasoning:
+#
+#   * The server takes DSNs and endpoints, so a managed RDS/ElastiCache/S3 is a
+#     one-line change — while a bundled database would be the one thing in the
+#     release nobody can safely `helm uninstall`.
+#   * LiveKit needs a wide UDP port range and a routable external address to
+#     carry media. A generic subchart gets that wrong more often than right,
+#     and the failure mode is calls that connect and then carry no audio.
+#   * Vendoring four subcharts makes `helm template`, `helm lint` and CI
+#     depend on upstream chart repositories staying reachable and stable.
+#
+# What must exist before installing:
+#
+#   * PostgreSQL 16+, reachable, with the database and role in `databaseURL`
+#     already created. The chart's migration hook creates the schema.
+#   * Redis 7+, reachable at `redisURL`.
+#   * An S3-compatible endpoint at `config.minio.endpoint` with the bucket
+#     `config.minio.bucket` already created — the server does not create it at
+#     boot (only the setup wizard does).
+#   * LiveKit reachable at `config.livekit.url`, configured with the same
+#     api key/secret pair given in `secrets`.
