@@ -150,7 +150,11 @@ type Config struct {
 	// Auth
 	AuthIssuer   string `env:"TEAMUP_AUTH_ISSUER" envDefault:"teamup"`
 	AuthAudience string `env:"TEAMUP_AUTH_AUDIENCE" envDefault:"teamup-api"`
-	AuthSecret   string `env:"TEAMUP_AUTH_SECRET"` // For HS256 fallback
+	// Encrypts the signing key where it is stored, so a database backup does
+	// not carry the ability to mint access tokens. Optional — but once a
+	// deployment has started with it, it has to keep being set, because the
+	// stored key cannot be read back without it.
+	AuthSecret string `env:"TEAMUP_AUTH_SECRET"`
 
 	// Base URL for redirects
 	BaseURL string `env:"TEAMUP_BASE_URL" envDefault:"http://localhost:8080"`
@@ -219,20 +223,23 @@ type Config struct {
 // AuthConfig returns the auth service configuration
 func (c *Config) AuthConfig() auth.Config {
 	return auth.Config{
-		Issuer:          c.AuthIssuer,
-		Audience:        c.AuthAudience,
-		BaseURL:         c.BaseURL,
-		GoogleClientID:  c.GoogleClientID,
-		GoogleSecret:    c.GoogleClientSecret,
-		EntraClientID:   c.EntraClientID,
-		EntraSecret:     c.EntraClientSecret,
-		EntraTenantID:   c.EntraTenantID,
-		CustomIssuer:    c.CustomIssuer,
-		CustomClientID:  c.CustomClientID,
-		CustomSecret:    c.CustomClientSecret,
-		AccessTokenTTL:  15 * time.Minute,
-		RefreshTokenTTL: 7 * 24 * time.Hour,
-		InsecureCookies: c.InsecureCookies,
+		Issuer:         c.AuthIssuer,
+		Audience:       c.AuthAudience,
+		BaseURL:        c.BaseURL,
+		GoogleClientID: c.GoogleClientID,
+		GoogleSecret:   c.GoogleClientSecret,
+		EntraClientID:  c.EntraClientID,
+		EntraSecret:    c.EntraClientSecret,
+		EntraTenantID:  c.EntraTenantID,
+		CustomIssuer:   c.CustomIssuer,
+		CustomClientID: c.CustomClientID,
+		CustomSecret:   c.CustomClientSecret,
+		AccessTokenTTL: 15 * time.Minute,
+		// 30 days, per the OIDC decision: a week meant signing in again every
+		// Monday morning.
+		RefreshTokenTTL:  30 * 24 * time.Hour,
+		SigningKeySecret: c.AuthSecret,
+		InsecureCookies:  c.InsecureCookies,
 	}
 }
 
@@ -367,7 +374,13 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	// Initialize services
 	authCfg := cfg.AuthConfig()
-	authService := auth.NewService(dbPool, redisClient, authCfg)
+	// The signing key is loaded from (or written to) the database here, so
+	// every replica signs with the same one and a restart does not sign
+	// everybody out. Failing to get it is fatal on purpose.
+	authService, err := auth.NewService(dbPool, redisClient, authCfg)
+	if err != nil {
+		return err
+	}
 	orgService := org.NewService(dbPool)
 	chatService := chat.NewService(dbPool, redisClient)
 	callsService := calls.NewService(dbPool, cfg.CallsConfig())

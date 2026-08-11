@@ -2,9 +2,12 @@ package auth
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -40,20 +43,49 @@ func seedUser(t *testing.T, pool *pgxpool.Pool, email, password string) (orgID, 
 	return org.ID, org.OwnerID
 }
 
-func testService(pool *pgxpool.Pool) *Service {
-	return NewService(pool, nil, Config{
+// testService builds a service against the test database, which is where the
+// signing key now lives. Without a database there is nowhere to keep one, so
+// the few tests that need no storage bring their own key.
+func testService(t *testing.T, pool *pgxpool.Pool) *Service {
+	t.Helper()
+	cfg := Config{
 		Issuer:          "teamup",
 		Audience:        "teamup-api",
 		AccessTokenTTL:  15 * time.Minute,
 		RefreshTokenTTL: 24 * time.Hour,
+	}
+	if pool == nil {
+		cfg.PrivateKey = keylessTestKey(t)
+	}
+	svc, err := NewService(pool, nil, cfg)
+	if err != nil {
+		t.Fatalf("build auth service: %v", err)
+	}
+	return svc
+}
+
+var (
+	testKeyOnce sync.Once
+	testKey     *rsa.PrivateKey
+)
+
+func keylessTestKey(t *testing.T) *rsa.PrivateKey {
+	t.Helper()
+	testKeyOnce.Do(func() {
+		var err error
+		testKey, err = rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			t.Fatalf("generate test key: %v", err)
+		}
 	})
+	return testKey
 }
 
 // GetUserByEmail was a stub returning ErrNotFound, so password login could
 // never find the account the wizard had just created.
 func TestGetUserByEmailFindsTheWizardCreatedAdmin(t *testing.T) {
 	pool := testDB(t)
-	svc := testService(pool)
+	svc := testService(t, pool)
 	ctx := context.Background()
 
 	email := "owner-" + uuid.New().String()[:8] + "@acme.test"
@@ -82,7 +114,7 @@ func TestGetUserByEmailFindsTheWizardCreatedAdmin(t *testing.T) {
 
 func TestGetUserByEmailIsCaseInsensitive(t *testing.T) {
 	pool := testDB(t)
-	svc := testService(pool)
+	svc := testService(t, pool)
 	ctx := context.Background()
 
 	email := "mixed-" + uuid.New().String()[:8] + "@acme.test"
@@ -106,7 +138,7 @@ func upper(s string) string {
 
 func TestGetUserByEmailUnknownReturnsNotFound(t *testing.T) {
 	pool := testDB(t)
-	svc := testService(pool)
+	svc := testService(t, pool)
 
 	if _, err := svc.GetUserByEmail(context.Background(), "nobody@nowhere.test"); err == nil {
 		t.Fatal("unknown email must not resolve to a user")
@@ -115,7 +147,7 @@ func TestGetUserByEmailUnknownReturnsNotFound(t *testing.T) {
 
 func TestVerifyPassword(t *testing.T) {
 	pool := testDB(t)
-	svc := testService(pool)
+	svc := testService(t, pool)
 	ctx := context.Background()
 
 	email := "verify-" + uuid.New().String()[:8] + "@acme.test"
@@ -134,7 +166,7 @@ func TestVerifyPassword(t *testing.T) {
 }
 
 func TestVerifyPasswordRejectsAccountWithoutPassword(t *testing.T) {
-	svc := testService(nil)
+	svc := testService(t, nil)
 	// OIDC-only accounts have no password_hash; they must not be loggable
 	// with an empty password.
 	if err := svc.VerifyPassword(&User{}, ""); err == nil {
@@ -147,7 +179,7 @@ func TestVerifyPasswordRejectsAccountWithoutPassword(t *testing.T) {
 // refresh path was stubbed out.
 func TestRefreshTokenCanBeFoundByItsHash(t *testing.T) {
 	pool := testDB(t)
-	svc := testService(pool)
+	svc := testService(t, pool)
 	ctx := context.Background()
 
 	email := "rt-" + uuid.New().String()[:8] + "@acme.test"
@@ -183,7 +215,7 @@ func TestRefreshTokenCanBeFoundByItsHash(t *testing.T) {
 // revoked on the very next request.
 func TestAccessAndRefreshTokensShareASession(t *testing.T) {
 	pool := testDB(t)
-	svc := testService(pool)
+	svc := testService(t, pool)
 	ctx := context.Background()
 
 	email := "sess-" + uuid.New().String()[:8] + "@acme.test"
@@ -209,7 +241,7 @@ func TestAccessAndRefreshTokensShareASession(t *testing.T) {
 
 func TestRevokeSessionMakesItRevoked(t *testing.T) {
 	pool := testDB(t)
-	svc := testService(pool)
+	svc := testService(t, pool)
 	ctx := context.Background()
 
 	email := "revoke-" + uuid.New().String()[:8] + "@acme.test"
@@ -237,7 +269,7 @@ func TestRevokeSessionMakesItRevoked(t *testing.T) {
 // would let a forged or long-expired token through.
 func TestUnknownSessionIsTreatedAsRevoked(t *testing.T) {
 	pool := testDB(t)
-	svc := testService(pool)
+	svc := testService(t, pool)
 
 	revoked, err := svc.isSessionRevoked(context.Background(), uuid.New().String())
 	if err != nil {
@@ -250,7 +282,7 @@ func TestUnknownSessionIsTreatedAsRevoked(t *testing.T) {
 
 func TestRefreshAccessTokenRotatesAndInvalidatesTheOldToken(t *testing.T) {
 	pool := testDB(t)
-	svc := testService(pool)
+	svc := testService(t, pool)
 	ctx := context.Background()
 
 	email := "rotate-" + uuid.New().String()[:8] + "@acme.test"
@@ -274,15 +306,31 @@ func TestRefreshAccessTokenRotatesAndInvalidatesTheOldToken(t *testing.T) {
 		t.Error("refresh token must be rotated, not reused")
 	}
 
-	// Replaying the consumed token must fail.
-	if _, err := svc.RefreshAccessToken(ctx, raw, "ua", "127.0.0.1"); err == nil {
-		t.Error("a rotated-away refresh token must not work a second time")
+	// Replaying the consumed token never yields a second refresh token. For a
+	// short window it still answers with an access token, because the callers
+	// that arrive together with the one that rotated are the same user's own
+	// requests — see refreshRotationGrace and
+	// TestARotatedTokenIsDeadOnceTheGraceWindowPasses, which covers the point
+	// where it stops working altogether.
+	replay, err := svc.RefreshAccessToken(ctx, raw, "ua", "127.0.0.1")
+	if err == nil && replay.RefreshToken != "" {
+		t.Error("a rotated-away refresh token must not mint another refresh token")
+	}
+
+	// The session it belonged to is finished with, whatever happens to the
+	// token itself.
+	revoked, err := svc.isSessionRevoked(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("isSessionRevoked: %v", err)
+	}
+	if !revoked {
+		t.Error("the rotated session must not still be usable")
 	}
 }
 
 func TestRevokeAllUserTokens(t *testing.T) {
 	pool := testDB(t)
-	svc := testService(pool)
+	svc := testService(t, pool)
 	ctx := context.Background()
 
 	email := "revokeall-" + uuid.New().String()[:8] + "@acme.test"
@@ -313,7 +361,7 @@ func TestRevokeAllUserTokens(t *testing.T) {
 
 func TestGetUserByIDLoadsRoles(t *testing.T) {
 	pool := testDB(t)
-	svc := testService(pool)
+	svc := testService(t, pool)
 	ctx := context.Background()
 
 	email := "byid-" + uuid.New().String()[:8] + "@acme.test"
@@ -333,7 +381,7 @@ func TestGetUserByIDLoadsRoles(t *testing.T) {
 
 func TestLinkedIdentityRoundTrip(t *testing.T) {
 	pool := testDB(t)
-	svc := testService(pool)
+	svc := testService(t, pool)
 	ctx := context.Background()
 
 	email := "linked-" + uuid.New().String()[:8] + "@acme.test"
@@ -385,7 +433,7 @@ func TestLinkedIdentityRoundTrip(t *testing.T) {
 // to rotate it.
 func TestChangePassword(t *testing.T) {
 	pool := testDB(t)
-	svc := testService(pool)
+	svc := testService(t, pool)
 	ctx := context.Background()
 
 	email := "rotate-" + uuid.New().String()[:8] + "@acme.test"
@@ -413,7 +461,7 @@ func TestChangePassword(t *testing.T) {
 
 func TestChangePasswordEnforcesLength(t *testing.T) {
 	pool := testDB(t)
-	svc := testService(pool)
+	svc := testService(t, pool)
 	ctx := context.Background()
 
 	email := "short-" + uuid.New().String()[:8] + "@acme.test"
@@ -427,7 +475,7 @@ func TestChangePasswordEnforcesLength(t *testing.T) {
 // Rotating the password must not leave old sessions usable.
 func TestChangePasswordRevokesOtherSessions(t *testing.T) {
 	pool := testDB(t)
-	svc := testService(pool)
+	svc := testService(t, pool)
 	ctx := context.Background()
 
 	email := "revoke-pw-" + uuid.New().String()[:8] + "@acme.test"
@@ -454,7 +502,7 @@ func TestChangePasswordRevokesOtherSessions(t *testing.T) {
 
 func TestListSessionsReturnsActiveOnes(t *testing.T) {
 	pool := testDB(t)
-	svc := testService(pool)
+	svc := testService(t, pool)
 	ctx := context.Background()
 
 	email := "sessions-" + uuid.New().String()[:8] + "@acme.test"
@@ -530,7 +578,7 @@ func getAs(r *gin.Engine, method, path, token string) *httptest.ResponseRecorder
 // the screen, so the check lives in the middleware rather than the frontend.
 func TestATemporaryPasswordLocksTheAPIUntilItIsChanged(t *testing.T) {
 	pool := testDB(t)
-	svc := testService(pool)
+	svc := testService(t, pool)
 	ctx := context.Background()
 
 	email := "temp-" + uuid.New().String()[:8] + "@acme.test"
@@ -564,7 +612,7 @@ func TestATemporaryPasswordLocksTheAPIUntilItIsChanged(t *testing.T) {
 // Once changed, the requirement must not come back.
 func TestChangingThePasswordClearsTheRequirement(t *testing.T) {
 	pool := testDB(t)
-	svc := testService(pool)
+	svc := testService(t, pool)
 	ctx := context.Background()
 
 	email := "cleared-" + uuid.New().String()[:8] + "@acme.test"
@@ -595,7 +643,7 @@ func TestChangingThePasswordClearsTheRequirement(t *testing.T) {
 // so a page reload quietly replaced the signed-in user with a stub.
 func TestCurrentUserAnswersWithTheWholeUser(t *testing.T) {
 	pool := testDB(t)
-	svc := testService(pool)
+	svc := testService(t, pool)
 	ctx := context.Background()
 
 	email := "whole-" + uuid.New().String()[:8] + "@acme.test"
@@ -649,16 +697,19 @@ func TestCurrentUserAnswersWithTheWholeUser(t *testing.T) {
 func TestCookiesAreSecureUnlessDeliberatelyRelaxed(t *testing.T) {
 	pool := testDB(t)
 
-	secure := testService(pool)
+	secure := testService(t, pool)
 	if !secure.cookieSecure() {
 		t.Error("cookies should be Secure by default")
 	}
 
-	relaxed := NewService(pool, nil, Config{
+	relaxed, err := NewService(pool, nil, Config{
 		Issuer: "teamup", Audience: "teamup-api",
 		AccessTokenTTL: time.Minute, RefreshTokenTTL: time.Hour,
 		InsecureCookies: true,
 	})
+	if err != nil {
+		t.Fatalf("build auth service: %v", err)
+	}
 	if relaxed.cookieSecure() {
 		t.Error("the flag should come off when asked")
 	}

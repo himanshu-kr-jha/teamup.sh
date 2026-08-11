@@ -57,7 +57,9 @@ for an organisation and an admin account.
 
 The defaults in `.env.example` are development credentials and are fine for
 localhost. **Change every secret before exposing this to anyone**, in particular
-`TEAMUP_AUTH_SECRET`.
+`TEAMUP_AUTH_SECRET`, which encrypts the key TeamUp signs access tokens with
+where it stores it. Once a deployment has started with that value, keep it: the
+stored key cannot be read back without it, and losing it signs everybody out.
 
 ### Run it by hand
 

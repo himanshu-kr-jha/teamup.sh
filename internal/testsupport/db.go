@@ -39,7 +39,7 @@ const EnvDatabaseURL = "TEAMUP_TEST_DATABASE_URL"
 // CASCADE handles ordering itself, but naming them explicitly keeps schema
 // migrations honest: a new table holding state has to be added here.
 var tablesToClean = []string{
-	"audit_logs", "linked_identities", "refresh_tokens", "org_configs",
+	"audit_logs", "linked_identities", "refresh_tokens", "signing_keys", "org_configs",
 	"notifications", "push_subscriptions", "user_presence",
 	"call_participants", "calls",
 	"sprint_tasks", "task_activities", "task_watchers", "task_attachments",
