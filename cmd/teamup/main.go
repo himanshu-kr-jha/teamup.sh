@@ -108,14 +108,29 @@ var (
 	date    = "unknown"
 )
 
+// DatabaseConfig is everything a database migration needs, and nothing else.
+//
+// Migrations touch Postgres only, so `teamup migrate` parses this rather than
+// the whole of Config. Asking for the full service configuration here refused
+// to migrate from anywhere that legitimately has the database and none of the
+// credentials: a pre-deploy job, an init container, and `make test-db`, which
+// sets TEAMUP_DATABASE_URL and nothing more.
+type DatabaseConfig struct {
+	DatabaseURL string `env:"TEAMUP_DATABASE_URL,required"`
+}
+
+// Config is what the running server needs. Everything required here is
+// required at boot deliberately: an instance missing a service credential
+// should fail immediately and visibly, not at the first request that reaches
+// for the missing piece.
 type Config struct {
+	// Database
+	DatabaseConfig
+
 	// Server
 	Port        string `env:"TEAMUP_PORT" envDefault:"8080"`
 	Environment string `env:"TEAMUP_ENV" envDefault:"development"`
 	LogLevel    string `env:"TEAMUP_LOG_LEVEL" envDefault:"info"`
-
-	// Database
-	DatabaseURL string `env:"TEAMUP_DATABASE_URL,required"`
 
 	// Redis
 	RedisURL string `env:"TEAMUP_REDIS_URL,required"`
@@ -628,7 +643,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 }
 
 func runMigrate(cmd *cobra.Command, args []string) error {
-	cfg := Config{}
+	cfg := DatabaseConfig{}
 	if err := env.Parse(&cfg); err != nil {
 		return fmt.Errorf("config parse: %w", err)
 	}
