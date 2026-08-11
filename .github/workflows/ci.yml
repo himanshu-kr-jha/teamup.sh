@@ -1,0 +1,328 @@
+name: CI
+
+# Nothing here publishes. Every job is a check; pushing images, packaging the
+# chart and cutting releases live in release.yml and only run on a semver tag.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.25'
+  NODE_VERSION: '20'
+  PNPM_VERSION: '9'
+
+jobs:
+  # ── Frontend ────────────────────────────────────────────────────────────
+  # Runs first because everything else needs its output: cmd/teamup/main.go
+  # has `//go:embed all:web/dist`, so `go build ./...`, `go vet ./...` and
+  # `go test ./cmd/...` all fail with "pattern all:web/dist: no matching files
+  # found" until the SPA has been built. The directory is gitignored, so a
+  # fresh checkout never has it.
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: ESLint
+        working-directory: web
+        run: pnpm lint
+
+      # `pnpm test` is bare `vitest`, which watches and never exits. `run` is
+      # the one-shot form.
+      - name: Vitest
+        working-directory: web
+        run: pnpm exec vitest run
+
+      # `pnpm build` is `tsc && vite build`, so this is also the typecheck.
+      # Vite writes to ../cmd/teamup/web/dist (see web/vite.config.ts).
+      - name: Build SPA
+        working-directory: web
+        run: pnpm build
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: cmd/teamup/web/dist
+          if-no-files-found: error
+          retention-days: 1
+
+  # ── Go lint ─────────────────────────────────────────────────────────────
+  lint:
+    name: Lint (Go)
+    needs: frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: cmd/teamup/web/dist
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l ./cmd ./internal ./pkg)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt would rewrite these files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      # golangci-lint reports 26 pre-existing findings across packages this
+      # ticket does not touch (20 errcheck, 4 staticcheck, 1 ineffassign,
+      # 1 unused — see issue 43). Blocking on them would make every PR red for
+      # debt it did not create, and silencing them would make the linter
+      # useless. So it blocks on issues the pull request introduces and
+      # ignores the rest. Once the backlog is cleared, drop only-new-issues
+      # and let this run on push as well.
+      - name: golangci-lint (new issues only)
+        if: github.event_name == 'pull_request'
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.6.2
+          only-new-issues: true
+
+  # ── Go tests ────────────────────────────────────────────────────────────
+  test:
+    name: Test (Go)
+    needs: frontend
+    runs-on: ubuntu-latest
+
+    services:
+      # internal/testsupport clones this database once per test package, so
+      # the connecting role has to be allowed to CREATE DATABASE. The
+      # container's POSTGRES_USER is a superuser, which covers it.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: teamup
+          POSTGRES_PASSWORD: teamup
+          POSTGRES_DB: teamup_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U teamup"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      TEAMUP_TEST_DATABASE_URL: postgres://teamup:teamup@localhost:5432/teamup_test?sslmode=disable
+      # The suite reads no other service. Only TEAMUP_TEST_DATABASE_URL is
+      # consulted by any test in the repository, so Redis, MinIO and LiveKit
+      # containers would be dead weight here.
+      MIN_EXPECTED_TESTS: '280'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: cmd/teamup/web/dist
+
+      # Not `make test-db`: that target drops a hardcoded `teamup_test`
+      # regardless of the URL it is given. Migrating the service container's
+      # database directly does the same job without that trap.
+      #
+      # `teamup migrate` parses the whole config and rejects a missing Redis,
+      # MinIO or LiveKit setting even though migrating touches none of them
+      # (issue 46). The placeholders below exist only to get past that check;
+      # nothing connects to them.
+      - name: Migrate the template database
+        env:
+          TEAMUP_DATABASE_URL: postgres://teamup:teamup@localhost:5432/teamup_test?sslmode=disable
+          TEAMUP_REDIS_URL: redis://127.0.0.1:6379
+          TEAMUP_MINIO_ENDPOINT: 127.0.0.1:9000
+          TEAMUP_MINIO_ACCESS_KEY: unused-by-migrate
+          TEAMUP_MINIO_SECRET_KEY: unused-by-migrate
+          TEAMUP_MINIO_BUCKET: unused-by-migrate
+          TEAMUP_LIVEKIT_URL: http://127.0.0.1:7880
+          TEAMUP_LIVEKIT_API_KEY: unused-by-migrate
+          TEAMUP_LIVEKIT_API_SECRET: unused-by-migrate
+        run: go run ./cmd/teamup migrate up
+
+      # A Go toolchain fetched as a module (GOTOOLCHAIN=auto) ships a trimmed
+      # pkg/tool without covdata, and `go test -coverprofile` then fails with
+      # `go: no such tool "covdata"` for every package that has no test files.
+      # actions/setup-go installs the full distribution, which has it — but if
+      # that ever changes, coverage is dropped with a warning instead of
+      # failing the build for a reason nobody would guess from the message.
+      - name: Check the toolchain ships covdata
+        id: covdata
+        run: |
+          if go tool covdata help >/dev/null 2>&1; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::this Go toolchain has no covdata tool; running without a coverage profile"
+          fi
+
+      # ./cmd/... is included deliberately (issue 45): it holds the config
+      # loading and LiveKit proxy tests, and `make test-unit` leaves it out.
+      # -race is what catches the unlocked-map class of bug in the hub.
+      #
+      # -tags=integration rather than a second `make test-integration` step:
+      # a build tag only adds files, so `go test -tags=integration ./internal/...`
+      # re-runs every ordinary test as well. No file carries that tag today, so
+      # a separate step would double a three-minute suite for nothing; folding
+      # the tag in here runs everything exactly once and still picks up the
+      # first integration test somebody writes.
+      - name: Run the suite
+        run: |
+          set -o pipefail
+          cover=()
+          if [ "${{ steps.covdata.outputs.available }}" = "true" ]; then
+            cover=(-coverprofile=coverage.out -covermode=atomic)
+          fi
+          go test -race -v -tags=integration "${cover[@]}" \
+            ./internal/... ./pkg/... ./cmd/... 2>&1 | tee test.log
+
+      # The trap this repository already fell into once: internal/testsupport
+      # skips every database-backed test when TEAMUP_TEST_DATABASE_URL is
+      # unset, so a workflow that loses its Postgres service still exits 0
+      # while testing almost nothing. A skip in CI is a failure.
+      - name: Refuse a run in which any test skipped
+        if: always()
+        run: |
+          if grep -Eq '^[[:space:]]*--- SKIP' test.log; then
+            echo "::error::tests were skipped — CI must run the database-backed suite, not step over it"
+            grep -E '^[[:space:]]*--- SKIP' test.log
+            exit 1
+          fi
+          echo "no skipped tests"
+
+      # Second half of the same guard: a suite that compiles but has lost most
+      # of its tests also exits 0. Raise the floor as the suite grows.
+      - name: Refuse a run that lost tests
+        if: always()
+        run: |
+          passed=$(grep -Ec '^--- PASS' test.log || true)
+          echo "$passed top-level tests passed (floor: $MIN_EXPECTED_TESTS)"
+          if [ "$passed" -lt "$MIN_EXPECTED_TESTS" ]; then
+            echo "::error::only $passed tests ran, expected at least $MIN_EXPECTED_TESTS"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: go-test-log
+          path: test.log
+          retention-days: 7
+
+  # ── Multi-arch binaries ─────────────────────────────────────────────────
+  build:
+    name: Build (linux/${{ matrix.arch }})
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: cmd/teamup/web/dist
+
+      - name: Build
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=${{ matrix.arch }} go build \
+            -ldflags="-s -w \
+              -X main.version=$(git describe --tags --always --dirty) \
+              -X main.commit=$(git rev-parse --short HEAD) \
+              -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            -o teamup-linux-${{ matrix.arch }} ./cmd/teamup
+
+      # Only the runner's own architecture can be executed here.
+      - name: Smoke test the binary
+        if: matrix.arch == 'amd64'
+        run: |
+          ./teamup-linux-amd64 version
+          ./teamup-linux-amd64 migrate --help
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: teamup-linux-${{ matrix.arch }}
+          path: teamup-linux-${{ matrix.arch }}
+          retention-days: 7
+
+  # ── Docker image ────────────────────────────────────────────────────────
+  # Builds both architectures to prove the Dockerfile still works. It never
+  # pushes: publishing happens on a tag, in release.yml.
+  docker:
+    name: Docker image (build only)
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: cmd/teamup/web/dist
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          outputs: type=cacheonly
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Helm chart ──────────────────────────────────────────────────────────
+  helm:
+    name: Helm chart
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: helm lint
+        run: helm lint helm/teamup
