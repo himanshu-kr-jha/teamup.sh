@@ -26,7 +26,10 @@ for arg in "$@"; do
   case "$arg" in
     --check) MODE="check" ;;
     --force) MODE="force" ;;
-    -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    # Print the header comment block as the help text: skip the shebang, strip
+    # the leading '#', and stop at the first line that is not a comment, so
+    # this keeps working when the block above changes length.
+    -h|--help) awk 'NR==1{next} /^#/{sub(/^#[[:space:]]?/,""); print; next} {exit}' "$0"; exit 0 ;;
     *) echo "Unknown option: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
