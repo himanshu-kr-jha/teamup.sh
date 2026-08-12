@@ -176,6 +176,11 @@ Edit `.env`. What matters:
 TEAMUP_BASE_URL=https://teamup.yourdomain.com
 TEAMUP_ENV=production
 
+# Encrypts the key TeamUp signs tokens with. The value in .env.example is a
+# published placeholder — anyone who has read the repository could mint valid
+# tokens against it. Generate your own:  openssl rand -hex 32
+TEAMUP_AUTH_SECRET=<64 random hex characters>
+
 # Change every one of these from the defaults.
 TEAMUP_DATABASE_URL=postgres://teamup:<a real password>@postgres:5432/teamup?sslmode=disable
 TEAMUP_MINIO_ACCESS_KEY=<not minioadmin>
@@ -193,6 +198,16 @@ TEAMUP_SMTP_FROM=teamup@yourdomain.com
 
 Leave `TEAMUP_INSECURE_COOKIES` unset. On HTTPS it is not needed and turning it
 on would send session tokens in clear.
+
+**Back up `TEAMUP_AUTH_SECRET` somewhere other than the server.** It decrypts
+the signing key held in the database; if you lose it, that key cannot be read
+back, every session ends at once, and a new key has to be generated. Restoring
+a database backup without the matching secret does not get you back.
+
+**Create the object storage bucket before first boot.** Nothing in the server's
+startup path creates it, so without it `/readyz` reports MinIO unhealthy and
+every upload fails. `./setup.sh` does this for a local install; for a production
+one, create `TEAMUP_MINIO_BUCKET` by hand in your object store.
 
 ### The certificate
 
