@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 
@@ -210,7 +211,7 @@ func GinLogger(logger zerolog.Logger) gin.HandlerFunc {
 // GinMetrics returns a Gin middleware for Prometheus metrics
 func GinMetrics() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		path := sanitizePath(c.Request.URL.Path)
+		path := routeLabel(c)
 		method := c.Request.Method
 
 		httpRequestsInFlight.WithLabelValues(method, path).Inc()
@@ -222,15 +223,29 @@ func GinMetrics() gin.HandlerFunc {
 		duration := time.Since(start).Seconds()
 
 		httpRequestsInFlight.WithLabelValues(method, path).Dec()
-		httpRequestsTotal.WithLabelValues(method, path, string(rune(status))).Inc()
+		httpRequestsTotal.WithLabelValues(method, path, strconv.Itoa(status)).Inc()
 		httpRequestDuration.WithLabelValues(method, path).Observe(duration)
 	}
 }
 
-func sanitizePath(path string) string {
-	// Replace UUIDs and IDs with placeholders
-	// This is a simplified version; in production use a proper path matcher
-	return path
+// unmatchedRoute is the single label value that every request matching no route
+// is counted under. The requested URL must never reach the label: it is
+// attacker-controlled, and echoing it lets any client mint one time series per
+// request until the scraper falls over.
+const unmatchedRoute = "<unmatched>"
+
+// routeLabel returns the path label for a request. It is the route template Gin
+// matched ("/api/tasks/:id"), not the URL that was requested
+// ("/api/tasks/<uuid>"), so cardinality is bounded by the number of registered
+// routes rather than by traffic.
+//
+// Gin resolves the route before running the handler chain, so this is already
+// populated when the middleware is entered.
+func routeLabel(c *gin.Context) string {
+	if route := c.FullPath(); route != "" {
+		return route
+	}
+	return unmatchedRoute
 }
 
 // MetricsHandler exposes Prometheus metrics
