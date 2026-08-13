@@ -279,6 +279,23 @@ func (s *Service) IsChannelMember(ctx context.Context, orgID, channelID, userID 
 // work the caller should not wait on, and none of it affects whether the call
 // was created.
 func (s *Service) Ring(ctx context.Context, call *Call, callerID, callerName string, invitees []uuid.UUID) {
+	// The list arrives from a request body — the create-call handler passes on
+	// whatever ids it was given — so it is resolved against the call's own
+	// organization first. A ring carries a LiveKit token, and a token issued to
+	// somebody in another organization is a way into this one's room.
+	//
+	// Unlike the invite frame, this runs detached after the call already
+	// exists, so there is no longer anybody to refuse to: strangers are dropped
+	// and the genuine invitees still get their call.
+	invitees, err := s.inviteesInOrg(ctx, call.OrgID, invitees)
+	if err != nil {
+		// Fail closed. Ringing an unresolved list is exactly the thing this
+		// guards against.
+		s.logger.Error().Err(err).Str("call", call.ID.String()).
+			Msg("could not resolve call invitees; nobody was rung")
+		return
+	}
+
 	// Devices first, and regardless of whether anything is open: somebody with
 	// no tab is exactly who this reaches.
 	s.ringDevices(ctx, call, callerName, invitees)
@@ -315,6 +332,55 @@ func (s *Service) Ring(ctx context.Context, call *Call, callerID, callerName str
 			"reachable": s.isReachable(invitee.String()),
 		}))
 	}
+}
+
+// inviteesInOrg keeps only the people who really are in the organization.
+//
+// Nothing in an invitee list is trustworthy: the ids come off the wire, from a
+// socket frame or a request body, and reaching one of them mints a LiveKit
+// token for it. Every other cross-organization boundary here is enforced in
+// the query, and this is the same idea — resolve who was named against the
+// organization doing the naming before anybody is reached.
+//
+// Order is preserved and duplicates are dropped, so the result can be compared
+// against a de-duplicated request to see whether anybody was rejected.
+func (s *Service) inviteesInOrg(ctx context.Context, orgID uuid.UUID, invitees []uuid.UUID) ([]uuid.UUID, error) {
+	if len(invitees) == 0 {
+		return nil, nil
+	}
+
+	named := make([]string, 0, len(invitees))
+	for _, id := range invitees {
+		named = append(named, id.String())
+	}
+	rows, err := s.db.Query(ctx,
+		`SELECT id FROM users WHERE org_id = $1 AND id = ANY($2::uuid[])`, orgID, named)
+	if err != nil {
+		return nil, fmt.Errorf("resolve call invitees: %w", err)
+	}
+	defer rows.Close()
+
+	inOrg := map[uuid.UUID]bool{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan call invitee: %w", err)
+		}
+		inOrg[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("resolve call invitees: %w", err)
+	}
+
+	resolved := make([]uuid.UUID, 0, len(invitees))
+	seen := map[uuid.UUID]bool{}
+	for _, id := range invitees {
+		if inOrg[id] && !seen[id] {
+			seen[id] = true
+			resolved = append(resolved, id)
+		}
+	}
+	return resolved, nil
 }
 
 // Participants lists everybody on a call, optionally skipping one person.
@@ -515,10 +581,67 @@ func (s *Service) HandleCallInvite(ctx context.Context, conn websocket.WSConnect
 		return
 	}
 
-	orgID, _ := uuid.Parse(conn.OrgID())
-	userID, _ := uuid.Parse(conn.UserID())
+	orgID, err := uuid.Parse(conn.OrgID())
+	if err != nil {
+		s.refuseInvite(conn)
+		return
+	}
+	userID, err := uuid.Parse(conn.UserID())
+	if err != nil {
+		s.refuseInvite(conn)
+		return
+	}
 
-	call, err := s.CreateCall(ctx, orgID, userID, &payload.Title, payload.CallType, nil, payload.Invitees)
+	// Whoever is on the other end of this socket named these people, and the
+	// shipped client never sends this frame at all — so the list is checked
+	// against their own organization before a call exists, before anybody is
+	// rung, and before a single token is minted.
+	requested := make([]uuid.UUID, 0, len(payload.Invitees))
+	seen := map[uuid.UUID]bool{}
+	for _, raw := range payload.Invitees {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			s.refuseInvite(conn)
+			return
+		}
+		if !seen[id] {
+			seen[id] = true
+			requested = append(requested, id)
+		}
+	}
+	invitees, err := s.inviteesInOrg(ctx, orgID, requested)
+	if err != nil {
+		s.logger.Error().Err(err).Msg("could not resolve the invitees on a call frame")
+		s.refuseInvite(conn)
+		return
+	}
+
+	// A frame naming somebody who is not in the caller's organization is
+	// refused whole, rather than honoured for the part of it that checks out.
+	//
+	// Nothing has happened by this point — no call row, no room, no token — so
+	// refusing leaves the world untouched, which is the direction to fail in
+	// for a message that hands out media-server credentials. It is also the
+	// clearer of the two failures: a caller who asked for three people and
+	// silently got two sits in a room wondering why the third never picked up,
+	// whereas a refusal says the invite did not happen. And there is no
+	// legitimate partly-valid invite to preserve here — the shipped client
+	// cannot produce one, so a frame like this is a bug or a probe either way.
+	if len(invitees) != len(requested) {
+		s.logger.Warn().
+			Str("caller", userID.String()).Str("org", orgID.String()).
+			Int("named", len(requested)).Int("resolved", len(invitees)).
+			Msg("refused a call invite naming somebody outside the caller's organization")
+		s.refuseInvite(conn)
+		return
+	}
+
+	named := make([]string, 0, len(invitees))
+	for _, id := range invitees {
+		named = append(named, id.String())
+	}
+
+	call, err := s.CreateCall(ctx, orgID, userID, &payload.Title, payload.CallType, nil, named)
 	if err != nil {
 		return
 	}
@@ -534,13 +657,10 @@ func (s *Service) HandleCallInvite(ctx context.Context, conn websocket.WSConnect
 	}))
 
 	if s.broadcaster != nil {
-		for _, invitee := range payload.Invitees {
-			inviteeName := ""
-			if id, err := uuid.Parse(invitee); err == nil {
-				inviteeName = s.DisplayName(ctx, id)
-			}
-			inviteeToken, _ := s.GenerateToken(ctx, call.RoomName, invitee, inviteeName, true, true)
-			s.broadcaster.BroadcastToUser(invitee, protocol.NewMessage(protocol.TypeCallInvited, protocol.CallInvitedPayload{
+		for _, invitee := range invitees {
+			inviteeToken, _ := s.GenerateToken(ctx, call.RoomName, invitee.String(),
+				s.DisplayName(ctx, invitee), true, true)
+			s.broadcaster.BroadcastToUser(invitee.String(), protocol.NewMessage(protocol.TypeCallInvited, protocol.CallInvitedPayload{
 				RoomName:   call.RoomName,
 				CallerID:   conn.UserID(),
 				CallerName: "Caller",
@@ -549,6 +669,19 @@ func (s *Service) HandleCallInvite(ctx context.Context, conn websocket.WSConnect
 			}))
 		}
 	}
+}
+
+// refuseInvite tells the caller their invite did not happen, so a client that
+// has put up a "calling…" panel takes it down rather than waiting on a call
+// that was never made.
+//
+// One reason for every refusal, deliberately: whether an id was malformed,
+// belongs to nobody, or belongs to somebody in another organization is not
+// something a caller is entitled to learn by asking.
+func (s *Service) refuseInvite(conn websocket.WSConnection) {
+	conn.Enqueue(protocol.NewMessage(protocol.TypeCallEnded, protocol.CallEndedPayload{
+		Reason: "invalid_invitee",
+	}))
 }
 
 func (s *Service) HandleCallAccept(ctx context.Context, conn websocket.WSConnection, msg *protocol.Message) {

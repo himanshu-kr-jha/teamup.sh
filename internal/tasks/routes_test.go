@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"github.com/teamup/teamup/internal/testsupport"
 )
@@ -18,17 +19,32 @@ import (
 // middleware, so a test can say who is calling without minting a real token.
 func asOwner(t *testing.T, svc *Service, org *testsupport.Org) *gin.Engine {
 	t.Helper()
+	return asUser(t, svc, org.ID, org.OwnerID, "owner")
+}
+
+// asUser is the same router for somebody who is not the owner, so a test can
+// call as a second member of the organization — or as a member of another one.
+func asUser(t *testing.T, svc *Service, orgID, userID uuid.UUID, roles ...string) *gin.Engine {
+	t.Helper()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	api := r.Group("/api")
 	api.Use(func(c *gin.Context) {
-		c.Set("org_id", org.ID.String())
-		c.Set("user_id", org.OwnerID.String())
-		c.Set("user_roles", []string{"owner"})
+		c.Set("org_id", orgID.String())
+		c.Set("user_id", userID.String())
+		c.Set("user_roles", roles)
 		c.Next()
 	})
 	RegisterRoutes(api, svc)
 	return r
+}
+
+func deleteTask(t *testing.T, r *gin.Engine, id string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, "/api/tasks/"+id, nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
 }
 
 func patchTask(t *testing.T, r *gin.Engine, id string, body string) *httptest.ResponseRecorder {
@@ -164,5 +180,83 @@ func TestUpdateTaskRejectsTheWholeBodyWhenOneFieldIsBad(t *testing.T) {
 	}
 	if after.Title != "Original" {
 		t.Errorf("the valid half of a rejected body was applied: %q", after.Title)
+	}
+}
+
+// Deleting used to need nothing but membership of the organization, so any
+// member could make anybody else's task disappear from everybody's board.
+// Authority over the person who filed it is what is required, and the caller
+// who lacks it must be told 403 — while an id belonging to another tenant
+// stays a 404, so a refusal never confirms that the task exists.
+func TestDeletingATaskNeedsAuthorityOverTheReporter(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	reporter := testsupport.SeedUser(t, pool, org, "reporter@example.test", "member")
+	bystander := testsupport.SeedUser(t, pool, org, "bystander@example.test", "member")
+	manager := testsupport.SeedUser(t, pool, org, "manager@example.test", "manager")
+	admin := testsupport.SeedUser(t, pool, org, "admin@example.test", "admin")
+	testsupport.SeedTeam(t, pool, org, "Support", &manager, nil, reporter)
+
+	elsewhere := testsupport.SeedOrg(t, pool)
+
+	cases := []struct {
+		name   string
+		orgID  uuid.UUID
+		userID uuid.UUID
+		roles  []string
+		want   int
+	}{
+		{"the person who filed it", org.ID, reporter, []string{"member"}, http.StatusOK},
+		{"another member of the same organization", org.ID, bystander, []string{"member"}, http.StatusForbidden},
+		{"the manager of the team they are on", org.ID, manager, []string{"manager"}, http.StatusOK},
+		{"an administrator of the organization", org.ID, admin, []string{"admin"}, http.StatusOK},
+		{"the owner of the organization", org.ID, org.OwnerID, []string{"owner"}, http.StatusOK},
+		{"a member of another organization", elsewhere.ID, elsewhere.OwnerID, []string{"owner"}, http.StatusNotFound},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			task := createTaskAs(t, svc, org, reporter, "Somebody else's work")
+			r := asUser(t, svc, tc.orgID, tc.userID, tc.roles...)
+
+			w := deleteTask(t, r, task.ID.String())
+			if w.Code != tc.want {
+				t.Fatalf("want %d, got %d: %s", tc.want, w.Code, w.Body.String())
+			}
+
+			_, err := svc.GetTask(ctx, org.ID, task.ID)
+			if tc.want == http.StatusOK && err == nil {
+				t.Error("an allowed delete should take the task off the board")
+			}
+			if tc.want != http.StatusOK && err != nil {
+				t.Errorf("a refused delete must leave the task alone: %v", err)
+			}
+		})
+	}
+}
+
+// The 404 has to be the same 404 an invented id gets, or the status alone
+// tells a caller in another organization that the task is real.
+func TestADeleteFromAnotherOrganizationLooksLikeAnInventedID(t *testing.T) {
+	svc, pool := newService(t)
+	org := testsupport.SeedOrg(t, pool)
+	task := createTask(t, svc, org, "Theirs")
+
+	elsewhere := testsupport.SeedOrg(t, pool)
+	r := asUser(t, svc, elsewhere.ID, elsewhere.OwnerID, "owner")
+
+	real := deleteTask(t, r, task.ID.String())
+	invented := deleteTask(t, r, uuid.NewString())
+
+	if real.Code != http.StatusNotFound {
+		t.Fatalf("another organization's task: want 404, got %d: %s", real.Code, real.Body.String())
+	}
+	if real.Code != invented.Code || real.Body.String() != invented.Body.String() {
+		t.Errorf("a real task in another organization answered %d %s, an invented id answered %d %s",
+			real.Code, real.Body.String(), invented.Code, invented.Body.String())
+	}
+	if _, err := svc.GetTask(context.Background(), org.ID, task.ID); err != nil {
+		t.Errorf("the task was deleted from across the tenant boundary: %v", err)
 	}
 }

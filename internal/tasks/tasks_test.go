@@ -20,7 +20,14 @@ func newService(t *testing.T) (*Service, *pgxpool.Pool) {
 
 func createTask(t *testing.T, svc *Service, org *testsupport.Org, title string) *Task {
 	t.Helper()
-	task, err := svc.CreateTask(context.Background(), org.ID, org.OwnerID,
+	return createTaskAs(t, svc, org, org.OwnerID, title)
+}
+
+// createTaskAs files a task in somebody else's name, so a test can be a person
+// who did not report the task it is acting on.
+func createTaskAs(t *testing.T, svc *Service, org *testsupport.Org, reporterID uuid.UUID, title string) *Task {
+	t.Helper()
+	task, err := svc.CreateTask(context.Background(), org.ID, reporterID,
 		title, "", "", "", "", nil, nil, nil, nil, nil, false)
 	if err != nil {
 		t.Fatalf("create task %q: %v", title, err)
@@ -118,8 +125,8 @@ func TestTasksDoNotCrossOrganizations(t *testing.T) {
 	if _, err := svc.GetTask(ctx, mine.ID, theirTask.ID); err == nil {
 		t.Error("a task from another organization must not be readable")
 	}
-	if err := svc.DeleteTask(ctx, mine.ID, theirTask.ID); err == nil {
-		t.Error("a task from another organization must not be deletable")
+	if err := svc.DeleteTask(ctx, mine.ID, theirTask.ID, mine.OwnerID, true); err == nil {
+		t.Error("a task from another organization must not be deletable, not even by an admin")
 	}
 	list, _ := svc.ListTasks(ctx, mine.ID, Filters{})
 	if len(list) != 0 {
@@ -182,7 +189,7 @@ func TestDeleteTaskRemovesItFromTheBoard(t *testing.T) {
 	org := testsupport.SeedOrg(t, pool)
 	task := createTask(t, svc, org, "Temporary")
 
-	if err := svc.DeleteTask(ctx, org.ID, task.ID); err != nil {
+	if err := svc.DeleteTask(ctx, org.ID, task.ID, org.OwnerID, false); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	if _, err := svc.GetTask(ctx, org.ID, task.ID); err == nil {
@@ -192,7 +199,7 @@ func TestDeleteTaskRemovesItFromTheBoard(t *testing.T) {
 	if len(list) != 0 {
 		t.Errorf("deleted task still on the board: %+v", list)
 	}
-	if err := svc.DeleteTask(ctx, org.ID, task.ID); err == nil {
+	if err := svc.DeleteTask(ctx, org.ID, task.ID, org.OwnerID, false); err == nil {
 		t.Error("deleting twice should report not-found")
 	}
 }

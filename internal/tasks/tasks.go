@@ -677,13 +677,23 @@ func (s *Service) validateUpdates(ctx context.Context, orgID, actorID uuid.UUID,
 // assign work to themselves. Organization owners and admins are not bounded by
 // the chart. Without this, any member could assign work to their manager.
 func (s *Service) MayAssign(ctx context.Context, orgID, actorID, assigneeID uuid.UUID, isOrgAdmin bool) (bool, error) {
-	if isOrgAdmin || actorID == assigneeID {
+	return s.hasAuthorityOver(ctx, orgID, actorID, assigneeID, isOrgAdmin)
+}
+
+// hasAuthorityOver answers whether actor may act on subject's behalf: they are
+// the same person, actor manages a team subject sits on (directly or further
+// down), or actor administers the organization. It is the one place this
+// package decides who outranks whom, so assigning work and deleting somebody's
+// task cannot drift apart.
+func (s *Service) hasAuthorityOver(ctx context.Context, orgID, actorID, subjectID uuid.UUID, isOrgAdmin bool) (bool, error) {
+	if isOrgAdmin || actorID == subjectID {
 		return true, nil
 	}
 
 	// Somebody who administers the organization is above the chart, even if
 	// they happen to sit on a team as an ordinary member. Without this a
-	// manager could assign work to the owner of the organization.
+	// manager could assign work to — or delete the tasks of — the owner of the
+	// organization.
 	var targetAdministers bool
 	if err := s.db.QueryRow(ctx, `
 		SELECT COALESCE(u.is_admin, false)
@@ -693,15 +703,15 @@ func (s *Service) MayAssign(ctx context.Context, orgID, actorID, assigneeID uuid
 		        JOIN roles r ON r.id = ur.role_id
 		        WHERE ur.user_id = u.id AND r.name IN ('owner', 'admin'))
 		FROM users u WHERE u.id = $1 AND u.org_id = $2
-	`, assigneeID, orgID).Scan(&targetAdministers); err != nil {
-		return false, fmt.Errorf("check assignee standing: %w", err)
+	`, subjectID, orgID).Scan(&targetAdministers); err != nil {
+		return false, fmt.Errorf("check subject standing: %w", err)
 	}
 	if targetAdministers {
 		return false, nil
 	}
 
 	// Walk down from every team the actor manages, following parent_id, and
-	// ask whether the assignee sits anywhere in that subtree.
+	// ask whether the subject sits anywhere in that subtree.
 	var ok bool
 	err := s.db.QueryRow(ctx, `
 		WITH RECURSIVE managed AS (
@@ -719,9 +729,9 @@ func (s *Service) MayAssign(ctx context.Context, orgID, actorID, assigneeID uuid
 			JOIN managed ON managed.id = tm.team_id
 			WHERE tm.user_id = $3
 		)
-	`, orgID, actorID, assigneeID).Scan(&ok)
+	`, orgID, actorID, subjectID).Scan(&ok)
 	if err != nil {
-		return false, fmt.Errorf("check assignment authority: %w", err)
+		return false, fmt.Errorf("check authority: %w", err)
 	}
 	return ok, nil
 }
@@ -873,7 +883,45 @@ func recordActivity(ctx context.Context, tx pgx.Tx, taskID, userID uuid.UUID, fi
 
 // DeleteTask is a soft delete: comments, activity and attachments reference the
 // task and an audit trail that loses its subject is worse than a hidden row.
-func (s *Service) DeleteTask(ctx context.Context, orgID, id uuid.UUID) error {
+//
+// Deleting needs authority over the person who filed the task — themselves,
+// whoever manages them through the team chart, or an organization owner or
+// admin — the same ladder that decides who may assign work to whom. Membership
+// of the organization used to be enough, so anybody could make anybody else's
+// task disappear from everybody's board.
+//
+// The assignee is deliberately not on that list: being handed a piece of work
+// is not authority to destroy the record of it, which is precisely how an
+// unwanted bug report would be made to go away. An assignee can still close
+// the task, and closing is written to its activity trail.
+//
+// (projects.lead_id would be a natural fifth answer, but nothing in the
+// codebase reads or writes projects yet — no service, no route, no way to
+// appoint a lead — so gating on it would be a branch no caller can reach.)
+func (s *Service) DeleteTask(ctx context.Context, orgID, id, actorID uuid.UUID, isOrgAdmin bool) error {
+	// Look the task up first, scoped to the organization: an id from another
+	// tenant, or one already deleted, is not-found and never a refusal, so a
+	// 403 cannot be used to discover that a task exists.
+	var reporterID uuid.UUID
+	if err := s.db.QueryRow(ctx, `
+		SELECT reporter_id FROM tasks
+		WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
+	`, id, orgID).Scan(&reporterID); err != nil {
+		if err == pgx.ErrNoRows {
+			return apperrors.ErrNotFound
+		}
+		return fmt.Errorf("load task for delete: %w", err)
+	}
+
+	mayDelete, err := s.hasAuthorityOver(ctx, orgID, actorID, reporterID, isOrgAdmin)
+	if err != nil {
+		return err
+	}
+	if !mayDelete {
+		return apperrors.New(apperrors.CodeForbidden,
+			"only the person who filed this task, their manager, or an administrator may delete it")
+	}
+
 	tag, err := s.db.Exec(ctx, `
 		UPDATE tasks SET deleted_at = NOW(), updated_at = NOW()
 		WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL

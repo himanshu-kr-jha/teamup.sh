@@ -271,7 +271,8 @@ func (h *Handler) DeleteTask(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := h.service.DeleteTask(c.Request.Context(), cl.OrgID, id); err != nil {
+	if err := h.service.DeleteTask(c.Request.Context(), cl.OrgID, id, cl.UserID,
+		auth.GetUserFromContext(c).HasAnyRole("owner", "admin")); err != nil {
 		httpx.Error(c, err, "failed to delete task")
 		return
 	}
