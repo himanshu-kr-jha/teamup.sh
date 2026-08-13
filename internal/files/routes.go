@@ -22,8 +22,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	h := NewHandler(service)
 
 	rg.POST("/files/upload-url", h.GetUploadURL)
-	rg.POST("/files/multipart/initiate", h.InitiateMultipart)
-	rg.POST("/files/multipart/complete", h.CompleteMultipart)
+	rg.GET("/files/limits", h.UploadLimits)
 	rg.GET("/files/download-url", h.GetDownloadURL)
 	rg.POST("/files/record", h.RecordAttachment)
 	rg.GET("/files", h.ListAttachments)
@@ -159,34 +158,11 @@ func (h *Handler) GetUploadURL(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-func (h *Handler) InitiateMultipart(c *gin.Context) {
-	// Similar to GetUploadURL but for large files
-	h.GetUploadURL(c)
-}
-
-func (h *Handler) CompleteMultipart(c *gin.Context) {
-	user := auth.GetUserFromContext(c)
-	orgID := user.OrgID
-
-	var req struct {
-		ObjectKey string          `json:"objectKey" binding:"required"`
-		UploadID  string          `json:"uploadId" binding:"required"`
-		Parts     []CompletedPart `json:"parts" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	if err := h.service.CompleteMultipartUpload(c.Request.Context(), orgID, user.UserID, req.ObjectKey, req.UploadID, req.Parts); err != nil {
-		httpx.Error(c, err, "failed to complete upload")
-		return
-	}
-
-	// Record attachment in DB
-	// INSERT INTO attachments ...
-
-	c.JSON(http.StatusOK, gin.H{"message": "upload completed"})
+// UploadLimits lets the client refuse an over-sized file in the browser rather
+// than after the bytes have crossed the network. It is not the enforcement —
+// that is the signed content length on the upload URL — only the courtesy.
+func (h *Handler) UploadLimits(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"maxUploadBytes": h.service.MaxUploadBytes()})
 }
 
 func (h *Handler) GetDownloadURL(c *gin.Context) {

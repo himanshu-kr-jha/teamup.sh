@@ -185,6 +185,8 @@ TEAMUP_AUTH_SECRET=<64 random hex characters>
 TEAMUP_DATABASE_URL=postgres://teamup:<a real password>@postgres:5432/teamup?sslmode=disable
 TEAMUP_MINIO_ACCESS_KEY=<not minioadmin>
 TEAMUP_MINIO_SECRET_KEY=<not minioadmin>
+# The address the BROWSER uses for object storage — see below. Not minio:9000.
+TEAMUP_MINIO_ENDPOINT=teamup.yourdomain.com
 TEAMUP_LIVEKIT_API_KEY=<not devkey>
 TEAMUP_LIVEKIT_API_SECRET=<not devsecret>
 
@@ -222,8 +224,77 @@ sudo cp /etc/letsencrypt/live/teamup.yourdomain.com/privkey.pem  certs/tls.key
 sudo chown $USER certs/*
 ```
 
-Replace `teamup.example.com` with your own name in `nginx.conf` — it appears
-twice, once in the redirect and once in the TLS server.
+Replace `teamup.example.com` with your own name in three places:
+
+| File | What |
+| --- | --- |
+| `nginx.conf` | `server_name`, twice — the redirect and the TLS server |
+| `docker-compose.prod.yml` | `TEAMUP_MINIO_ENDPOINT`, `TEAMUP_BASE_URL`, and the nginx service's network `aliases` entry |
+
+The alias is what lets the other containers resolve your public name from
+inside the compose network, so LiveKit's recording upload does not have to
+leave the host and come back through NAT to reach object storage. Use a real
+certificate rather than a self-signed one: those containers verify it.
+
+### Object storage has to be reachable from the browser
+
+Uploads and inline images do not pass through the app. The server signs a URL
+and the browser opens it directly, which means the address in
+`TEAMUP_MINIO_ENDPOINT` has to be one a *browser* can resolve and load over
+TLS. `minio:9000` is neither: the name does not exist outside Docker, and an
+`http://` URL on an HTTPS page is blocked as mixed content before it is even
+tried. The shipped configuration therefore looks like this:
+
+```ini
+TEAMUP_MINIO_ENDPOINT=teamup.yourdomain.com     # what the browser opens
+TEAMUP_MINIO_SECURE=true
+TEAMUP_MINIO_INTERNAL_ENDPOINT=minio:9000       # what this server dials
+TEAMUP_MINIO_INTERNAL_SECURE=false
+TEAMUP_MINIO_BUCKET=teamup-files
+TEAMUP_MINIO_REGION=us-east-1
+```
+
+and `nginx.conf` carries a matching `location /teamup-files/` block. Three
+things about that block are load-bearing, because an S3 signature covers the
+request path, the query string and the `Host` header, and MinIO recomputes it
+from whatever actually arrives:
+
+- **The location prefix is the bucket name.** URLs are path-style —
+  `https://teamup.yourdomain.com/<bucket>/<object key>`. Rename the bucket and
+  you must rename the location.
+- **Nothing may rewrite the path.** No `rewrite`, and `proxy_pass` without a
+  URI part so nginx forwards the request line as the browser sent it.
+- **`proxy_set_header Host $http_host;`.** Not `$host`, which drops a
+  non-default port, and not nginx's default, which substitutes the upstream
+  name. Either one produces `SignatureDoesNotMatch` on every upload.
+
+If you put object storage on its own hostname instead — `files.yourdomain.com`
+with its own certificate and server block — set `TEAMUP_MINIO_ENDPOINT` to that
+name and keep the bucket-named location. Everything above still applies.
+
+### The upload limit
+
+`TEAMUP_MAX_UPLOAD_BYTES` (default 100 MiB) is the largest single file the
+server will sign for. It is not advisory: the exact content length is signed
+into each upload URL, so object storage rejects a body of any other size. The
+browser is told the limit as well, so an over-sized file is refused before
+anything is sent.
+
+Raising it means changing two things together:
+
+1. `TEAMUP_MAX_UPLOAD_BYTES` in `docker-compose.prod.yml`, and
+2. `client_max_body_size` on the `/teamup-files/` location in `nginx.conf`,
+   which must be at least as large or nginx answers `413` first.
+
+There is no multipart upload. A single PUT is enough for anything under the
+5 GiB S3 object limit, and the endpoints that claimed to do multipart never
+did — `initiate` handed back an ordinary single-PUT URL and `complete` wrote
+no record at all. They have been removed rather than left as a trap.
+
+`TEAMUP_MINIO_REGION` is part of the signing key. Leave it at `us-east-1`
+unless you set `MINIO_REGION` on the minio service, in which case set both to
+the same value. A mismatch shows up in the readiness probe at start-up rather
+than as a user's failed upload.
 
 ### Running it
 
@@ -258,4 +329,8 @@ Open `https://teamup.yourdomain.com` and the setup wizard runs.
 | Nothing arrives without a refresh | The WebSocket is not connecting. Check that the proxy passes `Upgrade` and `Connection` headers on `/ws`. |
 | A call connects but nobody hears anything | UDP 50000–60000 is not open, or LiveKit is advertising an address the other side cannot reach. `docker logs teamup-livekit | grep nodeIP` shows what it settled on. |
 | The camera never starts | The page is not on HTTPS or localhost. |
+| Every upload and every inline image fails | `TEAMUP_MINIO_ENDPOINT` is not an address the browser can reach over TLS, or nginx has no `location` matching the bucket name. Open one of the failing URLs directly: a DNS error or a mixed-content block in the console says which. |
+| Uploads fail with 403 `SignatureDoesNotMatch` | The proxy altered something the signature covers. Check that the `/teamup-files/` location sets `Host $http_host` and does not rewrite the path, and that `TEAMUP_MINIO_REGION` matches the object store. |
+| Uploads fail with 413 | `client_max_body_size` on the `/teamup-files/` location is smaller than `TEAMUP_MAX_UPLOAD_BYTES`. |
+| A large file is refused before anything is sent | It is over `TEAMUP_MAX_UPLOAD_BYTES`. The message says what the limit is. |
 | New members get no email | No SMTP is configured. The screen says so, and offers the credentials as a file instead. |

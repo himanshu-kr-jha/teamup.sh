@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"io"
 	"mime"
+	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,20 +27,59 @@ import (
 )
 
 type Config struct {
+	// Endpoint is where the BROWSER reaches object storage. Presigned URLs are
+	// opened by the browser, not by this process, so a Docker-internal
+	// hostname here means every upload and every inline image fails: the name
+	// does not resolve, and an http:// URL on an https page is blocked as
+	// mixed content before it is even tried.
 	Endpoint  string
 	AccessKey string
 	SecretKey string
 	Bucket    string
 	Secure    bool
+
+	// InternalEndpoint is where this process reaches object storage itself —
+	// bucket checks, stat, delete. It defaults to Endpoint, but pointing it at
+	// the container network keeps server-side calls off the public origin and
+	// out of the reverse proxy. It is never handed to a browser.
+	InternalEndpoint string
+	InternalSecure   bool
+
+	// Region has to match what the object store reports, because it is part of
+	// the signing key. Setting it here also keeps presigning offline: with no
+	// region the client asks the endpoint where the bucket lives before it can
+	// sign, which on the public endpoint means a round trip back through the
+	// reverse proxy.
+	Region string
+
+	// MaxUploadBytes is the largest single upload that will be signed for.
+	// Zero means DefaultMaxUploadBytes; there is no "unlimited".
+	MaxUploadBytes int64
+}
+
+// objectStore is the part of the MinIO API this package calls directly, as
+// opposed to signs URLs for. *minio.Client satisfies it.
+type objectStore interface {
+	StatObject(ctx context.Context, bucket, object string, opts minio.StatObjectOptions) (minio.ObjectInfo, error)
+	RemoveObject(ctx context.Context, bucket, object string, opts minio.RemoveObjectOptions) error
+	BucketExists(ctx context.Context, bucket string) (bool, error)
 }
 
 type Service struct {
-	client     *minio.Client
-	bucketName string
-	db         *pgxpool.Pool
-	cfg        Config
-	logger     zerolog.Logger
-	initErr    error
+	// presigner signs the URLs the browser opens; internal is the same storage
+	// reached over the container network. They are separate clients because
+	// the host is part of an S3 signature: a URL signed for one host cannot be
+	// replayed against the other.
+	presigner *minio.Client
+	internal  *minio.Client
+	store     objectStore
+
+	bucketName     string
+	maxUploadBytes int64
+	db             *pgxpool.Pool
+	cfg            Config
+	logger         zerolog.Logger
+	initErr        error
 }
 
 type UploadRequest struct {
@@ -55,36 +97,99 @@ type UploadResponse struct {
 	ObjectKey string            `json:"objectKey"`
 	ExpiresAt time.Time         `json:"expiresAt"`
 	Headers   map[string]string `json:"headers"`
-	Multipart *MultipartInfo    `json:"multipart,omitempty"`
 }
 
-type MultipartInfo struct {
-	UploadID string   `json:"uploadId"`
-	PartURLs []string `json:"partUrls"`
-	PartSize int64    `json:"partSize"`
-}
+// DefaultMaxUploadBytes is the cap applied when a deployment sets none. It is
+// deliberately not "unlimited": with the PUT going straight to object storage,
+// no limit means one person dragging in a video fills the volume for everyone.
+const DefaultMaxUploadBytes int64 = 100 << 20 // 100 MiB
 
-type CompletedPart struct {
-	PartNumber int    `json:"partNumber"`
-	ETag       string `json:"etag"`
+// DefaultRegion is MinIO's own default. A deployment that sets MINIO_REGION
+// must set TEAMUP_MINIO_REGION to the same value or every signature is wrong.
+const DefaultRegion = "us-east-1"
+
+// withDefaults fills in the settings cmd/teamup does not plumb through yet.
+// Reading them here is a seam rather than a preference — this package is their
+// only consumer, and the alternative is a Config field nothing ever populates.
+// They belong in cmd/teamup's Config struct the next time that file is open.
+func (c Config) withDefaults() Config {
+	if c.InternalEndpoint == "" {
+		c.InternalEndpoint = os.Getenv("TEAMUP_MINIO_INTERNAL_ENDPOINT")
+		c.InternalSecure, _ = strconv.ParseBool(os.Getenv("TEAMUP_MINIO_INTERNAL_SECURE"))
+	}
+	if c.Region == "" {
+		c.Region = os.Getenv("TEAMUP_MINIO_REGION")
+		if c.Region == "" {
+			c.Region = DefaultRegion
+		}
+	}
+	if c.MaxUploadBytes <= 0 {
+		if n, err := strconv.ParseInt(os.Getenv("TEAMUP_MAX_UPLOAD_BYTES"), 10, 64); err == nil && n > 0 {
+			c.MaxUploadBytes = n
+		} else {
+			c.MaxUploadBytes = DefaultMaxUploadBytes
+		}
+	}
+	return c
 }
 
 func NewService(cfg Config) *Service {
+	cfg = cfg.withDefaults()
+
 	// A discarded error here left a nil client that panicked on first use;
 	// the service now reports the misconfiguration when it is asked to work.
-	client, err := minio.New(cfg.Endpoint, &minio.Options{
+	presigner, err := newClient(cfg, cfg.Endpoint, cfg.Secure)
+
+	// Server-side calls take the internal address when there is one. Falling
+	// back to the public endpoint keeps a single-address deployment working.
+	internalEndpoint, internalSecure := cfg.Endpoint, cfg.Secure
+	if cfg.InternalEndpoint != "" {
+		internalEndpoint, internalSecure = cfg.InternalEndpoint, cfg.InternalSecure
+	}
+	internal, ierr := newClient(cfg, internalEndpoint, internalSecure)
+	if err == nil {
+		err = ierr
+	}
+
+	s := &Service{
+		presigner:      presigner,
+		internal:       internal,
+		bucketName:     cfg.Bucket,
+		maxUploadBytes: cfg.MaxUploadBytes,
+		cfg:            cfg,
+		initErr:        err,
+	}
+	// A typed nil in an interface is not nil, so only a real client goes in.
+	if internal != nil {
+		s.store = internal
+	}
+	return s
+}
+
+func newClient(cfg Config, endpoint string, secure bool) (*minio.Client, error) {
+	c, err := minio.New(endpoint, &minio.Options{
 		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
-		Secure: cfg.Secure,
+		Secure: secure,
+		Region: cfg.Region,
+		// Path-style addressing, explicitly. The browser reaches storage
+		// through the site's own origin, so the bucket cannot be a DNS label;
+		// it has to be the first path segment for nginx to route on, and the
+		// signature covers that path.
+		BucketLookup: minio.BucketLookupPath,
 	})
 	if err != nil {
-		client = nil
+		return nil, err
 	}
-	return &Service{
-		client:     client,
-		bucketName: cfg.Bucket,
-		cfg:        cfg,
-		initErr:    err,
+	return c, nil
+}
+
+// internalAddr is the address this process itself dials, which is the one worth
+// naming when a server-side call fails.
+func (s *Service) internalAddr() string {
+	if s.internal != nil {
+		return s.internal.EndpointURL().String()
 	}
+	return s.cfg.Endpoint
 }
 
 // SetLogger wires real logging. Left at the zero value every diagnostic in
@@ -107,25 +212,34 @@ func (s *Service) Ping(ctx context.Context) error {
 	if s.initErr != nil {
 		return fmt.Errorf("object storage is misconfigured: %w", s.initErr)
 	}
-	if s.client == nil {
+	if s.store == nil {
 		return errors.New("object storage is not configured")
 	}
-	exists, err := s.client.BucketExists(ctx, s.bucketName)
+	exists, err := s.store.BucketExists(ctx, s.bucketName)
 	if err != nil {
-		return fmt.Errorf("object storage at %s is unreachable: %w", s.cfg.Endpoint, err)
+		return fmt.Errorf("object storage at %s is unreachable: %w", s.internalAddr(), err)
 	}
 	if !exists {
-		return fmt.Errorf("bucket %q does not exist at %s", s.bucketName, s.cfg.Endpoint)
+		return fmt.Errorf("bucket %q does not exist at %s", s.bucketName, s.internalAddr())
 	}
 	return nil
 }
 
 func (s *Service) GenerateUploadURL(ctx context.Context, req UploadRequest) (*UploadResponse, error) {
-	if s.client == nil {
+	if s.presigner == nil {
 		return nil, apperrors.New(apperrors.CodeUnavailable, "object storage is not configured")
 	}
 	if err := s.validateAccess(ctx, req); err != nil {
 		return nil, err
+	}
+	if req.Size <= 0 {
+		return nil, apperrors.New(apperrors.CodeBadRequest, "an upload has to declare how large it is")
+	}
+	// The only chance to refuse a file. The PUT goes straight to object
+	// storage, so nothing downstream of this ever sees the bytes.
+	if limit := s.uploadLimit(); req.Size > limit {
+		return nil, apperrors.New(apperrors.CodeBadRequest, fmt.Sprintf(
+			"that file is %s; the largest this server accepts is %s", humanBytes(req.Size), humanBytes(limit)))
 	}
 
 	objectKey := s.buildObjectKey(req)
@@ -134,16 +248,25 @@ func (s *Service) GenerateUploadURL(ctx context.Context, req UploadRequest) (*Up
 		contentType = mime.TypeByExtension(filepath.Ext(req.Filename))
 	}
 
-	// Larger objects get a longer window; MinIO handles the multipart split
-	// internally behind a presigned PUT.
+	// One PUT carries the whole object — the cap above is far below the 5 GiB
+	// a single PUT can hold. A bigger file just gets longer to finish on a
+	// slow connection before the URL expires.
 	expiry := 15 * time.Minute
 	if req.Size >= 50*1024*1024 {
 		expiry = 2 * time.Hour
 	}
 
+	// The declared size is signed into the URL, which is what turns the limit
+	// from a request the client may ignore into one object storage enforces:
+	// a body of any other length fails the signature check and never lands.
+	// The browser sets Content-Length itself from the file, so it matches by
+	// construction and cannot be forged from script.
+	signedHeaders := http.Header{}
+	signedHeaders.Set("Content-Length", strconv.FormatInt(req.Size, 10))
+
 	// The error has to be checked before touching the URL: minio-go returns a
 	// nil *url.URL alongside it, so calling String() first panics.
-	presigned, err := s.client.PresignedPutObject(ctx, s.bucketName, objectKey, expiry)
+	presigned, err := s.presigner.PresignHeader(ctx, http.MethodPut, s.bucketName, objectKey, expiry, nil, signedHeaders)
 	if err != nil {
 		return nil, fmt.Errorf("presign upload: %w", err)
 	}
@@ -155,24 +278,44 @@ func (s *Service) GenerateUploadURL(ctx context.Context, req UploadRequest) (*Up
 	}, nil
 }
 
+// uploadLimit never returns zero: an unconfigured service is capped, not open.
+func (s *Service) uploadLimit() int64 {
+	if s.maxUploadBytes > 0 {
+		return s.maxUploadBytes
+	}
+	return DefaultMaxUploadBytes
+}
+
+// MaxUploadBytes is what the client is told so it can refuse a file before
+// starting an upload that is going to be rejected.
+func (s *Service) MaxUploadBytes() int64 { return s.uploadLimit() }
+
+// humanBytes renders a size the way the message needs to read: "100 MB", not
+// "104857600 bytes".
+func humanBytes(n int64) string {
+	for _, u := range []struct {
+		size int64
+		name string
+	}{{1 << 30, "GB"}, {1 << 20, "MB"}, {1 << 10, "KB"}} {
+		if n >= u.size {
+			v := float64(n) / float64(u.size)
+			if v >= 10 {
+				return fmt.Sprintf("%.0f %s", v, u.name)
+			}
+			return strings.TrimSuffix(strconv.FormatFloat(v, 'f', 1, 64), ".0") + " " + u.name
+		}
+	}
+	return fmt.Sprintf("%d bytes", n)
+}
+
 func (s *Service) buildObjectKey(req UploadRequest) string {
 	safeName := sanitizeFilename(req.Filename)
 	timestamp := time.Now().UTC().Format("20060102T150405Z")
 	return fmt.Sprintf("org-%s/%s/%s/%s-%s", req.OrgID, req.Category, req.RefID, timestamp, safeName)
 }
 
-func (s *Service) CompleteMultipartUpload(ctx context.Context, orgID, userID, objectKey, uploadID string, parts []CompletedPart) error {
-	// With single-part presigned PUT, multipart completion is not needed
-	// The object is complete once the PUT succeeds
-	if err := s.validateObjectAccess(ctx, orgID, userID, objectKey); err != nil {
-		return err
-	}
-	// Object is already complete with single-part upload
-	return nil
-}
-
 func (s *Service) GenerateDownloadURL(ctx context.Context, orgID, userID, objectKey, filename string, inline bool) (string, error) {
-	if s.client == nil {
+	if s.presigner == nil {
 		return "", apperrors.New(apperrors.CodeUnavailable, "object storage is not configured")
 	}
 	if err := s.validateObjectAccess(ctx, orgID, userID, objectKey); err != nil {
@@ -186,7 +329,7 @@ func (s *Service) GenerateDownloadURL(ctx context.Context, orgID, userID, object
 		reqParams.Set("response-content-disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
 	}
 
-	presigned, err := s.client.PresignedGetObject(ctx, s.bucketName, objectKey, 1*time.Hour, reqParams)
+	presigned, err := s.presigner.PresignedGetObject(ctx, s.bucketName, objectKey, 1*time.Hour, reqParams)
 	if err != nil {
 		return "", fmt.Errorf("presign download: %w", err)
 	}
@@ -424,6 +567,26 @@ func (s *Service) RecordAttachment(ctx context.Context, rec AttachmentRecord) (*
 		return nil, apperrors.New(apperrors.CodeForbidden, "access denied")
 	}
 
+	// The size in the body is a claim, not a measurement — this server never
+	// saw the bytes. Asking storage how big the object actually is makes
+	// size_bytes true, and is also the only proof the upload happened at all.
+	if s.store == nil {
+		return nil, apperrors.New(apperrors.CodeUnavailable, "object storage is not configured")
+	}
+	info, err := s.store.StatObject(ctx, s.bucketName, rec.ObjectKey, minio.StatObjectOptions{})
+	if err != nil {
+		s.logger.Warn().Err(err).Str("object", rec.ObjectKey).Msg("recording an object that is not in storage")
+		return nil, apperrors.New(apperrors.CodeBadRequest, "that upload is not in storage")
+	}
+	if limit := s.uploadLimit(); info.Size > limit {
+		// Belt and braces: the signed content length should already have kept
+		// this out, but if it is here it does not get to stay.
+		s.removeObject(ctx, rec.ObjectKey)
+		return nil, apperrors.New(apperrors.CodeBadRequest, fmt.Sprintf(
+			"that file is %s; the largest this server accepts is %s", humanBytes(info.Size), humanBytes(limit)))
+	}
+	rec.SizeBytes = info.Size
+
 	var a Attachment
 	err = s.db.QueryRow(ctx, `
 		INSERT INTO attachments (id, org_id, uploaded_by, category, ref_id, object_key,
@@ -541,10 +704,10 @@ func (s *Service) SweepAbandonedUploads(ctx context.Context, olderThan time.Dura
 // removeObject deletes the stored bytes. Best effort: the row is already gone,
 // and a leftover object is wasted space rather than a correctness problem.
 func (s *Service) removeObject(ctx context.Context, objectKey string) {
-	if s.client == nil {
+	if s.store == nil {
 		return
 	}
-	if err := s.client.RemoveObject(ctx, s.bucketName, objectKey, minio.RemoveObjectOptions{}); err != nil {
+	if err := s.store.RemoveObject(ctx, s.bucketName, objectKey, minio.RemoveObjectOptions{}); err != nil {
 		s.logger.Warn().Err(err).Str("object", objectKey).Msg("could not remove stored object")
 	}
 }

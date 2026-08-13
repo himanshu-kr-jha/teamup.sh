@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { filesApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
+import { humanSize } from './AttachmentChip';
 
 export interface UploadedFile {
   /** The attachment row's id — what binds the file to a message when sent. */
@@ -9,6 +10,27 @@ export interface UploadedFile {
   filename: string;
   contentType: string;
   size: number;
+}
+
+// The server's cap, asked for once per page load. Fetching it is a courtesy so
+// an over-sized file fails here instead of after the bytes have crossed the
+// network; the enforcement is the content length signed into the upload URL,
+// which object storage itself refuses to accept a different body for.
+let uploadLimit: Promise<number> | null = null;
+
+function maxUploadBytes(): Promise<number> {
+  if (!uploadLimit) {
+    uploadLimit = filesApi
+      .limits()
+      .then(({ data }) => data.maxUploadBytes)
+      .catch(() => {
+        // Do not block an upload because this one call failed; the server
+        // still refuses anything too large. Try again next time.
+        uploadLimit = null;
+        return Number.POSITIVE_INFINITY;
+      });
+  }
+  return uploadLimit;
 }
 
 /**
@@ -25,6 +47,14 @@ export function useUpload(category: string, refId: string) {
     setError('');
     setProgress(0);
     try {
+      const limit = await maxUploadBytes();
+      if (file.size > limit) {
+        setError(
+          `${file.name} is ${humanSize(file.size)}. The largest file this server accepts is ${humanSize(limit)}.`
+        );
+        return null;
+      }
+
       const { data: presigned } = await filesApi.getUploadUrl({
         category,
         refId,
@@ -49,7 +79,8 @@ export function useUpload(category: string, refId: string) {
         objectKey: presigned.objectKey,
         filename: file.name,
         contentType: file.type || 'application/octet-stream',
-        size: file.size,
+        // What storage says is there, not what we claimed on the way in.
+        size: recorded.sizeBytes,
       };
     } catch (err) {
       setError(apiErrorMessage(err, 'Could not upload that file.'));
@@ -80,7 +111,15 @@ function putWithProgress(
     xhr.onload = () =>
       xhr.status >= 200 && xhr.status < 300
         ? resolve()
-        : reject(new Error(`Upload failed (${xhr.status})`));
+        : reject(
+            new Error(
+              // 403 here is the signed content length being rejected: the file
+              // is not the size the URL was issued for.
+              xhr.status === 403
+                ? 'Upload rejected: the file changed while it was being sent.'
+                : `Upload failed (${xhr.status})`
+            )
+          );
     xhr.onerror = () => reject(new Error('Upload failed. Check your connection.'));
     xhr.send(file);
   });

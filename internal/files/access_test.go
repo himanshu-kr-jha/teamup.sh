@@ -10,11 +10,13 @@ import (
 	"github.com/teamup/teamup/internal/testsupport"
 )
 
-// accessService builds a Service with a database but no MinIO client: every
-// test here stops at the access check, before any object storage call.
+// accessService builds a Service with a database and a scripted object store.
+// Every test here stops at the access check, except the ones that record an
+// attachment: recording now measures the object rather than believing the
+// client, so it needs a store that says the object is there.
 func accessService(t *testing.T) *Service {
 	t.Helper()
-	s := &Service{}
+	s := &Service{store: &fakeStore{size: 1}}
 	s.SetDB(testsupport.DB(t))
 	return s
 }
@@ -246,6 +248,7 @@ func TestRecordedAttachmentCanBeListedAndResolved(t *testing.T) {
 	org := testsupport.SeedOrg(t, pool)
 	channel := testsupport.SeedChannel(t, pool, org, "general", org.OwnerID)
 	key := "org-" + org.ID.String() + "/chat/" + channel.String() + "/20260101T000000Z-notes.pdf"
+	svc.store = &fakeStore{size: 2048}
 
 	att, err := svc.RecordAttachment(ctx, AttachmentRecord{
 		OrgID: org.ID, UploadedBy: org.OwnerID,
@@ -285,7 +288,8 @@ func TestRecordingAnAttachmentTwiceUpdatesRatherThanDuplicating(t *testing.T) {
 	if _, err := svc.RecordAttachment(ctx, rec); err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	rec.SizeBytes = 4096
+	// The object grew in storage; re-recording must pick that up.
+	svc.store = &fakeStore{size: 4096}
 	if _, err := svc.RecordAttachment(ctx, rec); err != nil {
 		t.Fatalf("second: %v", err)
 	}

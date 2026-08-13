@@ -97,6 +97,25 @@ export const orgApi = {
       /** Whether the credentials were posted to them, or need passing on by hand. */
       emailed: boolean;
     }>('/users', data),
+  /**
+   * Create a whole CSV of colleagues at once. Every row is reported back
+   * separately — one bad address does not cost the rest of the batch — and the
+   * generated passwords come back with them, which is the only time they are
+   * ever visible.
+   */
+  importMembers: (csv: string) =>
+    api.post<{
+      created: number;
+      failed: number;
+      outcomes: Array<{
+        row: number;
+        name: string;
+        email: string;
+        status: 'created' | 'duplicate' | 'invalid' | 'failed';
+        message?: string;
+        temporaryPassword?: string;
+      }>;
+    }>('/users/import', { csv }),
   getUser: (id: string) => api.get(`/users/${id}`),
   updateUser: (id: string, data: { name?: string; avatarUrl?: string }) => api.patch(`/users/${id}`, data),
   deactivateUser: (id: string) => api.delete(`/users/${id}`),
@@ -108,9 +127,15 @@ export const orgApi = {
   assignRole: (userId: string, roleId: string) => api.post(`/users/${userId}/roles`, { roleId }),
   removeRole: (userId: string, roleId: string) => api.delete(`/users/${userId}/roles/${roleId}`),
   listTeams: () => getList('/teams', 'teams'),
-  createTeam: (data: { name: string; description?: string; managerId?: string }) => api.post('/teams', data),
-  updateTeam: (id: string, data: { name?: string; description?: string; managerId?: string }) =>
-    api.patch(`/teams/${id}`, data),
+  createTeam: (data: { name: string; description?: string; managerId?: string; parentId?: string }) =>
+    api.post('/teams', data),
+  // parentId: omit to leave the team where it is in the tree, or pass an empty
+  // string to lift it to the top level. Without the distinction a team could
+  // never be moved back out from under a parent.
+  updateTeam: (
+    id: string,
+    data: { name?: string; description?: string; managerId?: string; parentId?: string },
+  ) => api.patch(`/teams/${id}`, data),
   deleteTeam: (id: string) => api.delete(`/teams/${id}`),
   listTeamMembers: (id: string) => getList(`/teams/${id}/members`, 'users'),
   addTeamMember: (id: string, userId: string) => api.post(`/teams/${id}/members`, { userId }),
@@ -250,8 +275,8 @@ export const filesApi = {
   list: (category: string, refId: string) => getList('/files', 'attachments', { category, refId }),
   /** Throws away an upload that was staged and then removed before sending. */
   discard: (id: string) => api.delete(`/files/${id}`),
-  initiateMultipart: (data: { category: string; refId: string; filename: string; contentType: string; size: number }) => api.post('/files/multipart/initiate', data),
-  completeMultipart: (data: { objectKey: string; uploadId: string; parts: { partNumber: number; etag: string }[] }) => api.post('/files/multipart/complete', data),
+  /** The largest single upload this server signs for. */
+  limits: () => api.get<{ maxUploadBytes: number }>('/files/limits'),
   getDownloadUrl: (objectKey: string, filename?: string, inline?: boolean) => api.get('/files/download-url', { params: { objectKey, filename, inline } }),
 };
 
