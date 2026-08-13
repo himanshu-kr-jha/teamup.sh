@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   Hash, Send, Paperclip, Smile, Bell, Settings, ChevronLeft, MessageSquare, Video, User,
@@ -36,6 +36,15 @@ import { useUIStore } from '@/shared/store';
 import { CreateChannelDialog } from './CreateChannelDialog';
 import { usePresence, type PresenceStatus } from '@/features/presence/usePresence';
 import { PresenceDot, presenceLabel } from '@/features/presence/PresenceDot';
+import { HISTORY_PAGE_SIZE, mergeOlder, olderCursor, reachedStart } from './history';
+import {
+  QUICK_EMOJI,
+  applyReaction,
+  hasReacted,
+  reactionSummary,
+  summariseReactions,
+  type ReactionMap,
+} from './reactions';
 
 interface Message {
   id: string;
@@ -125,10 +134,11 @@ export function ChatPage() {
 
   const channels = channelsResponse?.data || [];
 
-  // Fetch messages for active channel
+  // The newest page. Everything live — an optimistic send, a message off the
+  // socket, the catch-up refetch after a reconnect — lands here.
   const { data: messagesResponse, isLoading: messagesLoading } = useQuery({
     queryKey: ['messages', channelId],
-    queryFn: () => channelsApi.getMessages(channelId!),
+    queryFn: () => channelsApi.getMessages(channelId!, { limit: HISTORY_PAGE_SIZE }),
     enabled: !!channelId,
     staleTime: 0,
     refetchOnMount: 'always',
@@ -136,10 +146,89 @@ export function ChatPage() {
 
   // Memoised so the fallback [] doesn't produce a new array every render and
   // retrigger the scroll-to-bottom effect below.
-  const messages = useMemo(() => messagesResponse?.data || [], [messagesResponse]);
+  const recent = useMemo<Message[]>(() => messagesResponse?.data || [], [messagesResponse]);
+
+  /**
+   * History paged in above the newest page.
+   *
+   * Deliberately not in the query cache. The reconnect and tab-visibility
+   * catch-up both invalidate ['messages'], which re-reads the newest page —
+   * if the pages people had scrolled back through lived there too, every
+   * reconnect would throw their place in the conversation away.
+   */
+  const [older, setOlder] = useState<Message[]>([]);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  /** The server had no more to give, so stop asking. */
+  const [atStart, setAtStart] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // The scroll height just before a prepend, so the position afterwards is
+  // arithmetic rather than a guess.
+  const heightBeforePrependRef = useRef<number | null>(null);
+
+  // A different conversation is a different history.
+  useEffect(() => {
+    setOlder([]);
+    setAtStart(false);
+    setLoadingOlder(false);
+    heightBeforePrependRef.current = null;
+  }, [channelId]);
+
+  const messages = useMemo(() => mergeOlder(older, recent), [older, recent]);
+
+  const loadOlder = useCallback(async () => {
+    if (!channelId || loadingOlder || atStart) return;
+    const cursor = olderCursor(messages);
+    // Nothing accepted by the server yet, so there is no point in the history
+    // to ask about.
+    if (!cursor) return;
+
+    setLoadingOlder(true);
+    heightBeforePrependRef.current = scrollRef.current?.scrollHeight ?? null;
+    try {
+      const page = await channelsApi.getMessages(channelId, {
+        limit: HISTORY_PAGE_SIZE,
+        before: cursor,
+      });
+      const rows = (page.data ?? []) as Message[];
+      // A short page means the server ran out. Without this the spinner sits
+      // at the top of a three-message channel asking for ever.
+      if (reachedStart(rows.length, HISTORY_PAGE_SIZE)) setAtStart(true);
+      if (rows.length > 0) {
+        setOlder((all) => mergeOlder(rows, all));
+      } else {
+        heightBeforePrependRef.current = null;
+      }
+    } catch (err) {
+      heightBeforePrependRef.current = null;
+      toast.error(apiErrorMessage(err, 'Could not load earlier messages.'));
+    } finally {
+      setLoadingOlder(false);
+    }
+    // toast is rebuilt every render; the rest is what actually decides this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [channelId, loadingOlder, atStart, messages]);
+
+  /**
+   * Keeps the reader where they were when older messages arrive above them.
+   *
+   * Everything on screen has moved down by exactly the height of what was
+   * inserted, so putting that back is the whole job. Before the layout is
+   * painted, or it reads as a jump.
+   */
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    const before = heightBeforePrependRef.current;
+    if (!el || before == null) return;
+    heightBeforePrependRef.current = null;
+    el.scrollTop += el.scrollHeight - before;
+  }, [messages]);
 
   const activeChannel = channels.find((c) => c.id === channelId);
   const { statusOf, personOf } = usePresence();
+  // A reaction payload only carries user ids. Availability covers everybody in
+  // the organization, including people who are not connected, so it can name
+  // whoever reacted — and reactionSummary counts anyone it cannot.
+  const nameOf = (id: string) => personOf(id)?.name;
   const toast = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { upload, progress, error: uploadError } = useUpload('chat', channelId || '');
@@ -161,6 +250,97 @@ export function ChatPage() {
     queryClient.setQueryData(['messages', channel], (old: any) =>
       old ? { ...old, data: update(old.data ?? []) } : old
     );
+
+  /**
+   * Changes one message wherever it happens to be held.
+   *
+   * A message is either in the newest page (the query cache) or in the history
+   * paged in above it, and a reaction or an edit can land on either. Writing
+   * to only one of the two would leave anything older than fifty messages
+   * unreactable — which is the same class of bug as not being able to read it.
+   */
+  const patchMessage = useCallback(
+    (messageId: string, update: (message: Message) => Message) => {
+      const applyTo = (list: Message[]) => {
+        let touched = false;
+        const next = list.map((m) => {
+          if (m.id !== messageId) return m;
+          touched = true;
+          return update(m);
+        });
+        // Same array back when nothing matched, so React has no re-render to do.
+        return touched ? next : list;
+      };
+      setOlder(applyTo);
+      queryClient.setQueryData(['messages', channelId], (old: any) =>
+        old ? { ...old, data: applyTo(old.data ?? []) } : old
+      );
+    },
+    [channelId, queryClient]
+  );
+
+  /**
+   * Puts a reaction on, or takes it off — the same click either way.
+   *
+   * Optimistic, because a reaction is a gesture and a gesture that waits for a
+   * round trip does not feel like one. Put back if the server disagrees.
+   */
+  const toggleReaction = useCallback(
+    async (messageId: string, emoji: string, current: ReactionMap | undefined) => {
+      const userId = user?.id;
+      if (!userId) return;
+      const action = hasReacted(current, emoji, userId) ? 'remove' : 'add';
+
+      patchMessage(messageId, (m) => ({
+        ...m,
+        reactions: applyReaction(m.reactions, { emoji, userId, action }),
+      }));
+
+      try {
+        await (action === 'add'
+          ? channelsApi.addReaction(messageId, emoji)
+          : channelsApi.removeReaction(messageId, emoji));
+      } catch (err) {
+        // Undo by applying the opposite, not by restoring a snapshot: somebody
+        // else's reaction may have arrived in between and is not ours to drop.
+        patchMessage(messageId, (m) => ({
+          ...m,
+          reactions: applyReaction(m.reactions, {
+            emoji,
+            userId,
+            action: action === 'add' ? 'remove' : 'add',
+          }),
+        }));
+        toast.error(apiErrorMessage(err, 'Could not change that reaction.'));
+      }
+    },
+    // toast is rebuilt every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [user?.id, patchMessage]
+  );
+
+  // Somebody else reacting, live. The server excludes whoever reacted from the
+  // broadcast, so this only ever carries other people — and applyReaction is
+  // idempotent regardless, so a duplicate cannot read as two people.
+  useEffect(() => {
+    return on('chat.reaction', (msg) => {
+      const event = msg.payload as {
+        messageId?: string;
+        emoji?: string;
+        action?: 'add' | 'remove';
+        userId?: string;
+      };
+      if (!event?.messageId || !event.emoji || !event.userId || !event.action) return;
+      patchMessage(event.messageId, (m) => ({
+        ...m,
+        reactions: applyReaction(m.reactions, {
+          emoji: event.emoji!,
+          userId: event.userId!,
+          action: event.action!,
+        }),
+      }));
+    });
+  }, [on, patchMessage]);
 
   const sendMessageMutation = useMutation({
     mutationFn: (data: { channelId: string; content: string; tempId: string; attachmentIds?: string[] }) =>
@@ -268,10 +448,27 @@ export function ChatPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channelId, on, queryClient]);
 
-  // Scroll to bottom
+  // Scroll to bottom.
+  //
+  // Keyed on the newest message rather than the list, because the list also
+  // changes when history is paged in above — and being yanked back to the
+  // bottom every time you scroll up is the thing that makes reading history
+  // impossible. Prepending does not move the end of the conversation, so this
+  // does not fire for it.
+  //
+  // Opening a channel jumps; only a message arriving in one you are already
+  // reading animates. Smooth-scrolling the initial position meant travelling
+  // through the top of the list, which tripped the load-older handler on the
+  // way past and fetched a second page nobody had asked for — every time
+  // anybody opened any channel.
+  const newestMessageId = messages[messages.length - 1]?.id;
+  const positionedChannelRef = useRef<string | null>(null);
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+    if (!newestMessageId) return;
+    const opening = positionedChannelRef.current !== channelId;
+    positionedChannelRef.current = channelId ?? null;
+    messagesEndRef.current?.scrollIntoView({ behavior: opening ? 'auto' : 'smooth' });
+  }, [newestMessageId, channelId]);
 
   // Reading a conversation marks it read. Nothing used to call this, so
   // last_read_at was never set and every message ever sent stayed unread.
@@ -555,7 +752,16 @@ export function ChatPage() {
           </div>
 
           {/* Messages */}
-          <div className="flex-1 space-y-1 overflow-y-auto p-4">
+          <div
+            ref={scrollRef}
+            className="flex-1 space-y-1 overflow-y-auto p-4"
+            onScroll={(e) => {
+              // Near the top means somebody is reading backwards. Fetching
+              // before they hit the very top means the next page is usually
+              // already there when they get to it.
+              if (e.currentTarget.scrollTop < 200) void loadOlder();
+            }}
+          >
             {messagesLoading ? (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
                 Loading messages…
@@ -572,6 +778,35 @@ export function ChatPage() {
               </div>
             ) : (
               <>
+                {/* One fixed height for all three states. Swapping a 52px
+                    button for a 32px line of text would shift everything below
+                    it by twenty pixels at exactly the moment somebody is
+                    reading — which is the same jump the scroll restoring below
+                    exists to prevent.
+
+                    Scrolling is also not the only way up: a keyboard has no
+                    scroll gesture, and a channel shorter than the window has
+                    no scrollbar to use, so there is a real control here. */}
+                <div className="flex h-12 shrink-0 items-center justify-center">
+                  {loadingOlder ? (
+                    <p className="text-xs text-muted-foreground">Loading earlier messages…</p>
+                  ) : atStart ? (
+                    <p className="px-4 text-center text-xs text-muted-foreground">
+                      This is the beginning of{' '}
+                      {activeChannel?.type === 'dm'
+                        ? `your conversation with ${activeChannel?.name ?? 'them'}`
+                        : activeChannel?.name
+                          ? `#${activeChannel.name}`
+                          : 'this conversation'}
+                      .
+                    </p>
+                  ) : (
+                    <Button variant="ghost" size="sm" className="text-xs" onClick={() => void loadOlder()}>
+                      Load earlier messages
+                    </Button>
+                  )}
+                </div>
+
                 {messages.map((msg, i) => {
                   const previous = messages[i - 1];
                   // A run of messages from one person in quick succession
@@ -601,7 +836,10 @@ export function ChatPage() {
                         status={statusOf(msg.userId)}
                         note={personOf(msg.userId)?.note}
                         grouped={sameAuthor && closeInTime && !newDay}
-                        channelId={channelId!}
+                        currentUserId={user?.id}
+                        nameOf={nameOf}
+                        onToggleReaction={toggleReaction}
+                        onPatch={patchMessage}
                       />
                     </div>
                   );
@@ -694,9 +932,36 @@ export function ChatPage() {
                   }}
                 />
                 <div className="absolute bottom-1 right-1 flex items-center gap-1">
-                  <Button variant="ghost" size="icon" type="button" aria-label="Emoji" className="h-8 w-8">
-                    <Smile className="h-4 w-4" />
-                  </Button>
+                  {/* This did nothing at all. It puts an emoji in what you are
+                      writing — reacting to somebody else's message is the
+                      picker on the message itself. */}
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        type="button"
+                        aria-label="Emoji"
+                        disabled={!channelId}
+                        className="h-8 w-8"
+                      >
+                        <Smile className="h-4 w-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end" className="flex min-w-0 gap-0.5 p-1">
+                      {QUICK_EMOJI.map((emoji) => (
+                        <button
+                          key={emoji}
+                          type="button"
+                          aria-label={`Insert ${emoji}`}
+                          onClick={() => setMessage((text) => text + emoji)}
+                          className="rounded p-1.5 text-lg leading-none transition-colors hover:bg-accent"
+                        >
+                          {emoji}
+                        </button>
+                      ))}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </div>
               </div>
               <Button
@@ -800,7 +1065,10 @@ function MessageBubble({
   status,
   note,
   grouped,
-  channelId,
+  currentUserId,
+  nameOf,
+  onToggleReaction,
+  onPatch,
 }: {
   message: Message;
   isOwn: boolean;
@@ -808,13 +1076,16 @@ function MessageBubble({
   note?: string;
   /** Part of a run from the same person: no repeated name or picture. */
   grouped: boolean;
-  channelId: string;
+  currentUserId?: string;
+  nameOf: (userId: string) => string | undefined;
+  onToggleReaction: (messageId: string, emoji: string, current: ReactionMap | undefined) => void;
+  onPatch: (messageId: string, update: (message: Message) => Message) => void;
 }) {
   const toast = useToast();
-  const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.content);
   const [showingReads, setShowingReads] = useState(false);
+  const pills = summariseReactions(message.reactions, currentUserId);
 
   const deleted = !!message.deletedAt;
   const time = new Date(message.createdAt).toLocaleTimeString(undefined, {
@@ -826,8 +1097,10 @@ function MessageBubble({
   const withinEditWindow =
     Date.now() - new Date(message.createdAt).getTime() < 5 * 60 * 1000;
 
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ['messages', channelId] });
-
+  // Applied where the message actually is rather than by re-reading the
+  // channel: invalidating only re-fetches the newest page, so deleting
+  // something from further back used to leave it on screen once history could
+  // be scrolled at all.
   const saveEdit = async () => {
     const content = draft.trim();
     if (!content || content === message.content) {
@@ -837,7 +1110,7 @@ function MessageBubble({
     try {
       await channelsApi.editMessage(message.id, content);
       setEditing(false);
-      refresh();
+      onPatch(message.id, (m) => ({ ...m, content, editedAt: new Date().toISOString() }));
     } catch (err) {
       toast.error(apiErrorMessage(err, 'Could not edit that message.'));
     }
@@ -846,7 +1119,12 @@ function MessageBubble({
   const remove = async () => {
     try {
       await channelsApi.deleteMessage(message.id);
-      refresh();
+      onPatch(message.id, (m) => ({
+        ...m,
+        deletedAt: new Date().toISOString(),
+        content: '',
+        attachments: [],
+      }));
     } catch (err) {
       toast.error(apiErrorMessage(err, 'Could not delete that message.'));
     }
@@ -875,12 +1153,15 @@ function MessageBubble({
             </div>
           ))}
 
-        <div className={cn('relative flex min-w-0 max-w-[75%] flex-col', isOwn ? 'items-end' : 'items-start')}>
+        <div className={cn('flex min-w-0 max-w-[75%] flex-col', isOwn ? 'items-end' : 'items-start')}>
           {!isOwn && !grouped && (
             <p className="mb-1 px-1 text-xs font-medium text-muted-foreground">{message.userName}</p>
           )}
 
-          <div className="flex min-w-0 max-w-full items-end gap-1">
+          {/* The positioning context for the timestamp below, so it stays
+              level with the bubble rather than being pushed down the side of
+              whatever reactions are underneath it. */}
+          <div className="relative flex min-w-0 max-w-full items-end gap-1">
             {/* The menu sits on the side the message came from, so it never
                 covers the text. */}
             {isOwn && !deleted && (
@@ -954,6 +1235,12 @@ function MessageBubble({
               )}
             </div>
 
+            {!deleted && (
+              <ReactionPicker
+                onPick={(emoji) => onToggleReaction(message.id, emoji, message.reactions)}
+              />
+            )}
+
             {!isOwn && !deleted && (
               <MessageMenu
                 canEdit={false}
@@ -961,36 +1248,67 @@ function MessageBubble({
                 onShowReads={() => setShowingReads(true)}
               />
             )}
+
+            {/* Out of the flow: shown on hover without moving anything. */}
+            <span
+              className={cn(
+                'pointer-events-none absolute bottom-0 flex items-center gap-1 whitespace-nowrap text-[0.7rem] text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100',
+                isOwn ? 'right-full mr-2' : 'left-full ml-2',
+                (message.pending || (isOwn && !deleted)) && 'opacity-100'
+              )}
+            >
+              {message.pending ? (
+                'Sending…'
+              ) : (
+                <>
+                  {time}
+                  {message.editedAt && !deleted && <span>· edited</span>}
+                  {/* Only the sender is told whether it landed; showing it to
+                      everybody would just be noise. */}
+                  {isOwn && !deleted && (
+                    <span title={message.readCount ? `Read by ${message.readCount}` : 'Not read yet'}>
+                      {message.readCount ? (
+                        <CheckCheck className="h-3.5 w-3.5 text-primary" aria-label="Read" />
+                      ) : (
+                        <Check className="h-3.5 w-3.5" aria-label="Sent" />
+                      )}
+                    </span>
+                  )}
+                </>
+              )}
+            </span>
           </div>
 
-          {/* Out of the flow: shown on hover without moving anything. */}
-          <span
-            className={cn(
-              'pointer-events-none absolute bottom-0 flex items-center gap-1 whitespace-nowrap text-[0.7rem] text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100',
-              isOwn ? 'right-full mr-2' : 'left-full ml-2',
-              (message.pending || (isOwn && !deleted)) && 'opacity-100'
-            )}
-          >
-            {message.pending ? (
-              'Sending…'
-            ) : (
-              <>
-                {time}
-                {message.editedAt && !deleted && <span>· edited</span>}
-                {/* Only the sender is told whether it landed; showing it to
-                    everybody would just be noise. */}
-                {isOwn && !deleted && (
-                  <span title={message.readCount ? `Read by ${message.readCount}` : 'Not read yet'}>
-                    {message.readCount ? (
-                      <CheckCheck className="h-3.5 w-3.5 text-primary" aria-label="Read" />
-                    ) : (
-                      <Check className="h-3.5 w-3.5" aria-label="Sent" />
+          {/* Under the message, where a reaction belongs: it is about the
+              message, not another one. */}
+          {pills.length > 0 && !deleted && (
+            <div className={cn('mt-1 flex flex-wrap gap-1', isOwn ? 'justify-end' : 'justify-start')}>
+              {pills.map((pill) => {
+                const who = reactionSummary(pill.userIds, currentUserId, nameOf);
+                return (
+                  <button
+                    key={pill.emoji}
+                    type="button"
+                    // Clicking a reaction you are already on takes it back;
+                    // that is the whole interaction, in one control.
+                    onClick={() => onToggleReaction(message.id, pill.emoji, message.reactions)}
+                    title={`${who} reacted with ${pill.emoji}`}
+                    aria-label={`${pill.emoji}, ${who}`}
+                    aria-pressed={pill.mine}
+                    className={cn(
+                      'flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs leading-none transition-colors',
+                      pill.mine
+                        ? 'border-primary/50 bg-primary/10 text-primary'
+                        : 'border-border bg-muted/60 text-muted-foreground hover:bg-muted'
                     )}
-                  </span>
-                )}
-              </>
-            )}
-          </span>
+                  >
+                    <span aria-hidden="true">{pill.emoji}</span>
+                    <span className="font-medium tabular-nums">{pill.count}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
 
@@ -999,6 +1317,43 @@ function MessageBubble({
         onClose={() => setShowingReads(false)}
       />
     </>
+  );
+}
+
+/**
+ * The emoji offered on a message.
+ *
+ * Its own control rather than an item in the actions menu: reacting is meant
+ * to be one gesture, and burying it two clicks deep is how a feature ends up
+ * unused.
+ */
+function ReactionPicker({ onPick }: { onPick: (emoji: string) => void }) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label="Add a reaction"
+          className="h-6 w-6 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
+        >
+          <Smile className="h-4 w-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="center" className="flex min-w-0 gap-0.5 p-1">
+        {QUICK_EMOJI.map((emoji) => (
+          <button
+            key={emoji}
+            type="button"
+            aria-label={`React with ${emoji}`}
+            onClick={() => onPick(emoji)}
+            className="rounded p-1.5 text-lg leading-none transition-colors hover:bg-accent"
+          >
+            {emoji}
+          </button>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
