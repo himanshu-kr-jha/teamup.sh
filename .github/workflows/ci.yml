@@ -133,12 +133,27 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+      # internal/presence reads TEAMUP_TEST_REDIS_URL and SKIPS when it cannot
+      # connect — and the skip guard below turns a skip into a failed build, so
+      # this is not optional dead weight.
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     env:
       TEAMUP_TEST_DATABASE_URL: postgres://teamup:teamup@localhost:5432/teamup_test?sslmode=disable
-      # The suite reads no other service. Only TEAMUP_TEST_DATABASE_URL is
-      # consulted by any test in the repository, so Redis, MinIO and LiveKit
-      # containers would be dead weight here.
-      MIN_EXPECTED_TESTS: '280'
+      TEAMUP_TEST_REDIS_URL: redis://localhost:6379
+      # 378 top-level tests pass locally as of the authorization/real-time
+      # wave. The floor sits below that on purpose — it exists to catch a
+      # suite that has silently lost most of itself, not to be updated on
+      # every commit.
+      MIN_EXPECTED_TESTS: '350'
 
     steps:
       - uses: actions/checkout@v4
@@ -199,6 +214,35 @@ jobs:
       # a separate step would double a three-minute suite for nothing; folding
       # the tag in here runs everything exactly once and still picks up the
       # first integration test somebody writes.
+      # cmd/teamup's readiness and shutdown tests boot a real server, which
+      # refuses to start unless every dependency answers. They address the
+      # standard ports directly, so these run on the host network rather than
+      # as `services:` entries — a service container cannot override the
+      # image's command, and both of these need one.
+      - name: Start MinIO and LiveKit
+        run: |
+          docker run -d --name minio -p 9000:9000 \
+            -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+            minio/minio:latest server /data
+          docker run -d --name livekit -p 7880:7880 \
+            livekit/livekit-server:latest --dev --bind 0.0.0.0
+
+          # The bucket is not created by anything on the boot path, so a
+          # readiness probe that checks for it fails against an empty MinIO.
+          for i in $(seq 1 30); do
+            docker run --rm --network host minio/mc:latest sh -c "
+              mc alias set ci http://127.0.0.1:9000 minioadmin minioadmin &&
+              mc mb --ignore-existing ci/teamup-files" && break
+            sleep 2
+          done
+
+          for i in $(seq 1 30); do
+            curl -sf -o /dev/null http://127.0.0.1:7880/ && break
+            sleep 2
+          done
+          echo "minio: $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9000/minio/health/live)"
+          echo "livekit: $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7880/)"
+
       - name: Run the suite
         run: |
           set -o pipefail
