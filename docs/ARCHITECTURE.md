@@ -26,9 +26,9 @@ runner, no message queue. You deploy a file.
   │   SPA   │               │    ├── /api/*   handlers │
   │  (PWA)  │◄─────────────►│    ├── /ws      hub      │
   └────┬────┘   WebSocket   │    ├── /livekit proxy    │
-       │        (downstream │    └── /*       embedded │
-       │         only, see  │                 web/dist │
-       │         below)     └───┬───┬───┬──────────────┘
+       │                    │    └── /*       embedded │
+       │                    │                 web/dist │
+       │                    └───┬───┬───┬──────────────┘
        │                        │   │   │
        │                  ┌─────┘   │   └──────┐
        │                  ▼         ▼          ▼
@@ -53,11 +53,11 @@ nothing about.
 presigned S3 URLs; the browser talks to MinIO directly. TeamUp signs the URL and
 records the metadata row.
 
-**The WebSocket is, in practice, a one-way downstream bus.** The server-side
-inbound handlers are real and correct, but the shipped web client never
-completes the handshake that would let it send. See
-[The WebSocket](#the-websocket) — this is the single most surprising thing in
-the codebase.
+**Chat is sent over REST and received over the WebSocket.** That split is not
+an accident of history, and it is worth internalising before you go looking for
+a send path on the socket. See [The WebSocket](#the-websocket), which also
+records why the inbound half of that socket was dead for most of this
+project's life — the most surprising thing in the codebase.
 
 ---
 
@@ -85,8 +85,9 @@ so read carefully before editing a query.
 
 ### A chat message
 
-Sending is REST; receiving is WebSocket. That split surprises people, and it is
-also *why chat works at all* given the state of the inbound socket path:
+Sending is REST; receiving is WebSocket. That split surprises people, and for
+most of this project's life it was also *why chat worked at all* — the inbound
+socket path was dead, and REST did not depend on it:
 
 ```
 sender    POST /api/channels/:id/messages ──► chat.SendMessage      chat.go:1535
@@ -129,19 +130,20 @@ handler owns the `type`.
 > the handler returned before reaching a single log line. The whole inbound
 > path was dead and silent.
 
-**The handshake is incomplete.** The client sends `conn.init`
-(`web/src/features/websocket/WSProvider.tsx:47`). The server has **no case for
-`conn.init`** and never emits `conn.ack` — `protocol.TypeConnAck` has zero
-senders. So the client's state never reaches `'ready'`, and everything passed to
-`send()` queues forever (`WSProvider.tsx:93`). Consequences:
+**The handshake works, as of the authorization/real-time wave.** It did not
+until recently, and the history is worth knowing because it explains the shape
+of the code: the server had no case for `conn.init` and never emitted
+`conn.ack`, so the client's state never reached `'ready'` and everything passed
+to `send()` queued forever. The socket was downstream-only. The client's queue
+flush on `conn.ack` had been written all along — it was simply unreachable.
 
-- `chat.send` over the socket: never sent by the shipped UI (REST is used)
-- `chat.typing`: never sent, never rendered — **no typing indicators**
-- Downstream events (`chat.message`, `presence.changed`, `notification.new`)
-  work fine, because they do not depend on the handshake
+What that leaves today:
 
-Fixing this is a small, well-scoped piece of work: handle `conn.init`, reply
-`conn.ack`. It unlocks several features that are already written on both sides.
+- `chat.send` over the socket now works, though the shipped UI still uses REST
+- `chat.typing` is unblocked on the wire, but **nothing in the UI sends or
+  renders it yet** — the server handler has been correct throughout
+- Connections carry a last-heard-from stamp, and the client answers
+  `conn.ping` with `conn.pong`, which is what makes reaping safe
 
 **Locking.** The hub keeps `map[userID]map[connID]*Connection`. Every broadcast
 copies the target connections into a slice **while holding the lock** and sends
@@ -204,12 +206,16 @@ Because storage is plain S3, `TEAMUP_MINIO_*` points equally at Amazon S3,
 Cloudflare R2 or Backblaze B2 — change the endpoint, set
 `TEAMUP_MINIO_SECURE=true`.
 
-> **The bucket is not created for you by the server.** Neither boot nor the
-> wizard's `FinalizeSetup` creates it; `ValidateServices` (`wizard.go:356`),
-> which would, is never called from anywhere. Only the wizard's step-4 "Test
-> connection" button does it. `./setup.sh` creates it explicitly for this
-> reason. If you provision some other way and `/readyz` reports
-> `minio: bucket does not exist`, that is why.
+The bucket is created during `FinalizeSetup` and on the auto-setup path, before
+the provisioning transaction opens, so a storage failure leaves no
+half-provisioned organisation. `./setup.sh` also creates it directly.
+
+> This was not true until recently, and it is the kind of gap worth
+> recognising: nothing on the boot path created the bucket, and
+> `ValidateServices` — which would have — was dead code whose only reference
+> was its own definition. An instance provisioned by anything other than a
+> human clicking the wizard's "Test connection" button came up with `/readyz`
+> reporting MinIO unhealthy and every upload failing, announced nowhere.
 
 ---
 
@@ -314,13 +320,11 @@ binary. For day-to-day work run Vite's dev server instead
 
 | Thing | The catch |
 | --- | --- |
-| **Reactions** | Persist and display correctly, but there is **no live broadcast** — others see them on next fetch |
-| **Presence** | Works, but Redis keys have **no TTL** and `cleanupStaleConnections` (`hub.go:329`) is an empty loop, so a `kill -9`'d process leaves everyone showing online forever. `GetAllOnline` uses `KEYS`. |
 | **Web push** | Real delivery, keys auto-generated by the wizard. Silently no-ops without keys; HTTPS-only in the browser. |
-| **Task deletion** | `DELETE /api/tasks/:id` filters by `org_id` only — **any member can delete anyone's task**. No role check. |
+| **Task updates** | Deletion is now gated on authority over the reporter, but **any member can still retitle or restatus any task**. That is arguably the product's model — a shared board — and unlike deletion, every field change writes an activity row naming the actor. `RemoveLabel` is the one mutation that is both ungated and untraced. |
 | **Multipart upload** | Fictional. `InitiateMultipart` forwards to `GetUploadURL`; `CompleteMultipartUpload` is a no-op. Large files still work via a single presigned PUT. |
-| **Prometheus metrics** | Endpoint serves, but `sanitizePath` is the identity function so every UUID becomes its own label (unbounded cardinality), and the status label is `string(rune(status))` — HTTP 200 renders as `È`. Metrics by status are unusable. |
 | **Correlation IDs** | Helpers exist; no middleware calls them. No request carries one. |
+| **Typing indicators** | Unblocked on the wire now that the handshake completes, and the server handler is correct — but no UI sends or renders them. |
 | **PWA offline** | Installable with a service worker, but the offline half is aspirational: no IndexedDB, no outbox, no BackgroundSync. `idb` is a dependency that is imported nowhere; `OfflineBanner` hard-codes 0. Runtime caching rules are anchored to `^https://` so none match on localhost. |
 | **Wizard OIDC step** | Settings are written to `org_configs` but the auth service only reads providers from **environment variables at boot**. Configuring OIDC in the wizard does not enable it. |
 
@@ -333,19 +337,27 @@ binary. For day-to-day work run Vite's dev server instead
 | **WS call signalling** | `HandleCallSignaling` unmarshals the payload and discards it. Real signalling is browser↔LiveKit direct. |
 | **Thumbnails** | `GenerateThumbnail` returns `"", nil` and has no callers |
 | **Threads** | `replyTo` is stored and round-tripped, but there is no thread endpoint and no thread view |
-| **Typing indicators** | Server handler is correct; nothing sends or renders them (blocked on the handshake above) |
 
 ### Security items to know about
 
+- **`call.accept` trusts the room name it is given.** `HandleCallAccept`
+  (`calls.go:679`) mints a publish/subscribe LiveKit token for whatever room
+  the client names, with no check that the call exists, that the caller was
+  invited, or that it belongs to their organisation. Room names are
+  `"call-" + uuid[:8]` — 32 bits, enumerable. The shipped UI never sends this,
+  which is the only thing limiting it.
+  ([#34](https://github.com/himanshu-kr-jha/teamup.sh/issues/34))
 - `/metrics` is unauthenticated and outside every auth group (`main.go:507`).
   Fine on a laptop; **do not publish it** — it exposes user counts, message and
   call volumes, and per-route error rates.
-- `HandleCallInvite` (`calls.go:512`) does not check that invitees belong to the
-  caller's org before minting them LiveKit tokens. The shipped UI never uses
-  this path, but any client with a socket can.
-- Task deletion has no authorization beyond org membership (above).
-- Config values are checked for **presence, not validity** — a malformed
-  `TEAMUP_BASE_URL` is accepted and then feeds OIDC redirect URIs.
+- Back-channel logout parses its token **without verifying the signature**,
+  revokes nothing, and returns 200.
+
+Recently closed, and worth knowing as a pattern: cross-org call invites minted
+LiveKit tokens for users in other organisations, and task deletion was gated on
+nothing but org membership. Both were invisible to single-tenant tests. **When
+you write a test that touches org-scoped data, put a second organisation in it
+— and where the rule is about people rather than tenants, a second member.**
 
 ### Not built at all
 
@@ -371,12 +383,16 @@ make test-unit  # go test -race
 ```
 
 **The trap:** database tests **skip** when `TEAMUP_TEST_DATABASE_URL` is unset.
-Without it, 265 of ~359 tests skip and the run still prints `ok`. This is not
+Without it the large majority of tests skip and the run still prints `ok`.
+This is not
 hypothetical — 286 tests passed with zero failures while the entire inbound
 WebSocket path was dead, because nothing ever sent a frame. CI therefore fails
 the build if any test reports SKIP.
 
-With a database: **340 pass, 0 fail, 0 skip, 0 races.**
+With Postgres and Redis: **458 pass (378 top-level), 0 skip, 0 races.**
+
+Two tests in `cmd/teamup` additionally need a live MinIO and LiveKit, because
+they boot a real server — they fail without them. CI provides all four.
 
 When you write a test that touches org-scoped data, **create a second
 organisation in it**. A single-org test cannot detect a missing `org_id` filter.
@@ -405,18 +421,29 @@ how much work each option is.
 
 ## If you want to contribute
 
-Good first pieces of work, in rough order of value for effort:
+Good pieces of work, in rough order of value for effort:
 
-1. **Complete the WebSocket handshake** — handle `conn.init`, reply `conn.ack`.
-   Small change; unlocks typing indicators and client-sent messages that are
-   already written on both sides.
-2. **Authorize task deletion** — a role check in `tasks.go:876`.
-3. **Fix the metrics labels** — a real `sanitizePath` and
-   `strconv.Itoa(status)`. Two small functions; makes metrics usable.
-4. **Give presence keys a TTL** and implement `cleanupStaleConnections`.
-5. **Make OIDC real** — replace the mock `findOrCreateUser` with genuine user
-   provisioning, and read provider config from `org_configs` rather than only
-   the environment.
+1. **Scope `call.accept` to a real call** ([#34](https://github.com/himanshu-kr-jha/teamup.sh/issues/34))
+   — the HTTP token route already does this correctly, so it is a matter of
+   making the WebSocket handler agree with it. Highest severity open item.
+2. **Wire up typing indicators** — the socket handshake and the server handler
+   are both done; only the UI is missing. Small and visible.
+3. **Make OIDC real** ([#15](https://github.com/himanshu-kr-jha/teamup.sh/issues/15))
+   — replace the mock `findOrCreateUser` with genuine provisioning, and read
+   provider config from `org_configs` rather than only the environment
+   ([#31](https://github.com/himanshu-kr-jha/teamup.sh/issues/31)). Larger, and
+   the single biggest gap between what TeamUp claims and what it does.
+4. **Populate correlation IDs** ([#21](https://github.com/himanshu-kr-jha/teamup.sh/issues/21))
+   — the helpers exist and nothing calls them.
+5. **Decide the multipart question** ([#26](https://github.com/himanshu-kr-jha/teamup.sh/issues/26))
+   — implement it, or remove the endpoints and document the single-PUT limit.
+   The current state is the worst of both, because a client can reasonably
+   assume resumability that is not there.
 
-Issues live as Markdown under `.scratch/<feature>/`; see
+The full list is on
+[GitHub](https://github.com/himanshu-kr-jha/teamup.sh/issues); anything
+labelled `ready-for-agent` is scoped enough to pick up unattended, and
+`ready-for-human` needs a product decision first.
+
+Older issues also live as Markdown under `.scratch/<feature>/`; see
 [`docs/agents/issue-tracker.md`](agents/issue-tracker.md).

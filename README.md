@@ -95,7 +95,7 @@ line-by-line detail.
 ### Solid
 
 - **Chat** — channels, DMs, private and announcement channels, editing,
-  deletion, read receipts, live delivery
+  deletion, reactions, read receipts, live delivery
 - **Search** — full-text and fuzzy, over Postgres, permission-scoped and
   highlighted
 - **Tasks** — create, assign along the org chart, filter, comment with
@@ -104,7 +104,8 @@ line-by-line detail.
   through the app
 - **Video calls** — LiveKit SFU, multi-party audio/video, screen share,
   recording to object storage, call events posted into the channel
-- **Presence** — online / away / in-call, availability and leave
+- **Presence** — online / away / in-call, availability and leave, with keys
+  that expire so a crashed process does not leave people showing online
 - **Auth** — password login, RS256 JWTs with a persisted signing key, refresh
   rotation with reuse detection, custom roles and RBAC
 - **Admin** — people, roles and a team tree, gated on both client and server
@@ -118,16 +119,17 @@ Being straight about these, because discovering them yourself is worse:
 
 | | |
 | --- | --- |
-| **OIDC sign-in is a stub** | The Google / Entra / custom buttons complete the OAuth round-trip but provision a fabricated in-memory user. **Password login is the real path.** |
-| **No typing indicators or threads** | The server side of typing exists but the client handshake is incomplete; `replyTo` is stored but there is no thread view |
-| **Reactions are not live** | They persist and display, but others see them on next fetch |
-| **Offline mode is aspirational** | Installable service worker, yes; IndexedDB outbox, no |
-| **Multipart upload is single-part** | Large files still upload fine, via one presigned PUT |
-| **`/metrics` is unauthenticated** | Fine on a laptop, do not publish it |
-| **Task deletion is unauthorised** | Any org member can delete any task |
+| **OIDC sign-in is a stub** | The Google / Entra / custom buttons complete the OAuth round-trip but provision a fabricated in-memory user. **Password login is the real path.** ([#15](https://github.com/himanshu-kr-jha/teamup.sh/issues/15)) |
+| **No typing indicators or threads** | The socket handshake now works, so typing is unblocked — but nothing in the UI sends or renders it yet. `replyTo` is stored and there is no thread view. ([#28](https://github.com/himanshu-kr-jha/teamup.sh/issues/28)) |
+| **`call.accept` trusts the room name** | Any authenticated user can join any call in any org by guessing a 32-bit room name. Not reachable from the UI. ([#34](https://github.com/himanshu-kr-jha/teamup.sh/issues/34)) |
+| **Offline mode is aspirational** | Installable service worker, yes; IndexedDB outbox, no ([#29](https://github.com/himanshu-kr-jha/teamup.sh/issues/29)) |
+| **Multipart upload is single-part** | Large files still upload fine, via one presigned PUT ([#26](https://github.com/himanshu-kr-jha/teamup.sh/issues/26)) |
+| **`/metrics` is unauthenticated** | Fine on a laptop, do not publish it ([#20](https://github.com/himanshu-kr-jha/teamup.sh/issues/20)) |
 
-Nothing here is architectural — most are small, well-scoped fixes, and
-[the architecture doc ends with the five worth doing first](docs/ARCHITECTURE.md#if-you-want-to-contribute).
+Nothing here is architectural — most are small, well-scoped fixes. The open
+ones are tracked as
+[GitHub issues](https://github.com/himanshu-kr-jha/teamup.sh/issues), and
+[the architecture doc ends with the ones worth doing first](docs/ARCHITECTURE.md#if-you-want-to-contribute).
 
 ### Not built
 
@@ -315,7 +317,7 @@ Each package clones the template into its own database and truncates between
 tests, so packages stay isolated and run in parallel. **With a database: 340
 pass, 0 skip, 0 races.**
 
-> Database tests **skip** when `TEAMUP_TEST_DATABASE_URL` is unset — 265 of ~359
+> Database tests **skip** when `TEAMUP_TEST_DATABASE_URL` is unset — most
 > of them. A run can be entirely green having tested almost nothing, which is
 > exactly how a completely dead WebSocket path once survived 286 passing tests.
 > CI fails the build if any test reports SKIP.
