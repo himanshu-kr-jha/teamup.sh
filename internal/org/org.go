@@ -959,13 +959,22 @@ func (s *Service) AddMember(ctx context.Context, orgID uuid.UUID, name, email, r
 
 // ── Bulk onboarding ───────────────────────────────────────────────────────
 
-// maxImportRows caps one batch. Every row costs a bcrypt hash at the default
-// cost — 50-100ms of CPU that cannot be parallelised away without handing the
-// whole box to one request — so 200 rows is already 10-20 seconds of work held
-// open on a single connection, which is about as long as a proxy will wait.
-// It is also several times the 50-60 people this is built for, so a file above
-// it is far more likely to be a mistake than an unusually large company.
-const maxImportRows = 200
+// maxImportRows caps one batch, and the number is set by the server's write
+// timeout rather than by taste.
+//
+// Every row costs a bcrypt hash at the default cost, which cannot be
+// parallelised away without handing the whole box to one request. A 200-row
+// import was measured at 29.0s against the 30s WriteTimeout in cmd/teamup —
+// 97% of the budget on an idle machine, so a slightly busier one loses the
+// response. That is not a retryable failure: rows commit individually by
+// design, so the accounts exist, must_change_password is set, and the only
+// copy of those passwords was in the body that never arrived. Re-running
+// reports every one of them as a duplicate.
+//
+// 50 rows is roughly 7s, which leaves room for a loaded box, and a company of
+// 50-60 people onboards in one or two batches. Raising this means raising
+// WriteTimeout with it, or moving the work off the request.
+const maxImportRows = 50
 
 // Outcomes of one imported row. A failure is per-row and reported, never fatal
 // to the batch: an administrator pasting 50 colleagues in cannot be made to

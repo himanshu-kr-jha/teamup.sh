@@ -2,6 +2,7 @@ package org
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -590,6 +591,21 @@ func optionalUUID(s *string) (*uuid.UUID, error) {
 	return &id, nil
 }
 
+// parentFromJSON reads the parentId a caller actually sent. null and "" both
+// mean "make this a root" — null because it is the obvious way to say it in
+// JSON, and "" because that is what an unset <select> submits.
+func parentFromJSON(raw json.RawMessage) (*uuid.UUID, error) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "null" {
+		return nil, nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, err
+	}
+	return optionalUUID(&s)
+}
+
 func (h *Handler) UpdateTeam(c *gin.Context) {
 	orgID, ok := callerOrg(c)
 	if !ok {
@@ -603,7 +619,11 @@ func (h *Handler) UpdateTeam(c *gin.Context) {
 		Name        *string `json:"name"`
 		Description *string `json:"description"`
 		ManagerID   *string `json:"managerId"`
-		ParentID    *string `json:"parentId"`
+		// Raw, because *string cannot tell `{"parentId": null}` from a body
+		// that never mentioned parentId — and those mean opposite things here:
+		// the first lifts the team to the top level, the second leaves it where
+		// it is. Decoded to a pointer only once we know which was sent.
+		ParentID *json.RawMessage `json:"parentId"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -618,7 +638,7 @@ func (h *Handler) UpdateTeam(c *gin.Context) {
 	// only the second should move the team to the top level.
 	var parentRef **uuid.UUID
 	if req.ParentID != nil {
-		parentID, err := optionalUUID(req.ParentID)
+		parentID, err := parentFromJSON(*req.ParentID)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid parentId"})
 			return
