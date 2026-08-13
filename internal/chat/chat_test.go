@@ -161,7 +161,7 @@ func TestMessageSurvivesAndLoadsAsHistory(t *testing.T) {
 		t.Fatalf("send: %v", err)
 	}
 
-	history, err := svc.GetMessages(ctx, ch, 50, nil)
+	history, err := svc.GetMessages(ctx, ch, 50, nil, nil)
 	if err != nil {
 		t.Fatalf("history: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestHistoryIsOldestFirstAndPagesBackwards(t *testing.T) {
 		time.Sleep(2 * time.Millisecond) // distinct created_at ordering
 	}
 
-	page, err := svc.GetMessages(ctx, ch, 2, nil)
+	page, err := svc.GetMessages(ctx, ch, 2, nil, nil)
 	if err != nil {
 		t.Fatalf("page: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestHistoryIsOldestFirstAndPagesBackwards(t *testing.T) {
 		t.Errorf("unexpected page order: %q, %q", page[0].Content, page[1].Content)
 	}
 
-	older, err := svc.GetMessages(ctx, ch, 10, &page[0].CreatedAt)
+	older, err := svc.GetMessages(ctx, ch, 10, &page[0].CreatedAt, nil)
 	if err != nil {
 		t.Fatalf("older page: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestEditMessageIsLimitedToItsAuthor(t *testing.T) {
 		t.Fatalf("author edit: %v", err)
 	}
 
-	history, _ := svc.GetMessages(ctx, ch, 10, nil)
+	history, _ := svc.GetMessages(ctx, ch, 10, nil, nil)
 	if history[0].Content != "corrected" {
 		t.Errorf("edit not persisted: %q", history[0].Content)
 	}
@@ -263,7 +263,7 @@ func TestDeleteMessageTakesItsContentsButNotItsPlace(t *testing.T) {
 	if err := svc.DeleteMessage(ctx, msg.ID, org.OwnerID); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	history, _ := svc.GetMessages(ctx, ch, 10, nil)
+	history, _ := svc.GetMessages(ctx, ch, 10, nil, nil)
 	if len(history) != 1 {
 		t.Fatalf("the message should keep its place: %+v", history)
 	}
@@ -378,7 +378,7 @@ func TestReactionsRoundTrip(t *testing.T) {
 		t.Fatalf("duplicate reaction: %v", err)
 	}
 
-	history, _ := svc.GetMessages(ctx, ch, 10, nil)
+	history, _ := svc.GetMessages(ctx, ch, 10, nil, nil)
 	if got := len(history[0].Reactions["🚀"]); got != 1 {
 		t.Errorf("expected one reactor, got %d", got)
 	}
@@ -386,7 +386,7 @@ func TestReactionsRoundTrip(t *testing.T) {
 	if err := svc.RemoveReaction(ctx, msg.ID, org.OwnerID, "🚀"); err != nil {
 		t.Fatalf("remove reaction: %v", err)
 	}
-	history, _ = svc.GetMessages(ctx, ch, 10, nil)
+	history, _ = svc.GetMessages(ctx, ch, 10, nil, nil)
 	if len(history[0].Reactions) != 0 {
 		t.Errorf("reaction not removed: %+v", history[0].Reactions)
 	}
@@ -404,7 +404,7 @@ func TestReplyToIsPersisted(t *testing.T) {
 		t.Fatalf("reply: %v", err)
 	}
 
-	history, _ := svc.GetMessages(ctx, ch, 10, nil)
+	history, _ := svc.GetMessages(ctx, ch, 10, nil, nil)
 	if len(history) != 2 {
 		t.Fatalf("expected 2 messages, got %d", len(history))
 	}
@@ -732,7 +732,7 @@ func TestAMessageCarriesTheFilesSentWithIt(t *testing.T) {
 	}
 
 	// And it is still there when the conversation is reloaded.
-	history, err := svc.GetMessages(ctx, ch.ID, 50, nil)
+	history, err := svc.GetMessages(ctx, ch.ID, 50, nil, nil)
 	if err != nil {
 		t.Fatalf("history: %v", err)
 	}
@@ -876,7 +876,7 @@ func TestBothPeopleCanTalkInADirectMessage(t *testing.T) {
 		t.Fatalf("other send: %v", err)
 	}
 
-	history, err := svc.GetMessages(ctx, dm.ID, 50, nil)
+	history, err := svc.GetMessages(ctx, dm.ID, 50, nil, nil)
 	if err != nil {
 		t.Fatalf("history: %v", err)
 	}
@@ -1255,7 +1255,7 @@ func TestAMessageSaysHowManyPeopleHaveReadIt(t *testing.T) {
 		t.Fatalf("send: %v", err)
 	}
 
-	history, err := svc.GetMessages(ctx, ch.ID, 50, nil)
+	history, err := svc.GetMessages(ctx, ch.ID, 50, nil, nil)
 	if err != nil {
 		t.Fatalf("history: %v", err)
 	}
@@ -1266,7 +1266,7 @@ func TestAMessageSaysHowManyPeopleHaveReadIt(t *testing.T) {
 	if err := svc.MarkRead(ctx, ch.ID, reader, msg.ID); err != nil {
 		t.Fatalf("mark read: %v", err)
 	}
-	history, err = svc.GetMessages(ctx, ch.ID, 50, nil)
+	history, err = svc.GetMessages(ctx, ch.ID, 50, nil, nil)
 	if err != nil {
 		t.Fatalf("history: %v", err)
 	}
@@ -1333,7 +1333,7 @@ func TestADeletedMessageKeepsItsPlaceWithoutItsContents(t *testing.T) {
 		t.Fatalf("delete: %v", err)
 	}
 
-	history, err := svc.GetMessages(ctx, ch.ID, 50, nil)
+	history, err := svc.GetMessages(ctx, ch.ID, 50, nil, nil)
 	if err != nil {
 		t.Fatalf("history: %v", err)
 	}
@@ -1366,7 +1366,7 @@ func TestAMessageCanBeEditedForAWhileAndThenNot(t *testing.T) {
 	if err := svc.EditMessage(ctx, msg.ID, org.OwnerID, "the typo"); err != nil {
 		t.Fatalf("edit straight away: %v", err)
 	}
-	history, err := svc.GetMessages(ctx, ch.ID, 50, nil)
+	history, err := svc.GetMessages(ctx, ch.ID, 50, nil, nil)
 	if err != nil {
 		t.Fatalf("history: %v", err)
 	}
@@ -1499,7 +1499,7 @@ func TestAMissedCallIsWrittenIntoTheConversationAsAnEvent(t *testing.T) {
 	if written != dm.ID {
 		t.Errorf("the note went to %v but their conversation is %v", written, dm.ID)
 	}
-	history, err := svc.GetMessages(ctx, dm.ID, 10, nil)
+	history, err := svc.GetMessages(ctx, dm.ID, 10, nil, nil)
 	if err != nil {
 		t.Fatalf("history: %v", err)
 	}
@@ -1530,7 +1530,7 @@ func TestAnOrdinaryMessageIsNotAnEvent(t *testing.T) {
 	if _, err := svc.SendMessage(ctx, org.ID, ch, org.OwnerID, "hello", nil, nil, false); err != nil {
 		t.Fatalf("send: %v", err)
 	}
-	history, err := svc.GetMessages(ctx, ch, 10, nil)
+	history, err := svc.GetMessages(ctx, ch, 10, nil, nil)
 	if err != nil {
 		t.Fatalf("history: %v", err)
 	}

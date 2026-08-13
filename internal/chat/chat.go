@@ -1266,7 +1266,14 @@ func (s *Service) RejoinChannel(ctx context.Context, orgID, channelID, userID uu
 
 // GetMessages returns a page of history oldest-first, paging backwards through
 // `before` so a client can walk into the past.
-func (s *Service) GetMessages(ctx context.Context, channelID uuid.UUID, limit int, before *time.Time) ([]Message, error) {
+//
+// The cursor is (created_at, id), not created_at alone. created_at defaults to
+// NOW(), which is the TRANSACTION timestamp — every row written in one
+// transaction shares it exactly. With a bare `created_at < $2` a page boundary
+// landing inside such a group silently skips every remaining message that
+// shares the timestamp, and the reader is never told history went missing.
+// The id tiebreaker makes the cursor total, so no row can fall between pages.
+func (s *Service) GetMessages(ctx context.Context, channelID uuid.UUID, limit int, before *time.Time, beforeID *uuid.UUID) ([]Message, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
@@ -1277,10 +1284,11 @@ func (s *Service) GetMessages(ctx context.Context, channelID uuid.UUID, limit in
 		FROM messages m
 		JOIN users u ON u.id = m.user_id
 		WHERE m.channel_id = $1
-		  AND ($2::timestamptz IS NULL OR m.created_at < $2)
-		ORDER BY m.created_at DESC
+		  AND ($2::timestamptz IS NULL
+		       OR (m.created_at, m.id) < ($2, COALESCE($4, '00000000-0000-0000-0000-000000000000'::uuid)))
+		ORDER BY m.created_at DESC, m.id DESC
 		LIMIT $3
-	`, channelID, before, limit)
+	`, channelID, before, limit, beforeID)
 	if err != nil {
 		return nil, fmt.Errorf("get messages: %w", err)
 	}

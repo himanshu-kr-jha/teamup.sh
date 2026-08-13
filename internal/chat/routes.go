@@ -492,8 +492,16 @@ func (h *Handler) ListMessages(c *gin.Context) {
 			before = &parsed
 		}
 	}
+	// The id half of the cursor. Optional: a client that sends only `before`
+	// still pages, it just cannot separate messages sharing a timestamp.
+	var beforeID *uuid.UUID
+	if b := c.Query("beforeId"); b != "" {
+		if parsed, err := uuid.Parse(b); err == nil {
+			beforeID = &parsed
+		}
+	}
 
-	messages, err := h.service.GetMessages(c.Request.Context(), channelID, limit, before)
+	messages, err := h.service.GetMessages(c.Request.Context(), channelID, limit, before, beforeID)
 	if err != nil {
 		httpx.Error(c, err, "failed to get messages")
 		return

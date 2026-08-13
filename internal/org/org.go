@@ -518,13 +518,37 @@ func (s *Service) UpdateTeam(ctx context.Context, orgID, teamID uuid.UUID, name,
 		if err := s.requireSameOrgTeam(ctx, orgID, newParent); err != nil {
 			return nil, err
 		}
-		if err := s.requireNoCycle(ctx, orgID, teamID, newParent); err != nil {
+	}
+
+	// A move needs the cycle check and the write to be one unit. Checked and
+	// then written as separate statements, two admins reorganising at once can
+	// each be told their move is fine — A under B, B under A — and both commit,
+	// producing exactly the cycle the check exists to prevent. The consequence
+	// is silent: every walk UNIONs so nothing hangs, and instead everyone in
+	// the cycle becomes everyone else's manager.
+	//
+	// The lock is per organisation rather than per row because a cycle spans an
+	// arbitrary set of teams, so there is no fixed set to lock. Moving a team is
+	// a rare administrative act, so serialising it within one organisation costs
+	// nothing. DeleteTeam takes a transaction for a weaker race already.
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("update team: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if parentID != nil {
+		if _, err := tx.Exec(ctx,
+			`SELECT pg_advisory_xact_lock(hashtext($1))`, orgID.String()); err != nil {
+			return nil, fmt.Errorf("lock team tree: %w", err)
+		}
+		if err := s.requireNoCycle(ctx, tx, orgID, teamID, newParent); err != nil {
 			return nil, err
 		}
 	}
 
 	var t Team
-	err := s.db.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		UPDATE teams SET name = COALESCE($3, name), description = COALESCE($4, description),
 		                 manager_id = COALESCE($5, manager_id),
 		                 parent_id = CASE WHEN $6 THEN $7 ELSE parent_id END,
@@ -539,7 +563,17 @@ func (s *Service) UpdateTeam(ctx context.Context, orgID, teamID uuid.UUID, name,
 		}
 		return nil, fmt.Errorf("update team: %w", err)
 	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("update team: %w", err)
+	}
 	return &t, nil
+}
+
+// querier is whatever can run a query — the pool or a transaction. A check that
+// guards a write has to run on the same connection as that write, or it is
+// answering a question about a state the write will not see.
+type querier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
 // requireNoCycle refuses to file a team underneath itself or underneath one of
@@ -549,12 +583,12 @@ func (s *Service) UpdateTeam(ctx context.Context, orgID, teamID uuid.UUID, name,
 // cycle a manager of everybody else — a team lead below somebody gains control
 // of the team above them. The walk below starts at the team itself, so
 // re-parenting a team under itself is caught by the same query.
-func (s *Service) requireNoCycle(ctx context.Context, orgID, teamID uuid.UUID, parentID *uuid.UUID) error {
+func (s *Service) requireNoCycle(ctx context.Context, q querier, orgID, teamID uuid.UUID, parentID *uuid.UUID) error {
 	if parentID == nil {
 		return nil
 	}
 	var loops bool
-	if err := s.db.QueryRow(ctx, `
+	if err := q.QueryRow(ctx, `
 		WITH RECURSIVE subtree AS (
 			SELECT t.id FROM teams t
 			WHERE t.id = $1 AND t.org_id = $3 AND t.deleted_at IS NULL
