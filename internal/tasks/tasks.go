@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -539,6 +540,10 @@ var updatableFields = map[string]string{
 	"parentTaskId": "parent_task_id",
 }
 
+// titleMaxLength matches tasks.title, which is varchar(500). A longer title
+// is the caller's mistake, not a server fault.
+const titleMaxLength = 500
+
 // allowedStatuses and allowedPriorities mirror the binding tags on create.
 // PATCH takes a free-form map, so without these an update could set a status
 // no board column matches.
@@ -571,6 +576,53 @@ func (s *Service) validateUpdates(ctx context.Context, orgID, actorID uuid.UUID,
 	}
 	if err := enum("taskType", allowedTaskTypes); err != nil {
 		return err
+	}
+
+	// Everything below type-checks a value against the column that will hold
+	// it. Without this the raw JSON reached the driver and a caller's typo came
+	// back as a 500 carrying a constraint or encoding message.
+	if raw, ok := updates["title"]; ok {
+		title, isString := raw.(string)
+		if !isString || strings.TrimSpace(title) == "" || len(title) > titleMaxLength {
+			return apperrors.New(apperrors.CodeBadRequest, "invalid title")
+		}
+	}
+	if raw, ok := updates["description"]; ok && raw != nil {
+		if _, isString := raw.(string); !isString {
+			return apperrors.New(apperrors.CodeBadRequest, "invalid description")
+		}
+	}
+	for _, field := range []string{"dueDate", "startDate"} {
+		raw, ok := updates[field]
+		if !ok || raw == nil {
+			continue
+		}
+		text, isString := raw.(string)
+		if !isString {
+			return apperrors.New(apperrors.CodeBadRequest, "invalid "+field)
+		}
+		when, err := optionalTime(&text)
+		if err != nil {
+			return apperrors.New(apperrors.CodeBadRequest, "invalid "+field)
+		}
+		// Normalised so the driver receives a timestamp, never a string. An
+		// empty string clears the column, as it does on create.
+		if when == nil {
+			updates[field] = nil
+		} else {
+			updates[field] = *when
+		}
+	}
+	for _, field := range []string{"storyPoints", "position"} {
+		raw, ok := updates[field]
+		if !ok || raw == nil {
+			continue
+		}
+		n, err := wholeNumber(raw)
+		if err != nil {
+			return apperrors.New(apperrors.CodeBadRequest, "invalid "+field)
+		}
+		updates[field] = n
 	}
 
 	// Nullable foreign keys are global in the schema, so they have to be
@@ -672,6 +724,29 @@ func (s *Service) MayAssign(ctx context.Context, orgID, actorID, assigneeID uuid
 		return false, fmt.Errorf("check assignment authority: %w", err)
 	}
 	return ok, nil
+}
+
+// wholeNumber reads a value bound for an integer column. JSON decodes every
+// number as a float64, so 1.5 would otherwise reach story_points and be
+// silently truncated to 1 rather than refused.
+func wholeNumber(raw interface{}) (int, error) {
+	var f float64
+	switch v := raw.(type) {
+	case float64:
+		f = v
+	case int:
+		f = float64(v)
+	case int32:
+		f = float64(v)
+	case int64:
+		f = float64(v)
+	default:
+		return 0, fmt.Errorf("not a number")
+	}
+	if f != math.Trunc(f) || f < math.MinInt32 || f > math.MaxInt32 {
+		return 0, fmt.Errorf("not a whole 32-bit number")
+	}
+	return int(f), nil
 }
 
 func parseUUIDValue(raw interface{}) (uuid.UUID, error) {

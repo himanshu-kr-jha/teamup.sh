@@ -12,7 +12,9 @@ if [ -f .env ]; then
   . ./.env
   set +a
 else
-  echo "❌ .env not found. Copy .env.example to .env first." >&2
+  echo "❌ .env not found — this machine has not been set up yet." >&2
+  echo "   Run ./setup.sh first. It checks prerequisites, finds free ports," >&2
+  echo "   and generates the secrets that .env.example only has placeholders for." >&2
   exit 1
 fi
 
@@ -103,8 +105,35 @@ make build
 echo "🔧 Running database migrations..."
 ./bin/teamup migrate up
 
-echo "🌐 Starting TeamUp server on ${TEAMUP_BASE_URL:-http://localhost:8080}"
+APP_URL="${TEAMUP_BASE_URL:-http://localhost:${TEAMUP_PORT:-8080}}"
+
+# Printed before the server starts rather than after, because `exec` below
+# replaces this shell — once the server is running, nothing here runs again.
+cat <<SUMMARY
+
+  ┌──────────────────────────────────────────────────────────────┐
+  │  TeamUp is starting                                          │
+  └──────────────────────────────────────────────────────────────┘
+
+    App              ${APP_URL}
+    MinIO console    http://localhost:${TEAMUP_MINIO_CONSOLE_PORT:-9001}   (minioadmin / minioadmin)
+    Metrics          ${APP_URL}/metrics
+    Health           ${APP_URL}/healthz   ${APP_URL}/readyz
+
+    Postgres         localhost:${TEAMUP_POSTGRES_PORT:-5432}      Redis      localhost:${TEAMUP_REDIS_PORT:-6379}
+    LiveKit          localhost:${TEAMUP_LIVEKIT_PORT:-7880}
+
+  Open ${APP_URL} — the first visit runs the setup wizard,
+  which creates your organisation and owner account. There are no default
+  credentials.
+
+  Stop with Ctrl-C, then ./stop.sh to shut the containers down too.
+
+SUMMARY
+
 if [ -n "${TEAMUP_LIVEKIT_NODE_IP:-}" ]; then
-  echo "   LiveKit is advertising ${TEAMUP_LIVEKIT_NODE_IP}"
+  echo "  LiveKit is advertising ${TEAMUP_LIVEKIT_NODE_IP}"
+  echo
 fi
+
 exec ./bin/teamup server

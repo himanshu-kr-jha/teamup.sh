@@ -1,5 +1,18 @@
 # Build stage
-FROM golang:1.25-alpine AS builder
+#
+# Pinned to the build machine's own architecture and cross-compiled with
+# GOARCH. Building `--platform linux/arm64` the ordinary way would run this
+# stage under QEMU, which is slow, and the hardcoded `GOARCH=amd64` it used to
+# carry would then have put an amd64 binary inside an arm64 image.
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+
+# Supplied by buildx, one value per requested platform.
+ARG TARGETARCH
+
+# Stamped into the binary by the release workflow; `dev` when built by hand.
+ARG VERSION=dev
+ARG COMMIT=dev
+ARG BUILD_DATE=unknown
 
 WORKDIR /app
 
@@ -10,17 +23,15 @@ RUN apk add --no-cache git make gcc musl-dev
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code
+# Copy source code. This must already contain cmd/teamup/web/dist — the SPA is
+# gitignored, so build it (`make build-frontend`) before building the image.
 COPY . .
-
-# Copy pre-built frontend
-COPY cmd/teamup/web/dist ./web/dist
 
 # Build Go binary
 WORKDIR /app
 RUN go mod tidy && \
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags="-s -w -X main.version=dev -X main.commit=dev -X main.date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
+    -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${BUILD_DATE}" \
     -o /teamup ./cmd/teamup
 
 # Runtime stage (distroless for minimal attack surface)

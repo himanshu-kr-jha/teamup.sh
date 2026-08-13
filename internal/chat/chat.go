@@ -187,12 +187,7 @@ func (s *Service) SetBroadcaster(b Broadcaster) {
 // HandleSendMessage processes a chat.send message
 func (s *Service) HandleSendMessage(ctx context.Context, conn websocket.WSConnection, msg *protocol.Message) {
 	var payload protocol.ChatSendPayload
-	payloadBytes, ok := msg.Payload.([]byte)
-	if !ok {
-		s.logger.Error().Msg("Invalid chat.send payload: payload is not []byte")
-		return
-	}
-	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		s.logger.Error().Err(err).Msg("Invalid chat.send payload")
 		return
 	}
@@ -258,11 +253,7 @@ func (s *Service) HandleSendMessage(ctx context.Context, conn websocket.WSConnec
 
 func (s *Service) HandleEditMessage(ctx context.Context, conn websocket.WSConnection, msg *protocol.Message) {
 	var payload protocol.ChatEditPayload
-	payloadBytes, ok := msg.Payload.([]byte)
-	if !ok {
-		return
-	}
-	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return
 	}
 
@@ -306,11 +297,7 @@ func (s *Service) HandleEditMessage(ctx context.Context, conn websocket.WSConnec
 
 func (s *Service) HandleDeleteMessage(ctx context.Context, conn websocket.WSConnection, msg *protocol.Message) {
 	var payload protocol.ChatDeletePayload
-	payloadBytes, ok := msg.Payload.([]byte)
-	if !ok {
-		return
-	}
-	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return
 	}
 
@@ -345,13 +332,37 @@ func (s *Service) HandleDeleteMessage(ctx context.Context, conn websocket.WSConn
 	}
 }
 
+// HandleTyping shows somebody as typing to the rest of their channel.
+//
+// The channel id comes from the client, and this was the one chat handler that
+// took it on trust — no membership check, no organization parse. Anybody could
+// therefore appear to be typing in any channel on the instance, including a
+// private one they are not in and one belonging to another organization, which
+// both leaks that the channel exists and injects state into it. Gated on the
+// same question as posting, since that is what a typing indicator promises is
+// about to happen.
 func (s *Service) HandleTyping(ctx context.Context, conn websocket.WSConnection, msg *protocol.Message) {
 	var payload protocol.ChatTypingPayload
-	payloadBytes, ok := msg.Payload.([]byte)
-	if !ok {
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return
 	}
-	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+
+	channelID, err := uuid.Parse(payload.ChannelID)
+	if err != nil {
+		return
+	}
+	userID, err := uuid.Parse(conn.UserID())
+	if err != nil {
+		return
+	}
+	orgID, err := uuid.Parse(conn.OrgID())
+	if err != nil {
+		return
+	}
+
+	if err := s.AuthorizePost(ctx, orgID, channelID, userID, false); err != nil {
+		s.logger.Warn().Err(err).Str("user", conn.UserID()).Str("channel", payload.ChannelID).
+			Msg("Refused to show typing in channel")
 		return
 	}
 
@@ -362,11 +373,7 @@ func (s *Service) HandleTyping(ctx context.Context, conn websocket.WSConnection,
 
 func (s *Service) HandleRead(ctx context.Context, conn websocket.WSConnection, msg *protocol.Message) {
 	var payload protocol.ChatReadPayload
-	payloadBytes, ok := msg.Payload.([]byte)
-	if !ok {
-		return
-	}
-	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return
 	}
 

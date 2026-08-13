@@ -8,6 +8,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -18,6 +19,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/crypto/bcrypt"
@@ -28,21 +30,29 @@ import (
 )
 
 type Config struct {
-	Issuer          string
-	Audience        string
-	BaseURL         string
-	GoogleClientID  string
-	GoogleSecret    string
-	EntraClientID   string
-	EntraSecret     string
-	EntraTenantID   string
-	CustomIssuer    string
-	CustomClientID  string
-	CustomSecret    string
-	PrivateKey      *rsa.PrivateKey
-	PublicKey       *rsa.PublicKey
-	AccessTokenTTL  time.Duration
-	RefreshTokenTTL time.Duration
+	Issuer         string
+	Audience       string
+	BaseURL        string
+	GoogleClientID string
+	GoogleSecret   string
+	EntraClientID  string
+	EntraSecret    string
+	EntraTenantID  string
+	CustomIssuer   string
+	CustomClientID string
+	CustomSecret   string
+	// PrivateKey signs access tokens. Left nil — which is the normal case —
+	// the service loads the deployment's stored key, or stores a new one on
+	// first boot. PublicKey is always derived from it.
+	PrivateKey *rsa.PrivateKey
+	PublicKey  *rsa.PublicKey
+	// SigningKeySecret (TEAMUP_AUTH_SECRET) encrypts the stored signing key,
+	// so a database backup does not carry the ability to mint tokens with it.
+	// Optional, but once set it has to stay set: the key cannot be read back
+	// without it.
+	SigningKeySecret string
+	AccessTokenTTL   time.Duration
+	RefreshTokenTTL  time.Duration
 	// InsecureCookies drops the Secure flag from auth cookies.
 	//
 	// A browser will not store a Secure cookie sent over plain HTTP — except
@@ -123,13 +133,28 @@ type LinkedIdentity struct {
 	UpdatedAt    time.Time
 }
 
-func NewService(db *pgxpool.Pool, redis *redis.Client, cfg Config) *Service {
-	// Generate RSA keys if not provided
+// NewService builds the auth service, loading the deployment's signing key
+// from the database — and storing one there the first time — unless the caller
+// supplied a key itself.
+//
+// It returns an error rather than carrying on with an improvised key: a key
+// this process invented is one no other replica can verify, and the failure
+// mode of getting that wrong is every request to every other pod coming back
+// 401.
+func NewService(db *pgxpool.Pool, redis *redis.Client, cfg Config) (*Service, error) {
 	if cfg.PrivateKey == nil {
-		privateKey, _ := rsa.GenerateKey(rand.Reader, 2048)
-		cfg.PrivateKey = privateKey
-		cfg.PublicKey = &privateKey.PublicKey
+		if db == nil {
+			return nil, errors.New("auth: no signing key configured and no database to load one from")
+		}
+		key, err := loadOrCreateSigningKey(context.Background(), db, cfg.SigningKeySecret)
+		if err != nil {
+			return nil, fmt.Errorf("auth: %w", err)
+		}
+		cfg.PrivateKey = key
 	}
+	// Always derived, never taken on trust, so a caller cannot hand over a
+	// public key that does not belong to the private one.
+	cfg.PublicKey = &cfg.PrivateKey.PublicKey
 
 	s := &Service{
 		db:        db,
@@ -158,7 +183,7 @@ func NewService(db *pgxpool.Pool, redis *redis.Client, cfg Config) *Service {
 		}
 	}
 
-	return s
+	return s, nil
 }
 
 func (s *Service) GetProvider(name string) (Provider, bool) {
@@ -207,60 +232,127 @@ func hashRefreshToken(token string) string {
 // refers to the same session; otherwise access-token validation looks up a
 // session that has no stored token and rejects every request.
 func (s *Service) GenerateRefreshToken(ctx context.Context, user *User, sessionID, ua, ip string) (*RefreshToken, string, error) {
+	rt, tokenString, err := newRefreshToken(user, sessionID, ua, ip, s.cfg.RefreshTokenTTL)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := storeRefreshToken(ctx, s.db, rt); err != nil {
+		return nil, "", err
+	}
+	return rt, tokenString, nil
+}
+
+// newRefreshToken mints a token without storing it, so rotation can write it
+// inside the same transaction that retires the one being replaced.
+func newRefreshToken(user *User, sessionID, ua, ip string, ttl time.Duration) (*RefreshToken, string, error) {
 	rawToken := make([]byte, 32)
 	if _, err := rand.Read(rawToken); err != nil {
 		return nil, "", err
 	}
 	tokenString := base64.RawURLEncoding.EncodeToString(rawToken)
 
-	rt := &RefreshToken{
+	return &RefreshToken{
 		ID:        uuid.New(),
 		UserID:    user.ID,
 		SessionID: sessionID,
 		TokenHash: hashRefreshToken(tokenString),
 		UserAgent: ua,
 		IPAddress: ip,
-		ExpiresAt: time.Now().Add(s.cfg.RefreshTokenTTL),
+		ExpiresAt: time.Now().Add(ttl),
 		CreatedAt: time.Now(),
-	}
-
-	if err := s.storeRefreshToken(ctx, rt); err != nil {
-		return nil, "", err
-	}
-
-	return rt, tokenString, nil
+	}, tokenString, nil
 }
 
-// RefreshAccessToken rotates the refresh token and issues new access token
+// refreshRotationGrace is how long a refresh token that has just been rotated
+// away still gets its holder an access token — on the session that replaced
+// it, and never another refresh token.
+//
+// Requests arrive in bunches: a PWA refetches several queries when the window
+// regains focus, and every client refreshes at once after a deploy. All of
+// them present the same refresh token, one of them rotates it, and without
+// this window the rest were answered with 401 and the user was thrown back to
+// the sign-in screen. Wide enough to cover a burst, narrow enough that a
+// stolen token is not a foothold.
+const refreshRotationGrace = 30 * time.Second
+
+// RefreshAccessToken rotates the refresh token and issues a new access token.
+//
+// The lookup takes a row lock, so concurrent callers presenting the same token
+// are serialised: the first rotates it, and the ones behind it find the
+// rotation already recorded and take the grace path rather than racing to
+// rotate a token that is already spent.
 func (s *Service) RefreshAccessToken(ctx context.Context, refreshToken, ua, ip string) (*TokenPair, error) {
-	rt, err := s.findRefreshTokenByHash(ctx, refreshToken)
-	if err != nil || rt.RevokedAt != nil || time.Now().After(rt.ExpiresAt) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+
+	var (
+		id         uuid.UUID
+		userID     uuid.UUID
+		expiresAt  time.Time
+		revokedAt  *time.Time
+		replacedBy *uuid.UUID
+	)
+	err = tx.QueryRow(ctx, `
+		SELECT id, user_id, expires_at, revoked_at, replaced_by
+		FROM refresh_tokens WHERE token_hash = $1
+		FOR UPDATE
+	`, hashRefreshToken(refreshToken)).Scan(&id, &userID, &expiresAt, &revokedAt, &replacedBy)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, apperrors.ErrUnauthorized
+		}
+		return nil, err
+	}
+	if time.Now().After(expiresAt) {
 		return nil, apperrors.ErrUnauthorized
 	}
 
-	// Revoke old token (rotation)
-	now := time.Now()
-	rt.RevokedAt = &now
-	if err := s.updateRefreshToken(ctx, rt); err != nil {
+	user, err := scanUser(tx.QueryRow(ctx, fmt.Sprintf(userColumns, "u.id = $1"), userID))
+	if err != nil {
 		return nil, err
 	}
 
-	// Get user
-	user, err := s.getUser(ctx, rt.UserID)
-	if err != nil {
-		return nil, err
+	if revokedAt != nil {
+		accessToken, err := s.accessTokenForReplacement(ctx, tx, user, replacedBy, *revokedAt)
+		if err != nil {
+			return nil, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		// No refresh token: the caller that won the rotation has already been
+		// handed the replacement, and this one keeps the cookie it has until
+		// that response lands.
+		return &TokenPair{
+			AccessToken: accessToken,
+			ExpiresIn:   int(s.cfg.AccessTokenTTL.Seconds()),
+			TokenType:   "Bearer",
+		}, nil
 	}
 
 	// Rotation starts a new session so the previous access token stops being
 	// accepted along with the refresh token it was paired with.
-	newSessionID := uuid.New().String()
-	newRT, newRawToken, err := s.GenerateRefreshToken(ctx, user, newSessionID, ua, ip)
+	newRT, newRawToken, err := newRefreshToken(user, uuid.New().String(), ua, ip, s.cfg.RefreshTokenTTL)
 	if err != nil {
+		return nil, err
+	}
+	if err := storeRefreshToken(ctx, tx, newRT); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE refresh_tokens SET revoked_at = NOW(), replaced_by = $2 WHERE id = $1
+	`, id, newRT.ID); err != nil {
 		return nil, err
 	}
 
 	accessToken, err := s.GenerateAccessToken(ctx, user, newRT.SessionID)
 	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 
@@ -270,6 +362,30 @@ func (s *Service) RefreshAccessToken(ctx context.Context, refreshToken, ua, ip s
 		ExpiresIn:    int(s.cfg.AccessTokenTTL.Seconds()),
 		TokenType:    "Bearer",
 	}, nil
+}
+
+// accessTokenForReplacement serves the caller that lost a rotation race: it
+// hands back an access token on the session that replaced the one it
+// presented. Anything else — a token revoked by signing out, one rotated away
+// longer ago than the grace window, or a replacement that has itself been
+// revoked — is refused, so this stays a fix for concurrency and not a way to
+// keep using a token that was deliberately withdrawn.
+func (s *Service) accessTokenForReplacement(ctx context.Context, tx pgx.Tx, user *User, replacedBy *uuid.UUID, revokedAt time.Time) (string, error) {
+	if replacedBy == nil || time.Since(revokedAt) > refreshRotationGrace {
+		return "", apperrors.ErrUnauthorized
+	}
+	var sessionID string
+	err := tx.QueryRow(ctx, `
+		SELECT session_id FROM refresh_tokens
+		WHERE id = $1 AND revoked_at IS NULL AND expires_at > NOW()
+	`, *replacedBy).Scan(&sessionID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", apperrors.ErrUnauthorized
+		}
+		return "", err
+	}
+	return s.GenerateAccessToken(ctx, user, sessionID)
 }
 
 // ValidateAccessToken validates a JWT access token
@@ -336,7 +452,12 @@ func (s *Service) SetAuthCookies(w http.ResponseWriter, tokens *TokenPair) {
 		MaxAge:   tokens.ExpiresIn,
 	})
 
-	// Refresh token cookie (only sent to refresh endpoint)
+	// Refresh token cookie (only sent to refresh endpoint). A caller that lost
+	// a rotation race gets no refresh token, and must keep the cookie it has
+	// rather than have it overwritten with nothing.
+	if tokens.RefreshToken == "" {
+		return
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     "rt",
 		Value:    tokens.RefreshToken,
@@ -583,8 +704,14 @@ func (s *Service) VerifyPassword(user *User, password string) error {
 	return nil
 }
 
-func (s *Service) storeRefreshToken(ctx context.Context, rt *RefreshToken) error {
-	_, err := s.db.Exec(ctx, `
+// execer is whatever can run a statement: the pool for ordinary writes, a
+// transaction when rotation has to write and retire tokens together.
+type execer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+func storeRefreshToken(ctx context.Context, db execer, rt *RefreshToken) error {
+	_, err := db.Exec(ctx, `
 		INSERT INTO refresh_tokens (id, user_id, session_id, token_hash, user_agent, ip_address, expires_at, created_at)
 		VALUES ($1, $2, $3, $4, $5, NULLIF($6, '')::inet, $7, $8)
 	`, rt.ID, rt.UserID, rt.SessionID, rt.TokenHash, rt.UserAgent, rt.IPAddress, rt.ExpiresAt, rt.CreatedAt)
@@ -613,12 +740,6 @@ func (s *Service) findRefreshTokenByHash(ctx context.Context, tokenString string
 		rt.IPAddress = *ip
 	}
 	return &rt, nil
-}
-
-func (s *Service) updateRefreshToken(ctx context.Context, rt *RefreshToken) error {
-	_, err := s.db.Exec(ctx,
-		`UPDATE refresh_tokens SET revoked_at = $2 WHERE id = $1`, rt.ID, rt.RevokedAt)
-	return err
 }
 
 func (s *Service) revokeSessionTokens(ctx context.Context, sessionID string) error {

@@ -1,0 +1,104 @@
+TeamUp {{ .Chart.AppVersion }} — release {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+Reach it with:
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+{{- $host := .host }}
+{{- $scheme := "http" }}
+{{- range $.Values.ingress.tls }}{{ if has $host .hosts }}{{ $scheme = "https" }}{{ end }}{{ end }}
+  {{ $scheme }}://{{ $host }}
+{{- end }}
+{{- else }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "teamup.fullname" . }} 8080:{{ .Values.service.port }}
+  then open http://localhost:8080
+{{- end }}
+
+{{- $missing := include "teamup.missingRequired" . }}
+{{- if $missing }}
+
+  ##################################################################
+  #  This release will not start.                                  #
+  ##################################################################
+
+The server requires these variables at boot and this release does not supply
+them:
+
+{{- range (splitList " " $missing) }}
+  - {{ . }}
+{{- end }}
+
+The pod will CrashLoopBackOff. Its log names every missing variable:
+
+  kubectl --namespace {{ .Release.Namespace }} logs deploy/{{ include "teamup.fullname" . }}
+
+Set them under `secrets` / `config` in your values, or point
+`secrets.existingSecret` at a Secret whose keys are the TEAMUP_* names.
+{{- end }}
+
+{{- if not .Values.secrets.existingSecret }}
+{{- if not .Values.secrets.authSecret }}
+
+WARNING: secrets.authSecret is unset.
+
+TEAMUP_AUTH_SECRET wraps the JWT signing key that TeamUp persists in the
+database. Set it now, before anyone signs in:
+
+  secrets:
+    authSecret: "$(openssl rand -base64 48)"
+{{- end }}
+{{- end }}
+
+Two things about TEAMUP_AUTH_SECRET that are easy to learn the hard way:
+
+  * Lose it, and every issued session and refresh token stops verifying.
+    Everybody is logged out and cannot be logged back in with old tokens.
+    Back it up wherever you keep your other break-glass secrets.
+  * Change it, and the same thing happens — it is not a rotation you can do
+    casually. Every replica must carry the identical value, which is why it
+    lives in one Secret rather than being generated per pod.
+
+{{- $multi := or .Values.autoscaling.enabled (gt (int .Values.replicaCount) 1) }}
+{{- if $multi }}
+
+{{ if .Values.autoscaling.enabled -}}
+Autoscaling between {{ .Values.autoscaling.minReplicas }} and {{ .Values.autoscaling.maxReplicas }} replicas.
+{{- else -}}
+Running {{ .Values.replicaCount }} replicas.
+{{- end }} Replicas coordinate presence and message fan-out
+through Redis, and every one of them must carry the identical
+TEAMUP_AUTH_SECRET — which they do, since they all read the one Secret above.
+{{- end }}
+
+Health endpoints:
+
+  /healthz  liveness  — the process is up
+  /readyz   readiness — PostgreSQL and Redis are reachable
+
+Note that /readyz does not check MinIO or LiveKit. A pod with object storage or
+LiveKit down still reports ready and still receives traffic; file uploads and
+calls fail while the rollout looks green. Watch those two dependencies with
+their own monitoring rather than relying on this readiness gate.
+
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+{{- range .paths }}
+{{- if eq .path "/" }}
+
+Your Ingress publishes {{ .path }}, which includes /metrics. That endpoint has
+no authentication. Restrict it at the ingress controller, or scrape it through
+the Service and keep it off the public host.
+{{- end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+This chart deploys TeamUp only. PostgreSQL, Redis, an S3-compatible store and
+LiveKit are prerequisites — see the Prerequisites section in values.yaml.
+{{- if .Values.migrations.enabled }}
+Database migrations ran as a pre-install/pre-upgrade hook Job; check it with:
+
+  kubectl --namespace {{ .Release.Namespace }} logs job/{{ include "teamup.fullname" . }}-migrate
+{{- else }}
+Migrations are disabled. Run `teamup migrate up` against the database yourself
+before the server starts, or it will find no schema.
+{{- end }}

@@ -78,11 +78,19 @@ build-all: build-frontend
 TEST_DATABASE_URL ?= postgres://teamup:teamup@localhost:5432/teamup_test?sslmode=disable
 
 # Create and migrate the template database the test harness clones from.
+#
+# The database to recreate and the maintenance connection to do it over are both
+# read out of TEST_DATABASE_URL. The previous version substituted a literal
+# "teamup_test", so overriding TEST_DATABASE_URL pointed the migration at one
+# database while dropping another — passing a scratch URL destroyed the shared
+# test database instead of leaving it alone.
 test-db:
 	@echo "Preparing test database..."
-	@psql "$(subst /teamup_test?,/postgres?,$(TEST_DATABASE_URL))" -v ON_ERROR_STOP=1 \
-		-c "DROP DATABASE IF EXISTS teamup_test WITH (FORCE);" \
-		-c "CREATE DATABASE teamup_test;"
+	@db=$$(printf '%s' "$(TEST_DATABASE_URL)" | sed -E 's|^[^?]*/([^/?]+)(\?.*)?$$|\1|'); \
+	admin=$$(printf '%s' "$(TEST_DATABASE_URL)" | sed -E 's|^([^?]*/)[^/?]+|\1postgres|'); \
+	psql "$$admin" -v ON_ERROR_STOP=1 \
+		-c "DROP DATABASE IF EXISTS \"$$db\" WITH (FORCE);" \
+		-c "CREATE DATABASE \"$$db\";"
 	@TEAMUP_DATABASE_URL="$(TEST_DATABASE_URL)" $(BUILD_DIR)/$(BINARY_NAME) migrate up
 	@echo "Test database ready: $(TEST_DATABASE_URL)"
 

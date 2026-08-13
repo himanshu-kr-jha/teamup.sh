@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   postgres:
     image: postgres:16-alpine
@@ -9,7 +7,7 @@ services:
       POSTGRES_PASSWORD: teamup
       POSTGRES_DB: teamup
     ports:
-      - "5432:5432"
+      - "${TEAMUP_POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
@@ -22,7 +20,7 @@ services:
     image: redis:7-alpine
     container_name: teamup-redis
     ports:
-      - "6379:6379"
+      - "${TEAMUP_REDIS_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
     healthcheck:
@@ -36,8 +34,8 @@ services:
     container_name: teamup-minio
     command: server /data --console-address ":9001"
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "${TEAMUP_MINIO_PORT:-9000}:9000"
+      - "${TEAMUP_MINIO_CONSOLE_PORT:-9001}:9001"
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
@@ -53,8 +51,8 @@ services:
     image: livekit/livekit-server:latest
     container_name: teamup-livekit
     ports:
-      - "7880:7880"
-      - "7881:7881"
+      - "${TEAMUP_LIVEKIT_PORT:-7880}:7880"
+      - "${TEAMUP_LIVEKIT_TCP_PORT:-7881}:7881"
       - "7882:7882"
     environment:
       LIVEKIT_CONFIG: |
@@ -115,7 +113,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8080:8080"
+      - "${TEAMUP_PORT:-8080}:8080"
     environment:
       TEAMUP_DATABASE_URL: postgres://teamup:teamup@postgres:5432/teamup?sslmode=disable
       TEAMUP_REDIS_URL: redis://redis:6379

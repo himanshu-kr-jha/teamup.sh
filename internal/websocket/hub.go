@@ -53,7 +53,21 @@ func (c *Connection) OrgID() string {
 	return c.orgID
 }
 
+// Enqueue offers a message to the connection's writer, and gives up rather
+// than waiting: one slow client must not hold up a broadcast to everybody else.
+//
+// A finished connection swallows the message. SendCh is never closed, because
+// this is called by whoever holds a pointer taken from the hub maps, long after
+// the hub lock was released and possibly after the connection ended — and a
+// send on a closed channel panics however the select is written, from
+// goroutines that have no recover.
 func (c *Connection) Enqueue(msg *protocol.Message) {
+	select {
+	case <-c.ctx.Done():
+		return // nobody is reading this any more
+	default:
+	}
+
 	select {
 	case c.SendCh <- msg:
 	default:
@@ -240,33 +254,46 @@ func (h *Hub) BroadcastToChannel(channelID string, msg *protocol.Message, exclud
 	}
 }
 
+// BroadcastToUser delivers to every socket somebody has open.
+//
+// The connections are copied into a slice while the lock is held, as
+// BroadcastToChannel does. This used to fetch the user's inner connection map,
+// release the lock, and then range over that map — the map itself, not a copy
+// — while Register and Unregister were free to write it. That is
+// `fatal error: concurrent map iteration and map write`, a runtime throw
+// gin.Recovery cannot catch, so one occurrence killed every session on the
+// instance. Ringing somebody whose socket is opening or closing was enough to
+// trigger it, which is what a page refresh during a call looks like.
 func (h *Hub) BroadcastToUser(userID string, msg *protocol.Message) {
 	h.mu.RLock()
-	userConns, ok := h.userConns[userID]
+	conns := make([]*Connection, 0, len(h.userConns[userID]))
+	for _, conn := range h.userConns[userID] {
+		conns = append(conns, conn)
+	}
 	h.mu.RUnlock()
 
-	if !ok {
-		return
-	}
-
-	for _, conn := range userConns {
+	for _, conn := range conns {
 		conn.Enqueue(msg)
 	}
 }
 
 func (h *Hub) BroadcastToOrg(orgID string, msg *protocol.Message, excludeUserID string) {
 	h.mu.RLock()
-	defer h.mu.RUnlock()
-
+	conns := make([]*Connection, 0, len(h.userConns))
 	for userID, userConns := range h.userConns {
 		if userID == excludeUserID {
 			continue
 		}
 		for _, conn := range userConns {
 			if conn.OrgID() == orgID {
-				conn.Enqueue(msg)
+				conns = append(conns, conn)
 			}
 		}
+	}
+	h.mu.RUnlock()
+
+	for _, conn := range conns {
+		conn.Enqueue(msg)
 	}
 }
 
@@ -284,14 +311,18 @@ func (h *Hub) broadcastPresence(orgID, userID, status, customStatus string) {
 	})
 
 	h.mu.RLock()
-	defer h.mu.RUnlock()
-
+	conns := make([]*Connection, 0, len(h.userConns))
 	for _, userConns := range h.userConns {
 		for _, conn := range userConns {
 			if conn.OrgID() == orgID {
-				conn.Enqueue(msg)
+				conns = append(conns, conn)
 			}
 		}
+	}
+	h.mu.RUnlock()
+
+	for _, conn := range conns {
+		conn.Enqueue(msg)
 	}
 }
 
@@ -305,14 +336,24 @@ func (h *Hub) cleanupStaleConnections() {
 	}
 }
 
+// finish ends a connection once, whichever loop notices first.
+//
+// Cancelling the context is what stops the writer, and it is deliberately the
+// only thing that does. This used to close SendCh here, in the reader, while
+// every broadcast path was still free to enqueue to the same connection — so a
+// send on a closed channel panicked from a goroutine with no recover and took
+// the process with it. The channel now has no closer at all: it is garbage
+// collected with the connection, and Enqueue stops offering to it as soon as
+// the context is done.
+func (c *Connection) finish() {
+	c.CloseOnce.Do(func() {
+		c.cancel()
+		c.WS.Close(websocket.StatusNormalClosure, "")
+	})
+}
+
 func (c *Connection) ReadLoop() {
-	defer func() {
-		c.CloseOnce.Do(func() {
-			c.cancel()
-			close(c.SendCh)
-			c.WS.Close(websocket.StatusNormalClosure, "")
-		})
-	}()
+	defer c.finish()
 
 	for {
 		select {
@@ -376,10 +417,7 @@ func (c *Connection) WriteLoop() {
 		select {
 		case <-c.ctx.Done():
 			return
-		case msg, ok := <-c.SendCh:
-			if !ok {
-				return
-			}
+		case msg := <-c.SendCh:
 			if err := c.writeJSON(c.ctx, msg); err != nil {
 				c.logger.Debug().Err(err).Str("conn", c.ID).Msg("WS write error")
 				return

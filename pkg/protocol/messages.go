@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -48,13 +49,22 @@ const (
 	TypeNotificationRead = "notification.read"
 )
 
-// Message is the base WebSocket message envelope
+// Message is the base WebSocket message envelope.
+//
+// One struct serves both directions, so the payload field has to be readable
+// coming in as well as writable going out. It used to be an interface{}, which
+// encoding/json fills with map[string]interface{} on the way in — never with
+// the []byte every inbound handler asserted it to. Each of those assertions
+// failed, so the handler returned before doing anything and every
+// client-to-server frame was discarded without a log line. Raw JSON decodes
+// straight into a handler's own payload struct and re-marshals unchanged, so
+// the wire format is the same in both directions.
 type Message struct {
-	ID        string      `json:"id"`
-	Type      string      `json:"type"`
-	Payload   interface{} `json:"payload"`
-	Timestamp time.Time   `json:"timestamp"`
-	Version   int         `json:"version"`
+	ID        string          `json:"id"`
+	Type      string          `json:"type"`
+	Payload   json.RawMessage `json:"payload"`
+	Timestamp time.Time       `json:"timestamp"`
+	Version   int             `json:"version"`
 }
 
 // Connection payloads
@@ -284,10 +294,29 @@ func NewMessage(msgType string, payload interface{}) *Message {
 	return &Message{
 		ID:        generateID(),
 		Type:      msgType,
-		Payload:   payload,
+		Payload:   MarshalPayload(payload),
 		Timestamp: time.Now().UTC(),
 		Version:   1,
 	}
+}
+
+// MarshalPayload encodes an outbound payload to the raw JSON the envelope
+// carries. A payload that cannot be encoded becomes null: every declared
+// payload type is a plain struct of strings, times and slices, so this cannot
+// happen for anything in this package, and dropping the frame entirely would
+// be a worse answer than delivering one with an empty body.
+func MarshalPayload(payload interface{}) json.RawMessage {
+	switch p := payload.(type) {
+	case nil:
+		return nil
+	case json.RawMessage:
+		return p
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil
+	}
+	return encoded
 }
 
 func generateID() string {

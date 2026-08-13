@@ -1,0 +1,220 @@
+name: Release
+
+# Publishing is gated on a semver tag and nothing else. Pushing to a branch
+# never reaches GHCR and never creates a release.
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: '1.25'
+  NODE_VERSION: '20'
+  PNPM_VERSION: '9'
+  REGISTRY: ghcr.io
+
+jobs:
+  # ── Binaries ────────────────────────────────────────────────────────────
+  build-release:
+    name: Build release artifacts
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version
+        id: version
+        run: |
+          version="${GITHUB_REF#refs/tags/v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::tag ${GITHUB_REF#refs/tags/} is not vMAJOR.MINOR.PATCH[-prerelease]"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      # cmd/teamup/main.go embeds web/dist, so the SPA has to exist before any
+      # Go build can succeed.
+      - name: Build SPA
+        working-directory: web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Upload SPA for the image build
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: cmd/teamup/web/dist
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Build multi-arch binaries
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p dist
+          commit=$(git rev-parse --short HEAD)
+          built=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build \
+              -ldflags="-s -w -X main.version=$VERSION -X main.commit=$commit -X main.date=$built" \
+              -o "dist/teamup-linux-$arch" ./cmd/teamup
+          done
+
+      - name: Smoke test the native binary
+        run: ./dist/teamup-linux-amd64 version
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum teamup-linux-* > checksums.txt
+          cat checksums.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-artifacts
+          path: dist/
+          retention-days: 30
+
+  # ── Image ───────────────────────────────────────────────────────────────
+  docker:
+    name: Push image to GHCR
+    needs: build-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # The Dockerfile does not build the SPA; it expects it in the context.
+      - uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: cmd/teamup/web/dist
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `latest` would be wrong on a release candidate.
+      - name: Decide whether this is a prerelease
+        id: channel
+        run: |
+          if printf '%s' "${{ needs.build-release.outputs.version }}" | grep -q -- '-'; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Image tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ steps.channel.outputs.prerelease == 'false' }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ needs.build-release.outputs.version }}
+            COMMIT=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ── Chart ───────────────────────────────────────────────────────────────
+  helm:
+    name: Package Helm chart
+    needs: build-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.3
+
+      - name: Stamp the chart with the release version
+        env:
+          VERSION: ${{ needs.build-release.outputs.version }}
+        run: |
+          sed -i "s/^version: .*/version: $VERSION/" helm/teamup/Chart.yaml
+          sed -i "s/^appVersion: .*/appVersion: \"$VERSION\"/" helm/teamup/Chart.yaml
+          sed -i "s|^  tag: .*|  tag: \"$VERSION\"|" helm/teamup/values.yaml
+
+      - name: helm lint
+        run: helm lint helm/teamup
+
+      - name: helm package
+        run: helm package helm/teamup -d dist/helm
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: helm-chart
+          path: dist/helm/
+          retention-days: 30
+
+  # ── Release ─────────────────────────────────────────────────────────────
+  github-release:
+    name: GitHub Release
+    needs: [build-release, docker, helm]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-artifacts
+          path: dist
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: helm-chart
+          path: dist/helm
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: TeamUp ${{ github.ref_name }}
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            dist/teamup-linux-amd64
+            dist/teamup-linux-arm64
+            dist/checksums.txt
+            dist/helm/teamup-${{ needs.build-release.outputs.version }}.tgz

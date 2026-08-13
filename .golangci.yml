@@ -1,0 +1,31 @@
+version: "2"
+
+# The default linter set, written out so a golangci-lint upgrade cannot
+# quietly change what CI enforces.
+#
+# All five find real problems in this tree today: 20 errcheck, 4 staticcheck,
+# 1 ineffassign and 1 unused, spread across cmd/teamup, internal/auth,
+# internal/chat, internal/mail, internal/notifications, internal/org,
+# internal/presence, internal/tasks, internal/testsupport, internal/websocket
+# and internal/wizard. Until that backlog is cleared, CI runs this with
+# only-new-issues so a pull request is judged on what it adds. See issue 43.
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+
+  exclusions:
+    generated: lax
+    rules:
+      # Tests may ignore an error the assertion is about to catch anyway.
+      - path: _test\.go
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt

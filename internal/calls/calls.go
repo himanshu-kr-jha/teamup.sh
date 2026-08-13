@@ -511,11 +511,7 @@ func (s *Service) EndCall(ctx context.Context, callID string) error {
 
 func (s *Service) HandleCallInvite(ctx context.Context, conn websocket.WSConnection, msg *protocol.Message) {
 	var payload protocol.CallInvitePayload
-	payloadBytes, ok := msg.Payload.([]byte)
-	if !ok {
-		return
-	}
-	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return
 	}
 
@@ -557,11 +553,7 @@ func (s *Service) HandleCallInvite(ctx context.Context, conn websocket.WSConnect
 
 func (s *Service) HandleCallAccept(ctx context.Context, conn websocket.WSConnection, msg *protocol.Message) {
 	var payload protocol.CallAcceptPayload
-	payloadBytes, ok := msg.Payload.([]byte)
-	if !ok {
-		return
-	}
-	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return
 	}
 
@@ -581,11 +573,7 @@ func (s *Service) HandleCallAccept(ctx context.Context, conn websocket.WSConnect
 
 func (s *Service) HandleCallDecline(ctx context.Context, conn websocket.WSConnection, msg *protocol.Message) {
 	var payload protocol.CallDeclinePayload
-	payloadBytes, ok := msg.Payload.([]byte)
-	if !ok {
-		return
-	}
-	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return
 	}
 
@@ -599,11 +587,7 @@ func (s *Service) HandleCallDecline(ctx context.Context, conn websocket.WSConnec
 
 func (s *Service) HandleCallSignaling(ctx context.Context, conn websocket.WSConnection, msg *protocol.Message) {
 	var payload protocol.CallSignalingPayload
-	payloadBytes, ok := msg.Payload.([]byte)
-	if !ok {
-		return
-	}
-	if err := json.Unmarshal(payloadBytes, &payload); err != nil {
+	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return
 	}
 

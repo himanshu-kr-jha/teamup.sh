@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -87,8 +88,27 @@ var (
 	}, []string{"type"})
 )
 
+// version of the running build, recorded by Init so the health responses can
+// report which one answered.
+var (
+	versionMu sync.RWMutex
+	version   = "dev"
+)
+
+func serviceVersion() string {
+	versionMu.RLock()
+	defer versionMu.RUnlock()
+	return version
+}
+
 // Init initializes the global logger
-func Init(serviceName, version, environment string) {
+func Init(serviceName, buildVersion, environment string) {
+	versionMu.Lock()
+	if buildVersion != "" {
+		version = buildVersion
+	}
+	versionMu.Unlock()
+
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnixMs
 	zerolog.ErrorStackMarshaler = pkgerrors.MarshalStack
 
@@ -102,7 +122,7 @@ func Init(serviceName, version, environment string) {
 
 	log.Logger = log.Logger.With().
 		Str("service", serviceName).
-		Str("version", version).
+		Str("version", serviceVersion()).
 		Str("env", environment).
 		Logger()
 
@@ -238,38 +258,13 @@ type HealthChecker interface {
 }
 
 // LiveHandler - liveness probe (process alive)
+//
+// Deliberately answers from nothing but the process itself. A liveness probe
+// that consulted a dependency would have Kubernetes restart pods over an
+// outage a restart cannot fix; that judgement belongs to readiness, in
+// readiness.go.
 func LiveHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "alive"})
-}
-
-// ReadyHandler - readiness probe (dependencies healthy)
-func ReadyHandler(db interface{}, redis interface{}) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		ctx, cancel := context.WithTimeout(c.Request.Context(), 2*time.Second)
-		defer cancel()
-
-		// Check database
-		if db != nil {
-			if pgxPool, ok := db.(interface{ Ping(context.Context) error }); ok {
-				if err := pgxPool.Ping(ctx); err != nil {
-					c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not ready", "error": "database"})
-					return
-				}
-			}
-		}
-
-		// Check Redis
-		if redis != nil {
-			if redisClient, ok := redis.(interface{ Ping(context.Context) error }); ok {
-				if err := redisClient.Ping(ctx); err != nil {
-					c.JSON(http.StatusServiceUnavailable, gin.H{"status": "not ready", "error": "redis"})
-					return
-				}
-			}
-		}
-
-		c.JSON(http.StatusOK, gin.H{"status": "ready"})
-	}
 }
 
 // HealthHandler - full health check
@@ -310,7 +305,7 @@ func HealthHandler(checkers ...HealthChecker) gin.HandlerFunc {
 			Status:    overall,
 			Checks:    checks,
 			Timestamp: time.Now(),
-			Version:   "dev", // Will be set from main
+			Version:   serviceVersion(),
 		})
 	}
 }

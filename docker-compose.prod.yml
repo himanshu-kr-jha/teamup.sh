@@ -124,6 +124,9 @@ services:
       TEAMUP_ENV: production
       TEAMUP_LOG_LEVEL: info
       TEAMUP_BASE_URL: https://teamup.example.com
+      # Encrypts the token-signing key where it is stored, so a database
+      # backup does not carry the ability to mint access tokens. Keep it: the
+      # stored key cannot be read back without the value it was sealed with.
       TEAMUP_AUTH_SECRET: ${AUTH_SECRET}
     depends_on:
       postgres:
