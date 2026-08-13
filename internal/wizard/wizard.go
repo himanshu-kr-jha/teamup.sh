@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/smtp"
 	"strconv"
@@ -36,6 +37,49 @@ type Service struct {
 	cfg      *auth.Config
 	sessions sessionStore
 	logger   zerolog.Logger
+	// newStore builds the object storage client. Nil means the real MinIO
+	// client; tests substitute a fake, because whether setup provisions the
+	// bucket is otherwise only observable by having an object store.
+	newStore objectStoreFactory
+}
+
+// objectStore is the part of the MinIO API setup uses. *minio.Client satisfies
+// it as it stands.
+type objectStore interface {
+	BucketExists(ctx context.Context, bucketName string) (bool, error)
+	MakeBucket(ctx context.Context, bucketName string, opts minio.MakeBucketOptions) error
+	PutObject(ctx context.Context, bucketName, objectName string, reader io.Reader, objectSize int64, opts minio.PutObjectOptions) (minio.UploadInfo, error)
+	RemoveObject(ctx context.Context, bucketName, objectName string, opts minio.RemoveObjectOptions) error
+}
+
+type objectStoreFactory func(Data) (objectStore, error)
+
+func minioClientFor(data Data) (objectStore, error) {
+	client, err := minio.New(data.MinIOEndpoint, &minio.Options{
+		Creds:  credentials.NewStaticV4(data.MinIOAccessKey, data.MinIOSecretKey, ""),
+		Secure: data.MinIOSecure(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return client, nil
+}
+
+// storageFor builds the object storage client for this configuration, through
+// whichever factory the Service holds.
+func (s *Service) storageFor(data Data) (objectStore, error) {
+	if strings.TrimSpace(data.MinIOEndpoint) == "" || strings.TrimSpace(data.MinIOBucket) == "" {
+		return nil, fmt.Errorf("minio endpoint and bucket are required")
+	}
+	newStore := s.newStore
+	if newStore == nil {
+		newStore = minioClientFor
+	}
+	store, err := newStore(data)
+	if err != nil {
+		return nil, fmt.Errorf("minio config: %w", err)
+	}
+	return store, nil
 }
 
 type Data struct {
@@ -89,6 +133,14 @@ func (s *Service) IsSetupComplete(ctx context.Context) (bool, error) {
 // setup stays re-runnable (spec 09 §7).
 func (s *Service) FinalizeSetup(ctx context.Context, data Data) error {
 	if err := data.Validate(); err != nil {
+		return err
+	}
+
+	// Provision the bucket before anything is written. An organization whose
+	// object storage was never created answers 500 to every upload, and
+	// nothing else in the product would ever create it; doing this first also
+	// means a storage failure leaves no half-provisioned organization behind.
+	if err := s.EnsureObjectStorage(ctx, data); err != nil {
 		return err
 	}
 
@@ -287,7 +339,7 @@ func (s *Service) createDefaultRoles(ctx context.Context, tx pgx.Tx, orgID uuid.
 func (s *Service) TestService(ctx context.Context, service string, data Data) error {
 	switch service {
 	case "minio":
-		return testMinIO(ctx, data)
+		return s.testMinIO(ctx, data)
 	case "livekit":
 		return testLiveKit(ctx, data)
 	case "smtp":
@@ -300,34 +352,69 @@ func (s *Service) TestService(ctx context.Context, service string, data Data) er
 	}
 }
 
-func testMinIO(ctx context.Context, data Data) error {
-	if data.MinIOEndpoint == "" || data.MinIOBucket == "" {
-		return fmt.Errorf("minio endpoint and bucket are required")
-	}
-	mc, err := minio.New(data.MinIOEndpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(data.MinIOAccessKey, data.MinIOSecretKey, ""),
-		Secure: data.MinIOSecure(),
-	})
+// EnsureObjectStorage creates the configured bucket if it is not there yet.
+//
+// Nothing else in the product does. The wizard's step-4 "Test connection"
+// button creates it as a side effect of testing, so an instance provisioned
+// without a human pressing that button — every TEAMUP_AUTO_SETUP install —
+// came up with /readyz reporting a missing bucket and every upload failing,
+// and nothing anywhere said why. Creating a bucket that already exists is a
+// no-op, so this is safe to run on every boot.
+func (s *Service) EnsureObjectStorage(ctx context.Context, data Data) error {
+	store, err := s.storageFor(data)
 	if err != nil {
-		return fmt.Errorf("minio config: %w", err)
+		return err
 	}
+	return ensureBucket(ctx, store, data.MinIOBucket)
+}
 
-	exists, err := mc.BucketExists(ctx, data.MinIOBucket)
+// ensureBucket is the one place a bucket gets created.
+func ensureBucket(ctx context.Context, store objectStore, bucket string) error {
+	exists, err := store.BucketExists(ctx, bucket)
 	if err != nil {
-		return fmt.Errorf("minio connection: %w", err)
+		return fmt.Errorf("check object storage bucket %q: %w", bucket, err)
 	}
-	if !exists {
-		if err := mc.MakeBucket(ctx, data.MinIOBucket, minio.MakeBucketOptions{}); err != nil {
-			return fmt.Errorf("minio create bucket: %w", err)
+	if exists {
+		return nil
+	}
+	if err := store.MakeBucket(ctx, bucket, minio.MakeBucketOptions{}); err != nil {
+		// Replicas boot together, and each of them checks and then creates.
+		// Whoever loses that race is told the bucket already exists, which is
+		// the state it was trying to reach.
+		if bucketAlreadyExists(err) {
+			return nil
 		}
+		return fmt.Errorf("create object storage bucket %q: %w", bucket, err)
 	}
+	return nil
+}
 
+func bucketAlreadyExists(err error) bool {
+	switch minio.ToErrorResponse(err).Code {
+	case "BucketAlreadyOwnedByYou", "BucketAlreadyExists":
+		return true
+	}
+	return false
+}
+
+func (s *Service) testMinIO(ctx context.Context, data Data) error {
+	store, err := s.storageFor(data)
+	if err != nil {
+		return err
+	}
+	if err := ensureBucket(ctx, store, data.MinIOBucket); err != nil {
+		return err
+	}
 	// Reading is not enough — uploads are the thing that must work later.
+	return writeTestObject(ctx, store, data.MinIOBucket)
+}
+
+func writeTestObject(ctx context.Context, store objectStore, bucket string) error {
 	testKey := "wizard-test-" + uuid.New().String()
-	if _, err := mc.PutObject(ctx, data.MinIOBucket, testKey, strings.NewReader("test"), 4, minio.PutObjectOptions{}); err != nil {
+	if _, err := store.PutObject(ctx, bucket, testKey, strings.NewReader("test"), 4, minio.PutObjectOptions{}); err != nil {
 		return fmt.Errorf("minio write test: %w", err)
 	}
-	_ = mc.RemoveObject(ctx, data.MinIOBucket, testKey, minio.RemoveObjectOptions{})
+	_ = store.RemoveObject(ctx, bucket, testKey, minio.RemoveObjectOptions{})
 	return nil
 }
 
@@ -353,35 +440,15 @@ func (d Data) MinIOSecure() bool {
 	return strings.HasPrefix(d.MinIOEndpoint, "https")
 }
 
+// ValidateServices probes every configured dependency in one go, creating the
+// object storage bucket on the way as EnsureObjectStorage does.
 func (s *Service) ValidateServices(ctx context.Context, data Data) error {
-	mc, err := minio.New(data.MinIOEndpoint, &minio.Options{
-		Creds:  credentials.NewStaticV4(data.MinIOAccessKey, data.MinIOSecretKey, ""),
-		Secure: strings.HasPrefix(data.MinIOEndpoint, "https"),
-	})
-	if err != nil {
-		return fmt.Errorf("minio config: %w", err)
+	if err := s.testMinIO(ctx, data); err != nil {
+		return err
 	}
-
-	exists, err := mc.BucketExists(ctx, data.MinIOBucket)
-	if err != nil {
-		return fmt.Errorf("minio bucket check: %w", err)
+	if err := testLiveKit(ctx, data); err != nil {
+		return err
 	}
-	if !exists {
-		if err := mc.MakeBucket(ctx, data.MinIOBucket, minio.MakeBucketOptions{}); err != nil {
-			return fmt.Errorf("minio create bucket: %w", err)
-		}
-	}
-	testKey := "wizard-test-" + uuid.New().String()
-	if _, err := mc.PutObject(ctx, data.MinIOBucket, testKey, strings.NewReader("test"), 4, minio.PutObjectOptions{}); err != nil {
-		return fmt.Errorf("minio write test: %w", err)
-	}
-	mc.RemoveObject(ctx, data.MinIOBucket, testKey, minio.RemoveObjectOptions{})
-
-	lkClient := livekit.NewRoomServiceClient(data.LiveKitURL, data.LiveKitAPIKey, data.LiveKitAPISecret)
-	// Skip LiveKit connection test for now - ListRoomsRequest type may differ in v2
-	_ = lkClient
-	// _, err = lkClient.ListRooms(ctx, &livekit.ListRoomsRequest{})
-	// if err != nil { return fmt.Errorf("livekit connection: %w", err) }
 
 	if data.SMTPHost != "" {
 		if err := testSMTP(data.SMTPHost, data.SMTPPort, data.SMTPUser, data.SMTPPass); err != nil {

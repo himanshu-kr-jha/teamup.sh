@@ -2,6 +2,7 @@ package wizard
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -43,9 +44,17 @@ func testDB(t *testing.T) *pgxpool.Pool {
 	return testsupport.DB(t)
 }
 
+// serviceWithFakeStorage backs a Service with pool and a stand-in object
+// store. FinalizeSetup provisions the bucket, and there is no MinIO in the
+// test environment; the fake is what makes that step observable.
+func serviceWithFakeStorage(pool *pgxpool.Pool) (*Service, *fakeObjectStore) {
+	store := newFakeObjectStore()
+	return &Service{db: pool, newStore: store.factory()}, store
+}
+
 func TestFinalizeSetupCreatesOrgAdminAndRoles(t *testing.T) {
 	pool := testDB(t)
-	svc := &Service{db: pool}
+	svc, _ := serviceWithFakeStorage(pool)
 	ctx := context.Background()
 
 	data := completeData()
@@ -121,7 +130,7 @@ func TestFinalizeSetupCreatesOrgAdminAndRoles(t *testing.T) {
 // Spec 09 §7: setup must be re-runnable without exploding on unique constraints.
 func TestFinalizeSetupIsIdempotent(t *testing.T) {
 	pool := testDB(t)
-	svc := &Service{db: pool}
+	svc, _ := serviceWithFakeStorage(pool)
 	ctx := context.Background()
 
 	data := completeData()
@@ -177,7 +186,7 @@ func TestFinalizeSetupIsIdempotent(t *testing.T) {
 // the operator lands a permanent owner account.
 func TestFinalizeSetupRefusesASecondOrganization(t *testing.T) {
 	pool := testDB(t)
-	svc := &Service{db: pool}
+	svc, _ := serviceWithFakeStorage(pool)
 	ctx := context.Background()
 
 	first := completeData()
@@ -203,9 +212,49 @@ func TestFinalizeSetupRefusesASecondOrganization(t *testing.T) {
 	}
 }
 
+// Nothing in the product creates the object storage bucket. The wizard's
+// "Test connection" button does it as a side effect, so an instance nobody
+// clicked that button on — every TEAMUP_AUTO_SETUP install — came up with
+// /readyz reporting a missing bucket and every upload failing.
+func TestFinalizeSetupCreatesTheObjectStorageBucket(t *testing.T) {
+	pool := testDB(t)
+	svc, store := serviceWithFakeStorage(pool)
+	ctx := context.Background()
+
+	data := completeData()
+	data.OrgSubdomain = "finalize-bucket"
+
+	if err := svc.FinalizeSetup(ctx, data); err != nil {
+		t.Fatalf("finalize: %v", err)
+	}
+
+	if !store.hasBucket(data.MinIOBucket) {
+		t.Fatalf("finalizing setup must create the bucket %q, buckets created: %v", data.MinIOBucket, store.made)
+	}
+}
+
+// Storage that cannot be provisioned stops setup with a message saying so,
+// rather than leaving an organization pointing at a bucket that is not there.
+// The check runs before the transaction opens, so a Service with no database
+// is enough to prove nothing was written.
+func TestFinalizeSetupStopsWhenTheBucketCannotBeCreated(t *testing.T) {
+	store := newFakeObjectStore()
+	store.makeErr = errors.New("dial tcp 127.0.0.1:9000: connection refused")
+	svc := &Service{newStore: store.factory()} // nil db: any DB access would panic
+
+	data := completeData()
+	err := svc.FinalizeSetup(context.Background(), data)
+	if err == nil {
+		t.Fatal("setup must not complete when the object storage bucket cannot be created")
+	}
+	if !strings.Contains(err.Error(), data.MinIOBucket) {
+		t.Errorf("error should name the bucket %q, got: %v", data.MinIOBucket, err)
+	}
+}
+
 func TestIsSetupCompleteReflectsOrganizations(t *testing.T) {
 	pool := testDB(t)
-	svc := &Service{db: pool}
+	svc, _ := serviceWithFakeStorage(pool)
 	ctx := context.Background()
 
 	data := completeData()

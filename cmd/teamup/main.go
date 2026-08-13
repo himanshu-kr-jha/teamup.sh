@@ -346,6 +346,13 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if err := env.Parse(&cfg); err != nil {
 		return fmt.Errorf("config parse: %w", err)
 	}
+	// env.Parse only asserts that the required variables exist. Check the
+	// values before anything is dialled, so an unusable setting is named here
+	// rather than turning up as a driver error, a rejected OIDC redirect or a
+	// session cookie sent in the clear.
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
 
 	// Setup logger
 	observability.Init("teamup", version, cfg.Environment)
@@ -852,8 +859,18 @@ func liveKitProxyTarget(raw string) *url.URL {
 	return target
 }
 
-func runAutoSetup(ctx context.Context, wizardService *wizard.Service, cfg Config) error {
+// autoSetupService is the slice of the wizard the unattended path drives. An
+// interface rather than *wizard.Service so what this function asks for — and
+// in which order — can be tested without a database or an object store.
+type autoSetupService interface {
+	IsSetupComplete(ctx context.Context) (bool, error)
+	FinalizeSetup(ctx context.Context, data wizard.Data) error
+	EnsureObjectStorage(ctx context.Context, data wizard.Data) error
+}
+
+func runAutoSetup(ctx context.Context, wizardService autoSetupService, cfg Config) error {
 	logger := observability.Logger(ctx)
+	data := setupDataFromConfig(cfg)
 
 	// Don't re-provision an instance that is already set up: that would reset
 	// the admin password to the environment value on every restart.
@@ -863,12 +880,21 @@ func runAutoSetup(ctx context.Context, wizardService *wizard.Service, cfg Config
 	}
 	if complete {
 		logger.Info().Msg("Auto-setup skipped: setup already complete")
+		// The bucket is not part of what "setup complete" records: an instance
+		// provisioned before anything created buckets, or one whose bucket was
+		// deleted, has no other way back. Repair it on every boot — but do not
+		// take an otherwise healthy instance down over it. /readyz reports
+		// object storage separately, so it stays out of the load balancer
+		// until the bucket is there.
+		if err := wizardService.EnsureObjectStorage(ctx, data); err != nil {
+			logger.Error().Err(err).Str("bucket", data.MinIOBucket).
+				Msg("Could not create the object storage bucket; uploads will fail until it exists")
+		}
 		return nil
 	}
 
 	logger.Info().Msg("Running auto-setup...")
 
-	data := setupDataFromConfig(cfg)
 	if err := data.Validate(); err != nil {
 		return fmt.Errorf("auto-setup environment is incomplete (%w); set the missing TEAMUP_SETUP_* variables or disable TEAMUP_AUTO_SETUP", err)
 	}

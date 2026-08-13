@@ -6,7 +6,7 @@
 
 **Status:** open
 
-- [ ] Failing test: `TEAMUP_ENV=production` with `TEAMUP_INSECURE_COOKIES=true` refuses to boot
+- [x] Failing test: `TEAMUP_ENV=production` with `TEAMUP_INSECURE_COOKIES=true` refuses to boot
 - [ ] Failing test: `TEAMUP_ENV=production` with `TEAMUP_BASE_URL` left at its localhost default refuses to boot
 - [ ] Split required-field validation per subcommand rather than parsing one global struct
 - [ ] Remove or implement `TEAMUP_AUTH_SECRET` (ticket 35)
@@ -53,3 +53,47 @@ Password authentication is fully implemented and works (`POST /api/auth/login` �
 ### Test shape
 
 Table-driven over `Config`: for each production-hostile combination, assert the validator rejects it with a message naming the setting. Today no such validator exists — `env.Parse` checks only presence, never value.
+
+## Comments
+
+**Partly done — the under-constrained half.** `Config.Validate` (`cmd/teamup/config.go`)
+now checks values, not just presence, and `runServer` calls it immediately after
+`env.Parse`, before anything is dialled. Every message names the variable at
+fault:
+
+- `TEAMUP_DATABASE_URL` / `TEAMUP_REDIS_URL` are handed to `pgxpool.ParseConfig`
+  and `redis.ParseURL` — the same parsers that get them a few lines later, so
+  every form they accept (a keyword/value DSN as readily as a URL) still passes,
+  and a malformed one is named here instead of surfacing as a driver error at
+  dial time.
+- `TEAMUP_BASE_URL` and `TEAMUP_LIVEKIT_URL` must parse with a host and an
+  allowed scheme. A malformed base URL used to reach OIDC redirects and outbound
+  mail unchecked; a malformed LiveKit URL made `liveKitProxyTarget` return nil,
+  silently dropping both the `/livekit` proxy and the LiveKit readiness check.
+- `TEAMUP_MINIO_ENDPOINT` must be a bare host with an optional in-range port.
+  MinIO's own error for a scheme is "Endpoint url cannot have fully qualified
+  paths", which names no setting and does not mention `TEAMUP_MINIO_SECURE`.
+- `TEAMUP_PORT`, and `TEAMUP_SMTP_PORT` when a host is configured, must be
+  in 1-65535.
+- `TEAMUP_AUTH_SECRET` stays optional, but a value shorter than 32 characters is
+  refused: it wraps the stored signing key (ticket 35), and a short one looks
+  like protection without being any. **Upgrade hazard:** a deployment already
+  running a shorter secret will not boot until it is replaced, and replacing it
+  means the stored key cannot be decrypted — that instance has to drop the
+  `signing_keys` row and sign everybody out.
+- `TEAMUP_INSECURE_COOKIES=true` is refused with `TEAMUP_ENV=production`.
+
+Tests: `cmd/teamup/config_test.go:183` (table over unusable values, each
+asserting the message names its variable), `:244` (values that must stay
+acceptable, including production done properly), and `:285`, which runs the real
+binary with a complete-but-dangerous environment and a database URL pointing
+nowhere — it must die naming `TEAMUP_INSECURE_COOKIES` rather than reporting the
+connection it never made.
+
+**Deliberately not done here** (this pass was scoped to value validation):
+production refusing the localhost `TEAMUP_BASE_URL` default; the per-subcommand
+split, which ticket 32 already did for `migrate`; the loud log when Web Push has
+no VAPID keys; `TEAMUP_ALLOWED_WS_ORIGINS` pattern validation; and the "must an
+unattended install have an IdP" question. `TEAMUP_ENV` itself is still
+unvalidated — only the literal `production` is special-cased anywhere, so
+`prod` silently means development. Ticket stays open.
