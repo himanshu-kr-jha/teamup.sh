@@ -477,9 +477,8 @@ func TestAWholeOrganizationCanBeRungIntoOneCall(t *testing.T) {
 		theirMembers = append(theirMembers,
 			testsupport.SeedUser(t, pool, theirs, fmt.Sprintf("theirs%d@example.test", i), "member"))
 	}
-	theirChannel := testsupport.SeedChannel(t, pool, theirs, "their-all-hands",
+	testsupport.SeedChannel(t, pool, theirs, "their-all-hands",
 		append([]uuid.UUID{theirs.OwnerID}, theirMembers...)...)
-	_ = theirChannel
 
 	channelID := testsupport.SeedChannel(t, pool, org, "all-hands",
 		append([]uuid.UUID{org.OwnerID}, members...)...)

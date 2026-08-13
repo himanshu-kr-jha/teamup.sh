@@ -110,6 +110,16 @@ func TestFuzzySearchCanUseTheTrigramIndex(t *testing.T) {
 		t.Errorf("the approximate branch sequentially scans the messages table:\n%s", plan.String())
 	}
 
+	// A second organization holding the very word being searched for. Rewriting
+	// the WHERE chain to reach the index is exactly the kind of change that can
+	// drop an org predicate, and a single-org test cannot see that happen.
+	theirs := testsupport.SeedOrg(t, pool)
+	theirChannel := testsupport.SeedChannel(t, pool, theirs, "general", theirs.OwnerID)
+	if _, err := svc.SendMessage(ctx, theirs.ID, theirChannel, theirs.OwnerID,
+		"vestibulum confidential to the other company", nil, nil, false); err != nil {
+		t.Fatalf("seed the other organization: %v", err)
+	}
+
 	// And the query still answers: a superset from the index, narrowed by the
 	// comparison, must be the same rows as before.
 	results, err := svc.SearchMessages(ctx, org.ID, org.OwnerID, SearchQuery{Text: "vestibulm"})
@@ -123,6 +133,19 @@ func TestFuzzySearchCanUseTheTrigramIndex(t *testing.T) {
 		if !strings.Contains(r.Content, "vestibulum") {
 			t.Errorf("unrelated message matched: %q", r.Content)
 		}
+		if strings.Contains(r.Content, "confidential to the other company") {
+			t.Errorf("search crossed the organization boundary: %q", r.Content)
+		}
+	}
+
+	// The other organization must find its own message and nothing of ours,
+	// which is the same predicate read from the other side.
+	theirResults, err := svc.SearchMessages(ctx, theirs.ID, theirs.OwnerID, SearchQuery{Text: "vestibulm"})
+	if err != nil {
+		t.Fatalf("search as the other organization: %v", err)
+	}
+	if len(theirResults) != 1 {
+		t.Errorf("the other organization sees %d messages, want exactly its own 1", len(theirResults))
 	}
 }
 

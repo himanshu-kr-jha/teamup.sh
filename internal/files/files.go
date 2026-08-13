@@ -10,7 +10,6 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -108,27 +107,17 @@ const DefaultMaxUploadBytes int64 = 100 << 20 // 100 MiB
 // must set TEAMUP_MINIO_REGION to the same value or every signature is wrong.
 const DefaultRegion = "us-east-1"
 
-// withDefaults fills in the settings cmd/teamup does not plumb through yet.
-// Reading them here is a seam rather than a preference — this package is their
-// only consumer, and the alternative is a Config field nothing ever populates.
-// They belong in cmd/teamup's Config struct the next time that file is open.
+// withDefaults fills in what the caller left unset. It deliberately does NOT
+// read the environment: cmd/teamup owns every setting and validates it at boot,
+// so a second parser here would be a second source of truth — and one that
+// silently bypassed the validation. It would also let the ambient environment
+// leak into a Config a test constructed by hand.
 func (c Config) withDefaults() Config {
-	if c.InternalEndpoint == "" {
-		c.InternalEndpoint = os.Getenv("TEAMUP_MINIO_INTERNAL_ENDPOINT")
-		c.InternalSecure, _ = strconv.ParseBool(os.Getenv("TEAMUP_MINIO_INTERNAL_SECURE"))
-	}
 	if c.Region == "" {
-		c.Region = os.Getenv("TEAMUP_MINIO_REGION")
-		if c.Region == "" {
-			c.Region = DefaultRegion
-		}
+		c.Region = DefaultRegion
 	}
 	if c.MaxUploadBytes <= 0 {
-		if n, err := strconv.ParseInt(os.Getenv("TEAMUP_MAX_UPLOAD_BYTES"), 10, 64); err == nil && n > 0 {
-			c.MaxUploadBytes = n
-		} else {
-			c.MaxUploadBytes = DefaultMaxUploadBytes
-		}
+		c.MaxUploadBytes = DefaultMaxUploadBytes
 	}
 	return c
 }
