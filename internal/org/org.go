@@ -3,10 +3,13 @@ package org
 import (
 	"context"
 	"crypto/rand"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
+	netmail "net/mail"
 	"strings"
 	"time"
 
@@ -497,17 +500,38 @@ func (s *Service) ManagesTeam(ctx context.Context, orgID, teamID, userID uuid.UU
 	return ok, nil
 }
 
-func (s *Service) UpdateTeam(ctx context.Context, orgID, teamID uuid.UUID, name, description *string, managerID *uuid.UUID) (*Team, error) {
+// UpdateTeam applies only the fields that were supplied.
+//
+// parentID is a pointer to a pointer because moving a team needs three cases,
+// not two: nil leaves the team where it is, a pointer to nil lifts it to the
+// top level, and a pointer to an id files it under that team. A plain
+// *uuid.UUID could not say "make this a root" — which is why re-parenting was
+// missing from the update path entirely.
+func (s *Service) UpdateTeam(ctx context.Context, orgID, teamID uuid.UUID, name, description *string, managerID *uuid.UUID, parentID **uuid.UUID) (*Team, error) {
 	if err := s.requireSameOrgUser(ctx, orgID, managerID); err != nil {
 		return nil, err
 	}
+
+	var newParent *uuid.UUID
+	if parentID != nil {
+		newParent = *parentID
+		if err := s.requireSameOrgTeam(ctx, orgID, newParent); err != nil {
+			return nil, err
+		}
+		if err := s.requireNoCycle(ctx, orgID, teamID, newParent); err != nil {
+			return nil, err
+		}
+	}
+
 	var t Team
 	err := s.db.QueryRow(ctx, `
 		UPDATE teams SET name = COALESCE($3, name), description = COALESCE($4, description),
-		                 manager_id = COALESCE($5, manager_id), updated_at = NOW()
+		                 manager_id = COALESCE($5, manager_id),
+		                 parent_id = CASE WHEN $6 THEN $7 ELSE parent_id END,
+		                 updated_at = NOW()
 		WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
 		RETURNING id, org_id, parent_id, name, COALESCE(description, ''), manager_id, created_at, updated_at
-	`, teamID, orgID, name, description, managerID).Scan(
+	`, teamID, orgID, name, description, managerID, parentID != nil, newParent).Scan(
 		&t.ID, &t.OrgID, &t.ParentID, &t.Name, &t.Description, &t.ManagerID, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -518,17 +542,88 @@ func (s *Service) UpdateTeam(ctx context.Context, orgID, teamID uuid.UUID, name,
 	return &t, nil
 }
 
+// requireNoCycle refuses to file a team underneath itself or underneath one of
+// its own descendants. parent_id has no database-level check for this, and the
+// consequences are not loud: every walk of the tree UNIONs, so a cycle
+// terminates rather than hanging, and instead quietly makes everybody in the
+// cycle a manager of everybody else — a team lead below somebody gains control
+// of the team above them. The walk below starts at the team itself, so
+// re-parenting a team under itself is caught by the same query.
+func (s *Service) requireNoCycle(ctx context.Context, orgID, teamID uuid.UUID, parentID *uuid.UUID) error {
+	if parentID == nil {
+		return nil
+	}
+	var loops bool
+	if err := s.db.QueryRow(ctx, `
+		WITH RECURSIVE subtree AS (
+			SELECT t.id FROM teams t
+			WHERE t.id = $1 AND t.org_id = $3 AND t.deleted_at IS NULL
+			UNION
+			SELECT child.id FROM teams child
+			JOIN subtree ON child.parent_id = subtree.id
+			WHERE child.deleted_at IS NULL
+		)
+		SELECT EXISTS (SELECT 1 FROM subtree WHERE id = $2)
+	`, teamID, *parentID, orgID).Scan(&loops); err != nil {
+		return fmt.Errorf("check team ancestry: %w", err)
+	}
+	if loops {
+		return apperrors.New(apperrors.CodeBadRequest,
+			"a team cannot be moved underneath itself or one of the teams below it")
+	}
+	return nil
+}
+
+// DeleteTeam soft-deletes a team and grafts its children onto the parent it
+// had.
+//
+// Grafting rather than refusing, deliberately. The delete is soft, so the
+// ON DELETE SET NULL on parent_id never fires: without this the children go on
+// pointing at a row that no query returns, which drops the entire subtree out
+// of every manager's view and out of the org chart while leaving the teams
+// themselves alive and assignable. Refusing would be safe but it makes the
+// admin do the same re-parenting by hand before every reorganisation, and the
+// tempting shortcut — deleting the children first — loses their membership.
+// Grafting keeps every surviving team reachable from a root and preserves the
+// management chain: whoever ran the deleted team's parent still runs what is
+// left. A child of a root simply becomes a root itself.
 func (s *Service) DeleteTeam(ctx context.Context, orgID, teamID uuid.UUID) error {
-	tag, err := s.db.Exec(ctx,
-		`UPDATE teams SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
-		teamID, orgID)
+	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("delete team: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return apperrors.ErrNotFound
+	defer tx.Rollback(ctx)
+
+	// Locked, so a re-parent landing between the graft and the delete cannot
+	// leave a child hanging off the deleted row.
+	var grandparent *uuid.UUID
+	err = tx.QueryRow(ctx, `
+		SELECT parent_id FROM teams
+		WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
+		FOR UPDATE
+	`, teamID, orgID).Scan(&grandparent)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return apperrors.ErrNotFound
+		}
+		return fmt.Errorf("delete team: %w", err)
 	}
-	return nil
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE teams SET parent_id = $3, updated_at = NOW()
+		WHERE parent_id = $1 AND org_id = $2 AND deleted_at IS NULL
+	`, teamID, orgID, grandparent); err != nil {
+		return fmt.Errorf("reparent the children of a deleted team: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx, `
+		UPDATE teams SET deleted_at = NOW(), updated_at = NOW()
+		WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
+	`, teamID, orgID); err != nil {
+		return fmt.Errorf("delete team: %w", err)
+	}
+
+	return tx.Commit(ctx)
 }
 
 // requireSameOrgUser and requireSameOrgTeam guard the nullable foreign keys.
@@ -826,6 +921,190 @@ func (s *Service) AddMember(ctx context.Context, orgID uuid.UUID, name, email, r
 		return nil, "", err
 	}
 	return member, password, nil
+}
+
+// ── Bulk onboarding ───────────────────────────────────────────────────────
+
+// maxImportRows caps one batch. Every row costs a bcrypt hash at the default
+// cost — 50-100ms of CPU that cannot be parallelised away without handing the
+// whole box to one request — so 200 rows is already 10-20 seconds of work held
+// open on a single connection, which is about as long as a proxy will wait.
+// It is also several times the 50-60 people this is built for, so a file above
+// it is far more likely to be a mistake than an unusually large company.
+const maxImportRows = 200
+
+// Outcomes of one imported row. A failure is per-row and reported, never fatal
+// to the batch: an administrator pasting 50 colleagues in cannot be made to
+// lose the other 49 because one address was mistyped.
+const (
+	ImportCreated   = "created"
+	ImportDuplicate = "duplicate"
+	ImportInvalid   = "invalid"
+	ImportFailed    = "failed"
+)
+
+// ImportOutcome is what happened to a single line of the file. Row is the
+// line number in the uploaded file, so it lines up with what the
+// administrator sees in their spreadsheet.
+type ImportOutcome struct {
+	Row               int        `json:"row"`
+	Name              string     `json:"name"`
+	Email             string     `json:"email"`
+	Status            string     `json:"status"`
+	Message           string     `json:"message,omitempty"`
+	TemporaryPassword string     `json:"temporaryPassword,omitempty"`
+	UserID            *uuid.UUID `json:"userId,omitempty"`
+}
+
+// ImportMembers creates an account for every row of a CSV and reports each one
+// separately. It builds on AddMember rather than reimplementing it, so every
+// imported account gets the same transaction, the same role assignment and the
+// same enrolment in the organization's open channels as one added by hand.
+//
+// The error return is reserved for a file that cannot be used at all —
+// unparseable, no usable header, or past the cap. Anything wrong with an
+// individual row comes back as that row's outcome.
+func (s *Service) ImportMembers(ctx context.Context, orgID uuid.UUID, file string) ([]ImportOutcome, error) {
+	reader := csv.NewReader(strings.NewReader(file))
+	// Tolerate ragged rows: a spreadsheet often drops the trailing empty
+	// columns, and that is not a reason to reject somebody's whole team.
+	reader.FieldsPerRecord = -1
+	reader.TrimLeadingSpace = true
+
+	header, err := reader.Read()
+	if err != nil {
+		return nil, apperrors.New(apperrors.CodeBadRequest, "that file could not be read as CSV")
+	}
+	columns := map[string]int{}
+	for i, name := range header {
+		columns[strings.ToLower(strings.TrimSpace(name))] = i
+	}
+	nameCol, hasName := columns["name"]
+	emailCol, hasEmail := columns["email"]
+	if !hasName || !hasEmail {
+		return nil, apperrors.New(apperrors.CodeBadRequest,
+			"the first row has to name the columns, and must include name and email")
+	}
+	roleCol, hasRole := columns["role"]
+	teamCol, hasTeam := columns["team"]
+
+	type row struct {
+		line                  int
+		name, email, roleName string
+		teamName              string
+	}
+	var rows []row
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, apperrors.New(apperrors.CodeBadRequest, "that file could not be read as CSV: "+err.Error())
+		}
+		line, _ := reader.FieldPos(0)
+		field := func(idx int, present bool) string {
+			if !present || idx >= len(record) {
+				return ""
+			}
+			return strings.TrimSpace(record[idx])
+		}
+		r := row{
+			line:     line,
+			name:     field(nameCol, true),
+			email:    field(emailCol, true),
+			roleName: field(roleCol, hasRole),
+			teamName: field(teamCol, hasTeam),
+		}
+		// A wholly blank line is spreadsheet noise, not a person.
+		if r.name == "" && r.email == "" && r.roleName == "" && r.teamName == "" {
+			continue
+		}
+		if len(rows) >= maxImportRows {
+			return nil, apperrors.New(apperrors.CodeBadRequest,
+				fmt.Sprintf("that file has more than %d people in it; split it up", maxImportRows))
+		}
+		rows = append(rows, r)
+	}
+	if len(rows) == 0 {
+		return nil, apperrors.New(apperrors.CodeBadRequest, "that file has no rows in it")
+	}
+
+	// One lookup for the whole batch, scoped to this organization: a team name
+	// belonging to another tenant must not resolve, however it is spelled.
+	teams, err := s.ListTeams(ctx, orgID)
+	if err != nil {
+		return nil, err
+	}
+	teamsByName := map[string]uuid.UUID{}
+	for _, t := range teams {
+		teamsByName[strings.ToLower(t.Name)] = t.ID
+	}
+
+	outcomes := make([]ImportOutcome, 0, len(rows))
+	for _, r := range rows {
+		outcome := ImportOutcome{Row: r.line, Name: r.name, Email: r.email}
+
+		// The add-member form rejects a malformed address before it reaches
+		// AddMember, which only insists on something non-empty. Checking here
+		// keeps the two paths to the same standard rather than letting an
+		// import create accounts nobody can be reached at.
+		if r.email != "" {
+			if _, err := netmail.ParseAddress(r.email); err != nil {
+				outcome.Status = ImportInvalid
+				outcome.Message = "that is not an email address"
+				outcomes = append(outcomes, outcome)
+				continue
+			}
+		}
+
+		// The team is resolved before the account is created, so a row naming
+		// a team that does not exist here is rejected whole rather than
+		// leaving a member behind who is on nobody's team.
+		var teamID uuid.UUID
+		if r.teamName != "" {
+			id, ok := teamsByName[strings.ToLower(r.teamName)]
+			if !ok {
+				outcome.Status = ImportInvalid
+				outcome.Message = fmt.Sprintf("there is no team called %q here", r.teamName)
+				outcomes = append(outcomes, outcome)
+				continue
+			}
+			teamID = id
+		}
+
+		member, password, err := s.AddMember(ctx, orgID, r.name, r.email, r.roleName)
+		if err != nil {
+			outcome.Status = importStatusFor(err)
+			outcome.Message = apperrors.PublicMessage(err, "could not be added")
+			outcomes = append(outcomes, outcome)
+			continue
+		}
+
+		outcome.Status = ImportCreated
+		outcome.TemporaryPassword = password
+		outcome.UserID = &member.ID
+		if teamID != uuid.Nil {
+			// The account exists either way; say so rather than pretending the
+			// row failed and inviting the administrator to run it again.
+			if err := s.AddTeamMember(ctx, orgID, teamID, member.ID); err != nil {
+				outcome.Message = fmt.Sprintf("added, but could not be put on %s: %v", r.teamName, err)
+			}
+		}
+		outcomes = append(outcomes, outcome)
+	}
+	return outcomes, nil
+}
+
+func importStatusFor(err error) string {
+	switch apperrors.GetCode(err) {
+	case apperrors.CodeConflict:
+		return ImportDuplicate
+	case apperrors.CodeBadRequest, apperrors.CodeValidation, apperrors.CodeNotFound:
+		return ImportInvalid
+	default:
+		return ImportFailed
+	}
 }
 
 // generateTemporaryPassword builds a readable, unambiguous password. The

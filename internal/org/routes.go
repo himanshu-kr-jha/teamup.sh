@@ -3,7 +3,9 @@ package org
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -52,6 +54,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service, options ...func(*Hand
 
 	rg.GET("/users", h.ListUsers)
 	rg.POST("/users", h.requireAdmin, h.AddMember)
+	rg.POST("/users/import", h.requireAdmin, h.ImportMembers)
 	rg.GET("/users/:id", h.GetUser)
 	rg.PATCH("/users/:id", h.UpdateUser)
 	rg.DELETE("/users/:id", h.requireAdmin, h.DeleteUser)
@@ -228,6 +231,74 @@ func (h *Handler) AddMember(c *gin.Context) {
 		"user":              member,
 		"temporaryPassword": temporaryPassword,
 		"emailed":           emailed,
+	})
+}
+
+// maxImportBytes bounds what will be read off the wire. maxImportRows already
+// caps the people; this caps the file, so a malformed upload cannot be
+// streamed into memory forever. 200 rows of name, email, role and team is a
+// few tens of kilobytes, so a megabyte is generous.
+const maxImportBytes = 1 << 20
+
+// ImportMembers creates accounts for a whole CSV at once and reports what
+// happened to each row. Adding fifty colleagues by hand meant repeating the
+// add-member dialog forty-nine times and copying forty-nine passwords out of
+// it one at a time.
+//
+// A row that fails is reported in the response, not raised as an error: the
+// batch is deliberately not all-or-nothing, because one mistyped address must
+// not cost the other forty-nine accounts.
+func (h *Handler) ImportMembers(c *gin.Context) {
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
+
+	var file string
+	// A CSV posted as a file body, which is what curl and a spreadsheet export
+	// produce, and the same thing wrapped in JSON, which is what the browser
+	// sends after reading the file.
+	if strings.HasPrefix(c.ContentType(), "text/csv") {
+		raw, err := io.ReadAll(io.LimitReader(c.Request.Body, maxImportBytes))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "could not read the uploaded file"})
+			return
+		}
+		file = string(raw)
+	} else {
+		var req struct {
+			CSV string `json:"csv" binding:"required"`
+		}
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		if len(req.CSV) > maxImportBytes {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "that file is too large"})
+			return
+		}
+		file = req.CSV
+	}
+
+	outcomes, err := h.service.ImportMembers(c.Request.Context(), orgID, file)
+	if err != nil {
+		httpx.Error(c, err, "failed to import members")
+		return
+	}
+
+	created := 0
+	for _, o := range outcomes {
+		if o.Status == ImportCreated {
+			created++
+		}
+	}
+
+	// The passwords are in here and nowhere else: they are stored hashed and
+	// cannot be recovered, so this response is the administrator's only copy.
+	c.JSON(http.StatusOK, gin.H{
+		"outcomes": outcomes,
+		"created":  created,
+		"failed":   len(outcomes) - created,
 	})
 }
 
@@ -532,6 +603,7 @@ func (h *Handler) UpdateTeam(c *gin.Context) {
 		Name        *string `json:"name"`
 		Description *string `json:"description"`
 		ManagerID   *string `json:"managerId"`
+		ParentID    *string `json:"parentId"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -542,7 +614,19 @@ func (h *Handler) UpdateTeam(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid managerId"})
 		return
 	}
-	team, err := h.service.UpdateTeam(c.Request.Context(), orgID, teamID, req.Name, req.Description, managerID)
+	// Distinguish "parentId was not mentioned" from "parentId was cleared":
+	// only the second should move the team to the top level.
+	var parentRef **uuid.UUID
+	if req.ParentID != nil {
+		parentID, err := optionalUUID(req.ParentID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid parentId"})
+			return
+		}
+		parentRef = &parentID
+	}
+
+	team, err := h.service.UpdateTeam(c.Request.Context(), orgID, teamID, req.Name, req.Description, managerID, parentRef)
 	if err != nil {
 		httpx.Error(c, err, "failed to update team")
 		return

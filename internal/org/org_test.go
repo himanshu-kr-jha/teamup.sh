@@ -2,8 +2,11 @@ package org
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -357,7 +360,7 @@ func TestTeamManagerMustBelongToTheOrganization(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create team: %v", err)
 	}
-	if _, err := svc.UpdateTeam(ctx, org.ID, team.ID, nil, nil, &other.OwnerID); err == nil {
+	if _, err := svc.UpdateTeam(ctx, org.ID, team.ID, nil, nil, &other.OwnerID, nil); err == nil {
 		t.Fatal("reassigning to a foreign manager must be refused")
 	}
 }
@@ -640,5 +643,474 @@ func TestAddMemberRejectsAnUnknownRole(t *testing.T) {
 
 	if _, _, err := svc.AddMember(context.Background(), org.ID, "Nobody", "nobody@acme.test", "sysadmin"); err == nil {
 		t.Fatal("a role that does not exist in this organization must be refused")
+	}
+}
+
+// ── Nested teams ──────────────────────────────────────────────────────────
+
+// A team's place in the tree was fixed at creation: parent_id was accepted on
+// insert and never again, so no reorganisation could ever be recorded and the
+// recursive walks below had nothing deeper than one level to walk.
+func TestUpdateTeamReparentsATeam(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	root, err := svc.CreateTeam(ctx, org.ID, "Engineering", "", nil, nil)
+	if err != nil {
+		t.Fatalf("create root: %v", err)
+	}
+	moving, err := svc.CreateTeam(ctx, org.ID, "Platform", "", nil, nil)
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+
+	under := &root.ID
+	updated, err := svc.UpdateTeam(ctx, org.ID, moving.ID, nil, nil, nil, &under)
+	if err != nil {
+		t.Fatalf("reparent: %v", err)
+	}
+	if updated.ParentID == nil || *updated.ParentID != root.ID {
+		t.Fatalf("team was not moved under its new parent: %+v", updated.ParentID)
+	}
+
+	// Not supplying a parent leaves the one it has alone, the same way the
+	// other fields behave.
+	name := "Platform Group"
+	updated, err = svc.UpdateTeam(ctx, org.ID, moving.ID, &name, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("rename: %v", err)
+	}
+	if updated.ParentID == nil || *updated.ParentID != root.ID {
+		t.Errorf("renaming dropped the parent: %+v", updated.ParentID)
+	}
+
+	// And a team can be lifted back to the top level.
+	var none *uuid.UUID
+	updated, err = svc.UpdateTeam(ctx, org.ID, moving.ID, nil, nil, nil, &none)
+	if err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	if updated.ParentID != nil {
+		t.Errorf("team should be back at the top level, parent is %v", *updated.ParentID)
+	}
+}
+
+// The one that takes the product down. Every walk of the tree is a RECURSIVE
+// CTE over parent_id; a cycle does not hang them (they all UNION, which
+// deduplicates) but it does something quieter and worse — everybody in the
+// cycle ends up managing everybody else, so a team lead two levels down
+// acquires authority over their own manager's team.
+func TestUpdateTeamRefusesACycle(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	top, err := svc.CreateTeam(ctx, org.ID, "Engineering", "", nil, &org.OwnerID)
+	if err != nil {
+		t.Fatalf("create top: %v", err)
+	}
+	middle, err := svc.CreateTeam(ctx, org.ID, "Platform", "", &top.ID, nil)
+	if err != nil {
+		t.Fatalf("create middle: %v", err)
+	}
+	bottom, err := svc.CreateTeam(ctx, org.ID, "Storage", "", &middle.ID, nil)
+	if err != nil {
+		t.Fatalf("create bottom: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		team   uuid.UUID
+		parent uuid.UUID
+	}{
+		{"under itself", top.ID, top.ID},
+		{"under its child", top.ID, middle.ID},
+		{"under its grandchild", top.ID, bottom.ID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parent := &tc.parent
+			if _, err := svc.UpdateTeam(ctx, org.ID, tc.team, nil, nil, nil, &parent); err == nil {
+				t.Fatal("re-parenting a team beneath its own descendant must be refused")
+			}
+		})
+	}
+
+	// The tree is untouched: authority still runs downwards only, and the
+	// walk still terminates.
+	deadline, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	manages, err := svc.ManagesTeam(deadline, org.ID, bottom.ID, org.OwnerID)
+	if err != nil {
+		t.Fatalf("walk the tree after the refusals: %v", err)
+	}
+	if !manages {
+		t.Error("running the top team should still reach the bottom of the tree")
+	}
+
+	// And not upwards. This is what a cycle would have granted.
+	lead := testsupport.SeedUser(t, pool, org, "lead@example.test", "member")
+	if _, err := svc.UpdateTeam(ctx, org.ID, bottom.ID, nil, nil, &lead, nil); err != nil {
+		t.Fatalf("set the bottom team's manager: %v", err)
+	}
+	upwards, err := svc.ManagesTeam(deadline, org.ID, top.ID, lead)
+	if err != nil {
+		t.Fatalf("check upwards: %v", err)
+	}
+	if upwards {
+		t.Error("running a team at the bottom must not confer control of the team above it")
+	}
+}
+
+func TestUpdateTeamRefusesAParentInAnotherOrganization(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedOrg(t, pool)
+
+	mine, err := svc.CreateTeam(ctx, org.ID, "Platform", "", nil, nil)
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+	theirs, err := svc.CreateTeam(ctx, other.ID, "Their Engineering", "", nil, nil)
+	if err != nil {
+		t.Fatalf("create their team: %v", err)
+	}
+
+	parent := &theirs.ID
+	if _, err := svc.UpdateTeam(ctx, org.ID, mine.ID, nil, nil, nil, &parent); err == nil {
+		t.Fatal("a parent from another organization must be refused")
+	}
+
+	teams, err := svc.ListTeams(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(teams) != 1 || teams[0].ParentID != nil {
+		t.Errorf("the refused move still changed the tree: %+v", teams)
+	}
+}
+
+// Deleting a team is a soft delete, so parent_id's ON DELETE SET NULL never
+// fires: without this the children keep pointing at a row nobody can see and
+// the whole subtree drops out of every manager's view.
+func TestDeleteTeamGraftsChildrenOntoTheParent(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	top, err := svc.CreateTeam(ctx, org.ID, "Engineering", "", nil, &org.OwnerID)
+	if err != nil {
+		t.Fatalf("create top: %v", err)
+	}
+	middle, err := svc.CreateTeam(ctx, org.ID, "Platform", "", &top.ID, nil)
+	if err != nil {
+		t.Fatalf("create middle: %v", err)
+	}
+	bottom, err := svc.CreateTeam(ctx, org.ID, "Storage", "", &middle.ID, nil)
+	if err != nil {
+		t.Fatalf("create bottom: %v", err)
+	}
+
+	if err := svc.DeleteTeam(ctx, org.ID, middle.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	teams, err := svc.ListTeams(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	var graft *Team
+	for i := range teams {
+		if teams[i].ID == bottom.ID {
+			graft = &teams[i]
+		}
+	}
+	if graft == nil {
+		t.Fatal("the child of a deleted team disappeared from the organization")
+	}
+	if graft.ParentID == nil || *graft.ParentID != top.ID {
+		t.Fatalf("child should hang off the deleted team's parent, parent is %v", graft.ParentID)
+	}
+
+	// The point of the graft: whoever ran the tree still runs what is left.
+	manages, err := svc.ManagesTeam(ctx, org.ID, bottom.ID, org.OwnerID)
+	if err != nil {
+		t.Fatalf("check management: %v", err)
+	}
+	if !manages {
+		t.Error("deleting a team in the middle cut its children off from their manager")
+	}
+}
+
+func TestDeleteTeamLiftsChildrenOfARootToTheTopLevel(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedOrg(t, pool)
+
+	// A same-shaped tree next door, which must not be touched.
+	theirTop, err := svc.CreateTeam(ctx, other.ID, "Engineering", "", nil, nil)
+	if err != nil {
+		t.Fatalf("create their top: %v", err)
+	}
+	theirChild, err := svc.CreateTeam(ctx, other.ID, "Platform", "", &theirTop.ID, nil)
+	if err != nil {
+		t.Fatalf("create their child: %v", err)
+	}
+
+	top, err := svc.CreateTeam(ctx, org.ID, "Engineering", "", nil, nil)
+	if err != nil {
+		t.Fatalf("create top: %v", err)
+	}
+	child, err := svc.CreateTeam(ctx, org.ID, "Platform", "", &top.ID, nil)
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	if err := svc.DeleteTeam(ctx, org.ID, top.ID); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+
+	teams, err := svc.ListTeams(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(teams) != 1 || teams[0].ID != child.ID {
+		t.Fatalf("expected the child alone, got %+v", teams)
+	}
+	if teams[0].ParentID != nil {
+		t.Errorf("the child of a deleted root should be a root, parent is %v", *teams[0].ParentID)
+	}
+
+	// The neighbouring organization's identical tree is untouched.
+	theirs, err := svc.ListTeams(ctx, other.ID)
+	if err != nil {
+		t.Fatalf("list theirs: %v", err)
+	}
+	if len(theirs) != 2 {
+		t.Fatalf("a delete in one organization changed another: %+v", theirs)
+	}
+	for _, tm := range theirs {
+		if tm.ID == theirChild.ID && (tm.ParentID == nil || *tm.ParentID != theirTop.ID) {
+			t.Errorf("another organization's tree was re-parented: %+v", tm)
+		}
+	}
+}
+
+// ── Bulk onboarding ───────────────────────────────────────────────────────
+
+// Onboarding 50 people meant repeating a dialog 49 times. The point of doing
+// it in one operation is that one bad line cannot cost the other 49.
+func TestImportMembersReportsEveryRowSeparately(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	team, err := svc.CreateTeam(ctx, org.ID, "Platform", "", nil, nil)
+	if err != nil {
+		t.Fatalf("create team: %v", err)
+	}
+
+	outcomes, err := svc.ImportMembers(ctx, org.ID, strings.Join([]string{
+		"name,email,role,team",
+		"Ada Lovelace,ada@acme.test,member,",
+		"Grace Hopper,grace@acme.test,admin,Platform",
+		"Ada Again,ada@acme.test,member,",
+		"Nameless,,member,",
+		"Wrong Role,wrong@acme.test,sysadmin,",
+		"Wrong Team,team@acme.test,member,Nonesuch",
+		"Katherine Johnson,katherine@acme.test,,",
+	}, "\n"))
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+
+	want := []struct {
+		email  string
+		status string
+	}{
+		{"ada@acme.test", ImportCreated},
+		{"grace@acme.test", ImportCreated},
+		{"ada@acme.test", ImportDuplicate},
+		{"", ImportInvalid},
+		{"wrong@acme.test", ImportInvalid},
+		{"team@acme.test", ImportInvalid},
+		{"katherine@acme.test", ImportCreated},
+	}
+	if len(outcomes) != len(want) {
+		t.Fatalf("want an outcome per row (%d), got %d: %+v", len(want), len(outcomes), outcomes)
+	}
+	seen := map[string]bool{}
+	for i, w := range want {
+		got := outcomes[i]
+		if got.Email != w.email || got.Status != w.status {
+			t.Errorf("row %d: want %q/%s, got %q/%s (%s)", i, w.email, w.status, got.Email, got.Status, got.Message)
+		}
+		// The line number has to be the one the administrator sees in their
+		// spreadsheet, or "row 4 is wrong" is unactionable.
+		if got.Row != i+2 {
+			t.Errorf("row %d reported as line %d", i, got.Row)
+		}
+		if w.status == ImportCreated {
+			if len(got.TemporaryPassword) < 12 {
+				t.Errorf("%s got no usable password to hand over: %q", w.email, got.TemporaryPassword)
+			}
+			if seen[got.TemporaryPassword] {
+				t.Errorf("%s was given a password already issued to somebody else", w.email)
+			}
+			seen[got.TemporaryPassword] = true
+		} else if got.TemporaryPassword != "" {
+			t.Errorf("%s failed but was still handed a password", w.email)
+		}
+	}
+
+	// The failures did not take the successes with them.
+	users, err := svc.ListUsers(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	byEmail := map[string]User{}
+	for _, u := range users {
+		byEmail[u.Email] = u
+	}
+	for _, email := range []string{"ada@acme.test", "grace@acme.test", "katherine@acme.test"} {
+		u, ok := byEmail[email]
+		if !ok {
+			t.Fatalf("%s was reported as created but does not exist", email)
+		}
+		if !u.MustChangePassword {
+			t.Errorf("%s must be made to replace the generated password", email)
+		}
+	}
+	for _, email := range []string{"wrong@acme.test", "team@acme.test"} {
+		if _, ok := byEmail[email]; ok {
+			t.Errorf("%s was rejected but an account was created anyway", email)
+		}
+	}
+	if !hasRole(byEmail["grace@acme.test"].Roles, "admin") {
+		t.Errorf("the role column was ignored: %v", byEmail["grace@acme.test"].Roles)
+	}
+
+	// The team column put her on the team, rather than being decoration.
+	members, err := svc.ListTeamMembers(ctx, org.ID, team.ID)
+	if err != nil {
+		t.Fatalf("list team members: %v", err)
+	}
+	if len(members) != 1 || members[0].Email != "grace@acme.test" {
+		t.Errorf("team column did not place the member: %+v", members)
+	}
+}
+
+func TestImportMembersOnlySeesItsOwnOrganization(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedOrg(t, pool)
+
+	theirs, err := svc.CreateTeam(ctx, other.ID, "Secret", "", nil, nil)
+	if err != nil {
+		t.Fatalf("create their team: %v", err)
+	}
+
+	outcomes, err := svc.ImportMembers(ctx, org.ID, strings.Join([]string{
+		"name,email,role,team",
+		"Intruder,intruder@acme.test,member,Secret",
+	}, "\n"))
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if len(outcomes) != 1 || outcomes[0].Status != ImportInvalid {
+		t.Fatalf("a team belonging to another organization must not resolve: %+v", outcomes)
+	}
+
+	members, err := svc.ListTeamMembers(ctx, other.ID, theirs.ID)
+	if err != nil {
+		t.Fatalf("list their members: %v", err)
+	}
+	if len(members) != 0 {
+		t.Errorf("the import reached into another organization's team: %+v", members)
+	}
+	users, err := svc.ListUsers(ctx, other.ID)
+	if err != nil {
+		t.Fatalf("list their users: %v", err)
+	}
+	if len(users) != 1 {
+		t.Errorf("the import created accounts in another organization: %+v", users)
+	}
+}
+
+func TestImportMembersRefusesAnOversizedBatch(t *testing.T) {
+	svc, pool := newService(t)
+	org := testsupport.SeedOrg(t, pool)
+
+	rows := make([]string, 0, maxImportRows+2)
+	rows = append(rows, "name,email")
+	for i := 0; i <= maxImportRows; i++ {
+		rows = append(rows, fmt.Sprintf("Person %d,person%d@acme.test", i, i))
+	}
+
+	if _, err := svc.ImportMembers(context.Background(), org.ID, strings.Join(rows, "\n")); err == nil {
+		t.Fatal("a batch past the cap must be refused rather than held open for minutes")
+	}
+
+	users, err := svc.ListUsers(context.Background(), org.ID)
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	if len(users) != 1 {
+		t.Errorf("a refused batch still created %d account(s)", len(users)-1)
+	}
+}
+
+func TestImportMembersNeedsAUsableHeader(t *testing.T) {
+	svc, pool := newService(t)
+	org := testsupport.SeedOrg(t, pool)
+
+	for _, csv := range []string{
+		"",
+		"Ada Lovelace,ada@acme.test",
+		"forename,address\nAda,ada@acme.test",
+	} {
+		if _, err := svc.ImportMembers(context.Background(), org.ID, csv); err == nil {
+			t.Errorf("a file with no name/email header must be refused, accepted %q", csv)
+		}
+	}
+}
+
+// The add-member dialog rejects a malformed address with a 400; an import must
+// hold the same line, or a batch quietly creates accounts whose owners can
+// never be reached and whose address cannot be corrected to one already taken.
+func TestImportMembersRejectsAnAddressThatIsNotAnEmail(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	outcomes, err := svc.ImportMembers(ctx, org.ID, strings.Join([]string{
+		"name,email",
+		"Malformed,not-an-email",
+		"Fine,fine@acme.test",
+	}, "\n"))
+	if err != nil {
+		t.Fatalf("import: %v", err)
+	}
+	if len(outcomes) != 2 {
+		t.Fatalf("want two outcomes, got %+v", outcomes)
+	}
+	if outcomes[0].Status != ImportInvalid {
+		t.Errorf("a malformed address must be rejected, got %s (%s)", outcomes[0].Status, outcomes[0].Message)
+	}
+	if outcomes[1].Status != ImportCreated {
+		t.Errorf("the good row should still go through, got %s (%s)", outcomes[1].Status, outcomes[1].Message)
+	}
+
+	users, err := svc.ListUsers(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	for _, u := range users {
+		if u.Email == "not-an-email" {
+			t.Error("an account was created with an address nobody can be reached at")
+		}
 	}
 }

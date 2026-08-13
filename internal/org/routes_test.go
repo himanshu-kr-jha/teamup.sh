@@ -268,3 +268,265 @@ func TestManagingATeamDoesNotReachOtherTeams(t *testing.T) {
 		t.Error("running one team should not confer control of another")
 	}
 }
+
+// ── Bulk onboarding ───────────────────────────────────────────────────────
+
+func postImport(t *testing.T, r *gin.Engine, csv string) *httptest.ResponseRecorder {
+	t.Helper()
+	raw, err := json.Marshal(map[string]string{"csv": csv})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/users/import", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+type importResponse struct {
+	Created  int `json:"created"`
+	Failed   int `json:"failed"`
+	Outcomes []struct {
+		Row               int    `json:"row"`
+		Email             string `json:"email"`
+		Status            string `json:"status"`
+		Message           string `json:"message"`
+		TemporaryPassword string `json:"temporaryPassword"`
+	} `json:"outcomes"`
+}
+
+func TestImportEndpointReturnsAPasswordForEveryNewMember(t *testing.T) {
+	svc, _ := newService(t)
+	ctx := context.Background()
+
+	org, err := svc.CreateOrganization(ctx, "Bulk Co", "bulk-co", nil)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	seedDefaultRoles(t, svc, org.ID)
+
+	r := asRoles(t, svc, org.ID.String(), "owner")
+	w := postImport(t, r, "name,email,role\n"+
+		"Ada,ada@bulk.test,member\n"+
+		"Ada Again,ada@bulk.test,member\n"+
+		"Grace,grace@bulk.test,admin\n")
+	if w.Code != http.StatusOK {
+		t.Fatalf("want 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var got importResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Created != 2 || got.Failed != 1 {
+		t.Errorf("want 2 created and 1 failed, got %d/%d", got.Created, got.Failed)
+	}
+	if len(got.Outcomes) != 3 {
+		t.Fatalf("want an outcome per row, got %d: %+v", len(got.Outcomes), got.Outcomes)
+	}
+	// The duplicate is reported, not fatal, and the rows around it went through.
+	if got.Outcomes[1].Status != "duplicate" {
+		t.Errorf("a repeated address should be reported as a duplicate: %+v", got.Outcomes[1])
+	}
+	for _, i := range []int{0, 2} {
+		if got.Outcomes[i].TemporaryPassword == "" {
+			t.Errorf("row %d was created with no password to hand over: %+v", i, got.Outcomes[i])
+		}
+	}
+	if got.Outcomes[1].TemporaryPassword != "" {
+		t.Error("a rejected row must not carry a password")
+	}
+
+	users, err := svc.ListUsers(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	if len(users) != 2 {
+		t.Errorf("expected the two good rows to exist, got %d", len(users))
+	}
+}
+
+func TestImportEndpointRefusesANonAdministrator(t *testing.T) {
+	svc, _ := newService(t)
+	ctx := context.Background()
+
+	org, err := svc.CreateOrganization(ctx, "Bulk Locked Co", "bulk-locked-co", nil)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	seedDefaultRoles(t, svc, org.ID)
+
+	r := asRoles(t, svc, org.ID.String(), "member")
+	w := postImport(t, r, "name,email\nMallory,mallory@bulk.test\n")
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d: %s", w.Code, w.Body.String())
+	}
+
+	users, err := svc.ListUsers(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	if len(users) != 0 {
+		t.Errorf("a refused caller still created %d account(s)", len(users))
+	}
+}
+
+func TestImportEndpointRejectsAFileItCannotUse(t *testing.T) {
+	svc, _ := newService(t)
+	ctx := context.Background()
+
+	org, err := svc.CreateOrganization(ctx, "Bulk Bad Co", "bulk-bad-co", nil)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	seedDefaultRoles(t, svc, org.ID)
+
+	r := asRoles(t, svc, org.ID.String(), "admin")
+	// No header naming the columns: a 400 the administrator can act on, not a
+	// 500 and not 40 accounts named after their column headings.
+	if w := postImport(t, r, "Ada,ada@bulk.test\n"); w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// ── Re-parenting over HTTP ────────────────────────────────────────────────
+
+func patchTeam(t *testing.T, r *gin.Engine, id uuid.UUID, body map[string]any) *httptest.ResponseRecorder {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPatch, "/api/teams/"+id.String(), bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+func TestUpdateTeamEndpointMovesATeamAroundTheTree(t *testing.T) {
+	svc, _ := newService(t)
+	ctx := context.Background()
+
+	org, err := svc.CreateOrganization(ctx, "Tree Co", "tree-co", nil)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	seedDefaultRoles(t, svc, org.ID)
+
+	top, err := svc.CreateTeam(ctx, org.ID, "Engineering", "", nil, nil)
+	if err != nil {
+		t.Fatalf("create top: %v", err)
+	}
+	child, err := svc.CreateTeam(ctx, org.ID, "Platform", "", nil, nil)
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	var got struct {
+		ParentID *string `json:"parentId"`
+		Name     string  `json:"name"`
+	}
+	decode := func(w *httptest.ResponseRecorder) {
+		t.Helper()
+		got.ParentID = nil
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+	}
+
+	r := asRoles(t, svc, org.ID.String(), "admin")
+
+	w := patchTeam(t, r, child.ID, map[string]any{"parentId": top.ID.String()})
+	if w.Code != http.StatusOK {
+		t.Fatalf("reparent: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	decode(w)
+	if got.ParentID == nil || *got.ParentID != top.ID.String() {
+		t.Fatalf("team was not filed under its new parent: %+v", got.ParentID)
+	}
+
+	// A PATCH that does not mention the parent leaves it where it is.
+	w = patchTeam(t, r, child.ID, map[string]any{"name": "Platform Group"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("rename: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	decode(w)
+	if got.ParentID == nil || *got.ParentID != top.ID.String() {
+		t.Errorf("renaming a team moved it to the top level: %+v", got.ParentID)
+	}
+
+	// An explicitly empty parent lifts it back to the top level, which is the
+	// case a plain optional field could not express.
+	w = patchTeam(t, r, child.ID, map[string]any{"parentId": ""})
+	if w.Code != http.StatusOK {
+		t.Fatalf("detach: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	decode(w)
+	if got.ParentID != nil {
+		t.Errorf("team should be back at the top level, parent is %v", *got.ParentID)
+	}
+}
+
+func TestUpdateTeamEndpointRefusesACycle(t *testing.T) {
+	svc, _ := newService(t)
+	ctx := context.Background()
+
+	org, err := svc.CreateOrganization(ctx, "Loop Co", "loop-co", nil)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	seedDefaultRoles(t, svc, org.ID)
+
+	top, err := svc.CreateTeam(ctx, org.ID, "Engineering", "", nil, nil)
+	if err != nil {
+		t.Fatalf("create top: %v", err)
+	}
+	child, err := svc.CreateTeam(ctx, org.ID, "Platform", "", &top.ID, nil)
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	r := asRoles(t, svc, org.ID.String(), "admin")
+	// Something an administrator can read and correct, not a 500.
+	w := patchTeam(t, r, top.ID, map[string]any{"parentId": child.ID.String()})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("want 400, got %d: %s", w.Code, w.Body.String())
+	}
+
+	teams, err := svc.ListTeams(ctx, org.ID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, tm := range teams {
+		if tm.ID == top.ID && tm.ParentID != nil {
+			t.Errorf("the refused move was applied anyway: %+v", tm)
+		}
+	}
+}
+
+func TestUpdateTeamEndpointRefusesANonAdministrator(t *testing.T) {
+	svc, _ := newService(t)
+	ctx := context.Background()
+
+	org, err := svc.CreateOrganization(ctx, "Guarded Tree Co", "guarded-tree-co", nil)
+	if err != nil {
+		t.Fatalf("create org: %v", err)
+	}
+	seedDefaultRoles(t, svc, org.ID)
+
+	top, err := svc.CreateTeam(ctx, org.ID, "Engineering", "", nil, nil)
+	if err != nil {
+		t.Fatalf("create top: %v", err)
+	}
+	child, err := svc.CreateTeam(ctx, org.ID, "Platform", "", nil, nil)
+	if err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+
+	r := asRoles(t, svc, org.ID.String(), "member")
+	if w := patchTeam(t, r, child.ID, map[string]any{"parentId": top.ID.String()}); w.Code != http.StatusForbidden {
+		t.Fatalf("want 403, got %d: %s", w.Code, w.Body.String())
+	}
+}

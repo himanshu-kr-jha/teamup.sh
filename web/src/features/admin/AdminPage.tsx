@@ -1,8 +1,20 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Users, Shield, UsersRound, Trash2, Plus, Copy, UserPlus, Download } from 'lucide-react';
+import {
+  Users,
+  Shield,
+  UsersRound,
+  Trash2,
+  Plus,
+  Copy,
+  UserPlus,
+  Download,
+  Upload,
+  CornerDownRight,
+} from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
+import { Textarea } from '@/shared/components/ui/textarea';
 import { Label } from '@/shared/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/card';
 import { Badge } from '@/shared/components/ui/badge';
@@ -80,6 +92,8 @@ function MembersTab({ isAdmin, currentUserId }: { isAdmin: boolean; currentUserI
   const queryClient = useQueryClient();
   const [assignFor, setAssignFor] = useState<any | null>(null);
   const [adding, setAdding] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<ImportOutcome[] | null>(null);
   const [newCredentials, setNewCredentials] = useState<
     { name: string; email: string; password: string; emailed: boolean } | null
   >(null);
@@ -120,10 +134,16 @@ function MembersTab({ isAdmin, currentUserId }: { isAdmin: boolean; currentUserI
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0">
           <CardTitle>Members</CardTitle>
           {isAdmin && (
-            <Button size="sm" onClick={() => setAdding(true)}>
-              <UserPlus className="mr-2 h-4 w-4" />
-              Add member
-            </Button>
+            <div className="flex gap-2">
+              <Button size="sm" variant="outline" onClick={() => setImporting(true)}>
+                <Upload className="mr-2 h-4 w-4" />
+                Import CSV
+              </Button>
+              <Button size="sm" onClick={() => setAdding(true)}>
+                <UserPlus className="mr-2 h-4 w-4" />
+                Add member
+              </Button>
+            </div>
           )}
         </CardHeader>
         <CardContent className="space-y-2">
@@ -188,6 +208,17 @@ function MembersTab({ isAdmin, currentUserId }: { isAdmin: boolean; currentUserI
         credentials={newCredentials}
         onClose={() => setNewCredentials(null)}
       />
+
+      <BulkImportDialog
+        open={importing}
+        onOpenChange={setImporting}
+        onImported={(outcomes) => {
+          refresh();
+          setImportResult(outcomes);
+        }}
+      />
+
+      <ImportResultDialog outcomes={importResult} onClose={() => setImportResult(null)} />
 
       <AssignRoleDialog
         member={assignFor}
@@ -378,6 +409,173 @@ function TemporaryPasswordDialog({
   );
 }
 
+type ImportOutcome = {
+  row: number;
+  name: string;
+  email: string;
+  status: 'created' | 'duplicate' | 'invalid' | 'failed';
+  message?: string;
+  temporaryPassword?: string;
+};
+
+/**
+ * Onboarding a 50-person company meant opening the add-member dialog 49 times
+ * and copying 49 passwords out of it one at a time. This does the whole
+ * spreadsheet in one go and hands back every password at the end.
+ */
+function BulkImportDialog({
+  open,
+  onOpenChange,
+  onImported,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onImported: (outcomes: ImportOutcome[]) => void;
+}) {
+  const [csv, setCsv] = useState('');
+  const [fileName, setFileName] = useState('');
+
+  const reset = () => {
+    setCsv('');
+    setFileName('');
+  };
+
+  return (
+    <FormDialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o) reset();
+        onOpenChange(o);
+      }}
+      title="Import members"
+      description="One row per person. Everybody gets an account and a temporary password straight away."
+      submitLabel="Import"
+      disabledReason={!csv.trim() ? 'Choose a file, or paste the rows in.' : undefined}
+      onSubmit={async () => {
+        const res = await orgApi.importMembers(csv);
+        const outcomes = res.data.outcomes ?? [];
+        reset();
+        onImported(outcomes);
+      }}
+    >
+      <div className="space-y-2">
+        <Label htmlFor="importFile">CSV file</Label>
+        <Input
+          id="importFile"
+          type="file"
+          accept=".csv,text/csv"
+          onChange={async (e) => {
+            const file = e.target.files?.[0];
+            if (!file) return;
+            setFileName(file.name);
+            // Read here rather than posting the file itself: the browser
+            // already has it, and it lets the administrator see and correct
+            // the rows before anything is created.
+            setCsv(await file.text());
+          }}
+        />
+        {fileName && <p className="text-xs text-muted-foreground">Loaded {fileName}.</p>}
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor="importCsv">Rows</Label>
+        <Textarea
+          id="importCsv"
+          rows={8}
+          className="font-mono text-xs"
+          value={csv}
+          onChange={(e) => setCsv(e.target.value)}
+          placeholder={'name,email,role,team\nAda Lovelace,ada@example.com,member,Platform'}
+        />
+        <p className="text-xs text-muted-foreground">
+          The first row names the columns. <span className="font-mono">name</span> and{' '}
+          <span className="font-mono">email</span> are required;{' '}
+          <span className="font-mono">role</span> and <span className="font-mono">team</span> are
+          optional. A row that fails is reported on its own — the rest still go through.
+        </p>
+      </div>
+    </FormDialog>
+  );
+}
+
+/**
+ * What happened to each row, and the passwords. Same reasoning as the
+ * single-member dialog: the passwords are hashed on the server and exist
+ * nowhere else, so this is the only chance to keep them.
+ */
+function ImportResultDialog({
+  outcomes,
+  onClose,
+}: {
+  outcomes: ImportOutcome[] | null;
+  onClose: () => void;
+}) {
+  const created = (outcomes ?? []).filter((o) => o.status === 'created');
+  const failed = (outcomes ?? []).filter((o) => o.status !== 'created');
+
+  const downloadCredentials = () => {
+    const signIn = `${window.location.origin}/login`;
+    const rows = [
+      ['Name', 'Email', 'Temporary password', 'Sign in at'],
+      ...created.map((o) => [o.name, o.email, o.temporaryPassword ?? '', signIn]),
+    ];
+    const csv = rows
+      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','))
+      .join('\r\n');
+
+    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `teamup-new-members-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <Dialog open={!!outcomes} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>
+            {created.length} added{failed.length > 0 ? `, ${failed.length} not` : ''}
+          </DialogTitle>
+          <DialogDescription>
+            Download the passwords before closing — they are stored hashed and cannot be shown
+            again.
+          </DialogDescription>
+        </DialogHeader>
+
+        <ul className="max-h-72 space-y-1 overflow-y-auto text-sm">
+          {(outcomes ?? []).map((o) => (
+            <li key={`${o.row}-${o.email}`} className="flex items-start gap-2 rounded-md border border-border p-2">
+              <span className="w-8 shrink-0 text-xs text-muted-foreground">{o.row}</span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate">{o.email || o.name || '(blank row)'}</p>
+                {o.status === 'created' ? (
+                  <p className="truncate font-mono text-xs text-muted-foreground">
+                    {o.temporaryPassword}
+                  </p>
+                ) : (
+                  <p className="truncate text-xs text-destructive">{o.message || o.status}</p>
+                )}
+              </div>
+              <Badge variant={o.status === 'created' ? 'secondary' : 'destructive'}>{o.status}</Badge>
+            </li>
+          ))}
+        </ul>
+
+        <DialogFooter className="gap-2 sm:justify-between">
+          <Button variant="outline" onClick={downloadCredentials} disabled={created.length === 0}>
+            <Download className="mr-2 h-4 w-4" />
+            Download passwords
+          </Button>
+          <Button onClick={onClose}>Done</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function AssignRoleDialog({
   member,
   roles,
@@ -522,6 +720,70 @@ function RolesTab({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
+/**
+ * Radix will not accept an empty string as a Select value, and "no parent" is
+ * a real choice rather than the absence of one, so it needs a stand-in.
+ */
+const TOP_LEVEL = '__top__';
+
+/**
+ * Teams come back as a flat array carrying parentId. Rendering that array
+ * straight showed every team at the same level, so the org chart the database
+ * has always stored — and walks recursively to work out who manages whom —
+ * was invisible: the tree always looked one deep.
+ *
+ * Returns the teams in depth-first order with the depth to indent by.
+ */
+function asTree(teams: any[]): Array<{ team: any; depth: number }> {
+  const byId = new Map<string, any>(teams.map((t) => [String(t.id), t]));
+  const children = new Map<string, any[]>();
+  for (const t of teams) {
+    // A parent that is not in this list — deleted, or belonging to somebody
+    // else — is treated as no parent, so no team can drop off the screen.
+    const key = t.parentId && byId.has(String(t.parentId)) ? String(t.parentId) : '';
+    children.set(key, [...(children.get(key) ?? []), t]);
+  }
+
+  const out: Array<{ team: any; depth: number }> = [];
+  const placed = new Set<string>();
+  const walk = (parentKey: string, depth: number) => {
+    for (const t of children.get(parentKey) ?? []) {
+      const id = String(t.id);
+      // The server refuses to create a cycle, but the browser must not hang if
+      // one ever reaches it anyway.
+      if (placed.has(id)) continue;
+      placed.add(id);
+      out.push({ team: t, depth });
+      walk(id, depth + 1);
+    }
+  };
+  walk('', 0);
+  for (const t of teams) if (!placed.has(String(t.id))) out.push({ team: t, depth: 0 });
+  return out;
+}
+
+/**
+ * Where a team may legally be filed: anywhere except itself and the teams
+ * below it. Mirrors the check the server makes, so an impossible move is never
+ * offered rather than being offered and then refused.
+ */
+function eligibleParents(teams: any[], teamId?: string): any[] {
+  if (!teamId) return teams;
+  const banned = new Set<string>([String(teamId)]);
+  for (let pass = 0; pass < teams.length; pass++) {
+    let grew = false;
+    for (const t of teams) {
+      const id = String(t.id);
+      if (!banned.has(id) && t.parentId && banned.has(String(t.parentId))) {
+        banned.add(id);
+        grew = true;
+      }
+    }
+    if (!grew) break;
+  }
+  return teams.filter((t) => !banned.has(String(t.id)));
+}
+
 function TeamsTab({
   isAdmin,
   managedTeamIds,
@@ -535,9 +797,12 @@ function TeamsTab({
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  const [newParentId, setNewParentId] = useState(TOP_LEVEL);
   const [addTo, setAddTo] = useState<any | null>(null);
   const [memberId, setMemberId] = useState('');
   const [managerFor, setManagerFor] = useState<any | null>(null);
+  const [movingTeam, setMovingTeam] = useState<any | null>(null);
+  const [moveToId, setMoveToId] = useState(TOP_LEVEL);
   const [viewing, setViewing] = useState<any | null>(null);
   const [managerId, setManagerId] = useState('');
 
@@ -545,6 +810,7 @@ function TeamsTab({
   const { data: usersData } = useQuery({ queryKey: ['users'], queryFn: () => orgApi.listUsers() });
   const teams = data?.data ?? [];
   const users = usersData?.data ?? [];
+  const tree = asTree(teams);
 
   const remove = async (id: string) => {
     try {
@@ -571,8 +837,16 @@ function TeamsTab({
         </CardHeader>
         <CardContent className="space-y-2">
           {teams.length === 0 && <p className="text-sm text-muted-foreground">No teams yet.</p>}
-          {teams.map((t: any) => (
-            <div key={t.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border p-3">
+          {tree.map(({ team: t, depth }) => (
+            <div
+              key={t.id}
+              // Indented, and hung off a rule, so the shape of the organization
+              // is legible at a glance instead of being a flat list.
+              style={{ marginLeft: `${Math.min(depth, 8) * 1.5}rem` }}
+              className={`flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border p-3 ${
+                depth > 0 ? 'border-l-4 border-l-primary/30' : ''
+              }`}
+            >
               <div className="min-w-[10rem] flex-1 basis-full sm:basis-auto">
                 <p className="truncate font-medium">{t.name}</p>
                 <p className="truncate text-sm text-muted-foreground">
@@ -581,12 +855,28 @@ function TeamsTab({
                 </p>
                 <p className="truncate text-sm text-muted-foreground">
                   Manager: {users.find((u: any) => u.id === t.managerId)?.name ?? 'nobody yet'}
+                  {t.parentId
+                    ? ` · under ${teams.find((p: any) => p.id === t.parentId)?.name ?? 'another team'}`
+                    : ''}
                 </p>
               </div>
               {(isAdmin || managedTeamIds.has(t.id)) && (
                 <div className="flex gap-2">
                   {isAdmin && (
                     <Button variant="outline" size="sm" onClick={() => setManagerFor(t)}>Set manager</Button>
+                  )}
+                  {isAdmin && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setMovingTeam(t);
+                        setMoveToId(t.parentId ? String(t.parentId) : TOP_LEVEL);
+                      }}
+                    >
+                      <CornerDownRight className="mr-1 h-4 w-4" />
+                      Move
+                    </Button>
                   )}
                   <Button variant="outline" size="sm" onClick={() => setAddTo(t)}>Add member</Button>
                   <Button variant="outline" size="sm" onClick={() => setViewing(t)}>Members</Button>
@@ -601,6 +891,47 @@ function TeamsTab({
           ))}
         </CardContent>
       </Card>
+
+      <FormDialog
+        open={!!movingTeam}
+        onOpenChange={(o) => {
+          if (!o) {
+            setMovingTeam(null);
+            setMoveToId(TOP_LEVEL);
+          }
+        }}
+        title={movingTeam ? `Where does ${movingTeam.name} sit?` : 'Move team'}
+        description="Whoever runs the team above also runs this one, and everything beneath it."
+        submitLabel="Move team"
+        onSubmit={async () => {
+          await orgApi.updateTeam(movingTeam.id, {
+            // An empty string is what tells the server to lift the team to the
+            // top level; leaving the field out would mean "don't touch it".
+            parentId: moveToId === TOP_LEVEL ? '' : moveToId,
+          });
+          queryClient.invalidateQueries({ queryKey: ['teams'] });
+          queryClient.invalidateQueries({ queryKey: ['managed-teams'] });
+          setMovingTeam(null);
+          setMoveToId(TOP_LEVEL);
+          toast.success('Team moved.');
+        }}
+      >
+        <div className="space-y-2">
+          <Label htmlFor="teamParent">Sits under</Label>
+          <Select value={moveToId} onValueChange={setMoveToId}>
+            <SelectTrigger id="teamParent"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value={TOP_LEVEL}>Nothing — top level</SelectItem>
+              {eligibleParents(teams, movingTeam?.id).map((p: any) => (
+                <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-xs text-muted-foreground">
+            A team cannot be moved underneath itself or one of the teams below it.
+          </p>
+        </div>
+      </FormDialog>
 
       <TeamMembersDialog
         team={viewing}
@@ -647,17 +978,25 @@ function TeamsTab({
           if (!o) {
             setName('');
             setDescription('');
+            setNewParentId(TOP_LEVEL);
           }
           setCreateOpen(o);
         }}
         title="New team"
+        description="Teams nest: put one under another and whoever runs the parent runs it too."
         submitLabel="Create team"
         disabledReason={!name.trim() ? 'Give the team a name' : undefined}
         onSubmit={async () => {
-          await orgApi.createTeam({ name: name.trim(), description: description.trim() || undefined });
+          await orgApi.createTeam({
+            name: name.trim(),
+            description: description.trim() || undefined,
+            parentId: newParentId === TOP_LEVEL ? undefined : newParentId,
+          });
           queryClient.invalidateQueries({ queryKey: ['teams'] });
+          queryClient.invalidateQueries({ queryKey: ['managed-teams'] });
           setName('');
           setDescription('');
+          setNewParentId(TOP_LEVEL);
         }}
       >
         <div className="space-y-2">
@@ -667,6 +1006,18 @@ function TeamsTab({
         <div className="space-y-2">
           <Label htmlFor="teamDescription">Description (optional)</Label>
           <Input id="teamDescription" value={description} onChange={(e) => setDescription(e.target.value)} />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor="newTeamParent">Sits under (optional)</Label>
+          <Select value={newParentId} onValueChange={setNewParentId}>
+            <SelectTrigger id="newTeamParent"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value={TOP_LEVEL}>Nothing — top level</SelectItem>
+              {teams.map((p: any) => (
+                <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </FormDialog>
 
