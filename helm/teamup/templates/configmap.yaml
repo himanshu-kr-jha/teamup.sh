@@ -25,6 +25,8 @@ data:
   {{- if .Values.config.livekit.url }}
   TEAMUP_LIVEKIT_URL: {{ .Values.config.livekit.url | quote }}
   {{- end }}
+  TEAMUP_DB_MAX_CONNS: {{ .Values.config.dbMaxConns | quote }}
+  TEAMUP_MAX_CALL_PARTICIPANTS: {{ .Values.config.maxCallParticipants | quote }}
   {{- with .Values.config.smtp.host }}
   TEAMUP_SMTP_HOST: {{ . | quote }}
   TEAMUP_SMTP_PORT: {{ $.Values.config.smtp.port | quote }}

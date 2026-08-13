@@ -57,27 +57,51 @@ Two things about TEAMUP_AUTH_SECRET that are easy to learn the hard way:
     casually. Every replica must carry the identical value, which is why it
     lives in one Secret rather than being generated per pod.
 
-{{- $multi := or .Values.autoscaling.enabled (gt (int .Values.replicaCount) 1) }}
-{{- if $multi }}
+{{- $wanted := int .Values.replicaCount }}
+{{- if .Values.autoscaling.enabled }}{{ $wanted = int .Values.autoscaling.maxReplicas }}{{ end }}
+{{- if gt $wanted 1 }}
 
-{{ if .Values.autoscaling.enabled -}}
-Autoscaling between {{ .Values.autoscaling.minReplicas }} and {{ .Values.autoscaling.maxReplicas }} replicas.
-{{- else -}}
-Running {{ .Values.replicaCount }} replicas.
-{{- end }} Replicas coordinate presence and message fan-out
-through Redis, and every one of them must carry the identical
-TEAMUP_AUTH_SECRET — which they do, since they all read the one Secret above.
+  ##################################################################
+  #  Running {{ $wanted }} replicas. Messages will go missing.
+  ##################################################################
+
+You have set allowMultipleReplicas, so the chart rendered what you asked for.
+What that means:
+
+  * The WebSocket hub keeps its state in process — who is connected, which
+    channels they are subscribed to, who is in which call. There is no Redis
+    pub/sub between replicas and no other channel between them.
+  * A message sent by somebody on one replica reaches only the people whose
+    sockets are on that same replica. The others never see it, and there is no
+    error, no log line and no metric to tell anybody so.
+  * Presence splits the same way: each replica shows only its own half of the
+    company as online.
+  * A reconnect can land on a different replica, so which half of the company
+    somebody can hear from changes without warning.
+
+Scale up rather than out: one process serves a few hundred concurrent
+sessions.
+{{- else }}
+
+Running a single replica, which is what this application supports. The
+WebSocket hub is in-process and there is no Redis pub/sub between replicas, so
+a second one would silently split the organization in two. See replicaCount in
+values.yaml. One process serves a few hundred concurrent sessions; availability
+comes from a fast restart, not from a second copy.
 {{- end }}
+
+Every replica must carry the identical TEAMUP_AUTH_SECRET — which they do,
+since they read the one Secret above.
 
 Health endpoints:
 
   /healthz  liveness  — the process is up
-  /readyz   readiness — PostgreSQL and Redis are reachable
+  /readyz   readiness — PostgreSQL, Redis, object storage and, when
+                        TEAMUP_LIVEKIT_URL names an HTTP endpoint, LiveKit
 
-Note that /readyz does not check MinIO or LiveKit. A pod with object storage or
-LiveKit down still reports ready and still receives traffic; file uploads and
-calls fail while the rollout looks green. Watch those two dependencies with
-their own monitoring rather than relying on this readiness gate.
+A pod that cannot reach one of those stays out of the Service until it can,
+rather than answering 500 to uploads and calls behind a rollout that looks
+green.
 
 {{- if .Values.ingress.enabled }}
 {{- range .Values.ingress.hosts }}

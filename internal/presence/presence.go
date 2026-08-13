@@ -261,12 +261,29 @@ func (s *Service) ListOrgAvailability(ctx context.Context, orgID uuid.UUID) ([]P
 	}
 
 	// Whether each of them is actually here, and whether they are in a call.
+	//
+	// One pipeline rather than a hash read per person. This runs on every poll
+	// from every open tab, so as a sequential loop its cost was one blocking
+	// round trip per member of the organization — sixty waits to draw sixty
+	// dots, all day. Pipelined it is one wait however large the company gets,
+	// and Redis does the same work either way.
+	pipe := s.redis.Pipeline()
+	entries := make([]*redis.MapStringStringCmd, len(people))
 	for i := range people {
-		key := presenceKey(orgID.String(), people[i].UserID.String())
-		data, err := s.redis.HGetAll(ctx, key).Result()
-		if err != nil {
-			// Redis being unavailable should not hide who is on leave.
+		entries[i] = pipe.HGetAll(ctx, presenceKey(orgID.String(), people[i].UserID.String()))
+	}
+	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+		// Redis being unavailable should not hide who is on leave. Exec reports
+		// the first command error, and each command is still asked below, so
+		// there is nothing to do here but say so.
+		s.logger.Debug().Err(err).Msg("presence lookup failed")
+	}
+
+	for i := range people {
+		data, err := entries[i].Result()
+		if err != nil && err != redis.Nil {
 			s.logger.Debug().Err(err).Msg("presence lookup failed")
+			data = nil
 		}
 		connected := data["status"] != "" && data["status"] != "offline"
 		// Set either as a flag by the call itself, or as a status by a client

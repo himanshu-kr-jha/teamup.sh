@@ -7,7 +7,30 @@
 #
 # Every key here is read by a template. If you add one, wire it up.
 
+# One. Not a default to raise.
+#
+# TeamUp's WebSocket hub keeps its state in three in-process Go maps — who is
+# connected, which channels each connection is subscribed to, and who is in
+# which call. There is no Redis pub/sub and no other channel between replicas,
+# so two of them share nothing: a message sent by somebody on one replica never
+# reaches anybody on another. Nothing reports it. The send succeeds, the fan-out
+# finds nobody, and the half of the company that did not receive the message has
+# no way to know one was sent. Presence splits the same way.
+#
+# The chart refuses to render more than one — see `allowMultipleReplicas`.
+#
+# The ceiling this buys: one process serves a few hundred concurrent WebSocket
+# sessions comfortably, which is well past the size this product is built for.
+# Availability comes from a fast restart (the readiness gate and the 30s drain
+# below), not from running two.
 replicaCount: 1
+
+# Lets the chart render more than one replica anyway.
+#
+# Only set this if the deployment genuinely does not use chat, presence or
+# calls — a read-only or API-only use. For anything else it buys an outage that
+# looks exactly like working software.
+allowMultipleReplicas: false
 
 image:
   repository: ghcr.io/himanshu-kr-jha/teamup.sh
@@ -67,6 +90,16 @@ ingress:
   #     hosts:
   #       - teamup.example.com
 
+# The one process serves everybody (see `replicaCount`), so this is the whole
+# application's budget. Raise it rather than adding replicas.
+#
+# The server reads its cgroup CPU quota at boot and sets GOMAXPROCS to match, so
+# a `limits.cpu` of 1000m means one scheduling thread rather than one per core
+# of whatever node it lands on. Without that a 64-core node gave a one-CPU pod
+# sixty-four runnable threads sharing a quota that admits one.
+#
+# `limits.cpu` below 1000m rounds up to one thread — the runtime cannot schedule
+# on a fraction — so a pod throttled to 500m still works, it just waits.
 resources:
   limits:
     cpu: 1000m
@@ -79,9 +112,10 @@ resources:
 # /readyz checks its backing services. /readyz applies a 2s internal timeout,
 # so a readiness timeoutSeconds below that never sees the negative answer.
 #
-# Caveat: /readyz currently checks PostgreSQL and Redis only. A pod whose MinIO
-# or LiveKit is unreachable still reports ready and still takes traffic
-# (tracked separately as issue 39).
+# /readyz checks PostgreSQL, Redis, object storage and — when TEAMUP_LIVEKIT_URL
+# names an HTTP endpoint — LiveKit. A pod that cannot reach any of them stays
+# out of the Service until it can, rather than answering 500 to uploads and
+# calls behind a rollout that looks green.
 startupProbe:
   httpGet:
     path: /healthz
@@ -108,10 +142,16 @@ readinessProbe:
 # The server drains with a 30s deadline on SIGTERM.
 terminationGracePeriodSeconds: 40
 
+# Horizontal autoscaling, which for this application means adding replicas that
+# cannot talk to each other. Read the note on `replicaCount` first: with
+# maxReplicas above 1 the chart refuses to render unless
+# `allowMultipleReplicas` is set.
+#
+# Vertical headroom is the useful lever here — see `resources` below.
 autoscaling:
   enabled: false
   minReplicas: 1
-  maxReplicas: 3
+  maxReplicas: 1
   targetCPUUtilizationPercentage: 80
   # targetMemoryUtilizationPercentage: 80
 
@@ -160,6 +200,19 @@ config:
 
   livekit:
     url: http://livekit:7880
+
+  # How many PostgreSQL connections this server holds. The default in the
+  # binary is 25, chosen so one replica covers a 60-person organization's
+  # traffic plus the push fan-out and still leaves room inside PostgreSQL's
+  # default max_connections of 100 for migrations and a psql session.
+  dbMaxConns: 25
+
+  # How many people one call may hold: the size of the LiveKit room, and one
+  # more than the number of channel members a channel call rings. Not a media
+  # limit — LiveKit seats hundreds — but a bound on fan-out, since every invite
+  # is a row and a frame. 200 clears an all-hands at this size several times
+  # over.
+  maxCallParticipants: 200
 
   # Optional. Without SMTP, invited members are never sent their password.
   smtp:

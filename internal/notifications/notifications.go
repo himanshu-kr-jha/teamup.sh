@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -30,15 +31,26 @@ type Broadcaster interface {
 	BroadcastToUser(userID string, msg *protocol.Message)
 }
 
+// SocketRegistry reports whether somebody already has a live socket to this
+// server. The hub is the one that knows.
+type SocketRegistry interface {
+	IsConnected(userID string) bool
+}
+
 type Service struct {
 	db          *pgxpool.Pool
 	redis       *redis.Client
 	cfg         Config
 	logger      zerolog.Logger
 	broadcaster Broadcaster
+	sockets     SocketRegistry
 }
 
 func (s *Service) SetBroadcaster(b Broadcaster) { s.broadcaster = b }
+
+// SetSocketRegistry wires the hub, so a push is not sent to somebody the
+// socket has already reached.
+func (s *Service) SetSocketRegistry(r SocketRegistry) { s.sockets = r }
 
 // SetVAPIDKeys lets the keys stored with the organization at setup take
 // precedence over the environment. Without this an instance provisioned
@@ -185,6 +197,36 @@ func (s *Service) SendToUser(ctx context.Context, userID string, payload PushPay
 	return nil
 }
 
+// pushClient is the one HTTP client every push goes through.
+//
+// A client was built per push. That is not as costly as it looks — a client
+// with no Transport uses http.DefaultTransport, which is shared and does pool
+// connections — but DefaultTransport keeps only two idle connections per host,
+// and the fan-out below sends to one host (a browser vendor's push service)
+// many at a time. Everything past the second finishes, finds the idle pool
+// full, and has its connection closed, so the next burst pays for the
+// handshakes again. Sixty devices at three messages a second is enough to make
+// that the dominant cost of sending a message.
+//
+// One client with a transport sized for the fan-out keeps the connections
+// between bursts instead.
+var pushClient = &http.Client{
+	Timeout: 10 * time.Second,
+	Transport: &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   5 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          128,
+		MaxIdleConnsPerHost:   pushFanOut,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	},
+}
+
 func (s *Service) sendToSubscription(ctx context.Context, sub PushSubscription, payload PushPayload) {
 	pushSub := &webpush.Subscription{
 		Endpoint: sub.Endpoint,
@@ -205,7 +247,7 @@ func (s *Service) sendToSubscription(ctx context.Context, sub PushSubscription, 
 		VAPIDPrivateKey: s.cfg.VAPIDPrivateKey,
 		Subscriber:      s.cfg.VAPIDSubject,
 		TTL:             3600,
-		HTTPClient:      &http.Client{Timeout: 10 * time.Second},
+		HTTPClient:      pushClient,
 	})
 	if err != nil {
 		s.logger.Warn().Err(err).Str("endpoint", sub.Endpoint).Msg("push delivery failed")
@@ -249,6 +291,39 @@ func (s *Service) getSubscriptions(ctx context.Context, userID string) ([]PushSu
 		subs = append(subs, p)
 	}
 	return subs, rows.Err()
+}
+
+// subscriptionsFor loads the push subscriptions of several people in one
+// statement.
+//
+// One query per recipient was a round trip per person before a single push had
+// been sent — sixty of them for one message in a busy channel, all the same
+// statement with a different id, all competing for the same connection pool as
+// the traffic that people are waiting on.
+func (s *Service) subscriptionsFor(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID][]PushSubscription, error) {
+	byUser := map[uuid.UUID][]PushSubscription{}
+	if len(userIDs) == 0 {
+		return byUser, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id, org_id, user_id, endpoint, p256dh, auth,
+		       COALESCE(user_agent, ''), COALESCE(device_name, ''), created_at
+		FROM push_subscriptions WHERE user_id = ANY($1)
+	`, userIDs)
+	if err != nil {
+		return nil, fmt.Errorf("list push subscriptions: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var p PushSubscription
+		if err := rows.Scan(&p.ID, &p.OrgID, &p.UserID, &p.Endpoint, &p.P256DH, &p.Auth,
+			&p.UserAgent, &p.DeviceName, &p.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan push subscription: %w", err)
+		}
+		byUser[p.UserID] = append(byUser[p.UserID], p)
+	}
+	return byUser, rows.Err()
 }
 
 func (s *Service) deleteSubscription(ctx context.Context, id uuid.UUID) error {
@@ -310,16 +385,17 @@ func (s *Service) NotifyMany(ctx context.Context, orgID uuid.UUID, userIDs []uui
 	}
 
 	// Push is best effort and slow enough that it must not hold up the post.
+	//
+	// Everybody is reached, including people who are connected: unlike a chat
+	// message, the client does not raise its own notification for one of these
+	// — the bell only updates its badge — so skipping the connected would mean
+	// an announcement nobody notices.
 	go func() {
 		pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
 		defer cancel()
-		for _, userID := range userIDs {
-			if err := s.SendToUser(pushCtx, userID.String(), PushPayload{
-				Title: title, Body: body, Tag: kind, Data: data,
-			}); err != nil {
-				s.logger.Debug().Err(err).Msg("push delivery failed")
-			}
-		}
+		s.deliverToUsers(pushCtx, userIDs, PushPayload{
+			Title: title, Body: body, Tag: kind, Data: data,
+		})
 	}()
 	return nil
 }
@@ -348,12 +424,70 @@ func (s *Service) PushToUsers(ctx context.Context, userIDs []uuid.UUID, push pro
 	pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
 	go func() {
 		defer cancel()
-		for _, userID := range userIDs {
-			if err := s.SendToUser(pushCtx, userID.String(), payload); err != nil {
-				s.logger.Debug().Err(err).Msg("push delivery failed")
-			}
-		}
+		s.pushToUsers(pushCtx, userIDs, payload)
 	}()
+}
+
+// pushFanOut bounds how many pushes are in flight at once. High enough that a
+// channel's worth of devices goes out in a couple of waves rather than one at a
+// time, low enough not to open an unbounded number of sockets to a push service
+// that will rate-limit us for it.
+const pushFanOut = 32
+
+// pushToUsers is PushToUsers with the goroutine taken off, so it can be waited
+// on — by a test, and by anything that needs delivery finished before it moves.
+//
+// Anybody the hub already has a socket to is dropped first. They have had the
+// message live, and the client raises its own notification for a conversation
+// they are not looking at (see ChatNotifications), so a push to them is a
+// wasted lookup, a wasted encryption and a duplicate on their screen.
+func (s *Service) pushToUsers(ctx context.Context, userIDs []uuid.UUID, payload PushPayload) {
+	s.deliverToUsers(ctx, s.notYetReached(userIDs), payload)
+}
+
+// notYetReached drops the people who already have a live socket. With no hub
+// wired in, nobody is assumed to be connected — failing towards delivering a
+// notification twice rather than not at all.
+func (s *Service) notYetReached(userIDs []uuid.UUID) []uuid.UUID {
+	if s.sockets == nil {
+		return userIDs
+	}
+	remaining := make([]uuid.UUID, 0, len(userIDs))
+	for _, id := range userIDs {
+		if !s.sockets.IsConnected(id.String()) {
+			remaining = append(remaining, id)
+		}
+	}
+	return remaining
+}
+
+// deliverToUsers sends one payload to every device of every person named, with
+// one subscription query for all of them and a bounded number of deliveries in
+// flight.
+func (s *Service) deliverToUsers(ctx context.Context, userIDs []uuid.UUID, payload PushPayload) {
+	if !s.HasVAPIDKeys() || len(userIDs) == 0 {
+		return
+	}
+	byUser, err := s.subscriptionsFor(ctx, userIDs)
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("could not read push subscriptions")
+		return
+	}
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, pushFanOut)
+	for _, subs := range byUser {
+		for _, sub := range subs {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(sub PushSubscription) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				s.sendToSubscription(ctx, sub, payload)
+			}(sub)
+		}
+	}
+	wg.Wait()
 }
 
 func (s *Service) Notify(ctx context.Context, orgID, userID uuid.UUID, kind, title, body string, data map[string]any) error {

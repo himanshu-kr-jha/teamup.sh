@@ -124,6 +124,10 @@ services:
       TEAMUP_LIVEKIT_URL: http://livekit:7880
       TEAMUP_LIVEKIT_API_KEY: devkey
       TEAMUP_LIVEKIT_API_SECRET: devsecret
+      # Explicit, because pgx's own default is max(4, NumCPU) and a container
+      # with a CPU limit gets four connections for the whole application.
+      TEAMUP_DB_MAX_CONNS: "25"
+      TEAMUP_MAX_CALL_PARTICIPANTS: "200"
       TEAMUP_PORT: "8080"
       TEAMUP_ENV: development
       TEAMUP_LOG_LEVEL: debug

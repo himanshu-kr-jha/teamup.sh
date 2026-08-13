@@ -419,12 +419,15 @@ func TestAChannelRosterIsScopedToTheOrganization(t *testing.T) {
 // not try to ring everybody: a room only holds so many, and each invite is a
 // row and a frame.
 func TestAChannelCallInviteListIsBounded(t *testing.T) {
-	svc, pool := newService(t)
+	pool := testsupport.DB(t)
+	// A cap low enough to reach without seeding a crowd. The bound is
+	// configuration, so the test sets it rather than inheriting the default.
+	svc := NewService(pool, Config{MaxCallParticipants: 10})
 	ctx := context.Background()
 	org := testsupport.SeedOrg(t, pool)
 
 	members := []uuid.UUID{}
-	for i := 0; i < MaxChannelCallInvites+5; i++ {
+	for i := 0; i < svc.MaxChannelCallInvites()+5; i++ {
 		members = append(members,
 			testsupport.SeedUser(t, pool, org, fmt.Sprintf("crowd%d@example.test", i), "member"))
 	}
@@ -434,8 +437,8 @@ func TestAChannelCallInviteListIsBounded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("members: %v", err)
 	}
-	if len(invitees) != MaxChannelCallInvites {
-		t.Errorf("invitees: got %d want the cap of %d", len(invitees), MaxChannelCallInvites)
+	if len(invitees) != svc.MaxChannelCallInvites() {
+		t.Errorf("invitees: got %d want the cap of %d", len(invitees), svc.MaxChannelCallInvites())
 	}
 	// The true size is reported so the caller can be told who was left out.
 	if total != len(members) {
@@ -443,6 +446,69 @@ func TestAChannelCallInviteListIsBounded(t *testing.T) {
 	}
 	if total-len(invitees) != 5 {
 		t.Errorf("uninvited: got %d want 5", total-len(invitees))
+	}
+}
+
+// orgHeadcount is the size this product is built for: an all-hands at a small
+// company. A call that cannot hold the company is not a call the company can
+// have, so the default ceiling has to clear this with room to spare.
+const orgHeadcount = 60
+
+// The whole company in one room is the ordinary case for a startup this size,
+// not an edge case. With the ceiling at 50 the invitee query truncated at 49
+// and eleven people were never rung — silently, since the roster query
+// succeeded and the call started.
+func TestAWholeOrganizationCanBeRungIntoOneCall(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	// The owner plus everybody else makes orgHeadcount people.
+	members := []uuid.UUID{}
+	for i := 0; i < orgHeadcount-1; i++ {
+		members = append(members,
+			testsupport.SeedUser(t, pool, org, fmt.Sprintf("allhands%d@example.test", i), "member"))
+	}
+
+	// A second organization of the same size, whose members must not appear.
+	theirs := testsupport.SeedOrg(t, pool)
+	theirMembers := []uuid.UUID{}
+	for i := 0; i < orgHeadcount-1; i++ {
+		theirMembers = append(theirMembers,
+			testsupport.SeedUser(t, pool, theirs, fmt.Sprintf("theirs%d@example.test", i), "member"))
+	}
+	theirChannel := testsupport.SeedChannel(t, pool, theirs, "their-all-hands",
+		append([]uuid.UUID{theirs.OwnerID}, theirMembers...)...)
+	_ = theirChannel
+
+	channelID := testsupport.SeedChannel(t, pool, org, "all-hands",
+		append([]uuid.UUID{org.OwnerID}, members...)...)
+
+	invitees, total, err := svc.ChannelMembersFor(ctx, org.ID, channelID, org.OwnerID)
+	if err != nil {
+		t.Fatalf("members: %v", err)
+	}
+	if total != orgHeadcount-1 {
+		t.Errorf("total: got %d want %d", total, orgHeadcount-1)
+	}
+	if len(invitees) != orgHeadcount-1 {
+		t.Errorf("invitees: got %d, want the whole company minus the caller (%d) — %d people were never rung",
+			len(invitees), orgHeadcount-1, orgHeadcount-1-len(invitees))
+	}
+	// A room that cannot seat everybody it rang is the same bug one step later.
+	if svc.MaxParticipants() < orgHeadcount {
+		t.Errorf("room ceiling %d cannot seat an all-hands of %d", svc.MaxParticipants(), orgHeadcount)
+	}
+
+	// Nobody from the other organization, and nothing from its channel.
+	foreign := map[uuid.UUID]bool{theirs.OwnerID: true}
+	for _, id := range theirMembers {
+		foreign[id] = true
+	}
+	for _, id := range invitees {
+		if foreign[id] {
+			t.Errorf("invitee %s belongs to another organization", id)
+		}
 	}
 }
 

@@ -398,13 +398,26 @@ var sentinelStripper = strings.NewReplacer(HighlightStart, "", HighlightEnd, "")
 
 func (s *Service) createMessage(ctx context.Context, msg *Message) error {
 	msg.Content = sentinelStripper.Replace(msg.Content)
+	// The channel row is read here anyway, to derive org_id rather than trust
+	// it from the caller. Its type and name come back with it, so the question
+	// "is this an announcement?" costs nothing — it used to be a second round
+	// trip taken on every single message, which for around 95% of them found
+	// nothing and threw the answer away.
+	var orgID uuid.UUID
+	var channelKind, channelName string
 	err := s.db.QueryRow(ctx, `
-		INSERT INTO messages (id, org_id, channel_id, user_id, content, reply_to, kind, created_at)
-		SELECT $1, c.org_id, $2, $3, $4, $5, $7, $6
-		FROM channels c WHERE c.id = $2 AND c.deleted_at IS NULL
-		RETURNING created_at
+		WITH target AS (
+			SELECT c.org_id, c.type, COALESCE(c.name, 'Announcements') AS name
+			FROM channels c WHERE c.id = $2 AND c.deleted_at IS NULL
+		), inserted AS (
+			INSERT INTO messages (id, org_id, channel_id, user_id, content, reply_to, kind, created_at)
+			SELECT $1, t.org_id, $2, $3, $4, $5, $7, $6 FROM target t
+			RETURNING created_at
+		)
+		SELECT inserted.created_at, target.org_id, target.type, target.name
+		FROM inserted, target
 	`, msg.ID, msg.ChannelID, msg.UserID, msg.Content, msg.ReplyTo, msg.CreatedAt,
-		defaultKind(msg.Kind)).Scan(&msg.CreatedAt)
+		defaultKind(msg.Kind)).Scan(&msg.CreatedAt, &orgID, &channelKind, &channelName)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return apperrors.New(apperrors.CodeNotFound, "channel not found")
@@ -434,7 +447,10 @@ func (s *Service) createMessage(ctx context.Context, msg *Message) error {
 	s.notifyMentions(ctx, msg)
 	// An announcement is meant to reach people who are not watching the
 	// channel, so everybody in it hears about it — not only those named.
-	s.NotifyAnnouncement(ctx, msg)
+	// Anywhere else there is nobody extra to tell, and asking costs a query.
+	if channelKind == "announcement" {
+		s.notifyAnnouncement(ctx, msg, orgID, channelName)
+	}
 	return nil
 }
 
@@ -1123,18 +1139,19 @@ func (s *Service) NotifyAddedToChannel(ctx context.Context, orgID, channelID, us
 	}
 }
 
-// NotifyAnnouncement tells everybody in an announcement channel that something
+// notifyAnnouncement tells everybody in an announcement channel that something
 // was posted. Announcements are the one kind of message that is meant to reach
 // people who are not looking at the channel.
-func (s *Service) NotifyAnnouncement(ctx context.Context, msg *Message) {
+func (s *Service) notifyAnnouncement(ctx context.Context, msg *Message, orgID uuid.UUID, channelName string) {
 	if s.notifier == nil {
 		return
 	}
+	// The caller has already established that this is an announcement channel,
+	// and knows the organization and the channel's name, so all that is left to
+	// ask is who is in it.
 	rows, err := s.db.Query(ctx, `
-		SELECT cm.user_id, c.org_id, COALESCE(c.name, 'Announcements')
-		FROM channel_members cm
-		JOIN channels c ON c.id = cm.channel_id
-		WHERE cm.channel_id = $1 AND cm.user_id <> $2 AND c.type = 'announcement'
+		SELECT cm.user_id FROM channel_members cm
+		WHERE cm.channel_id = $1 AND cm.user_id <> $2
 	`, msg.ChannelID, msg.UserID)
 	if err != nil {
 		s.logger.Warn().Err(err).Msg("announcement recipient lookup failed")
@@ -1143,11 +1160,9 @@ func (s *Service) NotifyAnnouncement(ctx context.Context, msg *Message) {
 	defer rows.Close()
 
 	recipients := []uuid.UUID{}
-	var orgID uuid.UUID
-	var channelName string
 	for rows.Next() {
 		var userID uuid.UUID
-		if err := rows.Scan(&userID, &orgID, &channelName); err != nil {
+		if err := rows.Scan(&userID); err != nil {
 			continue
 		}
 		recipients = append(recipients, userID)
@@ -1857,6 +1872,62 @@ const (
 	HighlightEnd   = "\x03"
 )
 
+// searchSimilarityFloor is how close an approximate match has to be to count.
+// Unchanged: what changed is only how the same set of rows is found.
+const searchSimilarityFloor = 0.4
+
+// searchTrigramThreshold is what pg_trgm.word_similarity_threshold is set to
+// for the search query, and it sits deliberately just below the floor above.
+//
+// `word_similarity($2, m.content) >= 0.4` is a comparison of a function's
+// result, and pg_trgm can only accelerate its own operators — so that branch
+// was unindexable, and one unindexable branch in an OR forces the whole chain
+// to a filter over every message in the table. Measured at 100k messages: a
+// scan, ~1.2 s, growing linearly.
+//
+// The operator form `m.content %> $2` is indexable, but it means
+// "word_similarity > threshold" rather than ">= 0.4". Setting the threshold
+// fractionally under the floor makes the operator select a superset of what
+// the old predicate did, and keeping the original comparison alongside it
+// narrows that back to exactly the same rows: the index picks the candidates,
+// the comparison decides. Postgres can then BitmapOr all three branches.
+const searchTrigramThreshold = 0.39
+
+// searchFuzzyPredicate is the approximate branch of the OR chain, named so a
+// test can ask the planner what it does with it rather than take indexability
+// on trust. `%>` is what the GIN trigram index can answer; the comparison
+// beside it is what decides, and is the same one this query has always used.
+var searchFuzzyPredicate = `(m.content %> $2 AND word_similarity($2, m.content) >= ` +
+	fmt.Sprint(searchSimilarityFloor) + `)`
+
+// searchMessagesSQL is the search itself.
+var searchMessagesSQL = `
+		SELECT m.id, m.channel_id, COALESCE(c.name, ''), m.user_id, u.name, m.content,
+		       ts_headline('english', m.content, websearch_to_tsquery('english', $2),
+		                   'StartSel=' || chr(2) || ', StopSel=' || chr(3) || ', MaxFragments=2, MaxWords=18, MinWords=5'),
+		       m.created_at,
+		       (m.content_search @@ websearch_to_tsquery('english', $2)) AS exact
+		FROM messages m
+		JOIN channels c ON c.id = m.channel_id
+		JOIN users u ON u.id = m.user_id
+		LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.user_id = $3
+		WHERE m.org_id = $1
+		  AND m.deleted_at IS NULL
+		  AND c.deleted_at IS NULL
+		  AND (cm.user_id IS NOT NULL OR c.type = 'public')
+		  AND (
+		        m.content_search @@ websearch_to_tsquery('english', $2)
+		        OR m.content ILIKE '%' || $2 || '%'
+		        OR ` + searchFuzzyPredicate + `
+		      )
+		  AND ($4::uuid IS NULL OR m.channel_id = $4)
+		  AND ($5::uuid IS NULL OR m.user_id = $5)
+		ORDER BY (m.content_search @@ websearch_to_tsquery('english', $2)) DESC,
+		         ts_rank_cd(m.content_search, websearch_to_tsquery('english', $2), 32) DESC,
+		         word_similarity($2, m.content) DESC,
+		         m.created_at DESC
+		LIMIT $6 OFFSET $7`
+
 // SearchMessages runs a full-text search over the messages the caller may
 // read: channels they belong to, plus the organization's public channels.
 //
@@ -1878,33 +1949,23 @@ func (s *Service) SearchMessages(ctx context.Context, orgID, userID uuid.UUID, q
 	// Whole-word matching first, then trigram similarity for everything it
 	// misses — a typo, a partial word, a name spelled slightly differently.
 	// Exact matches still sort above approximate ones.
-	rows, err := s.db.Query(ctx, `
-		SELECT m.id, m.channel_id, COALESCE(c.name, ''), m.user_id, u.name, m.content,
-		       ts_headline('english', m.content, websearch_to_tsquery('english', $2),
-		                   'StartSel=' || chr(2) || ', StopSel=' || chr(3) || ', MaxFragments=2, MaxWords=18, MinWords=5'),
-		       m.created_at,
-		       (m.content_search @@ websearch_to_tsquery('english', $2)) AS exact
-		FROM messages m
-		JOIN channels c ON c.id = m.channel_id
-		JOIN users u ON u.id = m.user_id
-		LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.user_id = $3
-		WHERE m.org_id = $1
-		  AND m.deleted_at IS NULL
-		  AND c.deleted_at IS NULL
-		  AND (cm.user_id IS NOT NULL OR c.type = 'public')
-		  AND (
-		        m.content_search @@ websearch_to_tsquery('english', $2)
-		        OR m.content ILIKE '%' || $2 || '%'
-		        OR word_similarity($2, m.content) >= 0.4
-		      )
-		  AND ($4::uuid IS NULL OR m.channel_id = $4)
-		  AND ($5::uuid IS NULL OR m.user_id = $5)
-		ORDER BY (m.content_search @@ websearch_to_tsquery('english', $2)) DESC,
-		         ts_rank_cd(m.content_search, websearch_to_tsquery('english', $2), 32) DESC,
-		         word_similarity($2, m.content) DESC,
-		         m.created_at DESC
-		LIMIT $6 OFFSET $7
-	`, orgID, text, userID, q.ChannelID, q.UserID, q.Limit, q.Offset)
+	//
+	// In a transaction because the trigram operator reads its threshold from a
+	// setting, and the setting has to be this query's rather than the
+	// connection's — a pooled connection is handed to whatever runs next.
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("search messages: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx,
+		fmt.Sprintf("SET LOCAL pg_trgm.word_similarity_threshold = %v", searchTrigramThreshold)); err != nil {
+		return nil, fmt.Errorf("set search similarity threshold: %w", err)
+	}
+
+	rows, err := tx.Query(ctx, searchMessagesSQL,
+		orgID, text, userID, q.ChannelID, q.UserID, q.Limit, q.Offset)
 	if err != nil {
 		return nil, fmt.Errorf("search messages: %w", err)
 	}

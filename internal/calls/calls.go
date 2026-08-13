@@ -34,6 +34,11 @@ type Config struct {
 	StorageSecretKey string
 	StorageBucket    string
 	StorageSecure    bool
+
+	// MaxCallParticipants is the ceiling on one call: how large a LiveKit room
+	// is created, and one more than how many people a channel call rings.
+	// Zero means DefaultMaxCallParticipants.
+	MaxCallParticipants int
 }
 
 type Broadcaster interface {
@@ -144,7 +149,7 @@ func (s *Service) CreateCall(ctx context.Context, orgID, createdBy uuid.UUID, ti
 		room, err := s.roomService.CreateRoom(ctx, &livekit.CreateRoomRequest{
 			Name:            roomName,
 			EmptyTimeout:    300, // 5 minutes
-			MaxParticipants: maxCallParticipants,
+			MaxParticipants: uint32(s.MaxParticipants()),
 		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to create LiveKit room: %w", err)
@@ -207,14 +212,35 @@ func (s *Service) CreateCall(ctx context.Context, orgID, createdBy uuid.UUID, ti
 	return call, nil
 }
 
-// maxCallParticipants is what a LiveKit room is created with, and therefore
-// how many people a call can actually hold.
-const maxCallParticipants = 50
+// DefaultMaxCallParticipants is what a LiveKit room is created with unless the
+// deployment says otherwise, and therefore how many people a call can hold.
+//
+// It was 50, which is below the size of the companies this product is for: a
+// 60-person all-hands truncated its invitee list at 49 and LiveKit refused the
+// 51st join, both without saying anything. LiveKit itself seats hundreds in a
+// room, so the number here is not a media limit — it is a bound on runaway
+// fan-out, since every invite is a database row and a WebSocket frame. 200
+// clears an all-hands at this size several times over and still keeps one
+// mis-click from ringing an unbounded crowd.
+//
+// Deployments larger than that set TEAMUP_MAX_CALL_PARTICIPANTS.
+const DefaultMaxCallParticipants = 200
+
+// MaxParticipants is the ceiling this deployment puts on a call.
+func (s *Service) MaxParticipants() int {
+	if s.cfg.MaxCallParticipants > 0 {
+		return s.cfg.MaxCallParticipants
+	}
+	return DefaultMaxCallParticipants
+}
 
 // MaxChannelCallInvites bounds who gets rung when a call starts in a channel.
 // Every member of a public channel is the whole organization, so without a
 // bound one click in a busy channel rings everybody and writes a row each.
-const MaxChannelCallInvites = maxCallParticipants - 1
+// One below the room ceiling, because the caller takes a seat too.
+func (s *Service) MaxChannelCallInvites() int {
+	return s.MaxParticipants() - 1
+}
 
 // ChannelMembersFor lists everybody in a channel apart from one person, which
 // is who a channel call has to reach. Capped: it reports whether there were
@@ -237,7 +263,7 @@ func (s *Service) ChannelMembersFor(ctx context.Context, orgID, channelID, excep
 		WHERE cm.channel_id = $1 AND c.org_id = $2 AND cm.user_id <> $3
 		ORDER BY cm.joined_at
 		LIMIT $4
-	`, channelID, orgID, except, MaxChannelCallInvites)
+	`, channelID, orgID, except, s.MaxChannelCallInvites())
 	if err != nil {
 		return nil, 0, fmt.Errorf("list channel members for call: %w", err)
 	}
