@@ -58,6 +58,16 @@ func (c Config) Validate() error {
 	if err := checkHostPort(c.MinIOEndpoint); err != nil {
 		report("TEAMUP_MINIO_ENDPOINT %v", err)
 	}
+	// Optional: only set when object storage is reachable on a second, internal
+	// address. Empty means the server uses the same endpoint as the browser.
+	if c.MinIOInternalEndpoint != "" {
+		if err := checkHostPort(c.MinIOInternalEndpoint); err != nil {
+			report("TEAMUP_MINIO_INTERNAL_ENDPOINT %v", err)
+		}
+	}
+	if c.MaxUploadBytes <= 0 {
+		report("TEAMUP_MAX_UPLOAD_BYTES must be a positive number of bytes, got %d", c.MaxUploadBytes)
+	}
 
 	if err := checkPort(c.Port); err != nil {
 		report("TEAMUP_PORT %v", err)

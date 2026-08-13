@@ -98,7 +98,7 @@ type Data struct {
 	CustomIssuer       string `json:"customIssuer,omitempty"`
 	CustomClientID     string `json:"customClientId,omitempty"`
 	CustomClientSecret string `json:"customClientSecret,omitempty"`
-	MinIOEndpoint      string `json:"minioEndpoint" validate:"required,hostname_port"`
+	MinIOEndpoint      string `json:"minioEndpoint" validate:"required"`
 	MinIOAccessKey     string `json:"minioAccessKey" validate:"required"`
 	MinIOSecretKey     string `json:"minioSecretKey" validate:"required"`
 	MinIOBucket        string `json:"minioBucket" validate:"required"`

@@ -140,6 +140,10 @@ type Config struct {
 	// drain is cut short by a SIGKILL instead of finishing.
 	ShutdownGracePeriod time.Duration `env:"TEAMUP_SHUTDOWN_GRACE" envDefault:"30s"`
 
+	// How many PostgreSQL connections this server holds. Zero uses
+	// DefaultDBMaxConns; a pool_max_conns in the DSN wins over both.
+	DBMaxConns int `env:"TEAMUP_DB_MAX_CONNS" envDefault:"25"`
+
 	// Redis
 	RedisURL string `env:"TEAMUP_REDIS_URL,required"`
 
@@ -150,10 +154,27 @@ type Config struct {
 	MinIOBucket    string `env:"TEAMUP_MINIO_BUCKET,required"`
 	MinIOSecure    bool   `env:"TEAMUP_MINIO_SECURE" envDefault:"false"`
 
+	// MinIOEndpoint is the address the BROWSER uses, because presigned URLs are
+	// signed over the host and handed to the browser to call directly. When
+	// object storage also sits on the internal network, this is the address the
+	// server itself uses — a URL signed for one host cannot be replayed against
+	// the other, so the two clients are kept separate.
+	MinIOInternalEndpoint string `env:"TEAMUP_MINIO_INTERNAL_ENDPOINT"`
+	MinIOInternalSecure   bool   `env:"TEAMUP_MINIO_INTERNAL_SECURE" envDefault:"false"`
+	// Presigning is pure local computation only when the region is known;
+	// otherwise the client makes a live call to discover it on every start.
+	MinIORegion    string `env:"TEAMUP_MINIO_REGION" envDefault:"us-east-1"`
+	MaxUploadBytes int64  `env:"TEAMUP_MAX_UPLOAD_BYTES" envDefault:"104857600"`
+
 	// LiveKit
 	LiveKitURL       string `env:"TEAMUP_LIVEKIT_URL,required"`
 	LiveKitAPIKey    string `env:"TEAMUP_LIVEKIT_API_KEY,required"`
 	LiveKitAPISecret string `env:"TEAMUP_LIVEKIT_API_SECRET,required"`
+
+	// How many people one call may hold: the size of the LiveKit room, and one
+	// more than the number of channel members a channel call rings. See
+	// calls.DefaultMaxCallParticipants for why this is not a media limit.
+	MaxCallParticipants int `env:"TEAMUP_MAX_CALL_PARTICIPANTS" envDefault:"200"`
 
 	// Auth
 	AuthIssuer   string `env:"TEAMUP_AUTH_ISSUER" envDefault:"teamup"`
@@ -265,17 +286,23 @@ func (c *Config) CallsConfig() calls.Config {
 		StorageSecretKey: c.MinIOSecretKey,
 		StorageBucket:    c.MinIOBucket,
 		StorageSecure:    c.MinIOSecure,
+
+		MaxCallParticipants: c.MaxCallParticipants,
 	}
 }
 
 // FilesConfig returns the files service configuration
 func (c *Config) FilesConfig() files.Config {
 	return files.Config{
-		Endpoint:  c.MinIOEndpoint,
-		AccessKey: c.MinIOAccessKey,
-		SecretKey: c.MinIOSecretKey,
-		Bucket:    c.MinIOBucket,
-		Secure:    c.MinIOSecure,
+		Endpoint:         c.MinIOEndpoint,
+		AccessKey:        c.MinIOAccessKey,
+		SecretKey:        c.MinIOSecretKey,
+		Bucket:           c.MinIOBucket,
+		Secure:           c.MinIOSecure,
+		InternalEndpoint: c.MinIOInternalEndpoint,
+		InternalSecure:   c.MinIOInternalSecure,
+		Region:           c.MinIORegion,
+		MaxUploadBytes:   c.MaxUploadBytes,
 	}
 }
 
@@ -364,12 +391,26 @@ func runServer(cmd *cobra.Command, args []string) error {
 		Str("environment", cfg.Environment).
 		Msg("Starting TeamUp")
 
-	// Connect to database
-	dbPool, err := pgxpool.New(context.Background(), cfg.DatabaseURL)
+	// Schedule for the CPU this process is allowed rather than the CPU the
+	// node has, before anything starts a goroutine worth scheduling.
+	limitGOMAXPROCSToCPUQuota(logger)
+
+	// Connect to database. Sized explicitly: pgx's own default is
+	// max(4, NumCPU), which on a CPU-limited container is four connections for
+	// the whole application. See DefaultDBMaxConns.
+	poolCfg, err := databasePoolConfig(cfg.DatabaseURL, cfg.DBMaxConns)
+	if err != nil {
+		return err
+	}
+	dbPool, err := pgxpool.NewWithConfig(context.Background(), poolCfg)
 	if err != nil {
 		return fmt.Errorf("database connect: %w", err)
 	}
 	defer dbPool.Close()
+	logger.Info().
+		Int32("db_max_conns", poolCfg.MaxConns).
+		Int32("db_min_conns", poolCfg.MinConns).
+		Msg("Database pool sized")
 
 	// Test connection
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -450,6 +491,8 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// Notifications reach the browser over the same socket, and the features
 	// that raise them talk to the service through a narrow Notifier interface.
 	notificationsService.SetBroadcaster(wsHub)
+	// So a chat push is not sent to somebody the socket has already reached.
+	notificationsService.SetSocketRegistry(wsHub)
 	chatService.SetNotifier(notificationsService)
 	orgService.SetChannelEnroller(chatService)
 	// Outgoing mail reads its settings from the organization, which is where

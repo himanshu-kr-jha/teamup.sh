@@ -83,7 +83,7 @@ type AuthStep struct {
 }
 
 type ServicesStep struct {
-	MinIOEndpoint    string `json:"minioEndpoint" binding:"required,hostname_port"`
+	MinIOEndpoint    string `json:"minioEndpoint" binding:"required"`
 	MinIOAccessKey   string `json:"minioAccessKey" binding:"required"`
 	MinIOSecretKey   string `json:"minioSecretKey" binding:"required"`
 	MinIOBucket      string `json:"minioBucket" binding:"required"`
@@ -214,6 +214,18 @@ func (d Data) Validate() error {
 	if d.LiveKitURL != "" {
 		if u, err := url.Parse(d.LiveKitURL); err != nil || u.Scheme == "" || u.Host == "" {
 			problems = append(problems, "livekitUrl must be an absolute URL")
+		}
+	}
+	// A port is optional. This used to be `hostname_port`, which demanded one —
+	// and a TLS-fronted deployment addresses object storage as a bare hostname
+	// on 443, so the tag rejected exactly the configuration the production
+	// compose file now ships. A port is still accepted for a direct MinIO.
+	if d.MinIOEndpoint != "" {
+		switch {
+		case strings.Contains(d.MinIOEndpoint, "://"):
+			problems = append(problems, "minioEndpoint must be a host with no scheme, such as storage.example.com or minio:9000")
+		case strings.Contains(d.MinIOEndpoint, "/"):
+			problems = append(problems, "minioEndpoint must be a host with no path")
 		}
 	}
 
