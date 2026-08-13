@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -29,6 +30,9 @@ type Hub struct {
 	connections map[string]*Connection            // connectionID -> Connection
 	userConns   map[string]map[string]*Connection // userID -> connectionID -> Connection
 	channelSubs map[string]map[string]*Connection // channelID -> userID -> Connection
+
+	stop     chan struct{}
+	stopOnce sync.Once
 }
 
 type Connection struct {
@@ -43,7 +47,30 @@ type Connection struct {
 	cancel        context.CancelFunc
 	hub           *Hub
 	logger        zerolog.Logger
+
+	// consecutiveDrops counts messages discarded since the last one that made
+	// it into the buffer. It measures whether the writer is moving at all,
+	// which is what separates a client absorbing a burst from one that has
+	// stopped reading; see dropsBeforeClose.
+	consecutiveDrops atomic.Int64
+
+	// lastSeen is when this connection last said anything, as Unix nanoseconds.
+	// Atomic because the reader writes it and the reaper reads it.
+	lastSeen atomic.Int64
 }
+
+// staleAfter is how long a connection may go without saying anything before it
+// is treated as gone.
+//
+// The writer pings every 30 seconds and a live client answers immediately, so
+// this allows three missed pings before giving up. These are application-level
+// frames over an established TCP connection, not TCP keepalives: when a client
+// vanishes without a FIN — a suspended laptop, an expiring NAT entry, a phone
+// changing network — writes keep succeeding into the socket buffer for a long
+// time, so nothing else notices. Three is slack enough for a stalled tab or a
+// tunnel that hiccups, and short enough that a user's colleagues are not shown
+// a stale green dot for minutes.
+const staleAfter = 95 * time.Second
 
 func (c *Connection) UserID() string {
 	return c.userID
@@ -70,9 +97,50 @@ func (c *Connection) Enqueue(msg *protocol.Message) {
 
 	select {
 	case c.SendCh <- msg:
+		c.consecutiveDrops.Store(0)
 	default:
-		// Buffer full - client is slow
+		c.dropMessage(msg)
 	}
+}
+
+// dropMessage records a message the connection had no room for, and gives up
+// on a connection that has stopped taking anything at all.
+//
+// The drop used to be an empty default branch: no counter, no log, no signal to
+// the client. The messages are still in Postgres, so the user's view was merely
+// wrong rather than obviously broken, and nothing on either side knew. Now it
+// is counted and logged, and a client that is provably not keeping up is closed
+// so that it reconnects and refetches instead of diverging for as long as it
+// stays connected.
+func (c *Connection) dropMessage(msg *protocol.Message) {
+	wsMessagesDropped.WithLabelValues(msg.Type).Inc()
+	inARow := c.consecutiveDrops.Add(1)
+
+	c.logger.Warn().
+		Str("conn", c.ID).
+		Str("user", c.userID).
+		Str("type", msg.Type).
+		Int64("consecutive", inARow).
+		Msg("dropping message: the client is not reading fast enough")
+
+	if inARow < dropsBeforeClose {
+		return
+	}
+
+	c.logger.Warn().
+		Str("conn", c.ID).
+		Str("user", c.userID).
+		Int64("consecutive", inARow).
+		Msg("closing socket: the client is too far behind, reconnecting will refetch")
+
+	// Cancelled here rather than only inside finish, so that every other
+	// broadcast stops offering to this connection from the next call onwards.
+	// The close itself writes a close frame to the network, which must not
+	// happen on a broadcast goroutine that still has other people to deliver
+	// to — one wedged client must not hold up delivery to everybody else,
+	// which is the whole reason Enqueue does not block in the first place.
+	c.cancel()
+	go c.finish()
 }
 
 func NewHub(
@@ -89,19 +157,31 @@ func NewHub(
 		connections:     make(map[string]*Connection),
 		userConns:       make(map[string]map[string]*Connection),
 		channelSubs:     make(map[string]map[string]*Connection),
+		stop:            make(chan struct{}),
 	}
 }
 
+// Run reaps dead connections until Stop is called.
+//
+// The stop channel is what lets the goroutine end: this used to be a for/select
+// with a single case and no way out, so the reaper outlived every shutdown.
 func (h *Hub) Run() {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
+		case <-h.stop:
+			return
 		case <-ticker.C:
 			h.cleanupStaleConnections()
 		}
 	}
+}
+
+// Stop ends Run. Safe to call more than once, and from anywhere.
+func (h *Hub) Stop() {
+	h.stopOnce.Do(func() { close(h.stop) })
 }
 
 // Register adds a connection and announces the user as online.
@@ -111,6 +191,10 @@ func (h *Hub) Run() {
 // still holding the write lock deadlocked the hub permanently on the very
 // first connection, taking presence, live messages and call ringing with it.
 func (h *Hub) Register(conn *Connection) {
+	// Opening the socket is the first thing they were seen doing, and without
+	// this the reaper would judge every new connection against a zero clock.
+	conn.touch()
+
 	h.mu.Lock()
 	h.connections[conn.ID] = conn
 
@@ -326,13 +410,47 @@ func (h *Hub) broadcastPresence(orgID, userID, status, customStatus string) {
 	}
 }
 
+// cleanupStaleConnections closes and unregisters connections that have stopped
+// answering.
+//
+// This used to range over the connections, assign each to _, and return, so the
+// 30-second timer fired and accomplished nothing. A half-open connection stayed
+// in the hub maps for ever: its goroutines and 256-slot buffer were never
+// reclaimed, every broadcast walked it, and — because SetOffline only runs from
+// Unregister — the user was shown online to their whole organisation until the
+// process restarted.
+//
+// The stale connections are collected under the lock and dealt with after it is
+// released: closing writes a close frame to the network and Unregister takes
+// the write lock itself, neither of which can happen here.
 func (h *Hub) cleanupStaleConnections() {
-	h.mu.Lock()
-	defer h.mu.Unlock()
+	cutoff := time.Now().Add(-staleAfter).UnixNano()
 
+	h.mu.RLock()
+	var stale []*Connection
 	for _, conn := range h.connections {
-		_ = conn
-		// Check if connection is still alive
+		if conn.lastSeen.Load() < cutoff {
+			stale = append(stale, conn)
+		}
+	}
+	h.mu.RUnlock()
+
+	for _, conn := range stale {
+		h.logger.Info().
+			Str("conn", conn.ID).
+			Str("user", conn.UserID()).
+			Msg("reaping connection: no frame since the liveness deadline")
+
+		// Cancel now — that is what stops the loops — and let the close frame
+		// go out in the background. Closing waits for the peer to answer the
+		// close handshake, and the peer here is by definition not answering, so
+		// it blocks until the library's own timeout. Done inline, one dead
+		// connection would hold up the reaping of every other one behind it on
+		// this single goroutine.
+		conn.cancel()
+		go conn.finish()
+
+		h.Unregister(conn)
 	}
 }
 
@@ -345,10 +463,17 @@ func (h *Hub) cleanupStaleConnections() {
 // the process with it. The channel now has no closer at all: it is garbage
 // collected with the connection, and Enqueue stops offering to it as soon as
 // the context is done.
+// A connection with no socket is still finished properly. finish is now
+// reached from the broadcast path too — a client too far behind is closed there
+// — and that runs on goroutines with no recover, where a nil dereference is
+// fatal to the process rather than to one request. Cancelling is the part that
+// matters; there is simply nothing to send a close frame to.
 func (c *Connection) finish() {
 	c.CloseOnce.Do(func() {
 		c.cancel()
-		c.WS.Close(websocket.StatusNormalClosure, "")
+		if c.WS != nil {
+			c.WS.Close(websocket.StatusNormalClosure, "")
+		}
 	})
 }
 
@@ -366,6 +491,10 @@ func (c *Connection) ReadLoop() {
 				return
 			}
 
+			// Anything at all arriving proves the client is still there,
+			// including a frame this server cannot parse.
+			c.touch()
+
 			var msg protocol.Message
 			if err := json.Unmarshal(data, &msg); err != nil {
 				c.logger.Warn().Err(err).Str("conn", c.ID).Msg("Invalid WS message")
@@ -377,10 +506,44 @@ func (c *Connection) ReadLoop() {
 	}
 }
 
+// serverFeatures names what this build can be asked to do, so a client can
+// tell an older server from a newer one without probing it.
+var serverFeatures = []string{"chat", "presence", "calls", "notifications"}
+
+// acknowledge completes the handshake.
+//
+// The client opens the socket, sends conn.init and waits in its 'connecting'
+// state; everything handed to send() queues until a conn.ack arrives. Nothing
+// in the server ever sent one — handleMessage had no case for conn.init, so it
+// fell through to the unknown-message default — so the queue never drained and
+// no client-to-server frame the app produced was ever sent.
+//
+// The identity in the ack is the server's, taken from the claims that opened
+// the socket. The token in ConnInitPayload is deliberately ignored: the
+// handshake already authenticated from the cookie, and honouring a token
+// supplied over an established socket would let a client rename itself to
+// somebody else after connecting.
+func (c *Connection) acknowledge() {
+	c.Enqueue(protocol.NewMessage(protocol.TypeConnAck, protocol.ConnAckPayload{
+		ConnectionID: c.ID,
+		UserID:       c.userID,
+		OrgID:        c.orgID,
+		ServerTime:   time.Now().UTC().Format(time.RFC3339),
+		Features:     serverFeatures,
+	}))
+}
+
 func (c *Connection) handleMessage(msg *protocol.Message) {
 	ctx := c.ctx
 
 	switch msg.Type {
+	case protocol.TypeConnInit:
+		c.acknowledge()
+	case protocol.TypeConnPong:
+		// The liveness bookkeeping already happened in ReadLoop, which counts
+		// every inbound frame. The case exists so that a client answering the
+		// ping correctly is not logged as an unknown message type.
+
 	case protocol.TypeChatSend:
 		c.hub.services.HandleSendMessage(ctx, c, msg)
 	case protocol.TypeChatEdit:
@@ -423,12 +586,33 @@ func (c *Connection) WriteLoop() {
 				return
 			}
 		case <-ticker.C:
-			pingMsg := protocol.NewMessage(protocol.TypeConnPing, map[string]interface{}{})
-			if err := c.writeJSON(c.ctx, pingMsg); err != nil {
+			if err := c.heartbeat(); err != nil {
 				return
 			}
 		}
 	}
+}
+
+// touch records that the client has just proved it is still there.
+func (c *Connection) touch() {
+	c.lastSeen.Store(time.Now().UnixNano())
+}
+
+// heartbeat asks the client to prove it is still there, and keeps its presence
+// entry from expiring while it does.
+//
+// The two belong together. The presence keys carry a TTL so that a process
+// which is killed or OOMs — and so never runs Unregister — stops claiming
+// everybody it served is online; the price of that TTL is that somebody who is
+// still connected has to be refreshed, and this is the only thing that already
+// runs periodically per connection.
+func (c *Connection) heartbeat() error {
+	if refresher, ok := c.hub.presenceService.(PresenceRefresher); ok {
+		if err := refresher.Touch(c.userID, c.orgID); err != nil {
+			c.logger.Debug().Err(err).Str("conn", c.ID).Msg("could not refresh presence")
+		}
+	}
+	return c.writeJSON(c.ctx, protocol.NewMessage(protocol.TypeConnPing, map[string]interface{}{}))
 }
 
 func (c *Connection) writeJSON(ctx context.Context, msg *protocol.Message) error {

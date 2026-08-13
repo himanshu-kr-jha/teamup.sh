@@ -1507,27 +1507,83 @@ func (s *Service) attachReactions(ctx context.Context, messages []Message) ([]Me
 }
 
 func (s *Service) AddReaction(ctx context.Context, messageID, userID uuid.UUID, emoji string) error {
-	_, err := s.db.Exec(ctx, `
-		INSERT INTO message_reactions (message_id, user_id, emoji, created_at)
-		SELECT m.id, cm.user_id, $3, NOW()
-		FROM messages m JOIN channel_members cm ON cm.channel_id = m.channel_id
-		WHERE m.id = $1 AND cm.user_id = $2 AND m.deleted_at IS NULL
-		ON CONFLICT DO NOTHING
-	`, messageID, userID, emoji)
+	// The insert reports the channel it landed in, and reports nothing at all
+	// when it changed nothing — no such message, not a member of its channel,
+	// or the same reaction twice. That is what decides whether there is
+	// anything to announce, so a duplicate stays the silent no-op it was.
+	var channelID uuid.UUID
+	err := s.db.QueryRow(ctx, `
+		WITH added AS (
+			INSERT INTO message_reactions (message_id, user_id, emoji, created_at)
+			SELECT m.id, cm.user_id, $3, NOW()
+			FROM messages m JOIN channel_members cm ON cm.channel_id = m.channel_id
+			WHERE m.id = $1 AND cm.user_id = $2 AND m.deleted_at IS NULL
+			ON CONFLICT DO NOTHING
+			RETURNING message_id
+		)
+		SELECT m.channel_id FROM added JOIN messages m ON m.id = added.message_id
+	`, messageID, userID, emoji).Scan(&channelID)
+	if err == pgx.ErrNoRows {
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("add reaction: %w", err)
 	}
+	s.broadcastReaction(channelID, messageID, userID, emoji, reactionAdded)
 	return nil
 }
 
 func (s *Service) RemoveReaction(ctx context.Context, messageID, userID uuid.UUID, emoji string) error {
-	_, err := s.db.Exec(ctx,
-		`DELETE FROM message_reactions WHERE message_id = $1 AND user_id = $2 AND emoji = $3`,
-		messageID, userID, emoji)
+	var channelID uuid.UUID
+	err := s.db.QueryRow(ctx, `
+		WITH removed AS (
+			DELETE FROM message_reactions
+			WHERE message_id = $1 AND user_id = $2 AND emoji = $3
+			RETURNING message_id
+		)
+		SELECT m.channel_id FROM removed JOIN messages m ON m.id = removed.message_id
+	`, messageID, userID, emoji).Scan(&channelID)
+	if err == pgx.ErrNoRows {
+		// There was no such reaction, so nothing changed and nobody's view of
+		// the message is out of date.
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("remove reaction: %w", err)
 	}
+	s.broadcastReaction(channelID, messageID, userID, emoji, reactionRemoved)
 	return nil
+}
+
+// Which way a reaction went. One frame carries both directions, because a
+// client applies them to the same place in the same way.
+const (
+	reactionAdded   = "add"
+	reactionRemoved = "remove"
+)
+
+// broadcastReaction puts a reaction on everybody else's screen while the
+// conversation is still happening.
+//
+// Storing it and returning was the whole defect: the reaction was correct in
+// the database and in history, and invisible to the person you were reacting
+// to until they refetched. The payload carries enough — which message, which
+// emoji, who, and which way — for a client to apply it in place without
+// asking for the message again.
+func (s *Service) broadcastReaction(channelID, messageID, userID uuid.UUID, emoji, action string) {
+	if s.broadcaster == nil {
+		return
+	}
+	// Excluded like the sender of a message is: the client that just reacted
+	// already knows, and showing it its own reaction twice is a flicker.
+	s.broadcaster.BroadcastToChannel(channelID.String(), protocol.NewMessage(
+		protocol.TypeChatReaction, protocol.ChatReactionPayload{
+			MessageID: messageID.String(),
+			Emoji:     emoji,
+			Action:    action,
+			UserID:    userID.String(),
+		},
+	), userID.String())
 }
 
 // SendMessage is the HTTP path onto the same storage the WebSocket uses, so a

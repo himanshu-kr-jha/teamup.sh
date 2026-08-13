@@ -224,6 +224,22 @@ export function useUnifiedWebSocket() {
 | **Application** | Per-connection bounded channel (`chan OutgoingMessage, 256`) |
 | **Broadcast** | Fan-out via subscription manager — slow clients disconnected after 10s buffer |
 
+**What was actually built (see ticket 36).** The 256-slot buffer is as specified.
+The overflow policy is not time-based, as "disconnected after 10s buffer"
+suggests, but consecutive-drop-based, which needs no timer and no per-message
+bookkeeping:
+
+- A message that does not fit is counted on
+  `teamup_ws_messages_dropped_total{type}` and logged at warn with the
+  connection, user and message type. Before this, the drop was an empty
+  `default:` arm — no counter, no log, no signal — so a client silently
+  diverged and only ever surfaced as a user reporting a missing message.
+- Any message that *does* fit resets the count. After
+  `dropsBeforeClose` = 32 consecutive failures — the writer moving nothing at
+  all, on top of a full 256-slot buffer — the socket is closed so the client
+  reconnects and refetches. That reuses the recovery path the client already
+  has, rather than introducing a `resync` message type.
+
 **Go Implementation:**
 ```go
 // internal/websocket/connection.go

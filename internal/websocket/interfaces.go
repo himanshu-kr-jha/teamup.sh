@@ -41,6 +41,17 @@ type PresenceServiceInterface interface {
 	GetAllOnline(orgID string) ([]Presence, error)
 }
 
+// PresenceRefresher extends the TTL on a connected user's presence entry.
+//
+// Deliberately separate from PresenceServiceInterface rather than another
+// method on it: that interface is implemented by test doubles in several
+// packages, and a presence store with no expiry — anything backed by something
+// other than Redis — has nothing to refresh. The hub asks for it and carries on
+// without it.
+type PresenceRefresher interface {
+	Touch(userID, orgID string) error
+}
+
 // ChannelRosterInterface answers who is in a channel. Delivery resolves this
 // at send time rather than keeping a subscription table in step with every
 // channel somebody joins, leaves or has created for them while connected.

@@ -468,3 +468,96 @@ func TestATypingFrameCannotCrossOrganizations(t *testing.T) {
 
 	watcher.expectNothing(t, protocol.TypeChatTyping, time.Second)
 }
+
+// ── Reactions are live, not stored-and-forgotten ──────────────────────────
+//
+// Reacting always persisted and history always carried the reaction back, so
+// nothing failed loudly. It simply was not announced: every other chat
+// mutation fans out through the hub and this one did not, so in a conversation
+// happening right now a reaction appeared to do nothing until the other person
+// reloaded. These tests drive the service the HTTP handler drives and read the
+// frames off a real socket, so they fail on the missing broadcast rather than
+// on the storage that was already correct.
+
+func TestAReactionReachesTheChannelAsItHappens(t *testing.T) {
+	h := newWSHarness(t)
+	org := testsupport.SeedOrg(t, h.pool)
+	watcherID := testsupport.SeedUser(t, h.pool, org, "reaction-watcher@example.test", "member")
+	channelID := testsupport.SeedChannel(t, h.pool, org, "general", org.OwnerID, watcherID)
+
+	watcher := h.dial(t, "watcher", org.ID, watcherID)
+
+	ctx := context.Background()
+	msg, err := h.svc.SendMessage(ctx, org.ID, channelID, org.OwnerID, "ship it", nil, nil, false)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	watcher.await(t, protocol.TypeChatMessage, 5*time.Second)
+
+	if err := h.svc.AddReaction(ctx, msg.ID, org.OwnerID, "🚀"); err != nil {
+		t.Fatalf("add reaction: %v", err)
+	}
+
+	var added protocol.ChatReactionPayload
+	decodePayload(t, watcher.await(t, protocol.TypeChatReaction, 5*time.Second), &added)
+	if added.MessageID != msg.ID.String() {
+		t.Errorf("the reaction named message %q, want %q", added.MessageID, msg.ID)
+	}
+	if added.Emoji != "🚀" {
+		t.Errorf("reaction emoji: got %q, want 🚀", added.Emoji)
+	}
+	if added.Action != "add" {
+		t.Errorf("reaction action: got %q, want add", added.Action)
+	}
+	// Without the actor a client cannot draw the reaction — it has nobody to
+	// count, nobody to name on hover, and no way to tell whose it is.
+	if added.UserID != org.OwnerID.String() {
+		t.Errorf("the reaction did not say who reacted: got %q, want %q", added.UserID, org.OwnerID)
+	}
+
+	if err := h.svc.RemoveReaction(ctx, msg.ID, org.OwnerID, "🚀"); err != nil {
+		t.Fatalf("remove reaction: %v", err)
+	}
+
+	// Taking a reaction back has to be as live as putting one on, or it stays
+	// on everybody else's screen until they reload.
+	var removed protocol.ChatReactionPayload
+	decodePayload(t, watcher.await(t, protocol.TypeChatReaction, 5*time.Second), &removed)
+	if removed.MessageID != msg.ID.String() || removed.Emoji != "🚀" {
+		t.Errorf("the removal did not name the same reaction: %+v", removed)
+	}
+	if removed.Action != "remove" {
+		t.Errorf("removal action: got %q, want remove", removed.Action)
+	}
+	if removed.UserID != org.OwnerID.String() {
+		t.Errorf("the removal did not say whose reaction went: got %q, want %q", removed.UserID, org.OwnerID)
+	}
+}
+
+func TestAReactionIsNotAnnouncedOutsideItsOwnChannel(t *testing.T) {
+	h := newWSHarness(t)
+	ours := testsupport.SeedOrg(t, h.pool)
+	elsewhereID := testsupport.SeedUser(t, h.pool, ours, "elsewhere@example.test", "member")
+	channelID := testsupport.SeedChannel(t, h.pool, ours, "general", ours.OwnerID)
+	testsupport.SeedChannel(t, h.pool, ours, "other", ours.OwnerID, elsewhereID)
+
+	theirs := testsupport.SeedOrg(t, h.pool)
+	testsupport.SeedChannel(t, h.pool, theirs, "their-general", theirs.OwnerID)
+
+	elsewhere := h.dial(t, "another-channel", ours.ID, elsewhereID)
+	stranger := h.dial(t, "another-org", theirs.ID, theirs.OwnerID)
+
+	ctx := context.Background()
+	msg, err := h.svc.SendMessage(ctx, ours.ID, channelID, ours.OwnerID, "ship it", nil, nil, false)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if err := h.svc.AddReaction(ctx, msg.ID, ours.OwnerID, "🚀"); err != nil {
+		t.Fatalf("add reaction: %v", err)
+	}
+
+	// A reaction says a message exists, who wrote in that channel and who is
+	// reading it, none of which belongs to somebody in another conversation.
+	elsewhere.expectNothing(t, protocol.TypeChatReaction, time.Second)
+	stranger.expectNothing(t, protocol.TypeChatReaction, time.Second)
+}

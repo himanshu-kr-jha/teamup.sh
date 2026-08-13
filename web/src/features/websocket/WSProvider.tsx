@@ -63,6 +63,20 @@ export function WSProvider({ children }: { children: ReactNode }) {
           return;
         }
 
+        // The server pings every thirty seconds and reaps connections that
+        // stop answering, because a client that disappears without closing the
+        // socket — a suspended laptop, an expiring NAT entry, a phone changing
+        // network — is otherwise indistinguishable from an idle one. Staying
+        // silent here would have the server hang up on a perfectly live tab.
+        if (msg.type === 'conn.ping') {
+          ws.send(JSON.stringify({
+            id: crypto.randomUUID(),
+            type: 'conn.pong',
+            payload: {},
+          }));
+          return;
+        }
+
         const handlers = handlersRef.current.get(msg.type) || new Set();
         handlers.forEach(h => h(msg));
       } catch (err) {

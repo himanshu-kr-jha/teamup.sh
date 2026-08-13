@@ -78,8 +78,16 @@ type ClientInfo struct {
 	Version  string `json:"version"`
 }
 
+// ConnAckPayload answers conn.init and is what moves a client from
+// 'connecting' to 'ready'. It carries the identity the server settled on
+// rather than leaving the client to trust what it sent: the socket is
+// authenticated from a cookie at the handshake, so who the connection actually
+// belongs to is the server's answer to give, and a client that queued work
+// against the wrong account would send it to the wrong place.
 type ConnAckPayload struct {
 	ConnectionID string   `json:"connectionId"`
+	UserID       string   `json:"userId"`
+	OrgID        string   `json:"orgId"`
 	ServerTime   string   `json:"serverTime"`
 	Features     []string `json:"features"`
 }
@@ -160,6 +168,10 @@ type ChatReactionPayload struct {
 	MessageID string `json:"messageId"`
 	Emoji     string `json:"emoji"`
 	Action    string `json:"action"` // "add" | "remove"
+	// UserID names who reacted. Inbound it is implied by the connection and
+	// left empty; outbound it is the point, because a client cannot show a
+	// reaction, or decide whether it is its own, without knowing whose it is.
+	UserID string `json:"userId,omitempty"`
 }
 
 type ChatTypingPayload struct {

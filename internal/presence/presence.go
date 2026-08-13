@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,6 +20,43 @@ type Service struct {
 	db     *pgxpool.Pool
 	redis  *redis.Client
 	logger zerolog.Logger
+	ttl    time.Duration
+}
+
+// presenceTTL is how long a presence entry survives without being refreshed.
+//
+// These entries used to be written with no expiry at all, so the only thing
+// that ever removed one was Unregister — which only runs on a clean shutdown. A
+// process that is killed, OOMs or is rescheduled left every user it had served
+// showing online for ever, and nothing would ever correct it, because the only
+// writer for that user was the process that died.
+//
+// The connection heartbeat refreshes this every thirty seconds, so the entry
+// outlives three missed refreshes before disappearing. Long enough that a
+// momentary Redis or scheduling hiccup does not blink somebody offline in front
+// of their colleagues, short enough that a dead process stops lying within a
+// minute or two.
+const presenceTTL = 90 * time.Second
+
+func (s *Service) expiry() time.Duration {
+	if s.ttl > 0 {
+		return s.ttl
+	}
+	return presenceTTL
+}
+
+func presenceKey(orgID, userID string) string {
+	return "presence:" + orgID + ":" + userID
+}
+
+// writeEntry stores presence fields and sets the expiry in the same round trip,
+// so an entry can never be left behind without one.
+func (s *Service) writeEntry(ctx context.Context, key string, fields map[string]interface{}) error {
+	pipe := s.redis.TxPipeline()
+	pipe.HSet(ctx, key, fields)
+	pipe.PExpire(ctx, key, s.expiry())
+	_, err := pipe.Exec(ctx)
+	return err
 }
 
 func NewService(redis *redis.Client) *Service {
@@ -86,9 +124,9 @@ func (s *Service) GetAvailability(ctx context.Context, userID uuid.UUID) (Availa
 // SetInCall marks somebody as being in a call, which shows differently from
 // merely being busy. Transient: it goes when they disconnect.
 func (s *Service) SetInCall(userID, orgID string, inCall bool) error {
-	key := "presence:" + orgID + ":" + userID
+	key := presenceKey(orgID, userID)
 	if inCall {
-		return s.redis.HSet(context.Background(), key, "in_call", "1").Err()
+		return s.writeEntry(context.Background(), key, map[string]interface{}{"in_call": "1"})
 	}
 	return s.redis.HDel(context.Background(), key, "in_call").Err()
 }
@@ -121,34 +159,52 @@ func Effective(chosen Availability, connected, inCall bool) string {
 }
 
 func (s *Service) SetOnline(userID, orgID string) error {
-	key := "presence:" + orgID + ":" + userID
-	return s.redis.HSet(context.Background(), key, map[string]interface{}{
+	return s.writeEntry(context.Background(), presenceKey(orgID, userID), map[string]interface{}{
 		"status":        "online",
 		"last_activity": time.Now().Unix(),
-	}).Err()
+	})
+}
+
+// Touch extends the expiry on somebody who is still connected.
+//
+// Called from the connection heartbeat. Without it the TTL that stops a dead
+// process from claiming people are online would expire under people who really
+// are, and they would blink offline every ninety seconds.
+func (s *Service) Touch(userID, orgID string) error {
+	ctx := context.Background()
+
+	extended, err := s.redis.PExpire(ctx, presenceKey(orgID, userID), s.expiry()).Result()
+	if err != nil {
+		return err
+	}
+	if !extended {
+		// The entry has already gone: Redis was restarted, or was unreachable
+		// for longer than the TTL. Only a live connection is ever refreshed, so
+		// this person is demonstrably here — re-establish rather than leave
+		// them invisible until they happen to reconnect.
+		return s.SetOnline(userID, orgID)
+	}
+	return nil
 }
 
 func (s *Service) SetOffline(userID, orgID string) error {
-	key := "presence:" + orgID + ":" + userID
-	return s.redis.HSet(context.Background(), key, map[string]interface{}{
+	return s.writeEntry(context.Background(), presenceKey(orgID, userID), map[string]interface{}{
 		"status":        "offline",
 		"last_activity": time.Now().Unix(),
-	}).Err()
+	})
 }
 
 func (s *Service) UpdateStatus(userID, orgID string, status, customStatus, customEmoji string) error {
-	key := "presence:" + orgID + ":" + userID
-	return s.redis.HSet(context.Background(), key, map[string]interface{}{
+	return s.writeEntry(context.Background(), presenceKey(orgID, userID), map[string]interface{}{
 		"status":              status,
 		"custom_status":       customStatus,
 		"custom_status_emoji": customEmoji,
 		"last_activity":       time.Now().Unix(),
-	}).Err()
+	})
 }
 
 func (s *Service) GetPresence(userID, orgID string) (*websocket.Presence, error) {
-	key := "presence:" + orgID + ":" + userID
-	data, err := s.redis.HGetAll(context.Background(), key).Result()
+	data, err := s.redis.HGetAll(context.Background(), presenceKey(orgID, userID)).Result()
 	if err != nil || len(data) == 0 {
 		return nil, nil
 	}
@@ -206,7 +262,7 @@ func (s *Service) ListOrgAvailability(ctx context.Context, orgID uuid.UUID) ([]P
 
 	// Whether each of them is actually here, and whether they are in a call.
 	for i := range people {
-		key := "presence:" + orgID.String() + ":" + people[i].UserID.String()
+		key := presenceKey(orgID.String(), people[i].UserID.String())
 		data, err := s.redis.HGetAll(ctx, key).Result()
 		if err != nil {
 			// Redis being unavailable should not hide who is on leave.
@@ -221,22 +277,49 @@ func (s *Service) ListOrgAvailability(ctx context.Context, orgID uuid.UUID) ([]P
 	return people, nil
 }
 
+// GetAllOnline lists everybody in one organisation who is currently connected.
+//
+// It walks the keyspace with SCAN rather than KEYS. KEYS matches every key in
+// the database in a single blocking operation, and Redis is single-threaded, so
+// on a large keyspace it stalls every other command — including the ones on the
+// request path — for as long as it takes. SCAN does the same work in small
+// batches that yield between them.
+//
+// The prefix is the organisation's own, and the results are filtered to it
+// again on the way out, so a key that somehow matched another tenant's could
+// still not be returned here.
 func (s *Service) GetAllOnline(orgID string) ([]websocket.Presence, error) {
-	pattern := "presence:" + orgID + ":*"
-	keys, err := s.redis.Keys(context.Background(), pattern).Result()
-	if err != nil {
-		return nil, err
-	}
+	ctx := context.Background()
+	prefix := presenceKey(orgID, "")
 
 	var presences []websocket.Presence
-	for _, key := range keys {
-		data, err := s.redis.HGetAll(context.Background(), key).Result()
+	// SCAN guarantees only that a key present throughout is returned at least
+	// once — it may be returned more than once — so the same person must not be
+	// counted twice.
+	seen := map[string]bool{}
+
+	var cursor uint64
+	for {
+		keys, next, err := s.redis.Scan(ctx, cursor, prefix+"*", 100).Result()
 		if err != nil {
-			continue
+			return nil, err
 		}
-		if data["status"] == "online" {
-			// Extract userID from key (format: presence:orgID:userID)
-			userID := key[len("presence:"+orgID+":"):]
+
+		for _, key := range keys {
+			userID, ok := strings.CutPrefix(key, prefix)
+			if !ok || userID == "" || seen[userID] {
+				continue
+			}
+
+			data, err := s.redis.HGetAll(ctx, key).Result()
+			if err != nil {
+				continue
+			}
+			if data["status"] != "online" {
+				continue
+			}
+
+			seen[userID] = true
 			presences = append(presences, websocket.Presence{
 				UserID:       userID,
 				OrgID:        orgID,
@@ -246,8 +329,12 @@ func (s *Service) GetAllOnline(orgID string) ([]websocket.Presence, error) {
 				LastActivity: parseTime(data["last_activity"]),
 			})
 		}
+
+		cursor = next
+		if cursor == 0 {
+			return presences, nil
+		}
 	}
-	return presences, nil
 }
 
 func parseTime(s string) time.Time {
