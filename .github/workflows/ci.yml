@@ -149,11 +149,18 @@ jobs:
     env:
       TEAMUP_TEST_DATABASE_URL: postgres://teamup:teamup@localhost:5432/teamup_test?sslmode=disable
       TEAMUP_TEST_REDIS_URL: redis://localhost:6379
-      # 378 top-level tests pass locally as of the authorization/real-time
-      # wave. The floor sits below that on purpose — it exists to catch a
-      # suite that has silently lost most of itself, not to be updated on
-      # every commit.
-      MIN_EXPECTED_TESTS: '350'
+      # internal/files' object-storage integration tests skip unless this is
+      # set, and the skip guard below turns a skip into a failed build. They
+      # are the only tests that exercise presigned multipart against a real S3
+      # implementation, which is where the signing rules actually live.
+      TEAMUP_TEST_MINIO_ENDPOINT: localhost:9000
+      TEAMUP_TEST_MINIO_ACCESS_KEY: minioadmin
+      TEAMUP_TEST_MINIO_SECRET_KEY: minioadmin
+      TEAMUP_TEST_MINIO_BUCKET: teamup-files-test
+      # 487 top-level tests pass locally as of the threading/multipart wave.
+      # The floor sits below that on purpose — it exists to catch a suite that
+      # has silently lost most of itself, not to be updated on every commit.
+      MIN_EXPECTED_TESTS: '480'
 
     steps:
       - uses: actions/checkout@v4
