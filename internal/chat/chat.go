@@ -119,11 +119,39 @@ type Message struct {
 	Kind string `json:"kind"`
 	// ReadCount is how many other people in the channel have read this, so a
 	// sender can tell whether their message landed.
-	ReadCount int        `json:"readCount"`
-	CreatedAt time.Time  `json:"createdAt"`
-	EditedAt  *time.Time `json:"editedAt,omitempty"`
-	DeletedAt *time.Time `json:"deletedAt,omitempty"`
+	ReadCount int `json:"readCount"`
+	// ReplyCount and LastReplyAt describe the thread hanging off this message.
+	// Only ever set on a thread root, because a reply cannot have replies.
+	ReplyCount  int        `json:"replyCount"`
+	LastReplyAt *time.Time `json:"lastReplyAt,omitempty"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	EditedAt    *time.Time `json:"editedAt,omitempty"`
+	DeletedAt   *time.Time `json:"deletedAt,omitempty"`
 }
+
+// Thread is one conversation hanging off a message: the message it started
+// from, and everything said in reply to it.
+type Thread struct {
+	ChannelID uuid.UUID `json:"channelId"`
+	Root      Message   `json:"root"`
+	Replies   []Message `json:"replies"`
+}
+
+// replyCountSQL counts a page's replies in one round trip.
+//
+// One query for the whole page rather than one per message: counting replies
+// per row is fifty round trips for a fifty-message page, on the query that
+// already runs on every channel open, every socket reconnect and every tab
+// focus. `reply_to = ANY($1)` is a strict comparison, so the planner can prove
+// it excludes NULLs and use the partial index over reply_to.
+//
+// MAX(created_at) comes back with the count because "3 replies" is worth much
+// less than "3 replies, the last an hour ago", and it is free here.
+const replyCountSQL = `
+	SELECT reply_to, COUNT(*), MAX(created_at)
+	FROM messages
+	WHERE reply_to = ANY($1)
+	GROUP BY reply_to`
 
 type Attachment struct {
 	ID           string  `json:"id"`
@@ -396,8 +424,52 @@ func (s *Service) HandleRead(ctx context.Context, conn websocket.WSConnection, m
 // results.
 var sentinelStripper = strings.NewReplacer(HighlightStart, "", HighlightEnd, "")
 
+// threadRootFor decides which thread a reply joins, and refuses a parent that
+// is not in the same channel.
+//
+// A thread here is one level deep, the way it is in Slack: a reply to a reply
+// joins the conversation it was already in. reply_to points at a single
+// parent, so nothing in the schema stops a chain, and the choice is only
+// between flattening on the way in and flattening on the way out. On the way
+// in wins twice over — a reader that flattens what it finds has to walk an
+// arbitrarily deep tree to do it, on every read for ever, and any reader that
+// forgets lets the depth quietly come back.
+//
+// Requiring the parent to be in the same channel is not a formality. A reply
+// whose parent is elsewhere belongs to a conversation its own readers cannot
+// see, and it is a way to hang a message off a channel you are not in.
+func (s *Service) threadRootFor(ctx context.Context, channelID, parentID uuid.UUID) (uuid.UUID, error) {
+	var root uuid.UUID
+	// Deliberately no deleted_at filter: a message is soft-deleted and keeps
+	// its place precisely so its replies still have a parent, and a thread
+	// people are in the middle of does not close because the question was
+	// withdrawn.
+	err := s.db.QueryRow(ctx, `
+		SELECT COALESCE(m.reply_to, m.id)
+		FROM messages m
+		WHERE m.id = $1 AND m.channel_id = $2
+	`, parentID, channelID).Scan(&root)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return uuid.Nil, apperrors.New(apperrors.CodeBadRequest,
+				"the message you are replying to is not in this channel")
+		}
+		return uuid.Nil, fmt.Errorf("resolve thread root: %w", err)
+	}
+	return root, nil
+}
+
 func (s *Service) createMessage(ctx context.Context, msg *Message) error {
 	msg.Content = sentinelStripper.Replace(msg.Content)
+	// Settled before the insert rather than fixed up afterwards, so a reply
+	// with an impossible parent is never written at all.
+	if msg.ReplyTo != nil {
+		root, err := s.threadRootFor(ctx, msg.ChannelID, *msg.ReplyTo)
+		if err != nil {
+			return err
+		}
+		msg.ReplyTo = &root
+	}
 	// The channel row is read here anyway, to derive org_id rather than trust
 	// it from the caller. Its type and name come back with it, so the question
 	// "is this an announcement?" costs nothing — it used to be a second round
@@ -652,8 +724,15 @@ func (s *Service) ListChannels(ctx context.Context, orgID, userID uuid.UUID) ([]
 		       COALESCE(c.is_archived, false), COALESCE(c.is_private, true),
 		       COALESCE(c.max_members, 1000), c.created_at, c.updated_at,
 		       (SELECT COUNT(*) FROM channel_members m WHERE m.channel_id = c.id),
+		       -- Thread replies deliberately do not count. The read marker is a
+		       -- point in time advanced from the channel timeline, and a reply
+		       -- is not on it — so a counted reply would raise a badge that
+		       -- reading the channel could never clear, and it would sit there
+		       -- for ever pointing at nothing. What says a thread moved on is
+		       -- the reply count on its root, which is in the timeline.
 		       (SELECT COUNT(*) FROM messages msg
 		          WHERE msg.channel_id = c.id AND msg.deleted_at IS NULL
+		            AND msg.reply_to IS NULL
 		            AND msg.user_id <> $2
 		            AND msg.created_at > COALESCE(cm.last_read_at, 'epoch'::timestamptz)),
 		       -- A direct message has no name of its own; each side sees the
@@ -1273,17 +1352,21 @@ func (s *Service) RejoinChannel(ctx context.Context, orgID, channelID, userID uu
 // landing inside such a group silently skips every remaining message that
 // shares the timestamp, and the reader is never told history went missing.
 // The id tiebreaker makes the cursor total, so no row can fall between pages.
+// Replies are deliberately absent. A threaded reply belongs in its thread, not
+// in the middle of the channel, and leaving it inline is what made threading
+// invisible: the relationship was recorded and then rendered away. What the
+// timeline carries instead is the reply count on the parent, which is the way
+// into the thread — see attachReplyCounts.
 func (s *Service) GetMessages(ctx context.Context, channelID uuid.UUID, limit int, before *time.Time, beforeID *uuid.UUID) ([]Message, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT m.id, m.channel_id, m.user_id, m.content, m.reply_to,
-		       m.created_at, m.edited_at, m.deleted_at,
-		       u.name, COALESCE(u.avatar_url, ''), COALESCE(m.kind, 'user')
+		SELECT `+messageColumns+`
 		FROM messages m
 		JOIN users u ON u.id = m.user_id
 		WHERE m.channel_id = $1
+		  AND m.reply_to IS NULL
 		  AND ($2::timestamptz IS NULL
 		       OR (m.created_at, m.id) < ($2, COALESCE($4, '00000000-0000-0000-0000-000000000000'::uuid)))
 		ORDER BY m.created_at DESC, m.id DESC
@@ -1292,6 +1375,23 @@ func (s *Service) GetMessages(ctx context.Context, channelID uuid.UUID, limit in
 	if err != nil {
 		return nil, fmt.Errorf("get messages: %w", err)
 	}
+	messages, err := scanMessages(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	// Queried newest-first for the LIMIT; the client renders oldest-first.
+	reverse(messages)
+	return s.hydrate(ctx, channelID, messages)
+}
+
+// messageColumns is the shape every message read shares, so the timeline and
+// the thread view cannot drift into returning different things.
+const messageColumns = `m.id, m.channel_id, m.user_id, m.content, m.reply_to,
+	       m.created_at, m.edited_at, m.deleted_at,
+	       u.name, COALESCE(u.avatar_url, ''), COALESCE(m.kind, 'user')`
+
+func scanMessages(rows pgx.Rows) ([]Message, error) {
 	defer rows.Close()
 
 	messages := []Message{}
@@ -1311,14 +1411,20 @@ func (s *Service) GetMessages(ctx context.Context, channelID uuid.UUID, limit in
 		}
 		messages = append(messages, m)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
+	return messages, rows.Err()
+}
 
-	// Queried newest-first for the LIMIT; the client renders oldest-first.
+func reverse(messages []Message) {
 	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
 		messages[i], messages[j] = messages[j], messages[i]
 	}
+}
+
+// hydrate fills in everything that hangs off a page of messages, each in one
+// query for the whole page. Shared by the timeline and the thread view: a
+// reply that lost its reactions or its attachments on the way into a thread
+// would be the same class of defect as not being able to read it at all.
+func (s *Service) hydrate(ctx context.Context, channelID uuid.UUID, messages []Message) ([]Message, error) {
 	withReactions, err := s.attachReactions(ctx, messages)
 	if err != nil {
 		return nil, err
@@ -1327,7 +1433,141 @@ func (s *Service) GetMessages(ctx context.Context, channelID uuid.UUID, limit in
 	if err != nil {
 		return nil, err
 	}
-	return s.attachReadCounts(ctx, channelID, withFiles)
+	withReads, err := s.attachReadCounts(ctx, channelID, withFiles)
+	if err != nil {
+		return nil, err
+	}
+	return s.attachReplyCounts(ctx, withReads)
+}
+
+// attachReplyCounts tells each message how big a thread hangs off it, for the
+// whole page in one query rather than one query per message.
+//
+// A deleted reply is counted. It keeps its place in the thread exactly as a
+// deleted message keeps its place in the channel, so leaving it out would open
+// "2 replies" onto three things.
+func (s *Service) attachReplyCounts(ctx context.Context, messages []Message) ([]Message, error) {
+	if len(messages) == 0 {
+		return messages, nil
+	}
+	index := make(map[uuid.UUID]int, len(messages))
+	for i, m := range messages {
+		index[m.ID] = i
+	}
+
+	rows, err := s.db.Query(ctx, replyCountSQL, messageIDs(messages))
+	if err != nil {
+		return nil, fmt.Errorf("count replies: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var rootID uuid.UUID
+		var count int
+		var last time.Time
+		if err := rows.Scan(&rootID, &count, &last); err != nil {
+			return nil, fmt.Errorf("scan reply count: %w", err)
+		}
+		if i, ok := index[rootID]; ok {
+			messages[i].ReplyCount = count
+			at := last
+			messages[i].LastReplyAt = &at
+		}
+	}
+	return messages, rows.Err()
+}
+
+// threadReplyLimit caps a single thread read. A thread is one conversation
+// about one message, so in practice it is bounded by that; the cap is here so
+// a pathological one cannot be used to pull the channel's whole history in a
+// single request. Past it the newest replies are returned, matching the
+// timeline's own "newest page first" behaviour, and the root's reply count
+// still reports the true total so the gap is visible rather than silent.
+const threadReplyLimit = 200
+
+// ThreadOf resolves any message in a thread to the thread itself.
+//
+// Separate from GetThread so a caller can decide whether the reader is allowed
+// into the channel before any message body is loaded. Org-scoped, so an id
+// from another tenant reads as not-found rather than leaking the row.
+func (s *Service) ThreadOf(ctx context.Context, orgID, messageID uuid.UUID) (rootID, channelID uuid.UUID, err error) {
+	err = s.db.QueryRow(ctx, `
+		SELECT COALESCE(m.reply_to, m.id), m.channel_id
+		FROM messages m
+		JOIN channels c ON c.id = m.channel_id
+		WHERE m.id = $1 AND c.org_id = $2 AND c.deleted_at IS NULL
+	`, messageID, orgID).Scan(&rootID, &channelID)
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			return uuid.Nil, uuid.Nil, apperrors.ErrNotFound
+		}
+		return uuid.Nil, uuid.Nil, fmt.Errorf("resolve thread: %w", err)
+	}
+	return rootID, channelID, nil
+}
+
+// GetThread reads one thread: the message it started from, and the replies to
+// it. Any message in the thread identifies it, because a thread is opened as
+// often from a reply — from search, from a notification, from a link — as from
+// the parent.
+//
+// Org-scoped in its own right rather than trusting the caller to have checked.
+// Channel membership is the caller's to enforce, since only the HTTP layer
+// knows who is asking; see the thread handler.
+func (s *Service) GetThread(ctx context.Context, orgID, messageID uuid.UUID) (*Thread, error) {
+	rootID, channelID, err := s.ThreadOf(ctx, orgID, messageID)
+	if err != nil {
+		return nil, err
+	}
+
+	// The root and its replies are read separately so a long thread cannot
+	// push the root itself past the limit — the root is the oldest message in
+	// the thread, and so the first thing a newest-first cap would drop.
+	rootRows, err := s.db.Query(ctx, `
+		SELECT `+messageColumns+`
+		FROM messages m
+		JOIN users u ON u.id = m.user_id
+		WHERE m.id = $1
+	`, rootID)
+	if err != nil {
+		return nil, fmt.Errorf("read thread root: %w", err)
+	}
+	roots, err := scanMessages(rootRows)
+	if err != nil {
+		return nil, err
+	}
+	if len(roots) == 0 {
+		return nil, apperrors.ErrNotFound
+	}
+
+	replyRows, err := s.db.Query(ctx, `
+		SELECT `+messageColumns+`
+		FROM messages m
+		JOIN users u ON u.id = m.user_id
+		WHERE m.reply_to = $1
+		ORDER BY m.created_at DESC, m.id DESC
+		LIMIT $2
+	`, rootID, threadReplyLimit)
+	if err != nil {
+		return nil, fmt.Errorf("read thread replies: %w", err)
+	}
+	replies, err := scanMessages(replyRows)
+	if err != nil {
+		return nil, err
+	}
+	reverse(replies)
+
+	// Hydrated as one page so the whole thread costs the same number of
+	// queries as a single message would.
+	hydrated, err := s.hydrate(ctx, channelID, append(roots, replies...))
+	if err != nil {
+		return nil, err
+	}
+	return &Thread{
+		ChannelID: channelID,
+		Root:      hydrated[0],
+		Replies:   hydrated[1:],
+	}, nil
 }
 
 // attachFiles loads each message's attachments for a page in one query.

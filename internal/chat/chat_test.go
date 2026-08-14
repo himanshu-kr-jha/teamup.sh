@@ -392,6 +392,14 @@ func TestReactionsRoundTrip(t *testing.T) {
 	}
 }
 
+// The reply link survives storage — which is all this could check when a reply
+// was rendered inline like any other message.
+//
+// Issue 28 moved where a reply is read from rather than whether it is kept: it
+// is now in its thread instead of in the middle of the channel. So the
+// original assertion is unchanged and now made against the thread, and the
+// timeline is checked for the reply's absence, which is the new half of the
+// same fact.
 func TestReplyToIsPersisted(t *testing.T) {
 	svc, pool := newService(t)
 	ctx := context.Background()
@@ -404,12 +412,26 @@ func TestReplyToIsPersisted(t *testing.T) {
 		t.Fatalf("reply: %v", err)
 	}
 
-	history, _ := svc.GetMessages(ctx, ch, 10, nil, nil)
-	if len(history) != 2 {
-		t.Fatalf("expected 2 messages, got %d", len(history))
+	thread, err := svc.GetThread(ctx, org.ID, parent.ID)
+	if err != nil {
+		t.Fatalf("thread: %v", err)
 	}
-	if history[1].ReplyTo == nil || *history[1].ReplyTo != parent.ID {
-		t.Errorf("reply link lost: %+v", history[1].ReplyTo)
+	if len(thread.Replies) != 1 {
+		t.Fatalf("expected 1 reply, got %d", len(thread.Replies))
+	}
+	if thread.Replies[0].ReplyTo == nil || *thread.Replies[0].ReplyTo != parent.ID {
+		t.Errorf("reply link lost: %+v", thread.Replies[0].ReplyTo)
+	}
+	if thread.Replies[0].Content != "answer" {
+		t.Errorf("wrong reply came back: %q", thread.Replies[0].Content)
+	}
+
+	history, _ := svc.GetMessages(ctx, ch, 10, nil, nil)
+	if len(history) != 1 || history[0].ID != parent.ID {
+		t.Fatalf("the timeline should hold the parent alone, got %d: %+v", len(history), history)
+	}
+	if history[0].ReplyCount != 1 {
+		t.Errorf("the parent should offer the way into its thread, got %d replies", history[0].ReplyCount)
 	}
 }
 

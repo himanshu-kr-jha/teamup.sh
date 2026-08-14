@@ -38,6 +38,7 @@ export function ChatNotifications() {
         userName?: string;
         content?: string;
         attachments?: unknown[];
+        replyTo?: string;
       };
       if (!incoming?.id || !incoming.channelId) return;
       // Your own message coming back is not news.
@@ -57,7 +58,14 @@ export function ChatNotifications() {
       // heaviest thing a busy conversation did — and all of it to move one
       // number by one. Somebody actually watching the conversation is not
       // counted at all; it is read as it arrives.
-      if (!watchingThisConversation) {
+      //
+      // A thread reply is not counted, because the server does not count one
+      // either: the badge is cleared by reading the channel timeline, a reply
+      // is not on it, and a badge nothing can clear sits there for ever. The
+      // sound and the notification below still happen — you should hear that
+      // somebody answered — and the way to see it is the reply count on the
+      // parent, which the chat page moves as the frame arrives.
+      if (!watchingThisConversation && !incoming.replyTo) {
         queryClient.setQueryData(['channels'], (old: any) => {
           if (!old?.data) return old;
           return {

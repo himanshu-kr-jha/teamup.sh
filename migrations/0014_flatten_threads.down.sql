@@ -1,0 +1,14 @@
+-- Nothing to undo, and nothing that could be.
+--
+-- The up migration changed data, not schema: it re-pointed chained replies at
+-- their thread root and cut loose replies that pointed into another channel.
+-- Both overwrite the only record of what the old value was, so reversing them
+-- is not a matter of writing the inverse statement — the information is gone.
+--
+-- That is deliberate. The old values described relationships the product never
+-- rendered and the reader can no longer represent; restoring them would put
+-- messages back into the state where they appear in no thread and on no
+-- timeline. Rolling the schema back past this point leaves the flattened rows
+-- flattened, which is harmless: a one-level thread is a valid shape for the
+-- old reader too, since it never looked at reply_to at all.
+SELECT 1;

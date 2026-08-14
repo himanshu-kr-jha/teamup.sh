@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   Hash, Send, Paperclip, Smile, Bell, Settings, ChevronLeft, MessageSquare, Video, User,
   Megaphone, MoreVertical, Pencil, Trash2, Eye, Ban, Check, CheckCheck, PhoneMissed,
+  MessagesSquare, X,
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
@@ -38,6 +39,13 @@ import { usePresence, type PresenceStatus } from '@/features/presence/usePresenc
 import { PresenceDot, presenceLabel } from '@/features/presence/PresenceDot';
 import { HISTORY_PAGE_SIZE, mergeOlder, olderCursor, reachedStart } from './history';
 import {
+  bumpReplyCount,
+  mergeReplies,
+  partitionThreads,
+  replyCountLabel,
+  threadIdOf,
+} from './threads';
+import {
   QUICK_EMOJI,
   applyReaction,
   hasReacted,
@@ -54,7 +62,12 @@ interface Message {
   userAvatar?: string;
   content: string;
   attachments: any[];
+  /** The thread root this is a reply to. Absent on a top-level message. */
   replyTo?: string;
+  /** How many replies hang off this message. Only ever set on a root. */
+  replyCount?: number;
+  /** When this message's thread last moved. */
+  lastReplyAt?: string;
   reactions: Record<string, string[]>;
   createdAt: string;
   editedAt?: string;
@@ -165,15 +178,37 @@ export function ChatPage() {
   // arithmetic rather than a guess.
   const heightBeforePrependRef = useRef<number | null>(null);
 
+  /** The thread on screen beside the conversation, if any. */
+  const [openThreadId, setOpenThreadId] = useState<string | null>(null);
+  // Which replies have already moved a parent's count. A frame can be
+  // delivered twice — a reconnect, a duplicate — and one reply must not read
+  // as two. Cleared with the channel, because the counts are refetched with it.
+  const countedRepliesRef = useRef<Set<string>>(new Set());
+
   // A different conversation is a different history.
   useEffect(() => {
     setOlder([]);
     setAtStart(false);
     setLoadingOlder(false);
     heightBeforePrependRef.current = null;
+    // A thread belongs to the channel it is in; carrying one across to the
+    // next conversation would leave it open beside messages it has nothing to
+    // do with.
+    setOpenThreadId(null);
+    countedRepliesRef.current = new Set();
   }, [channelId]);
 
-  const messages = useMemo(() => mergeOlder(older, recent), [older, recent]);
+  const allMessages = useMemo(() => mergeOlder(older, recent), [older, recent]);
+  /**
+   * The channel timeline, with anything threaded taken out of it.
+   *
+   * The server already leaves replies out, so this normally removes nothing.
+   * It is here for the rows written before threads existed and for the window
+   * during a deploy when the two sides disagree — a reply rendered inline is
+   * the exact thing threading is here to fix, so the client refuses to render
+   * one rather than trusting it will never be sent one.
+   */
+  const messages = useMemo(() => partitionThreads(allMessages).timeline, [allMessages]);
 
   const loadOlder = useCallback(async () => {
     if (!channelId || loadingOlder || atStart) return;
@@ -275,8 +310,21 @@ export function ChatPage() {
       queryClient.setQueryData(['messages', channelId], (old: any) =>
         old ? { ...old, data: applyTo(old.data ?? []) } : old
       );
+      // A thread is the third place a message can be. Reacting to a reply, or
+      // editing one, has to land where the reply actually is — a reply lives
+      // in the same channel as its root, so reactions and read receipts work
+      // on it unchanged, and this is what makes that true on screen too.
+      if (openThreadId) {
+        queryClient.setQueryData(['thread', openThreadId], (old: any) => {
+          if (!old?.data) return old;
+          const replies = applyTo(old.data.replies ?? []);
+          const root = old.data.root?.id === messageId ? update(old.data.root) : old.data.root;
+          if (replies === old.data.replies && root === old.data.root) return old;
+          return { ...old, data: { ...old.data, root, replies } };
+        });
+      }
     },
-    [channelId, queryClient]
+    [channelId, openThreadId, queryClient]
   );
 
   /**
@@ -342,12 +390,31 @@ export function ChatPage() {
     });
   }, [on, patchMessage]);
 
+  /**
+   * A reply is sent down the same road as any other message — the same
+   * endpoint, the same broadcast — and differs only in where its optimistic
+   * copy is put while the server thinks about it: into the thread, never into
+   * the timeline.
+   */
+  const writeThread = (rootId: string, update: (replies: Message[]) => Message[]) =>
+    queryClient.setQueryData(['thread', rootId], (old: any) =>
+      old?.data ? { ...old, data: { ...old.data, replies: update(old.data.replies ?? []) } } : old
+    );
+
   const sendMessageMutation = useMutation({
-    mutationFn: (data: { channelId: string; content: string; tempId: string; attachmentIds?: string[] }) =>
-      channelsApi.sendMessage(data.channelId, data),
+    mutationFn: (data: {
+      channelId: string;
+      content: string;
+      tempId: string;
+      replyTo?: string;
+      attachmentIds?: string[];
+    }) => channelsApi.sendMessage(data.channelId, data),
     onMutate: async (variables) => {
-      await queryClient.cancelQueries({ queryKey: ['messages', variables.channelId] });
-      const previous = queryClient.getQueryData(['messages', variables.channelId]);
+      const key = variables.replyTo
+        ? ['thread', variables.replyTo]
+        : ['messages', variables.channelId];
+      await queryClient.cancelQueries({ queryKey: key });
+      const previous = queryClient.getQueryData(key);
       const tempMessage: Message = {
         id: variables.tempId,
         channelId: variables.channelId,
@@ -355,21 +422,44 @@ export function ChatPage() {
         userName: user?.name || 'You',
         content: variables.content,
         attachments: variables.attachmentIds?.length ? staged : [],
+        replyTo: variables.replyTo,
         reactions: {},
         createdAt: new Date().toISOString(),
         pending: true,
       };
       // History is oldest-first, so a new message belongs at the end.
-      writeMessages(variables.channelId, (messages) => [...messages, tempMessage]);
-      return { previous };
+      if (variables.replyTo) {
+        writeThread(variables.replyTo, (replies) => [...replies, tempMessage]);
+      } else {
+        writeMessages(variables.channelId, (messages) => [...messages, tempMessage]);
+      }
+      return { previous, key };
     },
-    onError: (err, variables, context) => {
-      queryClient.setQueryData(['messages', variables.channelId], context?.previous);
+    onError: (err, _variables, context) => {
+      if (context?.key) queryClient.setQueryData(context.key, context.previous);
       toast.error(apiErrorMessage(err, 'Could not send that message.'));
     },
     onSuccess: (data, variables) => {
+      const sent = { ...(data.data as Message), pending: false };
+      if (variables.replyTo) {
+        writeThread(variables.replyTo, (replies) =>
+          replies.map((m) => (m.id === variables.tempId ? sent : m))
+        );
+        // Your own reply does not come back over the socket, so the count on
+        // the parent is this side's to move — and only once, which is what the
+        // ledger of counted replies is for.
+        if (!countedRepliesRef.current.has(sent.id)) {
+          countedRepliesRef.current.add(sent.id);
+          const rootId = variables.replyTo;
+          setOlder((all) => bumpReplyCount(all, rootId, sent.createdAt));
+          queryClient.setQueryData(['messages', variables.channelId], (old: any) =>
+            old ? { ...old, data: bumpReplyCount(old.data ?? [], rootId, sent.createdAt) } : old
+          );
+        }
+        return;
+      }
       writeMessages(variables.channelId, (messages) =>
-        messages.map((m) => (m.id === variables.tempId ? { ...(data.data as Message), pending: false } : m))
+        messages.map((m) => (m.id === variables.tempId ? sent : m))
       );
     },
     // Deliberately no onSettled refetch. onSuccess has already replaced the
@@ -386,9 +476,39 @@ export function ChatPage() {
       // the only way to see one was to reload.
       const incoming = ((msg.payload as any)?.message ?? msg.payload) as Message;
       if (!incoming?.id) return;
+      // An edit is broadcast on this same type, carrying only the id, the
+      // channel and the new text. It is not a new message and must not be
+      // appended as one: a message the page is not already holding would
+      // otherwise arrive as a ghost with no author and no timestamp. Edits are
+      // applied where the message actually is, by patchMessage.
+      if (!incoming.userId) return;
       // The sound and the desktop notification are raised by
       // ChatNotifications, which listens wherever you are in the app. This
       // only keeps the conversation on screen up to date.
+
+      // A reply arrives over the same broadcast as anything else — deliberately
+      // the same path rather than a second mechanism — and lands in two places
+      // instead of the timeline: the parent's reply count, and the thread
+      // itself if somebody has it open.
+      if (incoming.replyTo) {
+        if (!countedRepliesRef.current.has(incoming.id)) {
+          countedRepliesRef.current.add(incoming.id);
+          const rootId = incoming.replyTo;
+          const at = incoming.createdAt;
+          setOlder((all) => bumpReplyCount(all, rootId, at));
+          queryClient.setQueryData(['messages', incoming.channelId], (old: any) =>
+            old ? { ...old, data: bumpReplyCount(old.data ?? [], rootId, at) } : old
+          );
+        }
+        // Anyone with the thread open sees it appear; the cache key is the
+        // thread, so this reaches the panel wherever it is mounted.
+        queryClient.setQueryData(['thread', incoming.replyTo], (old: any) =>
+          old
+            ? { ...old, data: { ...old.data, replies: mergeReplies(old.data.replies ?? [], [incoming]) } }
+            : old
+        );
+        return;
+      }
 
       writeMessages(incoming.channelId, (messages) =>
         messages.some((m) => m.id === incoming.id) ? messages : [...messages, incoming]
@@ -536,6 +656,23 @@ export function ChatPage() {
     setStaged([]);
   };
 
+  /**
+   * Says something in a thread.
+   *
+   * The same endpoint as any other message with `replyTo` set, so a reply is
+   * stored, broadcast, searched and counted like everything else — the only
+   * thing threading changes is where it is read.
+   */
+  const sendReply = (rootId: string, content: string) => {
+    if (!channelId || !content.trim()) return;
+    sendMessageMutation.mutate({
+      channelId,
+      content,
+      tempId: `temp-${Date.now()}`,
+      replyTo: rootId,
+    });
+  };
+
   // Calls the whole channel: everybody in it is rung. A public channel has the
   // whole organization in it, a private one only its members, so the channel
   // decides who can be reached without a separate rule here.
@@ -584,7 +721,9 @@ export function ChatPage() {
   return (
     <div className="flex h-full flex-col bg-background">
 
-      <div className="flex h-full min-w-0">
+      {/* Positioned, so the thread panel's full-screen form on a narrow
+          window covers the conversation rather than the whole application. */}
+      <div className="relative flex h-full min-w-0">
         {/* Sidebar */}
         <aside className={cn(
           'z-30 w-full shrink-0 border-r border-border bg-card lg:relative lg:w-72',
@@ -838,6 +977,7 @@ export function ChatPage() {
                         grouped={sameAuthor && closeInTime && !newDay}
                         currentUserId={user?.id}
                         nameOf={nameOf}
+                        onOpenThread={() => setOpenThreadId(threadIdOf(msg))}
                         onToggleReaction={toggleReaction}
                         onPatch={patchMessage}
                       />
@@ -975,6 +1115,24 @@ export function ChatPage() {
             </div>
           </form>
         </div>
+
+        {/* The thread, beside the conversation it came out of — so the channel
+            is still readable while a side conversation happens, which is the
+            whole reason for having threads at all. On a narrow screen there is
+            no beside, so it takes the space. */}
+        {openThreadId && (
+          <ThreadPanel
+            rootId={openThreadId}
+            currentUserId={user?.id}
+            statusOf={statusOf}
+            personOf={personOf}
+            nameOf={nameOf}
+            onToggleReaction={toggleReaction}
+            onPatch={patchMessage}
+            onSend={(content) => sendReply(openThreadId, content)}
+            onClose={() => setOpenThreadId(null)}
+          />
+        )}
       </div>
 
       <CreateChannelDialog
@@ -1067,6 +1225,7 @@ function MessageBubble({
   grouped,
   currentUserId,
   nameOf,
+  onOpenThread,
   onToggleReaction,
   onPatch,
 }: {
@@ -1078,6 +1237,12 @@ function MessageBubble({
   grouped: boolean;
   currentUserId?: string;
   nameOf: (userId: string) => string | undefined;
+  /**
+   * Opens the thread on this message. Absent inside a thread, where there is
+   * nowhere further to go: a reply to a reply joins this same conversation, so
+   * offering to open another one from in here would be a lie.
+   */
+  onOpenThread?: () => void;
   onToggleReaction: (messageId: string, emoji: string, current: ReactionMap | undefined) => void;
   onPatch: (messageId: string, update: (message: Message) => Message) => void;
 }) {
@@ -1173,6 +1338,7 @@ function MessageBubble({
                   setEditing(true);
                 }}
                 onDelete={remove}
+                onReply={onOpenThread}
                 onShowReads={() => setShowingReads(true)}
               />
             )}
@@ -1245,6 +1411,7 @@ function MessageBubble({
               <MessageMenu
                 canEdit={false}
                 canDelete={false}
+                onReply={onOpenThread}
                 onShowReads={() => setShowingReads(true)}
               />
             )}
@@ -1278,6 +1445,31 @@ function MessageBubble({
               )}
             </span>
           </div>
+
+          {/* The way into the thread. Under the message and always visible,
+              not on hover and not in a menu: it is the only sign that a
+              conversation is happening down here, and a reply nobody can see
+              a way to reach is the defect this replaced. It survives the
+              parent being deleted — the tombstone keeps its place precisely so
+              its replies still have somewhere to hang. */}
+          {(message.replyCount ?? 0) > 0 && onOpenThread && (
+            <button
+              type="button"
+              onClick={onOpenThread}
+              className={cn(
+                'mt-1 flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium text-primary transition-colors hover:bg-primary/10',
+                isOwn ? 'self-end' : 'self-start'
+              )}
+            >
+              <MessagesSquare className="h-3.5 w-3.5" aria-hidden="true" />
+              {replyCountLabel(message.replyCount ?? 0)}
+              {message.lastReplyAt && (
+                <span className="font-normal text-muted-foreground">
+                  · {formatRelativeTime(message.lastReplyAt)}
+                </span>
+              )}
+            </button>
+          )}
 
           {/* Under the message, where a reaction belongs: it is about the
               message, not another one. */}
@@ -1363,12 +1555,15 @@ function MessageMenu({
   canDelete,
   onEdit,
   onDelete,
+  onReply,
   onShowReads,
 }: {
   canEdit: boolean;
   canDelete: boolean;
   onEdit?: () => void;
   onDelete?: () => void;
+  /** Absent inside a thread, where the reply box below is already the answer. */
+  onReply?: () => void;
   onShowReads: () => void;
 }) {
   return (
@@ -1384,6 +1579,12 @@ function MessageMenu({
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
+        {onReply && (
+          <DropdownMenuItem onSelect={onReply}>
+            <MessagesSquare className="mr-2 h-4 w-4" />
+            Reply in thread
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem onSelect={onShowReads}>
           <Eye className="mr-2 h-4 w-4" />
           Who has read this
@@ -1411,6 +1612,158 @@ function MessageMenu({
         )}
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+/**
+ * One thread, beside the conversation it came out of.
+ *
+ * Fetched by the root's id, and the socket writes new replies straight into
+ * the same cache entry, so a reply arriving while this is open appears here
+ * rather than being discovered on a refresh. The whole thread comes back in
+ * one request: a thread is one conversation about one message, so it is
+ * bounded in a way channel history is not, and paging it would be machinery
+ * for a case that does not happen. The server caps it at 200 anyway, and the
+ * root's reply count still reports the true total, so a pathological thread
+ * shows a gap rather than silently losing its beginning.
+ */
+function ThreadPanel({
+  rootId,
+  currentUserId,
+  statusOf,
+  personOf,
+  nameOf,
+  onToggleReaction,
+  onPatch,
+  onSend,
+  onClose,
+}: {
+  rootId: string;
+  currentUserId?: string;
+  statusOf: (userId: string) => PresenceStatus;
+  personOf: (userId: string) => { note?: string } | undefined;
+  nameOf: (userId: string) => string | undefined;
+  onToggleReaction: (messageId: string, emoji: string, current: ReactionMap | undefined) => void;
+  onPatch: (messageId: string, update: (message: Message) => Message) => void;
+  onSend: (content: string) => void;
+  onClose: () => void;
+}) {
+  const [draft, setDraft] = useState('');
+  const endRef = useRef<HTMLDivElement>(null);
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['thread', rootId],
+    queryFn: () => channelsApi.thread(rootId),
+  });
+
+  const root = data?.data?.root as Message | undefined;
+  const replies = useMemo<Message[]>(() => (data?.data?.replies as Message[]) ?? [], [data]);
+
+  // A thread is read from the top — the question is the point of it — but a
+  // reply arriving while you are in it should be visible without scrolling.
+  const newestReplyId = replies[replies.length - 1]?.id;
+  useEffect(() => {
+    if (newestReplyId) endRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [newestReplyId]);
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!draft.trim()) return;
+    onSend(draft);
+    setDraft('');
+  };
+
+  return (
+    <aside className="absolute inset-0 z-20 flex flex-col bg-background lg:static lg:z-auto lg:w-96 lg:shrink-0 lg:border-l lg:border-border">
+      <div className="flex h-16 shrink-0 items-center justify-between border-b border-border px-4">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold">Thread</h2>
+          <p className="truncate text-xs text-muted-foreground">
+            {replies.length === 0 ? 'No replies yet' : replyCountLabel(replies.length)}
+          </p>
+        </div>
+        <Button variant="ghost" size="icon" aria-label="Close thread" onClick={onClose}>
+          <X className="h-5 w-5" />
+        </Button>
+      </div>
+
+      <div className="flex-1 space-y-1 overflow-y-auto p-4">
+        {isLoading && <p className="text-sm text-muted-foreground">Loading thread…</p>}
+        {error && (
+          <p className="text-sm text-muted-foreground">
+            {apiErrorMessage(error, 'Could not load that thread.')}
+          </p>
+        )}
+        {root && (
+          <>
+            {/* The message the thread is about, whatever became of it: a root
+                is soft-deleted and keeps its place precisely so the replies
+                under it still have a parent, and it renders as the tombstone
+                MessageBubble already knows how to draw. */}
+            <MessageBubble
+              message={root}
+              isOwn={root.userId === currentUserId}
+              status={statusOf(root.userId)}
+              note={personOf(root.userId)?.note}
+              grouped={false}
+              currentUserId={currentUserId}
+              nameOf={nameOf}
+              onToggleReaction={onToggleReaction}
+              onPatch={onPatch}
+            />
+            <div className="my-3 flex items-center gap-3">
+              <div className="h-px flex-1 bg-border" />
+              <span className="text-xs font-medium text-muted-foreground">
+                {replies.length === 0 ? 'No replies yet' : replyCountLabel(replies.length)}
+              </span>
+              <div className="h-px flex-1 bg-border" />
+            </div>
+            {replies.map((reply, i) => {
+              const previous = replies[i - 1];
+              const sameAuthor = previous?.userId === reply.userId;
+              const closeInTime =
+                previous != null &&
+                new Date(reply.createdAt).getTime() - new Date(previous.createdAt).getTime() <
+                  5 * 60 * 1000;
+              return (
+                <MessageBubble
+                  key={reply.id}
+                  message={reply}
+                  isOwn={reply.userId === currentUserId}
+                  status={statusOf(reply.userId)}
+                  note={personOf(reply.userId)?.note}
+                  grouped={sameAuthor && closeInTime}
+                  currentUserId={currentUserId}
+                  nameOf={nameOf}
+                  onToggleReaction={onToggleReaction}
+                  onPatch={onPatch}
+                />
+              );
+            })}
+            <div ref={endRef} />
+          </>
+        )}
+      </div>
+
+      <form onSubmit={submit} className="shrink-0 border-t border-border p-4">
+        <div className="flex items-end gap-2">
+          <Input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="Reply…"
+            aria-label="Reply in thread"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                submit(e);
+              }
+            }}
+          />
+          <Button type="submit" size="icon" disabled={!draft.trim()} className="shrink-0">
+            <Send className="h-5 w-5" />
+          </Button>
+        </div>
+      </form>
+    </aside>
   );
 }
 

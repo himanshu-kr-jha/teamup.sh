@@ -40,6 +40,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.PATCH("/messages/:id", h.EditMessage)
 	rg.DELETE("/messages/:id", h.DeleteMessage)
 	rg.GET("/messages/:id/reads", h.MessageReads)
+	rg.GET("/messages/:id/thread", h.GetThread)
 	rg.POST("/messages/:id/reactions", h.AddReaction)
 	rg.DELETE("/messages/:id/reactions/:emoji", h.RemoveReaction)
 	rg.POST("/channels/:id/read", h.MarkRead)
@@ -625,6 +626,40 @@ func (h *Handler) MessageReads(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"reads": receipts})
+}
+
+// GetThread reads one thread — a message and the replies to it — identified by
+// any message in it.
+//
+// Gated on exactly the same question as reading the channel it is in. A route
+// that turns a message id into messages is a second way in, and without this
+// it would be a way to read a private channel one id at a time. The channel is
+// resolved and the caller checked before any message body is loaded.
+func (h *Handler) GetThread(c *gin.Context) {
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	messageID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+
+	_, channelID, err := h.service.ThreadOf(c.Request.Context(), cl.OrgID, messageID)
+	if err != nil {
+		httpx.Error(c, err, "message not found")
+		return
+	}
+	if !h.requireMembership(c, cl, channelID, false) {
+		return
+	}
+
+	thread, err := h.service.GetThread(c.Request.Context(), cl.OrgID, messageID)
+	if err != nil {
+		httpx.Error(c, err, "failed to read that thread")
+		return
+	}
+	c.JSON(http.StatusOK, thread)
 }
 
 func (h *Handler) AddReaction(c *gin.Context) {
