@@ -272,24 +272,56 @@ If you put object storage on its own hostname instead — `files.yourdomain.com`
 with its own certificate and server block — set `TEAMUP_MINIO_ENDPOINT` to that
 name and keep the bucket-named location. Everything above still applies.
 
-### The upload limit
+### Upload limits, and the two upload paths
 
-`TEAMUP_MAX_UPLOAD_BYTES` (default 100 MiB) is the largest single file the
-server will sign for. It is not advisory: the exact content length is signed
-into each upload URL, so object storage rejects a body of any other size. The
-browser is told the limit as well, so an over-sized file is refused before
-anything is sent.
+Two settings, and they do different jobs.
 
-Raising it means changing two things together:
+`TEAMUP_MAX_UPLOAD_BYTES` (default 5 GiB) is the largest file the server will
+accept by either path. It is not advisory: the exact content length is signed
+into every URL, so object storage rejects a body of any other size, and the
+attachment row records the size storage measured rather than the one the
+browser claimed. The browser is told the limit too, so an over-sized file is
+refused before anything is sent.
 
-1. `TEAMUP_MAX_UPLOAD_BYTES` in `docker-compose.prod.yml`, and
-2. `client_max_body_size` on the `/teamup-files/` location in `nginx.conf`,
-   which must be at least as large or nginx answers `413` first.
+`TEAMUP_MULTIPART_THRESHOLD_BYTES` (default 16 MiB) is where a file stops going
+up in one PUT and starts going up in resumable parts:
 
-There is no multipart upload. A single PUT is enough for anything under the
-5 GiB S3 object limit, and the endpoints that claimed to do multipart never
-did — `initiate` handed back an ordinary single-PUT URL and `complete` wrote
-no record at all. They have been removed rather than left as a trap.
+- **At or below it** — one presigned PUT, as before.
+- **Above it** — a real S3 multipart upload. The server fixes the plan (how
+  many parts, and each part's exact byte count) when the upload starts, signs
+  one URL per part, and assembles the object itself. A connection that dies at
+  80% resumes: the browser asks the server which parts object storage already
+  holds and sends only what is missing. That survives a page reload as well,
+  provided the same file is chosen again — the browser cannot re-open a file
+  handle across a reload, so the user has to re-select it, and the parts
+  already uploaded are then kept.
+
+A single PUT above the threshold is **refused**, not merely discouraged. That
+is what guarantees no request ever carries more than one part.
+
+Which is why raising `TEAMUP_MAX_UPLOAD_BYTES` no longer means touching nginx.
+`client_max_body_size` on the `/teamup-files/` location has to cover the
+largest single *request*, and above the threshold that is one part — so it
+needs to be at least `TEAMUP_MULTIPART_THRESHOLD_BYTES` plus a little slack,
+not the size of the largest file. The shipped `100m` covers the default 16 MiB
+threshold with room to spare. Raise `client_max_body_size` only if you raise
+the threshold.
+
+The threshold must not exceed the ceiling — the server refuses to start with a
+configuration where nothing could ever use multipart.
+
+**Reclaiming abandoned uploads.** An interrupted multipart upload holds its
+parts in object storage without ever appearing as an object, so nothing that
+walks the bucket finds them. The hourly sweep that removes staged-but-never-sent
+single uploads also aborts multipart uploads nobody came back to after 24
+hours. A day is deliberate: it is long enough to resume a paused 2 GB upload
+the next morning. No bucket lifecycle rule is required, and none is configured.
+
+Multipart was previously removed from this codebase because it was a lie:
+`initiate` handed back an ordinary single-PUT URL and `complete` wrote no
+record at all. What is there now does the work — the size a client declares is
+what it is authorised for and all it can deliver, and completing writes a real
+attachment row measured from storage.
 
 `TEAMUP_MINIO_REGION` is part of the signing key. Leave it at `us-east-1`
 unless you set `MINIO_REGION` on the minio service, in which case set both to
@@ -331,6 +363,9 @@ Open `https://teamup.yourdomain.com` and the setup wizard runs.
 | The camera never starts | The page is not on HTTPS or localhost. |
 | Every upload and every inline image fails | `TEAMUP_MINIO_ENDPOINT` is not an address the browser can reach over TLS, or nginx has no `location` matching the bucket name. Open one of the failing URLs directly: a DNS error or a mixed-content block in the console says which. |
 | Uploads fail with 403 `SignatureDoesNotMatch` | The proxy altered something the signature covers. Check that the `/teamup-files/` location sets `Host $http_host` and does not rewrite the path, and that `TEAMUP_MINIO_REGION` matches the object store. |
-| Uploads fail with 413 | `client_max_body_size` on the `/teamup-files/` location is smaller than `TEAMUP_MAX_UPLOAD_BYTES`. |
+| Uploads fail with 413 | `client_max_body_size` on the `/teamup-files/` location is smaller than `TEAMUP_MULTIPART_THRESHOLD_BYTES`, which is the largest single request either path ever makes. |
 | A large file is refused before anything is sent | It is over `TEAMUP_MAX_UPLOAD_BYTES`. The message says what the limit is. |
+| A large file is refused with "has to go up as a resumable multipart upload" | A client asked for a single PUT above `TEAMUP_MULTIPART_THRESHOLD_BYTES`. The bundled web client never does; an old cached build or a third-party client might. |
+| A big upload restarts from zero after a reload | The same file has to be re-selected — the browser cannot re-open a file handle across a reload. A different file, or the same file re-saved, is treated as a new upload on purpose: the parts already in storage are not re-read, so a wrong match would silently splice two files together. |
+| Object storage fills with nothing visible in the bucket | Abandoned multipart parts. They are not objects, so listing the bucket does not show them. The hourly sweep aborts them after 24 hours; check the logs for "could not sweep abandoned uploads". |
 | New members get no email | No SMTP is configured. The screen says so, and offers the credentials as a file instead. |

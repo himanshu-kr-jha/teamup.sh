@@ -44,7 +44,7 @@ var tablesToClean = []string{
 	"call_participants", "calls",
 	"sprint_tasks", "task_activities", "task_watchers", "task_attachments",
 	"task_comments", "task_labels", "labels", "tasks", "sprints", "projects",
-	"attachments", "message_reactions", "messages",
+	"multipart_uploads", "attachments", "message_reactions", "messages",
 	"channel_members", "channels", "team_members", "teams",
 	"user_roles", "roles", "users", "organizations",
 }

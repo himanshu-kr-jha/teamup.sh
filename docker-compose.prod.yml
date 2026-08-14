@@ -135,7 +135,10 @@ services:
       # Largest single upload, in bytes (100 MiB). Signed into each upload URL,
       # so object storage refuses anything else; keep nginx's
       # client_max_body_size on the /teamup-files/ location at least this big.
-      TEAMUP_MAX_UPLOAD_BYTES: "104857600"
+      # 5 GiB. Real multipart means no single request is ever larger than one
+      # part, so raising this does not require touching nginx.
+      TEAMUP_MAX_UPLOAD_BYTES: "5368709120"
+      TEAMUP_MULTIPART_THRESHOLD_BYTES: "16777216"
       TEAMUP_LIVEKIT_URL: http://livekit:7880
       TEAMUP_LIVEKIT_API_KEY: ${LIVEKIT_API_KEY}
       TEAMUP_LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET}

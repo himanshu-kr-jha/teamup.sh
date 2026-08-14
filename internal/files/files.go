@@ -51,9 +51,14 @@ type Config struct {
 	// reverse proxy.
 	Region string
 
-	// MaxUploadBytes is the largest single upload that will be signed for.
-	// Zero means DefaultMaxUploadBytes; there is no "unlimited".
+	// MaxUploadBytes is the largest file that will be accepted at all, by
+	// either path. Zero means DefaultMaxUploadBytes; there is no "unlimited".
 	MaxUploadBytes int64
+
+	// MultipartThresholdBytes is where a file stops going up in a single PUT
+	// and starts going up in resumable parts. Zero means
+	// DefaultMultipartThreshold. It is clamped to MaxUploadBytes.
+	MultipartThresholdBytes int64
 }
 
 // objectStore is the part of the MinIO API this package calls directly, as
@@ -72,13 +77,18 @@ type Service struct {
 	presigner *minio.Client
 	internal  *minio.Client
 	store     objectStore
+	// multipart is the same internal client through the low-level S3 API.
+	// Starting, listing, assembling and aborting an upload are all server-side
+	// calls; only the part PUTs are presigned for the browser.
+	multipart multipartStore
 
-	bucketName     string
-	maxUploadBytes int64
-	db             *pgxpool.Pool
-	cfg            Config
-	logger         zerolog.Logger
-	initErr        error
+	bucketName         string
+	maxUploadBytes     int64
+	multipartThreshold int64
+	db                 *pgxpool.Pool
+	cfg                Config
+	logger             zerolog.Logger
+	initErr            error
 }
 
 type UploadRequest struct {
@@ -98,10 +108,16 @@ type UploadResponse struct {
 	Headers   map[string]string `json:"headers"`
 }
 
-// DefaultMaxUploadBytes is the cap applied when a deployment sets none. It is
-// deliberately not "unlimited": with the PUT going straight to object storage,
-// no limit means one person dragging in a video fills the volume for everyone.
-const DefaultMaxUploadBytes int64 = 100 << 20 // 100 MiB
+// DefaultMaxUploadBytes is the cap applied when a deployment sets none.
+//
+// It was 100 MiB, and that number existed only because a single PUT had to
+// carry the whole file in one unresumable request. Real multipart removed that
+// constraint, so the ceiling is now a policy choice about disk rather than a
+// protocol limit: 5 GiB comfortably holds the screen recordings the product is
+// for, and is still small enough that one person cannot fill the volume with
+// one file. It is deliberately not "unlimited" — the bytes go straight to
+// object storage and nothing downstream ever sees them.
+const DefaultMaxUploadBytes int64 = 5 << 30 // 5 GiB
 
 // DefaultRegion is MinIO's own default. A deployment that sets MINIO_REGION
 // must set TEAMUP_MINIO_REGION to the same value or every signature is wrong.
@@ -118,6 +134,9 @@ func (c Config) withDefaults() Config {
 	}
 	if c.MaxUploadBytes <= 0 {
 		c.MaxUploadBytes = DefaultMaxUploadBytes
+	}
+	if c.MultipartThresholdBytes <= 0 {
+		c.MultipartThresholdBytes = DefaultMultipartThreshold
 	}
 	return c
 }
@@ -141,16 +160,20 @@ func NewService(cfg Config) *Service {
 	}
 
 	s := &Service{
-		presigner:      presigner,
-		internal:       internal,
-		bucketName:     cfg.Bucket,
-		maxUploadBytes: cfg.MaxUploadBytes,
-		cfg:            cfg,
-		initErr:        err,
+		presigner:          presigner,
+		internal:           internal,
+		bucketName:         cfg.Bucket,
+		maxUploadBytes:     cfg.MaxUploadBytes,
+		multipartThreshold: cfg.MultipartThresholdBytes,
+		cfg:                cfg,
+		initErr:            err,
 	}
 	// A typed nil in an interface is not nil, so only a real client goes in.
 	if internal != nil {
 		s.store = internal
+		// Core is the same client through the low-level S3 API — one
+		// connection pool, not a second one.
+		s.multipart = &minio.Core{Client: internal}
 	}
 	return s
 }
@@ -230,6 +253,17 @@ func (s *Service) GenerateUploadURL(ctx context.Context, req UploadRequest) (*Up
 		return nil, apperrors.New(apperrors.CodeBadRequest, fmt.Sprintf(
 			"that file is %s; the largest this server accepts is %s", humanBytes(req.Size), humanBytes(limit)))
 	}
+	// Above the threshold a single PUT is the wrong shape, not merely a slower
+	// one: it is one unresumable request, so a connection that drops at 80%
+	// costs the whole file, and the reverse proxy in front of object storage
+	// has to be sized for the largest file rather than for one part. Refused
+	// here rather than merely discouraged, so there is one answer to "how did
+	// a 2 GB body get to storage in one request".
+	if threshold := s.MultipartThreshold(); req.Size > threshold {
+		return nil, apperrors.New(apperrors.CodeBadRequest, fmt.Sprintf(
+			"that file is %s; anything over %s has to go up as a resumable multipart upload",
+			humanBytes(req.Size), humanBytes(threshold)))
+	}
 
 	objectKey := s.buildObjectKey(req)
 	contentType := req.ContentType
@@ -237,13 +271,12 @@ func (s *Service) GenerateUploadURL(ctx context.Context, req UploadRequest) (*Up
 		contentType = mime.TypeByExtension(filepath.Ext(req.Filename))
 	}
 
-	// One PUT carries the whole object — the cap above is far below the 5 GiB
-	// a single PUT can hold. A bigger file just gets longer to finish on a
-	// slow connection before the URL expires.
-	expiry := 15 * time.Minute
-	if req.Size >= 50*1024*1024 {
-		expiry = 2 * time.Hour
-	}
+	// One PUT carries the whole object, and nothing on this path is now bigger
+	// than the multipart threshold, so a fixed short expiry is enough: 15
+	// minutes is under 20 kB/s for a 16 MiB file. This replaces a branch that
+	// stretched the expiry to two hours above 50 MiB — a size that can no
+	// longer reach this path at all, since anything that large is multipart.
+	const expiry = 15 * time.Minute
 
 	// The declared size is signed into the URL, which is what turns the limit
 	// from a request the client may ignore into one object storage enforces:
@@ -658,7 +691,12 @@ func (s *Service) DiscardUpload(ctx context.Context, orgID, userID, attachmentID
 // object storage and a row pointing at them for ever; nothing else ever
 // reclaims them.
 //
-// Returns how many were removed.
+// It also reclaims multipart uploads nobody came back to. That work belongs to
+// SweepAbandonedMultipartUploads, but it is driven from here so the hourly job
+// in cmd/teamup keeps calling one thing: a second ticker that somebody forgot
+// to wire up is exactly how parts end up living for ever.
+//
+// Returns how many were removed, across both.
 func (s *Service) SweepAbandonedUploads(ctx context.Context, olderThan time.Duration) (int, error) {
 	rows, err := s.db.Query(ctx, `
 		DELETE FROM attachments
@@ -687,7 +725,14 @@ func (s *Service) SweepAbandonedUploads(ctx context.Context, olderThan time.Dura
 	for _, key := range keys {
 		s.removeObject(ctx, key)
 	}
-	return len(keys), nil
+
+	multipart, err := s.SweepAbandonedMultipartUploads(ctx, olderThan)
+	if err != nil {
+		// The single-upload half already succeeded; report what it did rather
+		// than losing the count to the second half's failure.
+		return len(keys), err
+	}
+	return len(keys) + multipart, nil
 }
 
 // removeObject deletes the stored bytes. Best effort: the row is already gone,

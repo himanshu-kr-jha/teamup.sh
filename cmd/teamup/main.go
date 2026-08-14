@@ -163,8 +163,15 @@ type Config struct {
 	MinIOInternalSecure   bool   `env:"TEAMUP_MINIO_INTERNAL_SECURE" envDefault:"false"`
 	// Presigning is pure local computation only when the region is known;
 	// otherwise the client makes a live call to discover it on every start.
-	MinIORegion    string `env:"TEAMUP_MINIO_REGION" envDefault:"us-east-1"`
-	MaxUploadBytes int64  `env:"TEAMUP_MAX_UPLOAD_BYTES" envDefault:"104857600"`
+	MinIORegion string `env:"TEAMUP_MINIO_REGION" envDefault:"us-east-1"`
+	// The ceiling, in bytes. 5 GiB by default: with real multipart the old
+	// 100 MiB cap existed only because a single PUT had to carry the whole
+	// file, and a startup sharing screen recordings needs the room.
+	MaxUploadBytes int64 `env:"TEAMUP_MAX_UPLOAD_BYTES" envDefault:"5368709120"`
+	// Where a file stops going up in one PUT and starts going up in resumable
+	// parts. Also what the reverse proxy's client_max_body_size has to cover,
+	// since above it no single request is ever larger than one part.
+	MultipartThresholdBytes int64 `env:"TEAMUP_MULTIPART_THRESHOLD_BYTES" envDefault:"16777216"`
 
 	// LiveKit
 	LiveKitURL       string `env:"TEAMUP_LIVEKIT_URL,required"`
@@ -303,6 +310,9 @@ func (c *Config) FilesConfig() files.Config {
 		InternalSecure:   c.MinIOInternalSecure,
 		Region:           c.MinIORegion,
 		MaxUploadBytes:   c.MaxUploadBytes,
+		// Clamped inside the service as well; validated at boot so a bad value
+		// is a start-up failure rather than a surprise on the first big file.
+		MultipartThresholdBytes: c.MultipartThresholdBytes,
 	}
 }
 

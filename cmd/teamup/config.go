@@ -68,6 +68,16 @@ func (c Config) Validate() error {
 	if c.MaxUploadBytes <= 0 {
 		report("TEAMUP_MAX_UPLOAD_BYTES must be a positive number of bytes, got %d", c.MaxUploadBytes)
 	}
+	if c.MultipartThresholdBytes <= 0 {
+		report("TEAMUP_MULTIPART_THRESHOLD_BYTES must be a positive number of bytes, got %d", c.MultipartThresholdBytes)
+	}
+	// A threshold above the ceiling would mean nothing ever used multipart,
+	// which is a configuration mistake worth failing on rather than clamping
+	// silently at run time.
+	if c.MultipartThresholdBytes > c.MaxUploadBytes && c.MaxUploadBytes > 0 {
+		report("TEAMUP_MULTIPART_THRESHOLD_BYTES (%d) is above TEAMUP_MAX_UPLOAD_BYTES (%d), so no file would ever use multipart",
+			c.MultipartThresholdBytes, c.MaxUploadBytes)
+	}
 
 	if err := checkPort(c.Port); err != nil {
 		report("TEAMUP_PORT %v", err)

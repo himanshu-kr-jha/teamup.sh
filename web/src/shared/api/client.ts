@@ -162,6 +162,12 @@ export const channelsApi = {
   delete: (id: string) => api.delete(`/channels/${id}`),
   listMembers: (id: string) => getList(`/channels/${id}/members`, 'members'),
   addMember: (id: string, userId: string, role?: string) => api.post(`/channels/${id}/members`, { userId, role }),
+  /**
+   * One thread: a message and the replies to it. Any message in the thread
+   * identifies it, so this works just as well on a reply as on the root.
+   */
+  thread: (messageId: string) =>
+    api.get<{ channelId: string; root: any; replies: any[] }>(`/messages/${messageId}/thread`),
   /** Who has read a particular message. */
   messageReads: (messageId: string) =>
     getList<{ userId: string; name: string; readAt: string }>(`/messages/${messageId}/reads`, 'reads'),
@@ -264,6 +270,34 @@ export const callsApi = {
     api.post(`/calls/${id}/decline`, { reason }),
 };
 
+/** An upload in progress, as the server describes it. */
+export interface MultipartUpload {
+  id: string;
+  objectKey: string;
+  filename: string;
+  contentType: string;
+  totalBytes: number;
+  /** Every part but the last carries exactly this many bytes. */
+  partSize: number;
+  partCount: number;
+  createdAt: string;
+}
+
+/** A part object storage already holds. */
+export interface UploadedPart {
+  partNumber: number;
+  size: number;
+  etag: string;
+}
+
+/** One presigned part upload. The length is signed in, so the slice must match it exactly. */
+export interface PartUpload {
+  partNumber: number;
+  url: string;
+  contentLength: number;
+  expiresAt: string;
+}
+
 export const filesApi = {
   getUploadUrl: (data: { category: string; refId: string; filename: string; contentType: string; size: number }) => api.post('/files/upload-url', data),
   // Registers a finished upload; without this the file has no record.
@@ -275,8 +309,52 @@ export const filesApi = {
   list: (category: string, refId: string) => getList('/files', 'attachments', { category, refId }),
   /** Throws away an upload that was staged and then removed before sending. */
   discard: (id: string) => api.delete(`/files/${id}`),
-  /** The largest single upload this server signs for. */
-  limits: () => api.get<{ maxUploadBytes: number }>('/files/limits'),
+  /**
+   * What the server will accept, and where it switches upload paths. The
+   * client has to do the same arithmetic the server does, or a file lands in
+   * the gap between them.
+   */
+  limits: () =>
+    api.get<{ maxUploadBytes: number; multipartThresholdBytes: number }>('/files/limits'),
+
+  // ── Resumable (multipart) uploads ───────────────────────────────────────
+  //
+  // Big files go up in parts so that a connection that dies at 80% resumes
+  // instead of restarting. The server holds the plan; the browser holds only
+  // the file, and asks what is still missing every time it comes back.
+
+  /** Starts a resumable upload and returns its plan. */
+  initiateMultipart: (data: {
+    category: string;
+    refId: string;
+    filename: string;
+    contentType: string;
+    size: number;
+  }) => api.post<MultipartUpload>('/files/multipart', data),
+
+  /** The caller's own unfinished uploads for one parent, offered back after a reload. */
+  listMultipartUploads: (category: string, refId: string) =>
+    getList<MultipartUpload>('/files/multipart', 'uploads', { category, refId }),
+
+  /** The plan plus which parts object storage already holds. */
+  multipartStatus: (id: string) =>
+    api.get<{ upload: MultipartUpload; uploaded: UploadedPart[] }>(`/files/multipart/${id}`),
+
+  /**
+   * Presigned URLs for parts. Omit partNumbers to be given whatever is still
+   * missing — which is all a resuming browser knows how to ask for.
+   */
+  signParts: (id: string, partNumbers?: number[]) =>
+    api.post<{ parts: PartUpload[] }>(`/files/multipart/${id}/parts`, { partNumbers: partNumbers ?? [] }),
+
+  /** Assembles the object and records the attachment. Sends no part list: the server reads them from storage. */
+  completeMultipart: (id: string) =>
+    api.post<{ id: string; filename: string; contentType: string; sizeBytes: number; objectKey: string }>(
+      `/files/multipart/${id}/complete`
+    ),
+
+  /** Gives up and reclaims the parts now rather than waiting for the hourly sweep. */
+  abortMultipart: (id: string) => api.delete(`/files/multipart/${id}`),
   getDownloadUrl: (objectKey: string, filename?: string, inline?: boolean) => api.get('/files/download-url', { params: { objectKey, filename, inline } }),
 };
 

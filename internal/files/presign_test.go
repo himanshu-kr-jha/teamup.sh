@@ -168,13 +168,27 @@ func TestUploadAtTheLimitIsAllowed(t *testing.T) {
 }
 
 // An unconfigured deployment still has to have a limit; "no limit" is how one
-// employee fills the volume.
+// employee fills the volume. The default ceiling is now well above what a
+// single PUT carries, because multipart no longer needs it to be small — so
+// the file this refuses has to be over the new default, not the old one.
 func TestThereIsALimitEvenWhenNoneIsConfigured(t *testing.T) {
 	svc, pool := uploadService(t, browserFacingConfig())
-	req := chatUpload(t, pool, 5<<30) // 5 GB
+	req := chatUpload(t, pool, DefaultMaxUploadBytes+1)
 
 	if resp, err := svc.GenerateUploadURL(context.Background(), req); err == nil {
-		t.Fatalf("5 GB was handed an upload URL with no limit configured: %s", resp.UploadURL)
+		t.Fatalf("a file over the default ceiling was handed an upload URL: %s", resp.UploadURL)
+	}
+	if up, err := svc.InitiateMultipart(context.Background(), req); err == nil {
+		t.Fatalf("a file over the default ceiling was given a multipart plan: %s", up.ObjectKey)
+	}
+}
+
+// The ceiling has to be big enough for what the product is for — a screen
+// recording — and small enough that one file is not the whole volume.
+func TestTheDefaultCeilingHoldsAScreenRecording(t *testing.T) {
+	if DefaultMaxUploadBytes < 2<<30 {
+		t.Errorf("the default ceiling is %s; a 2 GB screen recording is the case multipart was built for",
+			humanBytes(DefaultMaxUploadBytes))
 	}
 }
 
@@ -269,20 +283,11 @@ func TestRecordingAnObjectThatWasNeverUploadedIsRefused(t *testing.T) {
 
 // ── Routes ────────────────────────────────────────────────────────────────
 
-// The multipart pair never worked: initiate handed back an ordinary single-PUT
-// URL under a multipart-shaped contract, and complete recorded nothing at all.
-// With a single-PUT size limit there is nothing for them to do.
-func TestMultipartEndpointsAreGone(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	e := gin.New()
-	RegisterRoutes(e.Group("/api"), nil)
-
-	for _, r := range e.Routes() {
-		if strings.Contains(r.Path, "multipart") {
-			t.Errorf("%s %s is still registered but does not do what its name says", r.Method, r.Path)
-		}
-	}
-}
+// The multipart pair that used to live here never worked: initiate handed back
+// an ordinary single-PUT URL under a multipart-shaped contract, and complete
+// recorded nothing at all. It was deleted for that reason. What replaced it is
+// covered by multipart_test.go, which asserts the endpoints exist AND that
+// completing writes a real attachment row measured from storage.
 
 // The client cannot fail fast without knowing the limit.
 func TestTheUploadLimitIsDiscoverable(t *testing.T) {
