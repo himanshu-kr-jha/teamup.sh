@@ -1,4 +1,4 @@
-.PHONY: build build-frontend test lint docker helm migrate-up migrate-down migrate-create run dev help
+.PHONY: build build-frontend test lint docker helm migrate-up migrate-down migrate-version migrate-create run dev help
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -25,9 +25,12 @@ help:
 	@echo "  docker          Build Docker image"
 	@echo "  docker-push     Build and push Docker image to GHCR"
 	@echo "  helm            Package Helm chart"
-	@echo "  migrate-up      Run database migrations up"
-	@echo "  migrate-down    Rollback last migration"
+	@echo "  migrate-up      Apply every pending migration"
+	@echo "  migrate-down    Roll back the last migration (one step)"
+	@echo "  migrate-version Show the recorded schema version"
 	@echo "  migrate-create  Create new migration files"
+	@echo "                  (rolling back everything is \`teamup migrate down-all\`,"
+	@echo "                   deliberately not a make target)"
 	@echo "  run             Run server locally"
 	@echo "  dev             Run development servers (frontend + backend)"
 	@echo "  clean           Clean build artifacts"
@@ -137,9 +140,15 @@ migrate-up:
 	@echo "Running migrations up..."
 	go run ./cmd/teamup migrate up
 
+# One step, matching the name. `teamup migrate down-all` rolls back everything;
+# it is deliberately not given a make target, because the whole point of the
+# separate name is that it is not reachable by habit.
 migrate-down:
-	@echo "Rolling back last migration..."
+	@echo "Rolling back the last migration..."
 	go run ./cmd/teamup migrate down
+
+migrate-version:
+	@go run ./cmd/teamup migrate version
 
 migrate-create:
 	@read -p "Migration name: " name; \
