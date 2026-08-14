@@ -77,6 +77,17 @@ type Task struct {
 	Labels       []Label    `json:"labels"`
 	CreatedAt    time.Time  `json:"createdAt"`
 	UpdatedAt    time.Time  `json:"updatedAt"`
+	// Can says what the caller who asked for this task may do to it. Nil when
+	// nobody asked in particular — an internal read rather than a board.
+	Can *Abilities `json:"can,omitempty"`
+}
+
+// Abilities is what one caller may do to one task.
+type Abilities struct {
+	Edit     bool   `json:"edit"`
+	Reassign bool   `json:"reassign"`
+	Delete   bool   `json:"delete"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 type Label struct {
@@ -135,6 +146,11 @@ type Filters struct {
 	// are expected to be across, so it belongs in your list rather than only in
 	// the notification that told you about it.
 	Involving *uuid.UUID
+	// Viewer is who the board is being drawn for. Not a filter: it narrows
+	// nothing, it decides what each returned task says about what this caller
+	// may do to it.
+	Viewer           *uuid.UUID
+	ViewerIsOrgAdmin bool
 }
 
 func NewService(db *pgxpool.Pool) *Service {
@@ -215,6 +231,16 @@ func (s *Service) ListTasks(ctx context.Context, orgID uuid.UUID, f Filters) ([]
 		// also runs a sub-team of interns sees both.
 		args = append(args, *f.ManagedBy, orgID)
 		manager, org := len(args)-1, len(args)
+		team := 0
+		if f.TeamID != nil {
+			args = append(args, *f.TeamID)
+			team = len(args)
+		}
+
+		narrow := ""
+		if team != 0 {
+			narrow = fmt.Sprintf(" WHERE member.team_id = $%d", team)
+		}
 		clause := fmt.Sprintf(`t.assignee_id IN (
 			WITH RECURSIVE managed AS (
 				SELECT tm.id FROM teams tm
@@ -225,12 +251,34 @@ func (s *Service) ListTasks(ctx context.Context, orgID uuid.UUID, f Filters) ([]
 				WHERE child.deleted_at IS NULL
 			)
 			SELECT member.user_id FROM team_members member
-			JOIN managed ON managed.id = member.team_id`, manager, org)
-		if f.TeamID != nil {
-			args = append(args, *f.TeamID)
-			clause += fmt.Sprintf(" WHERE member.team_id = $%d", len(args))
+			JOIN managed ON managed.id = member.team_id%s)`, manager, org, narrow)
+
+		// The mirror of the manager's problem. Somebody who administers the
+		// organization manages nobody in the chart and may nonetheless act on
+		// everybody, so this walk handed them an empty team board while every
+		// write path let them act on every row that ought to have been on it.
+		//
+		// The decision: an administrator who runs no team falls back to the
+		// whole organization, because the tab asks "what are the people I
+		// answer for doing?" and they answer for everyone. An administrator who
+		// does run teams already has a board that means something and keeps it
+		// — widening theirs would put sales on a tab labelled with their own
+		// team, and the team filter only offers teams they manage.
+		if f.ViewerIsOrgAdmin {
+			everybody := "t.assignee_id IS NOT NULL"
+			if team != 0 {
+				// They answer for every team, so they may narrow to any of them.
+				everybody = fmt.Sprintf(`t.assignee_id IN (
+					SELECT member.user_id FROM team_members member
+					JOIN teams tm ON tm.id = member.team_id
+					WHERE tm.org_id = $%d AND tm.id = $%d AND tm.deleted_at IS NULL)`, org, team)
+			}
+			clause = fmt.Sprintf(`(%s OR (%s AND NOT EXISTS (
+				SELECT 1 FROM teams tm
+				WHERE tm.manager_id = $%d AND tm.org_id = $%d AND tm.deleted_at IS NULL)))`,
+				clause, everybody, manager, org)
 		}
-		where = append(where, clause+")")
+		where = append(where, clause)
 	}
 
 	query := taskColumns + " WHERE " + strings.Join(where, " AND ") +
@@ -258,7 +306,16 @@ func (s *Service) ListTasks(ctx context.Context, orgID uuid.UUID, f Filters) ([]
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	return s.attachLabels(ctx, tasks)
+	tasks, err = s.attachLabels(ctx, tasks)
+	if err != nil {
+		return nil, err
+	}
+	if f.Viewer != nil {
+		if err := s.attachAbilities(ctx, orgID, *f.Viewer, f.ViewerIsOrgAdmin, tasks); err != nil {
+			return nil, err
+		}
+	}
+	return tasks, nil
 }
 
 // AssignableUsers lists the people this caller may put work on: themselves,
@@ -501,7 +558,7 @@ func (s *Service) CreateTask(ctx context.Context, orgID, reporterID uuid.UUID, t
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	created, err := s.GetTask(ctx, orgID, id)
+	created, err := s.GetTaskFor(ctx, orgID, id, reporterID, isOrgAdmin)
 	if err != nil {
 		return nil, err
 	}
@@ -522,6 +579,21 @@ func (s *Service) GetTask(ctx context.Context, orgID, id uuid.UUID) (*Task, erro
 		return nil, err
 	}
 	return &withLabels[0], nil
+}
+
+// GetTaskFor is GetTask with what this caller may do to the task attached. The
+// detail page is where Delete actually lives, so it has to be told the same
+// answer the board was given rather than finding out from a 403.
+func (s *Service) GetTaskFor(ctx context.Context, orgID, id, viewerID uuid.UUID, isOrgAdmin bool) (*Task, error) {
+	task, err := s.GetTask(ctx, orgID, id)
+	if err != nil {
+		return nil, err
+	}
+	page := []Task{*task}
+	if err := s.attachAbilities(ctx, orgID, viewerID, isOrgAdmin, page); err != nil {
+		return nil, err
+	}
+	return &page[0], nil
 }
 
 // updatableFields whitelists what a PATCH may touch, so a caller cannot smuggle
@@ -680,40 +752,38 @@ func (s *Service) MayAssign(ctx context.Context, orgID, actorID, assigneeID uuid
 	return s.hasAuthorityOver(ctx, orgID, actorID, assigneeID, isOrgAdmin)
 }
 
-// hasAuthorityOver answers whether actor may act on subject's behalf: they are
-// the same person, actor manages a team subject sits on (directly or further
-// down), or actor administers the organization. It is the one place this
-// package decides who outranks whom, so assigning work and deleting somebody's
-// task cannot drift apart.
-func (s *Service) hasAuthorityOver(ctx context.Context, orgID, actorID, subjectID uuid.UUID, isOrgAdmin bool) (bool, error) {
-	if isOrgAdmin || actorID == subjectID {
-		return true, nil
+// authorityFact is what the org chart says about one person, seen from one
+// actor. Everything in this package that asks "may I act on them?" reads the
+// answer out of these two facts, so there is one statement of who outranks
+// whom rather than a copy per surface.
+type authorityFact struct {
+	Name string
+	// Administers: they own or administer the organization, so they sit above
+	// the chart even when they are listed on a team as an ordinary member.
+	Administers bool
+	// Managed: they sit on a team the actor runs, or on one nested beneath it.
+	Managed bool
+}
+
+func (f authorityFact) allows() bool { return !f.Administers && f.Managed }
+
+// authorityFacts loads what the chart says about every named person, from
+// actor's point of view, in a single round trip. A board asks about a whole
+// page of cards at once: answering per card cost one query per row, which is
+// fifty round trips for a fifty-row board.
+//
+// People it cannot place — not in this organization — are simply absent from
+// the result, and every caller reads that as no authority.
+func (s *Service) authorityFacts(ctx context.Context, orgID, actorID uuid.UUID, subjects []uuid.UUID) (map[uuid.UUID]authorityFact, error) {
+	facts := make(map[uuid.UUID]authorityFact, len(subjects))
+	if len(subjects) == 0 {
+		return facts, nil
 	}
 
-	// Somebody who administers the organization is above the chart, even if
-	// they happen to sit on a team as an ordinary member. Without this a
-	// manager could assign work to — or delete the tasks of — the owner of the
-	// organization.
-	var targetAdministers bool
-	if err := s.db.QueryRow(ctx, `
-		SELECT COALESCE(u.is_admin, false)
-		    OR u.role IN ('owner', 'admin')
-		    OR EXISTS (
-		        SELECT 1 FROM user_roles ur
-		        JOIN roles r ON r.id = ur.role_id
-		        WHERE ur.user_id = u.id AND r.name IN ('owner', 'admin'))
-		FROM users u WHERE u.id = $1 AND u.org_id = $2
-	`, subjectID, orgID).Scan(&targetAdministers); err != nil {
-		return false, fmt.Errorf("check subject standing: %w", err)
-	}
-	if targetAdministers {
-		return false, nil
-	}
-
-	// Walk down from every team the actor manages, following parent_id, and
-	// ask whether the subject sits anywhere in that subtree.
-	var ok bool
-	err := s.db.QueryRow(ctx, `
+	// The recursive term walks down from every team the actor manages,
+	// following parent_id, so a team lead who also runs a sub-team of interns
+	// reaches both.
+	rows, err := s.db.Query(ctx, `
 		WITH RECURSIVE managed AS (
 			SELECT t.id
 			FROM teams t
@@ -724,16 +794,143 @@ func (s *Service) hasAuthorityOver(ctx context.Context, orgID, actorID, subjectI
 			JOIN managed ON child.parent_id = managed.id
 			WHERE child.org_id = $1 AND child.deleted_at IS NULL
 		)
-		SELECT EXISTS (
-			SELECT 1 FROM team_members tm
-			JOIN managed ON managed.id = tm.team_id
-			WHERE tm.user_id = $3
-		)
-	`, orgID, actorID, subjectID).Scan(&ok)
+		SELECT u.id, u.name,
+		       COALESCE(u.is_admin, false)
+		           OR u.role IN ('owner', 'admin')
+		           OR EXISTS (
+		               SELECT 1 FROM user_roles ur
+		               JOIN roles r ON r.id = ur.role_id
+		               WHERE ur.user_id = u.id AND r.name IN ('owner', 'admin')),
+		       EXISTS (
+		           SELECT 1 FROM team_members tm
+		           JOIN managed ON managed.id = tm.team_id
+		           WHERE tm.user_id = u.id)
+		FROM users u
+		WHERE u.org_id = $1 AND u.id = ANY($3)
+	`, orgID, actorID, subjects)
 	if err != nil {
-		return false, fmt.Errorf("check authority: %w", err)
+		return nil, fmt.Errorf("check authority: %w", err)
 	}
-	return ok, nil
+	defer rows.Close()
+
+	for rows.Next() {
+		var id uuid.UUID
+		var fact authorityFact
+		if err := rows.Scan(&id, &fact.Name, &fact.Administers, &fact.Managed); err != nil {
+			return nil, fmt.Errorf("scan authority: %w", err)
+		}
+		facts[id] = fact
+	}
+	return facts, rows.Err()
+}
+
+// hasAuthorityOver answers whether actor may act on subject's behalf: they are
+// the same person, actor manages a team subject sits on (directly or further
+// down), or actor administers the organization. It is the one place this
+// package decides who outranks whom, so assigning work, deleting somebody's
+// task and drawing their card on a board cannot drift apart.
+func (s *Service) hasAuthorityOver(ctx context.Context, orgID, actorID, subjectID uuid.UUID, isOrgAdmin bool) (bool, error) {
+	if isOrgAdmin || actorID == subjectID {
+		return true, nil
+	}
+	facts, err := s.authorityFacts(ctx, orgID, actorID, []uuid.UUID{subjectID})
+	if err != nil {
+		return false, err
+	}
+	// Somebody the chart cannot place is somebody nobody outranks. Nothing
+	// reachable gets here — every caller looks its row up organization-scoped
+	// first — and a refusal is the fail-closed answer if one ever does.
+	return facts[subjectID].allows(), nil
+}
+
+// attachAbilities tells each task what this caller may do to it, in one pass
+// over the whole page. Every answer comes from the same authority facts the
+// write paths consult, so a board cannot show an action the API will refuse —
+// which is exactly what it used to do for an administrator sitting on somebody
+// else's team as an ordinary member.
+func (s *Service) attachAbilities(ctx context.Context, orgID, viewerID uuid.UUID, isOrgAdmin bool, tasks []Task) error {
+	if len(tasks) == 0 {
+		return nil
+	}
+	if isOrgAdmin {
+		for i := range tasks {
+			tasks[i].Can = &Abilities{Edit: true, Reassign: true, Delete: true}
+		}
+		return nil
+	}
+
+	// Everybody the cards on this page are bound to: whoever filed each one and
+	// whoever holds it. One query for the page, not one per card.
+	people := make([]uuid.UUID, 0, 2*len(tasks))
+	seen := make(map[uuid.UUID]bool, 2*len(tasks))
+	remember := func(id uuid.UUID) {
+		if !seen[id] {
+			seen[id] = true
+			people = append(people, id)
+		}
+	}
+	for _, t := range tasks {
+		remember(t.ReporterID)
+		if t.AssigneeID != nil {
+			remember(*t.AssigneeID)
+		}
+	}
+
+	facts, err := s.authorityFacts(ctx, orgID, viewerID, people)
+	if err != nil {
+		return err
+	}
+
+	// over answers the one question, and names who to blame when the answer is
+	// no — a greyed card with no explanation is nearly as bad as the 403.
+	over := func(subject uuid.UUID) (bool, string) {
+		if subject == viewerID {
+			return true, ""
+		}
+		fact, known := facts[subject]
+		switch {
+		case !known:
+			return false, "they are not in this organisation"
+		case fact.Administers:
+			return false, fact.Name + " is an organisation admin"
+		case !fact.Managed:
+			return false, fact.Name + " is not on a team you manage"
+		}
+		return true, ""
+	}
+
+	for i := range tasks {
+		can := &Abilities{
+			// Any member of the organization may change a task's own fields:
+			// title, description, status, priority, dates. UpdateTask gates the
+			// assignee and nothing else, so this is unconditionally true today.
+			// It is carried anyway so the client reads one shape rather than a
+			// flag plus an assumption, and so that tightening the rule later
+			// has an obvious place to land.
+			Edit: true,
+		}
+
+		// Deleting needs authority over whoever filed the task, exactly as
+		// DeleteTask requires.
+		can.Delete, can.Reason = over(tasks[i].ReporterID)
+
+		// Reassigning needs authority over whoever currently holds the work.
+		// Nothing is being taken off anybody when the task is unassigned.
+		can.Reassign = true
+		if tasks[i].AssigneeID != nil {
+			mayMove, whyNot := over(*tasks[i].AssigneeID)
+			can.Reassign = mayMove
+			switch {
+			case whyNot == "" || whyNot == can.Reason:
+			case can.Reason == "":
+				can.Reason = whyNot
+			default:
+				can.Reason += "; " + whyNot
+			}
+		}
+		tasks[i].Can = can
+	}
+	return nil
 }
 
 // wholeNumber reads a value bound for an integer column. JSON decodes every
@@ -781,6 +978,23 @@ func (s *Service) UpdateTask(ctx context.Context, orgID, id, actorID uuid.UUID, 
 		return nil, err
 	}
 
+	// Handing a task to somebody needs authority over them, which
+	// validateUpdates has just checked. Taking it off whoever currently holds
+	// it needs the same: without this half, a manager who may not delete an
+	// organization admin's task could still quietly move it onto one of their
+	// own reports, and the board's reassign flag would be promising something
+	// the write path does not honour.
+	if _, reassigning := updates["assigneeId"]; reassigning && before.AssigneeID != nil {
+		mayTake, err := s.hasAuthorityOver(ctx, orgID, actorID, *before.AssigneeID, isOrgAdmin)
+		if err != nil {
+			return nil, err
+		}
+		if !mayTake {
+			return nil, apperrors.New(apperrors.CodeForbidden,
+				"you can only move work held by you or by somebody on a team you manage")
+		}
+	}
+
 	sets := []string{}
 	args := []any{id, orgID}
 	for key, value := range updates {
@@ -792,7 +1006,9 @@ func (s *Service) UpdateTask(ctx context.Context, orgID, id, actorID uuid.UUID, 
 		sets = append(sets, fmt.Sprintf("%s = $%d", column, len(args)))
 	}
 	if len(sets) == 0 {
-		return before, nil
+		// Nothing to write, but the caller still gets the same shape back as
+		// they would from a real change, abilities included.
+		return s.GetTaskFor(ctx, orgID, id, actorID, isOrgAdmin)
 	}
 	// Completing a task stamps completed_at; reopening clears it.
 	if status, ok := updates["status"].(string); ok {
@@ -837,7 +1053,7 @@ func (s *Service) UpdateTask(ctx context.Context, orgID, id, actorID uuid.UUID, 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	after, err := s.GetTask(ctx, orgID, id)
+	after, err := s.GetTaskFor(ctx, orgID, id, actorID, isOrgAdmin)
 	if err != nil {
 		return nil, err
 	}

@@ -10,7 +10,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
 import { formatRelativeTime, formatDate } from '@/shared/utils/cn';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { tasksApi, orgApi, filesApi } from '@/shared/api/client';
+import { tasksApi, filesApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
 import { Label } from '@/shared/components/ui/label';
@@ -20,6 +20,7 @@ import { useWebSocket } from '@/features/websocket/WSProvider';
 import { AttachmentChip } from '@/features/files/AttachmentChip';
 import { useUpload, type UploadedFile } from '@/features/files/useUpload';
 import { cn } from '@/shared/utils/cn';
+import { restrictionNote, type TaskAbilities } from './abilities';
 
 interface Task {
   id: string;
@@ -39,6 +40,8 @@ interface Task {
   projectName?: string;
   createdAt: string;
   updatedAt: string;
+  /** What this caller may do to it, worked out by the server. */
+  can?: TaskAbilities;
 }
 
 const statusColors = {
@@ -61,7 +64,12 @@ const priorities = ['low', 'medium', 'high', 'urgent'] as const;
 
 export function TaskDetailPage() {
   const { taskId } = useParams<{ taskId: string }>();
-  const { data: membersData } = useQuery({ queryKey: ['users'], queryFn: () => orgApi.listUsers() });
+  // Only the people the org chart will actually accept. Offering everybody in
+  // the organisation meant the picker could hand back a name the PATCH refuses.
+  const { data: membersData } = useQuery({
+    queryKey: ['assignable-users'],
+    queryFn: () => tasksApi.assignableUsers(),
+  });
   const members = membersData?.data ?? [];
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -147,6 +155,14 @@ export function TaskDetailPage() {
     updateTaskMutation.mutate({ priority });
   };
 
+  // The board already told the caller what they may do here; the detail page
+  // has to draw the same answer rather than offering a Delete that 403s.
+  // Absent means an older server that did not say, and the old behaviour —
+  // offer it and let the API decide — is the safe fallback.
+  const mayDelete = task.can?.delete !== false;
+  const mayReassign = task.can?.reassign !== false;
+  const restriction = restrictionNote(task.can);
+
   return (
     <div className="flex h-full flex-col bg-background">
       {/* Header */}
@@ -164,7 +180,13 @@ export function TaskDetailPage() {
           <DropdownMenuContent align="end">
             <DropdownMenuItem onSelect={() => setEditing(true)}>Edit</DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem className="text-destructive" onSelect={() => deleteTaskMutation.mutate()}>Delete</DropdownMenuItem>
+            {mayDelete ? (
+              <DropdownMenuItem className="text-destructive" onSelect={() => deleteTaskMutation.mutate()}>Delete</DropdownMenuItem>
+            ) : (
+              <DropdownMenuItem disabled>
+                Delete — {task.can?.reason ?? 'not yours to remove'}
+              </DropdownMenuItem>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
@@ -198,6 +220,11 @@ export function TaskDetailPage() {
                       />
                     ) : (
                       <h1 className="break-anywhere text-2xl font-bold">{task.title}</h1>
+                    )}
+                    {restriction && (
+                      <p className="mt-2 rounded-md border border-dashed border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+                        {restriction}
+                      </p>
                     )}
                   </div>
                   <div className="flex items-center gap-2">
@@ -270,8 +297,8 @@ export function TaskDetailPage() {
                   <CardHeader>
                     <CardTitle>Assignee</CardTitle>
                   </CardHeader>
-                  <CardContent>
-                    {task.assigneeName ? (
+                  <CardContent className="space-y-3">
+                    {task.assigneeName && (
                       <div className="flex items-center gap-3">
                         <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
                           <span className="text-lg font-medium text-primary">{task.assigneeName.charAt(0)}</span>
@@ -281,18 +308,30 @@ export function TaskDetailPage() {
                           <p className="text-sm text-muted-foreground">Assignee</p>
                         </div>
                       </div>
-                    ) : (
+                    )}
+                    {/* Moving work off somebody needs authority over them, so a
+                        task held by an organisation admin shows who has it and
+                        why it cannot be moved, rather than a picker that 403s. */}
+                    {mayReassign ? (
                       <Select
                         value=""
                         onValueChange={(v) => updateTaskMutation.mutate({ assigneeId: v } as any)}
                       >
-                        <SelectTrigger><SelectValue placeholder="Assign someone" /></SelectTrigger>
+                        <SelectTrigger>
+                          <SelectValue placeholder={task.assigneeName ? 'Reassign' : 'Assign someone'} />
+                        </SelectTrigger>
                         <SelectContent>
                           {members.map((m: any) => (
-                            <SelectItem key={m.id} value={m.id}>{m.name}</SelectItem>
+                            <SelectItem key={m.userId} value={m.userId}>{m.name}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">
+                        {task.can?.reason
+                          ? `Cannot be reassigned — ${task.can.reason}.`
+                          : 'Cannot be reassigned.'}
+                      </p>
                     )}
                   </CardContent>
                 </Card>
@@ -640,12 +679,18 @@ function WatchersCard({ taskId }: { taskId: string }) {
     queryKey: ['task-watchers', taskId],
     queryFn: () => tasksApi.listWatchers(taskId),
   });
-  const { data: usersData } = useQuery({ queryKey: ['users'], queryFn: () => orgApi.listUsers() });
+  // Putting somebody else on a task follows the same org chart as assigning
+  // them work, so the picker offers the same list — the whole organisation
+  // included people the POST would refuse.
+  const { data: usersData } = useQuery({
+    queryKey: ['assignable-users'],
+    queryFn: () => tasksApi.assignableUsers(),
+  });
 
   const watchers = data?.data ?? [];
-  const orgUsers = usersData?.data ?? [];
+  const addable = usersData?.data ?? [];
   const following = watchers.some((w: any) => w.userId === user?.id);
-  const candidates = orgUsers.filter((u: any) => !watchers.some((w: any) => w.userId === u.id));
+  const candidates = addable.filter((u: any) => !watchers.some((w: any) => w.userId === u.userId));
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['task-watchers', taskId] });
 
@@ -722,7 +767,7 @@ function WatchersCard({ taskId }: { taskId: string }) {
             <SelectTrigger id="taskMember"><SelectValue placeholder="Choose somebody" /></SelectTrigger>
             <SelectContent>
               {candidates.map((u: any) => (
-                <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>
+                <SelectItem key={u.userId} value={u.userId}>{u.name}</SelectItem>
               ))}
             </SelectContent>
           </Select>

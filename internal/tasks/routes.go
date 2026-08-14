@@ -97,6 +97,11 @@ func (h *Handler) ListTasks(c *gin.Context) {
 		LabelID:    queryUUID(c, "labelId"),
 		Search:     c.Query("search"),
 		TeamID:     queryUUID(c, "teamId"),
+		// Every card comes back saying what this caller may do to it. A board
+		// that shows work somebody cannot act on is the product decision; a
+		// board that does not say so is the bug.
+		Viewer:           &cl.UserID,
+		ViewerIsOrgAdmin: auth.GetUserFromContext(c).HasAnyRole("owner", "admin"),
 	}
 	// scope=team asks for the work of the people this caller manages. It is
 	// always the caller — you cannot ask to see somebody else's reports.
@@ -231,7 +236,8 @@ func (h *Handler) GetTask(c *gin.Context) {
 	if !ok {
 		return
 	}
-	task, err := h.service.GetTask(c.Request.Context(), cl.OrgID, id)
+	task, err := h.service.GetTaskFor(c.Request.Context(), cl.OrgID, id, cl.UserID,
+		auth.GetUserFromContext(c).HasAnyRole("owner", "admin"))
 	if err != nil {
 		httpx.Error(c, err, "task not found")
 		return

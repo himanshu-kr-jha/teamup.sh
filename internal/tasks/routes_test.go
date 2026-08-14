@@ -260,3 +260,108 @@ func TestADeleteFromAnotherOrganizationLooksLikeAnInventedID(t *testing.T) {
 		t.Errorf("the task was deleted from across the tenant boundary: %v", err)
 	}
 }
+
+func getJSON(t *testing.T, r *gin.Engine, path string) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+	return w
+}
+
+// abilities mirrors the "can" object the API promises, so the test reads what
+// a client would read rather than the struct the server happens to build.
+type abilities struct {
+	Edit     bool   `json:"edit"`
+	Reassign bool   `json:"reassign"`
+	Delete   bool   `json:"delete"`
+	Reason   string `json:"reason"`
+}
+
+// Issue #47 end to end. The list showed a manager work they could not touch and
+// said nothing about it, the delete answered 403 and the assignee list left the
+// person out entirely — three surfaces, three answers. The board now tells the
+// client what it may do, and this pins that answer to what the delete does.
+func TestTheListAndTheDeleteGiveTheSameAnswer(t *testing.T) {
+	svc, pool := newService(t)
+	c := seedBoardChart(t, pool)
+	quinn, bob, alice := c.people[1], c.people[2], c.people[3]
+
+	quinns := createTaskAs(t, svc, c.org, quinn.id, "Filed by an organisation admin")
+	alices := createTaskAs(t, svc, c.org, alice.id, "Filed by an engineer bob manages")
+
+	r := asUser(t, svc, c.org.ID, bob.id, "manager")
+
+	w := getJSON(t, r, "/api/tasks")
+	if w.Code != http.StatusOK {
+		t.Fatalf("list: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var listed struct {
+		Tasks []struct {
+			ID  string     `json:"id"`
+			Can *abilities `json:"can"`
+		} `json:"tasks"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode board %q: %v", w.Body.String(), err)
+	}
+	if len(listed.Tasks) != 2 {
+		t.Fatalf("expected both tasks on the board, got %s", w.Body.String())
+	}
+
+	promised := map[string]bool{}
+	for _, task := range listed.Tasks {
+		if task.Can == nil {
+			t.Fatalf("the board did not tell the client what it may do: %s", w.Body.String())
+		}
+		promised[task.ID] = task.Can.Delete
+		if !task.Can.Delete && task.Can.Reason == "" {
+			t.Errorf("task %s came back read-only with no reason a person could read", task.ID)
+		}
+	}
+	if promised[quinns.ID.String()] {
+		t.Error("the board offered bob the delete of an organisation admin's task")
+	}
+	if !promised[alices.ID.String()] {
+		t.Error("the board refused bob his own engineer's task")
+	}
+
+	// What the board promised is what the endpoint does.
+	for _, task := range []*Task{quinns, alices} {
+		want := http.StatusForbidden
+		if promised[task.ID.String()] {
+			want = http.StatusOK
+		}
+		if got := deleteTask(t, r, task.ID.String()); got.Code != want {
+			t.Errorf("%q: board promised delete=%v so DELETE should be %d, got %d: %s",
+				task.Title, promised[task.ID.String()], want, got.Code, got.Body.String())
+		}
+	}
+
+	// And the detail page, which is where the Delete button actually lives, is
+	// told the same thing.
+	detail := getJSON(t, r, "/api/tasks/"+quinns.ID.String())
+	if detail.Code != http.StatusOK {
+		t.Fatalf("detail: want 200, got %d: %s", detail.Code, detail.Body.String())
+	}
+	var one struct {
+		Can *abilities `json:"can"`
+	}
+	if err := json.Unmarshal(detail.Body.Bytes(), &one); err != nil {
+		t.Fatalf("decode detail %q: %v", detail.Body.String(), err)
+	}
+	if one.Can == nil || one.Can.Delete {
+		t.Errorf("the detail page would have drawn a Delete button that 403s: %+v", one.Can)
+	}
+	if !strings.Contains(one.Can.Reason, "organisation admin") {
+		t.Errorf("the reason should name the standing that blocks it, got %q", one.Can.Reason)
+	}
+
+	// Nothing of this crosses the tenant boundary: another organization's
+	// caller cannot read the task, let alone what they may do to it.
+	elsewhere := testsupport.SeedOrg(t, pool)
+	foreign := getJSON(t, asUser(t, svc, elsewhere.ID, elsewhere.OwnerID, "owner"),
+		"/api/tasks/"+quinns.ID.String())
+	if foreign.Code != http.StatusNotFound {
+		t.Errorf("another organization read the task: %d %s", foreign.Code, foreign.Body.String())
+	}
+}

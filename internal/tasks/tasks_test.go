@@ -2,11 +2,14 @@ package tasks
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/teamup/teamup/internal/testsupport"
@@ -1171,5 +1174,408 @@ func TestACommentCannotClaimAnUploadFromAnotherTask(t *testing.T) {
 	}
 	if len(comment.Attachments) != 0 {
 		t.Errorf("a comment pulled in a file from another task: %+v", comment.Attachments)
+	}
+}
+
+// ── What the board says this caller may do (issue #47) ────────────────────
+//
+// A manager's team board shows the work of an organisation admin who sits on
+// their team as an ordinary engineer, because hiding somebody's work hides the
+// work. What must never happen is the board and the write paths disagreeing:
+// the list walked the managed subtree with no exclusions, hasAuthorityOver
+// additionally excluded anybody who administers the organisation, and
+// AssignableUsers ran a third copy of the rule. Three surfaces, three answers.
+//
+// The invariant pinned below is that for every (caller, task) pair the board's
+// own answer and hasAuthorityOver — the one the write paths apply — agree.
+
+type person struct {
+	name       string
+	id         uuid.UUID
+	isOrgAdmin bool
+}
+
+type boardChart struct {
+	org    *testsupport.Org
+	people []person
+}
+
+// seedBoardChart is the smallest organisation that contains the disagreement:
+// somebody who administers the organisation and also sits on a team as an
+// ordinary member, the manager of that team, an ordinary member of it, and
+// somebody on a team nobody in the chart manages.
+func seedBoardChart(t *testing.T, pool *pgxpool.Pool) boardChart {
+	t.Helper()
+	org := testsupport.SeedOrg(t, pool)
+	quinn := testsupport.SeedUser(t, pool, org, "quinn-admin@example.test", "admin")
+	bob := testsupport.SeedUser(t, pool, org, "bob-manager@example.test", "manager")
+	alice := testsupport.SeedUser(t, pool, org, "alice-backend@example.test", "member")
+	sandra := testsupport.SeedUser(t, pool, org, "sandra-sales@example.test", "member")
+
+	testsupport.SeedTeam(t, pool, org, "backend", &bob, nil, quinn, alice)
+	testsupport.SeedTeam(t, pool, org, "sales", nil, nil, sandra)
+
+	return boardChart{org: org, people: []person{
+		{"the owner", org.OwnerID, true},
+		{"quinn, an admin sitting on backend", quinn, true},
+		{"bob, who manages backend", bob, false},
+		{"alice, an engineer on backend", alice, false},
+		{"sandra, over on sales", sandra, false},
+	}}
+}
+
+// fileOwnWork gives everybody in the chart one task they filed and hold, so
+// every (caller, task) pair in the property below is a pair of real people.
+func (c boardChart) fileOwnWork(t *testing.T, svc *Service) {
+	t.Helper()
+	for _, p := range c.people {
+		holder := p.id
+		if _, err := svc.CreateTask(context.Background(), c.org.ID, p.id,
+			p.name+"'s work", "", "", "", "", nil, &holder, nil, nil, nil, p.isOrgAdmin); err != nil {
+			t.Fatalf("file work for %s: %v", p.name, err)
+		}
+	}
+}
+
+func TestTheBoardAndHasAuthorityOverNeverDisagree(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	c := seedBoardChart(t, pool)
+	c.fileOwnWork(t, svc)
+
+	// A second organisation, whose work must never reach this board and over
+	// whose people nobody here has any authority at all.
+	elsewhere := testsupport.SeedOrg(t, pool)
+	if _, err := svc.CreateTask(ctx, elsewhere.ID, elsewhere.OwnerID, "Somebody else's tenant",
+		"", "", "", "", nil, &elsewhere.OwnerID, nil, nil, nil, true); err != nil {
+		t.Fatalf("seed the other organisation's work: %v", err)
+	}
+
+	for _, caller := range c.people {
+		caller := caller
+		t.Run(caller.name, func(t *testing.T) {
+			board, err := svc.ListTasks(ctx, c.org.ID, Filters{
+				Viewer:           &caller.id,
+				ViewerIsOrgAdmin: caller.isOrgAdmin,
+			})
+			if err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			if len(board) != len(c.people) {
+				t.Fatalf("the board should show everybody's work, got %+v", titlesOf(board))
+			}
+
+			for _, task := range board {
+				if task.OrgID != c.org.ID {
+					t.Fatalf("another organisation's work reached the board: %q", task.Title)
+				}
+				if task.Can == nil {
+					t.Fatalf("the board did not say what %s may do to %q", caller.name, task.Title)
+				}
+
+				wantDelete, err := svc.hasAuthorityOver(ctx, c.org.ID, caller.id, task.ReporterID, caller.isOrgAdmin)
+				if err != nil {
+					t.Fatalf("authority over the reporter of %q: %v", task.Title, err)
+				}
+				if task.Can.Delete != wantDelete {
+					t.Errorf("%q: board says delete=%v, hasAuthorityOver over its reporter says %v",
+						task.Title, task.Can.Delete, wantDelete)
+				}
+
+				// Nothing is being taken off anybody when the task is
+				// unassigned, so there is nobody to need authority over.
+				wantReassign := true
+				if task.AssigneeID != nil {
+					wantReassign, err = svc.hasAuthorityOver(ctx, c.org.ID, caller.id, *task.AssigneeID, caller.isOrgAdmin)
+					if err != nil {
+						t.Fatalf("authority over the assignee of %q: %v", task.Title, err)
+					}
+				}
+				if task.Can.Reassign != wantReassign {
+					t.Errorf("%q: board says reassign=%v, hasAuthorityOver over its assignee says %v",
+						task.Title, task.Can.Reassign, wantReassign)
+				}
+
+				// A greyed card with no explanation is nearly as bad as the 403.
+				blocked := !task.Can.Delete || !task.Can.Reassign
+				if blocked && task.Can.Reason == "" {
+					t.Errorf("%q is not actionable by %s and the board gives no reason",
+						task.Title, caller.name)
+				}
+				if !blocked && task.Can.Reason != "" {
+					t.Errorf("%q is fully actionable by %s yet carries the excuse %q",
+						task.Title, caller.name, task.Can.Reason)
+				}
+			}
+		})
+	}
+
+	// Authority does not cross the tenant boundary either: bob is a manager in
+	// his own organisation and nobody at all in the other one.
+	bob := c.people[2]
+	foreign, err := svc.ListTasks(ctx, elsewhere.ID, Filters{Viewer: &bob.id})
+	if err != nil {
+		t.Fatalf("list the other organisation: %v", err)
+	}
+	if len(foreign) != 1 {
+		t.Fatalf("expected the other organisation's single task, got %+v", titlesOf(foreign))
+	}
+	if foreign[0].Can == nil || foreign[0].Can.Delete || foreign[0].Can.Reassign {
+		t.Errorf("a manager was given authority inside another organisation: %+v", foreign[0].Can)
+	}
+}
+
+// The read-only decision, stated as a test: the task stays on the board and is
+// labelled with a reason a person can read.
+func TestAManagerSeesAnAdminsWorkOnTheirTeamBoardButCannotActOnIt(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	c := seedBoardChart(t, pool)
+	c.fileOwnWork(t, svc)
+
+	quinn, bob := c.people[1], c.people[2]
+
+	board, err := svc.ListTasks(ctx, c.org.ID, Filters{ManagedBy: &bob.id, Viewer: &bob.id})
+	if err != nil {
+		t.Fatalf("team board: %v", err)
+	}
+
+	var quinns *Task
+	for i := range board {
+		if board[i].ReporterID == quinn.id {
+			quinns = &board[i]
+		}
+	}
+	if quinns == nil {
+		t.Fatalf("quinn's work vanished from the team board: %+v", titlesOf(board))
+	}
+	if quinns.Can == nil {
+		t.Fatal("the team board did not say what bob may do")
+	}
+	if quinns.Can.Delete || quinns.Can.Reassign {
+		t.Errorf("the board offered bob an action the write path refuses: %+v", quinns.Can)
+	}
+	if !strings.Contains(quinns.Can.Reason, "organisation admin") {
+		t.Errorf("the reason should say why, got %q", quinns.Can.Reason)
+	}
+
+	// And alice, an ordinary engineer on the same team, is still bob's to act on.
+	alice := c.people[3]
+	var alices *Task
+	for i := range board {
+		if board[i].ReporterID == alice.id {
+			alices = &board[i]
+		}
+	}
+	if alices == nil {
+		t.Fatalf("alice's work is missing from her manager's board: %+v", titlesOf(board))
+	}
+	if alices.Can == nil || !alices.Can.Delete || !alices.Can.Reassign {
+		t.Errorf("bob should be able to act on his own engineer's work: %+v", alices.Can)
+	}
+}
+
+// The strongest form of the invariant: what the board promises is what the
+// delete actually does, for every pair of people in the chart.
+func TestTheBoardsDeleteFlagPredictsWhatDeletingDoes(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	c := seedBoardChart(t, pool)
+
+	for _, caller := range c.people {
+		for _, reporter := range c.people {
+			task := createTaskAs(t, svc, c.org, reporter.id, reporter.name+" filed this")
+
+			board, err := svc.ListTasks(ctx, c.org.ID, Filters{
+				Viewer:           &caller.id,
+				ViewerIsOrgAdmin: caller.isOrgAdmin,
+			})
+			if err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			var promised *Abilities
+			for i := range board {
+				if board[i].ID == task.ID {
+					promised = board[i].Can
+				}
+			}
+			if promised == nil {
+				t.Fatalf("%s's board did not carry %q", caller.name, task.Title)
+			}
+
+			err = svc.DeleteTask(ctx, c.org.ID, task.ID, caller.id, caller.isOrgAdmin)
+			if got := err == nil; got != promised.Delete {
+				t.Errorf("%s deleting %s's task: board promised %v, the server said %v (%v)",
+					caller.name, reporter.name, promised.Delete, got, err)
+			}
+			if err != nil {
+				// Leave the board clean for the next pair.
+				if err := svc.DeleteTask(ctx, c.org.ID, task.ID, c.org.OwnerID, true); err != nil {
+					t.Fatalf("clean up %q: %v", task.Title, err)
+				}
+			}
+		}
+	}
+}
+
+// The mirror case. Somebody who administers the organisation may act on
+// everybody, so a team board that showed them nothing was the same
+// disagreement the other way up.
+func TestAnAdminWhoManagesNoTeamStillHasATeamBoard(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	c := seedBoardChart(t, pool)
+	c.fileOwnWork(t, svc)
+
+	quinn := c.people[1]
+	board, err := svc.ListTasks(ctx, c.org.ID, Filters{
+		ManagedBy:        &quinn.id,
+		Viewer:           &quinn.id,
+		ViewerIsOrgAdmin: true,
+	})
+	if err != nil {
+		t.Fatalf("team board: %v", err)
+	}
+	if len(board) != len(c.people) {
+		t.Fatalf("an administrator's team board should reach everybody's work, got %+v", titlesOf(board))
+	}
+	for _, task := range board {
+		if task.Can == nil || !task.Can.Delete || !task.Can.Reassign {
+			t.Errorf("an administrator should be able to act on %q: %+v", task.Title, task.Can)
+		}
+	}
+
+	// An ordinary member who manages nobody still sees nothing: the tab is
+	// about the people you answer for, and they answer for none.
+	sandra := c.people[4]
+	empty, err := svc.ListTasks(ctx, c.org.ID, Filters{ManagedBy: &sandra.id, Viewer: &sandra.id})
+	if err != nil {
+		t.Fatalf("member team board: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("somebody who manages nobody saw team work: %+v", titlesOf(empty))
+	}
+
+	// And an administrator who does run a team keeps the board that means
+	// something: widening theirs would drop the rest of the organisation onto a
+	// tab labelled with their own team.
+	alice := c.people[3]
+	testsupport.SeedTeam(t, pool, c.org, "platform", &quinn.id, nil, alice.id)
+	focused, err := svc.ListTasks(ctx, c.org.ID, Filters{
+		ManagedBy:        &quinn.id,
+		Viewer:           &quinn.id,
+		ViewerIsOrgAdmin: true,
+	})
+	if err != nil {
+		t.Fatalf("team board once they run a team: %v", err)
+	}
+	if len(focused) != 1 || focused[0].ReporterID != alice.id {
+		t.Errorf("an administrator who runs a team should see that team, got %+v", titlesOf(focused))
+	}
+}
+
+// Handing a task to somebody needs authority over them. Taking it off somebody
+// needs the same, or the board's reassign flag would be promising something
+// the write path does not honour.
+func TestReassigningNeedsAuthorityOverWhoeverHoldsTheWork(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	c := seedBoardChart(t, pool)
+	c.fileOwnWork(t, svc)
+
+	quinn, bob, alice := c.people[1], c.people[2], c.people[3]
+
+	board, _ := svc.ListTasks(ctx, c.org.ID, Filters{Viewer: &bob.id})
+	var quinns, alices uuid.UUID
+	for _, task := range board {
+		if task.AssigneeID != nil && *task.AssigneeID == quinn.id {
+			quinns = task.ID
+		}
+		if task.AssigneeID != nil && *task.AssigneeID == alice.id {
+			alices = task.ID
+		}
+	}
+
+	if _, err := svc.UpdateTask(ctx, c.org.ID, quinns, bob.id,
+		map[string]interface{}{"assigneeId": alice.id.String()}, false); err == nil {
+		t.Error("bob took work off an organisation admin")
+	}
+	// Off his own engineer, though, is exactly what a manager is for.
+	if _, err := svc.UpdateTask(ctx, c.org.ID, alices, bob.id,
+		map[string]interface{}{"assigneeId": bob.id.String()}, false); err != nil {
+		t.Errorf("bob could not take his own engineer's work back: %v", err)
+	}
+}
+
+// countingTracer counts every statement the driver sends, so a board that
+// works out its abilities one card at a time is a failing test rather than
+// something to be caught in review.
+type countingTracer struct {
+	mu sync.Mutex
+	n  int
+}
+
+func (c *countingTracer) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.n++
+	return ctx
+}
+
+func (c *countingTracer) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+func (c *countingTracer) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n
+}
+
+// Asking hasAuthorityOver per card would be fifty round trips for a fifty-row
+// board. The whole page is resolved in one pass instead, and this pins it.
+func TestABoardResolvesItsAbilitiesInOnePassNotOnePerCard(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	c := seedBoardChart(t, pool)
+
+	const cards = 40
+	for i := 0; i < cards; i++ {
+		holder := c.people[i%len(c.people)]
+		if _, err := svc.CreateTask(ctx, c.org.ID, holder.id, fmt.Sprintf("card %d", i),
+			"", "", "", "", nil, &holder.id, nil, nil, nil, holder.isOrgAdmin); err != nil {
+			t.Fatalf("seed card %d: %v", i, err)
+		}
+	}
+
+	tracer := &countingTracer{}
+	cfg := pool.Config()
+	cfg.ConnConfig.Tracer = tracer
+	traced, err := pgxpool.NewWithConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("open a traced pool onto the same database: %v", err)
+	}
+	defer traced.Close()
+
+	// Bob is not an administrator, so this is the path that actually has to
+	// consult the chart.
+	bob := c.people[2]
+	board, err := NewService(traced).ListTasks(ctx, c.org.ID, Filters{Viewer: &bob.id})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(board) != cards {
+		t.Fatalf("expected %d cards, got %d", cards, len(board))
+	}
+	for _, task := range board {
+		if task.Can == nil {
+			t.Fatalf("a card came back without its abilities: %q", task.Title)
+		}
+	}
+
+	// The rows, their labels, and the authority facts for everybody the page
+	// mentions: three statements, whatever the size of the board.
+	const budget = 4
+	if got := tracer.count(); got > budget {
+		t.Errorf("a %d-card board cost %d statements (budget %d): the abilities are being resolved per card",
+			cards, got, budget)
 	}
 }

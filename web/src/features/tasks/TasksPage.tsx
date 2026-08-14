@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Search, Filter, MoreVertical, Calendar, User, Loader2, Plus } from 'lucide-react';
+import { Search, Filter, MoreVertical, Calendar, User, Loader2, Plus, Lock } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/shared/components/ui/dropdown-menu';
@@ -13,6 +13,8 @@ import { StandupView } from './StandupView';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
 import { tasksApi } from '@/shared/api/client';
 import { CreateTaskDialog } from './CreateTaskDialog';
+import { restrictionNote, type TaskAbilities } from './abilities';
+import { useAuth } from '@/features/auth/AuthProvider';
 
 interface Task {
   id: string;
@@ -30,6 +32,8 @@ interface Task {
   projectName?: string;
   createdAt: string;
   updatedAt: string;
+  /** What this caller may do to it, worked out by the server. */
+  can?: TaskAbilities;
 }
 
 const statusColors = {
@@ -61,13 +65,20 @@ export function TasksPage() {
   const [phoneColumn, setPhoneColumn] = useState('todo');
   const [searchOpen, setSearchOpen] = useState(false);
 
-  // Only somebody who actually manages a team gets the team view.
+  // Only somebody who actually manages a team gets the team view — plus an
+  // organisation admin, who manages nobody in the chart and may nonetheless
+  // act on everybody. Hiding the tab from them was the mirror of the bug the
+  // "can" flags fix: the server now answers scope=team for an administrator who
+  // runs no team with the whole organisation's work, so there is a tab worth
+  // showing. One who does run teams gets those teams, as before.
+  const { user } = useAuth();
+  const administersOrg = !!user?.roles?.some((r) => r === 'owner' || r === 'admin');
   const { data: managedData } = useQuery({
     queryKey: ['managed-teams'],
     queryFn: () => tasksApi.managedTeams(),
   });
   const managedTeams = managedData?.data ?? [];
-  const managesSomebody = managedTeams.length > 0;
+  const managesSomebody = managedTeams.length > 0 || administersOrg;
 
   // Narrowing to a team narrows who you can pick; "all teams" offers everyone
   // across every team they run, deduplicated.
@@ -354,8 +365,18 @@ function TaskCard({ task, onUpdate }: { task: Task; onUpdate: (data: { id: strin
   // is a row of the screen spent on nothing.
   const hasFooter = !!(task.assigneeName || task.dueDate || task.projectName);
 
+  // A manager's team board deliberately shows work they cannot act on — an
+  // organisation admin sitting on their team as an ordinary engineer, most
+  // often. The card has to say so, or the first they learn of it is a 403.
+  const restriction = restrictionNote(task.can);
+
   return (
-    <div className="rounded-lg border border-border bg-card p-3 shadow-sm transition-shadow hover:shadow-md md:p-4">
+    <div
+      className={cn(
+        'rounded-lg border border-border bg-card p-3 shadow-sm transition-shadow hover:shadow-md md:p-4',
+        restriction && 'border-dashed bg-muted/40'
+      )}
+    >
       <div className="mb-2 flex items-start justify-between gap-2">
         {/* The card had no way into the task at all, so the detail page —
             comments, history, members — was unreachable from the board. */}
@@ -382,6 +403,13 @@ function TaskCard({ task, onUpdate }: { task: Task; onUpdate: (data: { id: strin
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+
+      {restriction && (
+        <p className="mb-2 flex items-start gap-1.5 text-xs text-muted-foreground">
+          <Lock className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
+          <span className="break-anywhere">{restriction}</span>
+        </p>
+      )}
 
       {task.description && <p className="mb-2 line-clamp-2 break-anywhere text-sm text-muted-foreground md:mb-3">{task.description}</p>}
 
