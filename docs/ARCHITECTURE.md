@@ -151,6 +151,49 @@ afterwards. Iterating the map without the lock is `fatal error: concurrent map
 iteration and map write` — a Go runtime throw that `gin.Recovery` cannot catch,
 so it kills every session on the process, not just the one that tripped it.
 
+### More than one replica
+
+Those maps hold **this process's** connections and nothing else, so on their own
+a second replica does not share load, it splits the company: a message sent by
+somebody on replica A reaches only the share of the channel whose sockets are on
+A. Nothing surfaces it — the send succeeds, the fan-out finds nobody, and the
+people who did not receive it have no way to know a message existed. That was
+[#42](https://github.com/himanshu-kr-jha/teamup.sh/issues/42), and it is why the
+chart used to refuse `replicaCount > 1`.
+
+Two mechanisms make several replicas one hub, both over the Redis that is
+already required. [`internal/websocket/fanout.go`](../internal/websocket/fanout.go)
+carries the reasoning; the summary:
+
+| | |
+| --- | --- |
+| **Broadcast fan-out** | Every process publishes each broadcast onto one Redis pub/sub channel (`teamup:ws:fanout`) and subscribes to it. A received envelope goes through the same `deliverTo*` function as a local one, so there is one definition of who a message reaches. |
+| **No double delivery** | A broadcast is delivered locally first and published afterwards; a process ignores envelopes carrying its own `origin`, a random id minted per process. Local delivery never waits on a network hop. |
+| **Addressed, not resolved** | An envelope carries the channel/user/org id, not a recipient list. Each process resolves membership against its own roster and its own explicit subscriptions, so the remote path cannot disagree with the local one. |
+| **Org isolation** | Everything published reaches every process, so an org broadcast is checked against each connection's own org on arrival — not trusted from the address. |
+| **Session registry** | A sorted set per user in Redis (`presence:sessions:<userID>`), member per socket, scored by that socket's expiry. Offline means the set is empty, so a tab closing on one replica no longer publishes somebody as gone while their phone is on another. `IsConnected` — which decides whether to skip a web push and whether a caller is told anybody is there — is answered from it. |
+| **Who may expire what** | A process removes only the sessions it owns, by name. Anyone may discard members whose *own owner* said they would be stale by now, which is the deadline that owner extends on every heartbeat. That is what stops replicas evicting each other's connections, and what cleans up after one that was killed. |
+
+**Redis pub/sub is fire-and-forget, and that is accepted rather than hidden.**
+The durable record is Postgres and the client refetches on reconnect, so a
+process that is down loses nothing its own clients will not immediately re-read
+— they were disconnected by the same event. The window that *does* matter is
+this process staying up while its subscription dies, because then clients stay
+connected believing they are current. So a subscription re-established after
+having been lost is treated as a gap of unknown size and the hub closes its
+local sessions; reconnecting is what refetches. Watch
+`teamup_ws_fanout_resubscribes_total`.
+
+**Backpressure** is a bounded queue in each direction that drops, counts and
+logs rather than growing — the same answer a connection's own send buffer
+gives. Outbound so a stalled Redis cannot block the request goroutine that is
+broadcasting; inbound so a slow delivery cannot turn the subscriber into an
+unbounded queue, and so the socket keeps being read.
+
+Metrics: `teamup_ws_fanout_subscribed` (0 on a running pod means it is deaf to
+the others), `teamup_ws_fanout_{published,received,dropped}_total`,
+`teamup_ws_fanout_resubscribes_total`.
+
 ---
 
 ## Packages
@@ -315,6 +358,7 @@ binary. For day-to-day work run Vite's dev server instead
 | Org admin | People, custom roles, team tree — gated client- *and* server-side |
 | First-run wizard | Org + owner account, advisory-locked idempotent finalize |
 | Observability basics | zerolog JSON, honest `/readyz`, graceful shutdown drain |
+| Multiple replicas | Broadcasts, presence and reachability shared over Redis pub/sub; no sticky sessions needed |
 
 ### Half-built — works, with a specific catch
 
@@ -404,7 +448,9 @@ organisation in it**. A single-org test cannot detect a missing `org_id` filter.
 - **Docker Compose** — `docker-compose.prod.yml`
 - **Kubernetes** — `helm/teamup`, rendering 6 resources (8 with ingress and
   autoscaling), with migrations as a `pre-install` hook since the server never
-  migrates on boot
+  migrates on boot. `replicaCount` defaults to 2: replicas share their state
+  over Redis (see [More than one replica](#more-than-one-replica)), and the
+  point of the second one is surviving a rollout, not capacity
 - **A binary and a systemd unit** — it is one file; this is a legitimate option
 
 Postgres, Redis, S3 and LiveKit are prerequisites in every case, not bundled.

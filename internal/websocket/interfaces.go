@@ -52,6 +52,39 @@ type PresenceRefresher interface {
 	Touch(userID, orgID string) error
 }
 
+// PresenceSessions counts a person's live sockets across every process.
+//
+// The hub's maps only ever hold this process's connections, which makes two
+// questions unanswerable from them once there is more than one replica: is
+// this person reachable at all, and was that their last socket. Getting the
+// second one wrong is the damaging half — a process that assumes so publishes
+// somebody as offline while they are sitting in another replica's map, and
+// their colleagues watch them disappear.
+//
+// Separate from PresenceServiceInterface for the same reason PresenceRefresher
+// is: the interface is implemented by test doubles in several packages, and a
+// presence store that is not shared between processes has nothing to count.
+// The hub asks for it and manages without.
+//
+// A session id names one socket across the cluster; the hub builds it from its
+// own node id, so an implementation only has to store and count strings.
+// Nothing is scoped by organization here because the question arrives without
+// one at every call site that asks it — the caller has a user id and wants to
+// know whether to send a push — and a user belongs to exactly one
+// organization, so the id needs no further qualification. Who a message is
+// then delivered to remains organization-checked in the hub.
+type PresenceSessions interface {
+	// AddSession records a socket that has just opened.
+	AddSession(userID, sessionID string) error
+	// TouchSession keeps a live socket's claim from expiring.
+	TouchSession(userID, sessionID string) error
+	// RemoveSession gives up a socket and reports how many the person has left
+	// anywhere in the cluster.
+	RemoveSession(userID, sessionID string) (remaining int, err error)
+	// AnySession reports whether the person has a socket open anywhere.
+	AnySession(userID string) (bool, error)
+}
+
 // ChannelRosterInterface answers who is in a channel. Delivery resolves this
 // at send time rather than keeping a subscription table in step with every
 // channel somebody joins, leaves or has created for them while connected.

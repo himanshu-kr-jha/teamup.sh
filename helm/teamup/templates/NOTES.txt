@@ -61,33 +61,39 @@ Two things about TEAMUP_AUTH_SECRET that are easy to learn the hard way:
 {{- if .Values.autoscaling.enabled }}{{ $wanted = int .Values.autoscaling.maxReplicas }}{{ end }}
 {{- if gt $wanted 1 }}
 
-  ##################################################################
-  #  Running {{ $wanted }} replicas. Messages will go missing.
-  ##################################################################
+Running {{ $wanted }} replicas. They share their state through Redis:
 
-You have set allowMultipleReplicas, so the chart rendered what you asked for.
-What that means:
+  * Every replica publishes each broadcast onto a Redis pub/sub channel and
+    subscribes to it, so a message, a call and a presence change reach every
+    session in the deployment — not only the share on the pod that sent it.
+  * Whether somebody is connected is counted across all of them, so a person
+    with a laptop on one pod and a phone on another shows online until both
+    have gone.
+  * No sticky sessions needed. A client may reconnect to any pod.
 
-  * The WebSocket hub keeps its state in process — who is connected, which
-    channels they are subscribed to, who is in which call. There is no Redis
-    pub/sub between replicas and no other channel between them.
-  * A message sent by somebody on one replica reaches only the people whose
-    sockets are on that same replica. The others never see it, and there is no
-    error, no log line and no metric to tell anybody so.
-  * Presence splits the same way: each replica shows only its own half of the
-    company as online.
-  * A reconnect can land on a different replica, so which half of the company
-    somebody can hear from changes without warning.
+All of that runs over TEAMUP_REDIS_URL. Point every replica at the same Redis
+or they will not see each other, and check that they can:
 
-Scale up rather than out: one process serves a few hundred concurrent
-sessions.
+  teamup_ws_fanout_subscribed
+      1 while a pod is receiving. 0 on a running pod means it is deaf to the
+      others, which from the outside looks like nothing at all. Alert on it.
+
+  teamup_ws_fanout_resubscribes_total
+      Rises when a pod loses Redis and gets it back. Each one closes that pod's
+      sessions so its clients reconnect and refetch — pub/sub cannot replay
+      what was missed, so there is no honest alternative.
+
+  teamup_ws_fanout_dropped_total
+      Anything but zero is messages that did not cross between replicas. The
+      reason label says whether that was Redis or this pod.
 {{- else }}
 
-Running a single replica, which is what this application supports. The
-WebSocket hub is in-process and there is no Redis pub/sub between replicas, so
-a second one would silently split the organization in two. See replicaCount in
-values.yaml. One process serves a few hundred concurrent sessions; availability
-comes from a fast restart, not from a second copy.
+Running a single replica. It works, and messages, calls and presence are all
+correct — but every `helm upgrade`, node drain or crash disconnects everybody
+at once, because there is no second pod to serve them meanwhile.
+
+Two replicas is the smallest configuration that survives a rollout. They share
+their state over the Redis you already run; see replicaCount in values.yaml.
 {{- end }}
 
 Every replica must carry the identical TEAMUP_AUTH_SECRET — which they do,

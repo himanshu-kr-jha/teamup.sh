@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -156,6 +157,96 @@ func Effective(chosen Availability, connected, inCall bool) string {
 		return "available"
 	}
 	return chosen.Status
+}
+
+// The session registry: who has a socket open, on which process.
+//
+// The presence hash says what to show for somebody. It cannot say how many
+// sockets they have, and once more than one process is writing it, that
+// difference is the whole problem: the hub used to decide "that was their last
+// connection" from its own map, so a tab closing on one replica published
+// somebody as offline while their phone was still connected to another. Every
+// replica is a writer for the same key and the last one to write wins,
+// whichever of them is right.
+//
+// So each socket claims itself here, and offline means the set is empty.
+//
+// A sorted set, scored by the moment each claim expires, rather than a plain
+// set or a counter. It has to be both reference-counted and self-healing: a
+// process that is killed never gets to let go, and nothing else may remove its
+// entries — a member belongs to the process that wrote it, and only that
+// process removes it by name. What anybody may do is discard members whose own
+// owner said they would be stale by now, which is a deadline that owner has
+// been extending on every heartbeat. That is the rule that keeps several
+// replicas from evicting each other's connections.
+//
+// Keyed by user alone, unlike the org-scoped presence hash: every caller that
+// asks "is this person reachable" — the push path deciding whether to skip a
+// notification, a call deciding whether anybody is there — has a user id and no
+// organisation. A user belongs to exactly one organisation, so the id needs no
+// further qualification, and what is then *delivered* to them stays
+// organisation-checked in the hub.
+func sessionsKey(userID string) string { return "presence:sessions:" + userID }
+
+// AddSession records a socket that has just opened.
+func (s *Service) AddSession(userID, sessionID string) error {
+	ctx := context.Background()
+	now := time.Now()
+
+	pipe := s.redis.TxPipeline()
+	pipe.ZAdd(ctx, sessionsKey(userID), redis.Z{
+		Score:  float64(now.Add(s.expiry()).UnixMilli()),
+		Member: sessionID,
+	})
+	// The key's own expiry is only housekeeping — the scores are what decide
+	// who counts. Set on every write so that a key whose members have all gone
+	// stale is eventually reclaimed rather than sitting in Redis for ever.
+	pipe.PExpire(ctx, sessionsKey(userID), s.expiry())
+	_, err := pipe.Exec(ctx)
+	return err
+}
+
+// TouchSession pushes a live socket's deadline out. Called from the same
+// connection heartbeat that refreshes the presence entry, for the same reason.
+func (s *Service) TouchSession(userID, sessionID string) error {
+	return s.AddSession(userID, sessionID)
+}
+
+// RemoveSession gives up one socket and reports how many the person has left
+// anywhere in the cluster.
+func (s *Service) RemoveSession(userID, sessionID string) (int, error) {
+	ctx := context.Background()
+
+	pipe := s.redis.TxPipeline()
+	pipe.ZRem(ctx, sessionsKey(userID), sessionID)
+	s.forgetExpired(ctx, pipe, userID)
+	remaining := pipe.ZCard(ctx, sessionsKey(userID))
+	if _, err := pipe.Exec(ctx); err != nil {
+		return 0, err
+	}
+	return int(remaining.Val()), nil
+}
+
+// AnySession reports whether the person has a socket open anywhere.
+func (s *Service) AnySession(userID string) (bool, error) {
+	ctx := context.Background()
+
+	pipe := s.redis.TxPipeline()
+	s.forgetExpired(ctx, pipe, userID)
+	count := pipe.ZCard(ctx, sessionsKey(userID))
+	if _, err := pipe.Exec(ctx); err != nil {
+		return false, err
+	}
+	return count.Val() > 0, nil
+}
+
+// forgetExpired discards claims whose owner has stopped extending them.
+//
+// Done on the read paths rather than by a sweeper: it is one more command in a
+// pipeline that was already round-tripping, it keeps the answer correct at the
+// moment it is asked, and it needs no process to be elected to run it.
+func (s *Service) forgetExpired(ctx context.Context, pipe redis.Pipeliner, userID string) {
+	pipe.ZRemRangeByScore(ctx, sessionsKey(userID), "0", strconv.FormatInt(time.Now().UnixMilli(), 10))
 }
 
 func (s *Service) SetOnline(userID, orgID string) error {

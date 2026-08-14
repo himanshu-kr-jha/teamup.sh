@@ -144,33 +144,3 @@ Renders a space-separated list; empty when nothing is missing.
 {{- end -}}
 {{- join " " $missing -}}
 {{- end }}
-
-{{/*
-Refuses to render more than one replica.
-
-TeamUp's WebSocket hub is three in-process Go maps: who is connected, which
-channels each connection is subscribed to, and who is in which call. There is
-no Redis pub/sub, and no other channel between processes. Two replicas
-therefore do not share anything: a message sent by somebody on replica A never
-reaches anybody on replica B, and neither of them sees the other's presence.
-
-Nothing surfaces it. There is no error, no log line and no metric — the send
-succeeds, the fan-out finds nobody, and the people who did not receive it have
-no way to know a message existed. A user whose socket lands on the other
-replica after a reconnect simply stops hearing from half the company.
-
-So the chart refuses rather than letting a values file quietly buy an outage
-that looks like working software. Somebody who understands the above and wants
-it anyway sets `allowMultipleReplicas: true`.
-*/}}
-{{- define "teamup.checkReplicas" -}}
-{{- if not .Values.allowMultipleReplicas -}}
-{{- $wanted := int .Values.replicaCount -}}
-{{- if .Values.autoscaling.enabled -}}
-{{- $wanted = int .Values.autoscaling.maxReplicas -}}
-{{- end -}}
-{{- if gt $wanted 1 -}}
-{{- fail (printf "\n\nTeamUp cannot run %d replicas.\n\nThe WebSocket hub keeps its state in process — who is connected, which\nchannels they are subscribed to, who is in which call — and there is no Redis\npub/sub between replicas. With more than one, a message sent by somebody on\none replica never reaches anybody on another, silently: no error, no log line,\nno metric. Presence is split the same way.\n\nOne replica serves a few hundred concurrent users. Scale up rather than out.\n\nIf you are certain, set allowMultipleReplicas: true and read\nvalues.yaml for what you are taking on.\n" $wanted) -}}
-{{- end -}}
-{{- end -}}
-{{- end }}

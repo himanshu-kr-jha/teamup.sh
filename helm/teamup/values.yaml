@@ -7,30 +7,34 @@
 #
 # Every key here is read by a template. If you add one, wire it up.
 
-# One. Not a default to raise.
+# How many server pods to run.
 #
-# TeamUp's WebSocket hub keeps its state in three in-process Go maps — who is
-# connected, which channels each connection is subscribed to, and who is in
-# which call. There is no Redis pub/sub and no other channel between replicas,
-# so two of them share nothing: a message sent by somebody on one replica never
-# reaches anybody on another. Nothing reports it. The send succeeds, the fan-out
-# finds nobody, and the half of the company that did not receive the message has
-# no way to know one was sent. Presence splits the same way.
+# More than one is supported, and the reason to want it is availability rather
+# than capacity: one process serves a few hundred concurrent WebSocket sessions
+# comfortably, which is well past the size this product is built for, but a
+# single process means every `helm upgrade` drops every user at once. Two lets
+# a rollout drain one pod while the other serves.
 #
-# The chart refuses to render more than one — see `allowMultipleReplicas`.
+# What makes that safe is cross-process fan-out: every replica publishes each
+# broadcast onto a Redis pub/sub channel and subscribes to it, so a message,
+# a call and a presence change reach every session in the deployment rather
+# than the share that happens to be on the sending pod. Redis is already a
+# required dependency; there is nothing extra to run. Every replica must point
+# at the same one — see `secrets.redisURL`.
 #
-# The ceiling this buys: one process serves a few hundred concurrent WebSocket
-# sessions comfortably, which is well past the size this product is built for.
-# Availability comes from a fast restart (the readiness gate and the 30s drain
-# below), not from running two.
-replicaCount: 1
-
-# Lets the chart render more than one replica anyway.
+# Two things follow from it that are worth knowing before you scale up:
 #
-# Only set this if the deployment genuinely does not use chat, presence or
-# calls — a read-only or API-only use. For anything else it buys an outage that
-# looks exactly like working software.
-allowMultipleReplicas: false
+#   * Redis pub/sub is fire-and-forget. If a pod loses its subscription it
+#     cannot learn what it missed, so it closes the sessions it is holding and
+#     those clients reconnect and refetch. Expect a burst of reconnects when
+#     Redis fails over. Nothing is lost — the messages are in PostgreSQL.
+#   * The fan-out is only as available as Redis. A Redis outage does not stop
+#     the pods serving the people connected to them, but it does stop them
+#     talking to each other. Watch teamup_ws_fanout_subscribed; 0 on a running
+#     pod means it is deaf to the others.
+#
+# Sticky sessions are not required. A client may reconnect to any pod.
+replicaCount: 2
 
 image:
   repository: ghcr.io/himanshu-kr-jha/teamup.sh
@@ -142,16 +146,19 @@ readinessProbe:
 # The server drains with a 30s deadline on SIGTERM.
 terminationGracePeriodSeconds: 40
 
-# Horizontal autoscaling, which for this application means adding replicas that
-# cannot talk to each other. Read the note on `replicaCount` first: with
-# maxReplicas above 1 the chart refuses to render unless
-# `allowMultipleReplicas` is set.
+# Horizontal autoscaling.
 #
-# Vertical headroom is the useful lever here — see `resources` below.
+# Replicas share their state through Redis (see `replicaCount`), so scaling out
+# is correct. It is rarely the useful lever: the hub is not the bottleneck at
+# the size this product is built for, and vertical headroom is — see
+# `resources` below. Raise maxReplicas if you have measured a reason to.
+#
+# Each pod added or removed by the autoscaler closes the sessions it was
+# holding, so aggressive scaling means clients reconnecting often.
 autoscaling:
   enabled: false
-  minReplicas: 1
-  maxReplicas: 1
+  minReplicas: 2
+  maxReplicas: 4
   targetCPUUtilizationPercentage: 80
   # targetMemoryUtilizationPercentage: 80
 

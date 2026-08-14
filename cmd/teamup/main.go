@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -19,9 +18,6 @@ import (
 
 	"github.com/caarlos0/env/v10"
 	"github.com/gin-gonic/gin"
-	"github.com/golang-migrate/migrate/v4"
-	_ "github.com/golang-migrate/migrate/v4/database/postgres"
-	_ "github.com/golang-migrate/migrate/v4/source/file"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
@@ -344,10 +340,26 @@ func main() {
 
 	// Migrate command
 	migrateCmd := &cobra.Command{
-		Use:   "migrate [up|down|version|force|create]",
+		Use:   "migrate [up|down|down-all|version|force|create]",
 		Short: "Database migrations",
-		Args:  cobra.MinimumNArgs(1),
-		RunE:  runMigrate,
+		Long: `Database migrations.
+
+  up                 Apply every pending migration.
+  down               Roll back exactly one migration, the most recent.
+                     Run it again for another step.
+  down-all           Roll back every migration, dropping every table. Asks
+                     for the database name first, and refuses outright when
+                     TEAMUP_ENV=production.
+  version            Print the recorded version and whether it is dirty.
+  force <version>    Record which version is true, clearing a dirty mark left
+                     by a migration that failed partway. Use "nil" for "no
+                     migrations applied". This changes the bookkeeping only,
+                     never the schema.
+  create <name>      Scaffold the next numbered up/down migration pair.`,
+		Args:          cobra.MinimumNArgs(1),
+		RunE:          runMigrate,
+		SilenceUsage:  true,
+		SilenceErrors: true,
 	}
 
 	// Version command
@@ -373,7 +385,11 @@ func main() {
 	rootCmd.AddCommand(serverCmd, migrateCmd, versionCmd, wizardCmd)
 
 	if err := rootCmd.Execute(); err != nil {
-		log.Fatal(err)
+		// Plain, on stderr. log.Fatal stamps a timestamp on the first line
+		// only, which turns the multi-line recovery instructions a failed
+		// migration prints into something that reads like a stack trace.
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		os.Exit(1)
 	}
 }
 
@@ -483,6 +499,32 @@ func runServer(cmd *cobra.Command, args []string) error {
 		logger,
 	)
 	go wsHub.Run()
+
+	// Cross-process delivery, over the Redis this server already requires.
+	//
+	// Without it the hub's three maps are the whole world, and a second replica
+	// does not share load, it splits the company in half — silently. With it a
+	// broadcast reaches every session in the deployment, which is what makes a
+	// rolling deploy possible at all: the old pod can drain while the new one
+	// serves, instead of every user being dropped at once.
+	//
+	// Started before the listener opens, and waited on: a process that is
+	// accepting sockets while deaf to the other replicas is exactly the failure
+	// this replaces, so it is worth a moment at boot to know which it is. It is
+	// not fatal — one replica that can reach Redis for everything else is still
+	// a working single-replica deployment, and refusing to start would turn a
+	// degraded rollout into an outage.
+	fanout := websocket.NewFanout(redisClient, logger)
+	wsHub.SetFanout(fanout)
+	fanout.Start()
+	fanoutCtx, cancelFanoutWait := context.WithTimeout(context.Background(), 10*time.Second)
+	if err := fanout.WaitReady(fanoutCtx); err != nil {
+		logger.Error().Err(err).
+			Msg("WebSocket fan-out has not subscribed yet; until it does this instance cannot see the other replicas")
+	} else {
+		logger.Info().Str("node", wsHub.NodeID()).Msg("WebSocket fan-out subscribed")
+	}
+	cancelFanoutWait()
 
 	// Set broadcasters for chat and calls services
 	chatService.SetBroadcaster(wsHub)
@@ -780,64 +822,20 @@ func runServer(cmd *cobra.Command, args []string) error {
 		logger.Warn().Err(err).Msg("WebSocket sessions did not all close within the grace period")
 	}
 
+	// After the sessions, not before. Closing each one unregisters it, which
+	// gives up its claim on the shared session registry and publishes the user
+	// as offline once their last socket anywhere has gone — and that
+	// publication has to have somewhere to go, or the colleagues still
+	// connected to the other replicas keep seeing a green dot for somebody who
+	// left with this pod. Close drains what is queued before it unsubscribes.
+	if err := fanout.Close(drainCtx); err != nil {
+		logger.Warn().Err(err).Msg("WebSocket fan-out did not shut down cleanly")
+	}
+	// And the reaper, which has nothing left to reap.
+	wsHub.Stop()
+
 	logger.Info().Msg("Server stopped")
 	return shutdownErr
-}
-
-func runMigrate(cmd *cobra.Command, args []string) error {
-	cfg := DatabaseConfig{}
-	if err := env.Parse(&cfg); err != nil {
-		return fmt.Errorf("config parse: %w", err)
-	}
-
-	// Use absolute path for migrations in container, relative for local development
-	migrationsPath := "file://migrations"
-	if _, err := os.Stat("/migrations"); err == nil {
-		migrationsPath = "file:///migrations"
-	}
-
-	m, err := migrate.New(migrationsPath, cfg.DatabaseURL)
-	if err != nil {
-		return fmt.Errorf("migrate init: %w", err)
-	}
-
-	action := args[0]
-	switch action {
-	case "up":
-		if err := m.Up(); err != nil && err != migrate.ErrNoChange {
-			return fmt.Errorf("migrate up: %w", err)
-		}
-		fmt.Println("Migrations applied successfully")
-	case "down":
-		if err := m.Down(); err != nil {
-			return fmt.Errorf("migrate down: %w", err)
-		}
-		fmt.Println("Migration rolled back")
-	case "version":
-		v, dirty, _ := m.Version()
-		fmt.Printf("Version: %d, Dirty: %v\n", v, dirty)
-	case "force":
-		if len(args) < 2 {
-			return fmt.Errorf("force requires version number")
-		}
-		version := args[1]
-		// Parse version
-		var v uint
-		fmt.Sscanf(version, "%d", &v)
-		if err := m.Force(int(v)); err != nil {
-			return fmt.Errorf("migrate force: %w", err)
-		}
-		fmt.Printf("Forced version to %d\n", v)
-	case "create":
-		if len(args) < 2 {
-			return fmt.Errorf("create requires migration name")
-		}
-		name := strings.Join(args[1:], "_")
-		return createMigrationFiles(name)
-	default:
-		return fmt.Errorf("unknown action: %s", action)
-	}
-	return nil
 }
 
 // firstNonEmpty picks the first value that was actually configured, letting an
@@ -959,25 +957,6 @@ func runAutoSetup(ctx context.Context, wizardService autoSetupService, cfg Confi
 		Str("org", data.OrgName).
 		Str("admin", data.AdminEmail).
 		Msg("Auto-setup completed")
-	return nil
-}
-
-func createMigrationFiles(name string) error {
-	timestamp := time.Now().Format("20060102150405")
-	upFile := fmt.Sprintf("migrations/%s_%s.up.sql", timestamp, name)
-	downFile := fmt.Sprintf("migrations/%s_%s.down.sql", timestamp, name)
-
-	upContent := fmt.Sprintf("-- Migration: %s\n-- Created: %s\n\n", name, time.Now().Format(time.RFC3339))
-	downContent := fmt.Sprintf("-- Rollback: %s\n-- Created: %s\n\n", name, time.Now().Format(time.RFC3339))
-
-	if err := os.WriteFile(upFile, []byte(upContent), 0644); err != nil {
-		return err
-	}
-	if err := os.WriteFile(downFile, []byte(downContent), 0644); err != nil {
-		return err
-	}
-
-	fmt.Printf("Created migration files:\n  %s\n  %s\n", upFile, downFile)
 	return nil
 }
 

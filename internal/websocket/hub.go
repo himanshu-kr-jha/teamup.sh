@@ -26,6 +26,26 @@ type Hub struct {
 	calls           CallInviteDeliverer
 	logger          zerolog.Logger
 
+	// nodeID identifies this process for as long as it runs.
+	//
+	// Random per process rather than the hostname or pod name: it is what
+	// separates our own publications from other people's, and what tags our
+	// entries in the shared session registry. A restarted pod that reused its
+	// name would inherit the sessions its predecessor never got to clean up,
+	// and would keep everybody it had been serving showing online.
+	nodeID string
+
+	// fanout carries broadcasts to and from the other replicas. Nil in a
+	// single-process deployment and in tests, where the hub behaves exactly as
+	// it did before cross-process delivery existed.
+	fanout *Fanout
+
+	// sessions counts a person's live sockets across every process, so that
+	// "are they connected" and "have they gone offline" are cluster questions
+	// rather than questions about this process's maps. Nil when the presence
+	// implementation does not offer it.
+	sessions PresenceSessions
+
 	mu          sync.RWMutex
 	connections map[string]*Connection            // connectionID -> Connection
 	userConns   map[string]map[string]*Connection // userID -> connectionID -> Connection
@@ -149,17 +169,48 @@ func NewHub(
 	authService AuthServiceInterface,
 	logger zerolog.Logger,
 ) *Hub {
-	return &Hub{
+	hub := &Hub{
 		services:        services,
 		presenceService: presenceService,
 		authService:     authService,
 		logger:          logger,
+		nodeID:          uuid.NewString(),
 		connections:     make(map[string]*Connection),
 		userConns:       make(map[string]map[string]*Connection),
 		channelSubs:     make(map[string]map[string]*Connection),
 		stop:            make(chan struct{}),
 	}
+
+	// Asked for rather than required, as PresenceRefresher is: the presence
+	// interface is implemented by test doubles in several packages, and a
+	// presence store that is not shared between processes has no cluster-wide
+	// session count to offer. Without it the hub answers from its own maps,
+	// which is exactly the behaviour of a single-replica deployment.
+	if sessions, ok := presenceService.(PresenceSessions); ok {
+		hub.sessions = sessions
+	}
+
+	return hub
 }
+
+// SetFanout wires cross-process delivery. Without it a broadcast reaches only
+// the sockets this process owns.
+//
+// Call it before Fanout.Start. The subscriber and delivery goroutines read the
+// hub this attaches, and the only thing ordering that read against this write
+// is the goroutines not existing yet.
+func (h *Hub) SetFanout(f *Fanout) {
+	h.fanout = f
+	f.hub = h
+}
+
+// NodeID identifies this process in the fan-out and the session registry.
+func (h *Hub) NodeID() string { return h.nodeID }
+
+// sessionID names one socket uniquely across the whole cluster. Connection ids
+// are only unique within a process, which is not enough once several are
+// writing the same registry.
+func (h *Hub) sessionID(conn *Connection) string { return h.nodeID + ":" + conn.ID }
 
 // Run reaps dead connections until Stop is called.
 //
@@ -205,6 +256,17 @@ func (h *Hub) Register(conn *Connection) {
 
 	h.mu.Unlock()
 
+	// Claim this socket in the shared registry before saying they are online,
+	// so that a concurrent unregister on another replica counting what is left
+	// can already see it.
+	if h.sessions != nil {
+		if err := h.sessions.AddSession(conn.UserID(), h.sessionID(conn)); err != nil {
+			h.logger.Warn().Err(err).
+				Str("user", conn.UserID()).
+				Msg("could not record the session: the other replicas may not see this person as reachable")
+		}
+	}
+
 	h.presenceService.SetOnline(conn.UserID(), conn.OrgID())
 	h.broadcastPresence(conn.OrgID(), conn.UserID(), "online", "")
 
@@ -222,8 +284,14 @@ func (h *Hub) Register(conn *Connection) {
 }
 
 // Unregister removes a connection, announcing the user as offline once their
-// last one has gone. As in Register, the announcement is made after the lock is
-// released.
+// last one has gone — anywhere, not just here. As in Register, the
+// announcement is made after the lock is released.
+//
+// "Their last one" used to mean the last one in this process's map, which with
+// several replicas is a different and wrong question: somebody closing a tab
+// served by replica A would be published as offline while their phone was
+// still connected to replica B, and their colleagues would watch them
+// disappear. The registry is what makes the count a cluster count.
 func (h *Hub) Unregister(conn *Connection) {
 	h.mu.Lock()
 	delete(h.connections, conn.ID)
@@ -247,7 +315,44 @@ func (h *Hub) Unregister(conn *Connection) {
 	}
 	h.mu.Unlock()
 
-	if wentOffline {
+	// Give up this socket's claim whatever else is true, so the registry does
+	// not have to wait for the entry to expire to stop counting it. Only ever
+	// our own: a process removes the sessions it owns and nothing else — see
+	// cleanupStaleConnections for the other half of that rule.
+	lastAnywhere := wentOffline
+	if h.sessions != nil {
+		remaining, err := h.sessions.RemoveSession(conn.UserID(), h.sessionID(conn))
+		if err != nil {
+			// Fall back to the local answer, which is what this did before the
+			// registry existed. Redis being unreachable means SetOffline below
+			// will not land either, and the entry carries a TTL for exactly
+			// this case.
+			h.logger.Warn().Err(err).
+				Str("user", conn.UserID()).
+				Msg("could not release the session: falling back to this process's own view of who is left")
+		} else {
+			// Whoever takes the count to zero announces it — not whoever
+			// happened to empty this process's map.
+			//
+			// Those are different sessions, and a shutdown is where they come
+			// apart: every session of a person is cancelled at once and each
+			// unregisters on its own goroutine. All of them leave the map, then
+			// all of them reach the registry, and the one that saw the map go
+			// empty can get there first and still find the others' claims.
+			// Judged on wentOffline it would say nothing, the others would have
+			// already decided it was not their business, and the person's
+			// colleagues would be left looking at a green dot for somebody
+			// whose server has gone.
+			//
+			// The map is still consulted, freshly: the count reaching zero and
+			// this process having nothing left are two different facts, and a
+			// claim that failed to be written would otherwise let a live socket
+			// be announced as gone.
+			lastAnywhere = remaining == 0 && !h.hasLocalConnections(conn.UserID())
+		}
+	}
+
+	if lastAnywhere {
 		h.presenceService.SetOffline(conn.UserID(), conn.OrgID())
 		h.broadcastPresence(conn.OrgID(), conn.UserID(), "offline", "")
 	}
@@ -256,9 +361,40 @@ func (h *Hub) Unregister(conn *Connection) {
 // SetCallInviteDeliverer wires the check for calls waiting on somebody.
 func (h *Hub) SetCallInviteDeliverer(c CallInviteDeliverer) { h.calls = c }
 
-// IsConnected reports whether somebody has a session open, which is what
-// separates a phone that is ringing from one that is merely being called.
+// IsConnected reports whether somebody has a session open anywhere in the
+// cluster, which is what separates a phone that is ringing from one that is
+// merely being called.
+//
+// Anywhere, not here. Notifications skip a web push for somebody the socket
+// has already reached, and calls tell the caller whether anybody is there;
+// answered per replica, both were wrong for everybody whose socket was
+// somewhere else — a duplicate push in one direction, a call reported as
+// unreachable to somebody who was sitting there in the other.
+//
+// The local map is consulted first because it is free and, for the common case
+// of a busy channel on a single replica, always the answer. The registry is
+// only asked about people this process cannot see. It fails towards "not
+// connected", which is what the callers already fail towards: a duplicate
+// notification rather than a missing one.
 func (h *Hub) IsConnected(userID string) bool {
+	local := h.hasLocalConnections(userID)
+	if local || h.sessions == nil {
+		return local
+	}
+
+	connected, err := h.sessions.AnySession(userID)
+	if err != nil {
+		h.logger.Warn().Err(err).Str("user", userID).
+			Msg("could not ask whether they are connected elsewhere; assuming not")
+		return false
+	}
+	return connected
+}
+
+// hasLocalConnections reports whether this process still holds a socket for
+// somebody. Asked at the moment it matters, unlike a snapshot taken earlier
+// under a lock that has since been released.
+func (h *Hub) hasLocalConnections(userID string) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.userConns[userID]) > 0
@@ -301,7 +437,24 @@ func (h *Hub) UnsubscribeFromChannel(conn *Connection, channelID string) {
 // page. Resolving membership per broadcast also means a channel somebody joins,
 // or a conversation started with them, works immediately without anybody having
 // to reconnect.
+// Each broadcast is delivered to this process's own sockets and then published
+// to the others, which deliver it through the same deliverTo* function. See
+// fanout.go for why local delivery does not go through Redis, and how a
+// process avoids acting on its own publication.
 func (h *Hub) BroadcastToChannel(channelID string, msg *protocol.Message, excludeUserID string) {
+	h.deliverToChannel(channelID, msg, excludeUserID)
+	h.publish(fanoutKindChannel, channelID, excludeUserID, msg)
+}
+
+// deliverToChannel resolves the channel's membership here and delivers to the
+// local sockets it names.
+//
+// The receiving replicas run this too, on their own roster and their own
+// explicit subscriptions. That is why an envelope carries the channel id and
+// not a recipient list: membership resolved by whoever is about to deliver
+// cannot disagree with itself, and somebody who joined a channel a moment ago
+// is reached without the sending replica having to know.
+func (h *Hub) deliverToChannel(channelID string, msg *protocol.Message, excludeUserID string) {
 	recipients := map[string]bool{}
 
 	if h.roster != nil {
@@ -349,6 +502,11 @@ func (h *Hub) BroadcastToChannel(channelID string, msg *protocol.Message, exclud
 // instance. Ringing somebody whose socket is opening or closing was enough to
 // trigger it, which is what a page refresh during a call looks like.
 func (h *Hub) BroadcastToUser(userID string, msg *protocol.Message) {
+	h.deliverToUser(userID, msg)
+	h.publish(fanoutKindUser, userID, "", msg)
+}
+
+func (h *Hub) deliverToUser(userID string, msg *protocol.Message) {
 	h.mu.RLock()
 	conns := make([]*Connection, 0, len(h.userConns[userID]))
 	for _, conn := range h.userConns[userID] {
@@ -362,6 +520,18 @@ func (h *Hub) BroadcastToUser(userID string, msg *protocol.Message) {
 }
 
 func (h *Hub) BroadcastToOrg(orgID string, msg *protocol.Message, excludeUserID string) {
+	h.deliverToOrg(orgID, msg, excludeUserID)
+	h.publish(fanoutKindOrg, orgID, excludeUserID, msg)
+}
+
+// deliverToOrg delivers to the local sockets belonging to one organization.
+//
+// The organization is checked against each connection rather than trusted from
+// the address. Everything published goes to every process, so this check is
+// what keeps one tenant's traffic — presence above all, which is the whole
+// organization's business by definition — out of another tenant's sockets when
+// it arrives over Redis.
+func (h *Hub) deliverToOrg(orgID string, msg *protocol.Message, excludeUserID string) {
 	h.mu.RLock()
 	conns := make([]*Connection, 0, len(h.userConns))
 	for userID, userConns := range h.userConns {
@@ -387,31 +557,112 @@ func (h *Hub) BroadcastToOrg(orgID string, msg *protocol.Message, excludeUserID 
 // belonged to, leaking user ids and their online and offline timing across
 // organizations. Nothing surfaced it because no browser could open a socket at
 // all, so the loop never had anybody to send to.
+//
+// It goes through the ordinary organization broadcast, which means it crosses
+// to the other replicas like everything else. Presence that did not would be
+// worse than no presence: whether a colleague shows as online would depend on
+// which replica each of the two of you happened to land on, and it would
+// change under you on a reconnect. The list of who is online is read from
+// Redis and was already shared; this is the event that says it changed.
 func (h *Hub) broadcastPresence(orgID, userID, status, customStatus string) {
-	msg := protocol.NewMessage(protocol.TypePresenceChanged, protocol.PresenceChangedPayload{
+	h.BroadcastToOrg(orgID, protocol.NewMessage(protocol.TypePresenceChanged, protocol.PresenceChangedPayload{
 		UserID:       userID,
 		Status:       status,
 		CustomStatus: customStatus,
-	})
+	}), "")
+}
 
+// publish tells the other replicas about a broadcast that has just been
+// delivered here. A no-op without a fan-out, which is a single-replica
+// deployment.
+func (h *Hub) publish(kind, target, exclude string, msg *protocol.Message) {
+	if h.fanout == nil {
+		return
+	}
+	h.fanout.publish(&fanoutEnvelope{
+		Origin:  h.nodeID,
+		Kind:    kind,
+		Target:  target,
+		Exclude: exclude,
+		Msg:     msg,
+	})
+}
+
+// deliverEnvelope delivers a broadcast that happened on another replica.
+//
+// An unknown kind is counted and ignored rather than guessed at. During a
+// rolling upgrade the two versions are both publishing onto the same channel,
+// and a kind this build does not understand is one it cannot address
+// correctly — delivering it to the wrong people would be worse than the older
+// replicas simply not carrying a new sort of message for the few minutes the
+// rollout takes.
+func (h *Hub) deliverEnvelope(env *fanoutEnvelope) {
+	switch env.Kind {
+	case fanoutKindChannel:
+		h.deliverToChannel(env.Target, env.Msg, env.Exclude)
+	case fanoutKindUser:
+		h.deliverToUser(env.Target, env.Msg)
+	case fanoutKindOrg:
+		h.deliverToOrg(env.Target, env.Msg, env.Exclude)
+	default:
+		wsFanoutDropped.WithLabelValues("unknown_kind").Inc()
+		h.logger.Warn().Str("kind", env.Kind).
+			Msg("fan-out: a replica published a kind this build does not know")
+	}
+}
+
+// ResyncAfterGap ends every session this process is serving, after it was cut
+// off from the other replicas for an unknown length of time.
+//
+// Redis pub/sub does not replay. When a subscription comes back there is no
+// way to learn what was published while it was gone, and no way to tell the
+// difference between nothing and everything. The clients here are still
+// connected and still believe they are current — the one state this whole
+// change exists to prevent, because it is invisible from both ends.
+//
+// So they are disconnected. The client reconnects and refetches, which is the
+// same recovery already relied on for a client that falls too far behind, and
+// the messages themselves were never at risk: they are in PostgreSQL. It is a
+// blunt instrument and it costs a reconnect storm proportional to one
+// replica's share of the users, which at this product's size is tens of
+// sockets. The alternative is to say nothing and let people miss messages they
+// will never know existed.
+func (h *Hub) ResyncAfterGap() {
 	h.mu.RLock()
-	conns := make([]*Connection, 0, len(h.userConns))
-	for _, userConns := range h.userConns {
-		for _, conn := range userConns {
-			if conn.OrgID() == orgID {
-				conns = append(conns, conn)
-			}
-		}
+	conns := make([]*Connection, 0, len(h.connections))
+	for _, conn := range h.connections {
+		conns = append(conns, conn)
 	}
 	h.mu.RUnlock()
 
+	if len(conns) == 0 {
+		return
+	}
+
+	h.logger.Warn().Int("sessions", len(conns)).
+		Msg("closing sessions after a fan-out gap: reconnecting is what refetches whatever was missed")
+
 	for _, conn := range conns {
-		conn.Enqueue(msg)
+		// Cancel first so nothing else offers to them, and close in the
+		// background: the close handshake waits on the peer, and one slow
+		// client must not hold up the rest. Unregistering is left to the
+		// handler that owns the session, as it is everywhere else that a
+		// connection is closed from outside its own loops.
+		conn.cancel()
+		go conn.finish()
 	}
 }
 
 // cleanupStaleConnections closes and unregisters connections that have stopped
 // answering.
+//
+// It reaps only what this process owns, and it can only reap what this process
+// owns: h.connections holds the sockets terminated here and nothing else.
+// That is the rule with several replicas writing the same presence — a process
+// may retire its own sessions and no others. The sessions of a process that
+// died without unregistering are not this one's to remove either; they carry a
+// deadline their owner was extending on every heartbeat, and stop counting on
+// their own once it stops.
 //
 // This used to range over the connections, assign each to _, and return, so the
 // 30-second timer fired and accomplished nothing. A half-open connection stayed
@@ -610,6 +861,15 @@ func (c *Connection) heartbeat() error {
 	if refresher, ok := c.hub.presenceService.(PresenceRefresher); ok {
 		if err := refresher.Touch(c.userID, c.orgID); err != nil {
 			c.logger.Debug().Err(err).Str("conn", c.ID).Msg("could not refresh presence")
+		}
+	}
+	// The session claim expires on the same schedule and for the same reason:
+	// it is what stops a process that was killed from holding this person open
+	// as connected for ever, on every other replica, with nobody left to
+	// correct it.
+	if c.hub.sessions != nil {
+		if err := c.hub.sessions.TouchSession(c.userID, c.hub.sessionID(c)); err != nil {
+			c.logger.Debug().Err(err).Str("conn", c.ID).Msg("could not refresh the session claim")
 		}
 	}
 	return c.writeJSON(c.ctx, protocol.NewMessage(protocol.TypeConnPing, map[string]interface{}{}))
