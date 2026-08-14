@@ -61,7 +61,7 @@ jobs:
           pnpm build
 
       - name: Upload SPA for the image build
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: web-dist
           path: cmd/teamup/web/dist
@@ -90,7 +90,7 @@ jobs:
           sha256sum teamup-linux-* > checksums.txt
           cat checksums.txt
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-artifacts
           path: dist/
@@ -181,7 +181,7 @@ jobs:
       - name: helm package
         run: helm package helm/teamup -d dist/helm
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: helm-chart
           path: dist/helm/

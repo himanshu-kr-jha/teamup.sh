@@ -59,7 +59,7 @@ jobs:
         working-directory: web
         run: pnpm build
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: web-dist
           path: cmd/teamup/web/dist
@@ -286,7 +286,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: go-test-log
@@ -331,7 +331,7 @@ jobs:
           ./teamup-linux-amd64 version
           ./teamup-linux-amd64 migrate --help
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: teamup-linux-${{ matrix.arch }}
           path: teamup-linux-${{ matrix.arch }}
