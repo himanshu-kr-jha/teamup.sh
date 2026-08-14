@@ -33,11 +33,11 @@ func TestConcurrentReparentsCannotFormACycle(t *testing.T) {
 	// single attempt would pass on an unfixed build most of the time.
 	const rounds = 25
 	for round := 0; round < rounds; round++ {
-		a, err := svc.CreateTeam(ctx, org.ID, fmt.Sprintf("alpha-%d", round), "", nil, nil)
+		a, err := svc.CreateTeam(ctx, org.ID, adminActor, fmt.Sprintf("alpha-%d", round), "", nil, nil)
 		if err != nil {
 			t.Fatalf("round %d create alpha: %v", round, err)
 		}
-		b, err := svc.CreateTeam(ctx, org.ID, fmt.Sprintf("beta-%d", round), "", nil, nil)
+		b, err := svc.CreateTeam(ctx, org.ID, adminActor, fmt.Sprintf("beta-%d", round), "", nil, nil)
 		if err != nil {
 			t.Fatalf("round %d create beta: %v", round, err)
 		}
@@ -49,11 +49,11 @@ func TestConcurrentReparentsCannotFormACycle(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			_, _ = svc.UpdateTeam(ctx, org.ID, a.ID, nil, nil, nil, &aUnderB)
+			_, _ = svc.UpdateTeam(ctx, org.ID, a.ID, adminActor, nil, nil, nil, &aUnderB)
 		}()
 		go func() {
 			defer wg.Done()
-			_, _ = svc.UpdateTeam(ctx, org.ID, b.ID, nil, nil, nil, &bUnderA)
+			_, _ = svc.UpdateTeam(ctx, org.ID, b.ID, adminActor, nil, nil, nil, &bUnderA)
 		}()
 		wg.Wait()
 
@@ -72,8 +72,8 @@ func TestConcurrentReparentsCannotFormACycle(t *testing.T) {
 
 		// Clean up so the next round starts from two fresh roots.
 		nilParent := (*uuid.UUID)(nil)
-		_, _ = svc.UpdateTeam(ctx, org.ID, a.ID, nil, nil, nil, &nilParent)
-		_, _ = svc.UpdateTeam(ctx, org.ID, b.ID, nil, nil, nil, &nilParent)
+		_, _ = svc.UpdateTeam(ctx, org.ID, a.ID, adminActor, nil, nil, nil, &nilParent)
+		_, _ = svc.UpdateTeam(ctx, org.ID, b.ID, adminActor, nil, nil, nil, &nilParent)
 		if err := svc.DeleteTeam(ctx, org.ID, a.ID); err != nil {
 			t.Fatalf("round %d cleanup alpha: %v", round, err)
 		}

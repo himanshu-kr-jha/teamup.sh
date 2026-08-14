@@ -431,22 +431,66 @@ func (s *Service) RemoveRole(ctx context.Context, orgID, userID, roleID uuid.UUI
 
 // ── Teams ─────────────────────────────────────────────────────────────────
 
-func (s *Service) CreateTeam(ctx context.Context, orgID uuid.UUID, name, description string, parentID, managerID *uuid.UUID) (*Team, error) {
+// Actor is who is asking to change the shape of the team tree.
+//
+// An organization's administrators reshape all of it. Anybody else reshapes
+// only the subtree they already run: a team lead can open a team underneath
+// one of theirs and move a team of theirs to another place underneath one of
+// theirs, so that a reorganization inside one department does not have to
+// queue behind an administrator. They cannot open a team at the top level,
+// move a team out of their own reach, or touch anything above or beside them.
+//
+// The zero value is the least privilege there is — nobody, running nothing —
+// so a caller that forgets to fill this in is refused rather than obeyed.
+type Actor struct {
+	UserID  uuid.UUID
+	IsAdmin bool
+}
+
+func (s *Service) CreateTeam(ctx context.Context, orgID uuid.UUID, actor Actor, name, description string, parentID, managerID *uuid.UUID) (*Team, error) {
 	if err := s.requireSameOrgUser(ctx, orgID, managerID); err != nil {
 		return nil, err
 	}
 	if err := s.requireSameOrgTeam(ctx, orgID, parentID); err != nil {
 		return nil, err
 	}
+	if err := requireManagerIsSelf(actor, managerID); err != nil {
+		return nil, err
+	}
+
+	// The authority check and the insert are one unit, for the same reason
+	// UpdateTeam's cycle check is: it is a question about the tree that the
+	// write is about to join, and the tree moves. Checked on the pool and then
+	// written, a lead can be told their parent is theirs, have that parent
+	// moved out from under them, and still land the new team in a subtree that
+	// is no longer theirs. Same per-organization lock, so a create and a move
+	// cannot interleave inside each other.
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("create team: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	if !actor.IsAdmin {
+		if err := lockTeamTree(ctx, tx, orgID); err != nil {
+			return nil, err
+		}
+		if err := s.requireMayNestUnder(ctx, tx, orgID, actor, parentID); err != nil {
+			return nil, err
+		}
+	}
 
 	var t Team
-	err := s.db.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO teams (id, org_id, parent_id, name, description, manager_id, created_at, updated_at)
 		VALUES (gen_random_uuid(), $1, $2, $3, NULLIF($4, ''), $5, NOW(), NOW())
 		RETURNING id, org_id, parent_id, name, COALESCE(description, ''), manager_id, created_at, updated_at
 	`, orgID, parentID, name, description, managerID).Scan(
 		&t.ID, &t.OrgID, &t.ParentID, &t.Name, &t.Description, &t.ManagerID, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
+		return nil, fmt.Errorf("create team: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("create team: %w", err)
 	}
 	return &t, nil
@@ -480,10 +524,19 @@ func (s *Service) ListTeams(ctx context.Context, orgID uuid.UUID) ([]Team, error
 
 // ManagesTeam reports whether this person runs the team, directly or through
 // a team above it. Running a team is what entitles somebody to decide who is
-// on it, without making them an administrator of the whole organization.
+// on it, and to reshape what is underneath it, without making them an
+// administrator of the whole organization.
 func (s *Service) ManagesTeam(ctx context.Context, orgID, teamID, userID uuid.UUID) (bool, error) {
+	return s.managesTeam(ctx, s.db, orgID, teamID, userID)
+}
+
+// managesTeam is the one rule, asked of a particular connection. A check that
+// guards a write has to be asked of the transaction doing the write: the
+// answer is read off the team tree, and the team tree is what is being
+// changed.
+func (s *Service) managesTeam(ctx context.Context, q querier, orgID, teamID, userID uuid.UUID) (bool, error) {
 	var ok bool
-	err := s.db.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		WITH RECURSIVE managed AS (
 			SELECT t.id FROM teams t
 			WHERE t.manager_id = $3 AND t.org_id = $1 AND t.deleted_at IS NULL
@@ -507,9 +560,16 @@ func (s *Service) ManagesTeam(ctx context.Context, orgID, teamID, userID uuid.UU
 // top level, and a pointer to an id files it under that team. A plain
 // *uuid.UUID could not say "make this a root" — which is why re-parenting was
 // missing from the update path entirely.
-func (s *Service) UpdateTeam(ctx context.Context, orgID, teamID uuid.UUID, name, description *string, managerID *uuid.UUID, parentID **uuid.UUID) (*Team, error) {
+func (s *Service) UpdateTeam(ctx context.Context, orgID, teamID uuid.UUID, actor Actor, name, description *string, managerID *uuid.UUID, parentID **uuid.UUID) (*Team, error) {
 	if err := s.requireSameOrgUser(ctx, orgID, managerID); err != nil {
 		return nil, err
+	}
+	// Naming a manager displaces whoever holds the job. A lead may run a team
+	// they have just opened, but moving the job between people — even inside
+	// their own subtree — is an administrator's decision.
+	if !actor.IsAdmin && managerID != nil {
+		return nil, apperrors.New(apperrors.CodeForbidden,
+			"only an administrator can change who runs a team")
 	}
 
 	var newParent *uuid.UUID
@@ -537,10 +597,25 @@ func (s *Service) UpdateTeam(ctx context.Context, orgID, teamID uuid.UUID, name,
 	}
 	defer tx.Rollback(ctx)
 
+	// A non-administrator needs the lock whatever they are changing, because
+	// whatever they are changing is gated on a subtree read from this same
+	// tree. An administrator needs it only for a move.
+	if parentID != nil || !actor.IsAdmin {
+		if err := lockTeamTree(ctx, tx, orgID); err != nil {
+			return nil, err
+		}
+	}
+
+	// Authority before shape, so that somebody with no business here learns
+	// only that they have no business here, rather than what the tree looks
+	// like.
+	if err := s.requireRunsTeam(ctx, tx, orgID, actor, teamID,
+		"you do not manage this team"); err != nil {
+		return nil, err
+	}
 	if parentID != nil {
-		if _, err := tx.Exec(ctx,
-			`SELECT pg_advisory_xact_lock(hashtext($1))`, orgID.String()); err != nil {
-			return nil, fmt.Errorf("lock team tree: %w", err)
+		if err := s.requireMayNestUnder(ctx, tx, orgID, actor, newParent); err != nil {
+			return nil, err
 		}
 		if err := s.requireNoCycle(ctx, tx, orgID, teamID, newParent); err != nil {
 			return nil, err
@@ -574,6 +649,80 @@ func (s *Service) UpdateTeam(ctx context.Context, orgID, teamID uuid.UUID, name,
 // answering a question about a state the write will not see.
 type querier interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+// lockTeamTree serialises everything that reads the shape of one
+// organization's team tree in order to change it. Per organization rather than
+// per row because the questions asked — is this a cycle, is this team mine —
+// span an arbitrary set of teams, so there is no fixed set to lock. Reshaping
+// a team tree is a rare administrative act, so serialising it within one
+// organization costs nothing.
+func lockTeamTree(ctx context.Context, tx pgx.Tx, orgID uuid.UUID) error {
+	if _, err := tx.Exec(ctx,
+		`SELECT pg_advisory_xact_lock(hashtext($1))`, orgID.String()); err != nil {
+		return fmt.Errorf("lock team tree: %w", err)
+	}
+	return nil
+}
+
+// requireRunsTeam refuses unless the actor runs this team. Administrators run
+// everything; everybody else is asked of q, which must be the transaction
+// doing the write — see managesTeam.
+func (s *Service) requireRunsTeam(ctx context.Context, q querier, orgID uuid.UUID, actor Actor, teamID uuid.UUID, refusal string) error {
+	if actor.IsAdmin {
+		return nil
+	}
+	manages, err := s.managesTeam(ctx, q, orgID, teamID, actor.UserID)
+	if err != nil {
+		return err
+	}
+	if !manages {
+		// The same refusal whether the team is somebody else's or does not
+		// exist, so ids cannot be probed.
+		return apperrors.New(apperrors.CodeForbidden, refusal)
+	}
+	return nil
+}
+
+// requireMayNestUnder decides where a team is allowed to be filed.
+//
+// A lead may only choose a parent they already run, which keeps the team
+// inside their own subtree both before and after the change. Refusing the move
+// out is the whole point: a team filed under somebody else is gone for good as
+// far as the lead is concerned — they could not move it back — and it hands
+// their people to whoever runs the destination, who never agreed to take them.
+// That is a reorganization, not a lead reshaping their own patch, so it stays
+// with the administrators.
+//
+// The top level is nobody's subtree, so a lead cannot put a team there either:
+// a root is a new branch of the organization rather than a rearrangement of an
+// existing one.
+func (s *Service) requireMayNestUnder(ctx context.Context, q querier, orgID uuid.UUID, actor Actor, parentID *uuid.UUID) error {
+	if actor.IsAdmin {
+		return nil
+	}
+	if parentID == nil {
+		return apperrors.New(apperrors.CodeForbidden,
+			"only an administrator can put a team at the top level")
+	}
+	return s.requireRunsTeam(ctx, q, orgID, actor, *parentID,
+		"you can only file a team under one you manage")
+}
+
+// requireManagerIsSelf lets a lead run the team they are opening and stops
+// them handing it to anybody else. Appointing a third party would grant
+// authority over the lead's own people to somebody the lead has no standing to
+// promote; naming themselves grants nothing they do not already have through
+// the parent. Leaving it unset is the ordinary case and works the same way.
+func requireManagerIsSelf(actor Actor, managerID *uuid.UUID) error {
+	if actor.IsAdmin || managerID == nil {
+		return nil
+	}
+	if *managerID != actor.UserID {
+		return apperrors.New(apperrors.CodeForbidden,
+			"only an administrator can put somebody else in charge of a team")
+	}
+	return nil
 }
 
 // requireNoCycle refuses to file a team underneath itself or underneath one of

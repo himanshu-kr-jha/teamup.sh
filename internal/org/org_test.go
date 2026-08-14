@@ -21,6 +21,13 @@ func newService(t *testing.T) (*Service, *pgxpool.Pool) {
 	return NewService(pool), pool
 }
 
+// adminActor is the caller for the tests that are about something other than
+// team authority — an administrator may reshape the whole tree, so it takes
+// these tests back to what they were before authority was a parameter. The
+// tests that are about authority are in subteam_authority_test.go and go
+// through HTTP, where the actor is built from the session.
+var adminActor = Actor{IsAdmin: true}
+
 // ── Organizations ─────────────────────────────────────────────────────────
 
 func TestCreateAndReadOrganization(t *testing.T) {
@@ -352,15 +359,15 @@ func TestTeamManagerMustBelongToTheOrganization(t *testing.T) {
 	org := testsupport.SeedOrg(t, pool)
 	other := testsupport.SeedOrg(t, pool)
 
-	if _, err := svc.CreateTeam(ctx, org.ID, "Platform", "", nil, &other.OwnerID); err == nil {
+	if _, err := svc.CreateTeam(ctx, org.ID, adminActor, "Platform", "", nil, &other.OwnerID); err == nil {
 		t.Fatal("a manager from another organization must be refused")
 	}
 
-	team, err := svc.CreateTeam(ctx, org.ID, "Platform", "", nil, nil)
+	team, err := svc.CreateTeam(ctx, org.ID, adminActor, "Platform", "", nil, nil)
 	if err != nil {
 		t.Fatalf("create team: %v", err)
 	}
-	if _, err := svc.UpdateTeam(ctx, org.ID, team.ID, nil, nil, &other.OwnerID, nil); err == nil {
+	if _, err := svc.UpdateTeam(ctx, org.ID, team.ID, adminActor, nil, nil, &other.OwnerID, nil); err == nil {
 		t.Fatal("reassigning to a foreign manager must be refused")
 	}
 }
@@ -401,7 +408,7 @@ func TestTeamLifecycleAndMembership(t *testing.T) {
 	org := testsupport.SeedOrg(t, pool)
 	member := testsupport.SeedUser(t, pool, org, "teammate@example.test", "member")
 
-	team, err := svc.CreateTeam(ctx, org.ID, "Platform", "Core team", nil, &org.OwnerID)
+	team, err := svc.CreateTeam(ctx, org.ID, adminActor, "Platform", "Core team", nil, &org.OwnerID)
 	if err != nil {
 		t.Fatalf("create team: %v", err)
 	}
@@ -446,7 +453,7 @@ func TestAddTeamMemberRefusesAnotherOrganizationsUser(t *testing.T) {
 	org := testsupport.SeedOrg(t, pool)
 	other := testsupport.SeedOrg(t, pool)
 
-	team, err := svc.CreateTeam(ctx, org.ID, "Platform", "", nil, nil)
+	team, err := svc.CreateTeam(ctx, org.ID, adminActor, "Platform", "", nil, nil)
 	if err != nil {
 		t.Fatalf("create team: %v", err)
 	}
@@ -656,17 +663,17 @@ func TestUpdateTeamReparentsATeam(t *testing.T) {
 	ctx := context.Background()
 	org := testsupport.SeedOrg(t, pool)
 
-	root, err := svc.CreateTeam(ctx, org.ID, "Engineering", "", nil, nil)
+	root, err := svc.CreateTeam(ctx, org.ID, adminActor, "Engineering", "", nil, nil)
 	if err != nil {
 		t.Fatalf("create root: %v", err)
 	}
-	moving, err := svc.CreateTeam(ctx, org.ID, "Platform", "", nil, nil)
+	moving, err := svc.CreateTeam(ctx, org.ID, adminActor, "Platform", "", nil, nil)
 	if err != nil {
 		t.Fatalf("create team: %v", err)
 	}
 
 	under := &root.ID
-	updated, err := svc.UpdateTeam(ctx, org.ID, moving.ID, nil, nil, nil, &under)
+	updated, err := svc.UpdateTeam(ctx, org.ID, moving.ID, adminActor, nil, nil, nil, &under)
 	if err != nil {
 		t.Fatalf("reparent: %v", err)
 	}
@@ -677,7 +684,7 @@ func TestUpdateTeamReparentsATeam(t *testing.T) {
 	// Not supplying a parent leaves the one it has alone, the same way the
 	// other fields behave.
 	name := "Platform Group"
-	updated, err = svc.UpdateTeam(ctx, org.ID, moving.ID, &name, nil, nil, nil)
+	updated, err = svc.UpdateTeam(ctx, org.ID, moving.ID, adminActor, &name, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("rename: %v", err)
 	}
@@ -687,7 +694,7 @@ func TestUpdateTeamReparentsATeam(t *testing.T) {
 
 	// And a team can be lifted back to the top level.
 	var none *uuid.UUID
-	updated, err = svc.UpdateTeam(ctx, org.ID, moving.ID, nil, nil, nil, &none)
+	updated, err = svc.UpdateTeam(ctx, org.ID, moving.ID, adminActor, nil, nil, nil, &none)
 	if err != nil {
 		t.Fatalf("detach: %v", err)
 	}
@@ -706,15 +713,15 @@ func TestUpdateTeamRefusesACycle(t *testing.T) {
 	ctx := context.Background()
 	org := testsupport.SeedOrg(t, pool)
 
-	top, err := svc.CreateTeam(ctx, org.ID, "Engineering", "", nil, &org.OwnerID)
+	top, err := svc.CreateTeam(ctx, org.ID, adminActor, "Engineering", "", nil, &org.OwnerID)
 	if err != nil {
 		t.Fatalf("create top: %v", err)
 	}
-	middle, err := svc.CreateTeam(ctx, org.ID, "Platform", "", &top.ID, nil)
+	middle, err := svc.CreateTeam(ctx, org.ID, adminActor, "Platform", "", &top.ID, nil)
 	if err != nil {
 		t.Fatalf("create middle: %v", err)
 	}
-	bottom, err := svc.CreateTeam(ctx, org.ID, "Storage", "", &middle.ID, nil)
+	bottom, err := svc.CreateTeam(ctx, org.ID, adminActor, "Storage", "", &middle.ID, nil)
 	if err != nil {
 		t.Fatalf("create bottom: %v", err)
 	}
@@ -730,7 +737,7 @@ func TestUpdateTeamRefusesACycle(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			parent := &tc.parent
-			if _, err := svc.UpdateTeam(ctx, org.ID, tc.team, nil, nil, nil, &parent); err == nil {
+			if _, err := svc.UpdateTeam(ctx, org.ID, tc.team, adminActor, nil, nil, nil, &parent); err == nil {
 				t.Fatal("re-parenting a team beneath its own descendant must be refused")
 			}
 		})
@@ -750,7 +757,7 @@ func TestUpdateTeamRefusesACycle(t *testing.T) {
 
 	// And not upwards. This is what a cycle would have granted.
 	lead := testsupport.SeedUser(t, pool, org, "lead@example.test", "member")
-	if _, err := svc.UpdateTeam(ctx, org.ID, bottom.ID, nil, nil, &lead, nil); err != nil {
+	if _, err := svc.UpdateTeam(ctx, org.ID, bottom.ID, adminActor, nil, nil, &lead, nil); err != nil {
 		t.Fatalf("set the bottom team's manager: %v", err)
 	}
 	upwards, err := svc.ManagesTeam(deadline, org.ID, top.ID, lead)
@@ -768,17 +775,17 @@ func TestUpdateTeamRefusesAParentInAnotherOrganization(t *testing.T) {
 	org := testsupport.SeedOrg(t, pool)
 	other := testsupport.SeedOrg(t, pool)
 
-	mine, err := svc.CreateTeam(ctx, org.ID, "Platform", "", nil, nil)
+	mine, err := svc.CreateTeam(ctx, org.ID, adminActor, "Platform", "", nil, nil)
 	if err != nil {
 		t.Fatalf("create team: %v", err)
 	}
-	theirs, err := svc.CreateTeam(ctx, other.ID, "Their Engineering", "", nil, nil)
+	theirs, err := svc.CreateTeam(ctx, other.ID, adminActor, "Their Engineering", "", nil, nil)
 	if err != nil {
 		t.Fatalf("create their team: %v", err)
 	}
 
 	parent := &theirs.ID
-	if _, err := svc.UpdateTeam(ctx, org.ID, mine.ID, nil, nil, nil, &parent); err == nil {
+	if _, err := svc.UpdateTeam(ctx, org.ID, mine.ID, adminActor, nil, nil, nil, &parent); err == nil {
 		t.Fatal("a parent from another organization must be refused")
 	}
 
@@ -799,15 +806,15 @@ func TestDeleteTeamGraftsChildrenOntoTheParent(t *testing.T) {
 	ctx := context.Background()
 	org := testsupport.SeedOrg(t, pool)
 
-	top, err := svc.CreateTeam(ctx, org.ID, "Engineering", "", nil, &org.OwnerID)
+	top, err := svc.CreateTeam(ctx, org.ID, adminActor, "Engineering", "", nil, &org.OwnerID)
 	if err != nil {
 		t.Fatalf("create top: %v", err)
 	}
-	middle, err := svc.CreateTeam(ctx, org.ID, "Platform", "", &top.ID, nil)
+	middle, err := svc.CreateTeam(ctx, org.ID, adminActor, "Platform", "", &top.ID, nil)
 	if err != nil {
 		t.Fatalf("create middle: %v", err)
 	}
-	bottom, err := svc.CreateTeam(ctx, org.ID, "Storage", "", &middle.ID, nil)
+	bottom, err := svc.CreateTeam(ctx, org.ID, adminActor, "Storage", "", &middle.ID, nil)
 	if err != nil {
 		t.Fatalf("create bottom: %v", err)
 	}
@@ -850,20 +857,20 @@ func TestDeleteTeamLiftsChildrenOfARootToTheTopLevel(t *testing.T) {
 	other := testsupport.SeedOrg(t, pool)
 
 	// A same-shaped tree next door, which must not be touched.
-	theirTop, err := svc.CreateTeam(ctx, other.ID, "Engineering", "", nil, nil)
+	theirTop, err := svc.CreateTeam(ctx, other.ID, adminActor, "Engineering", "", nil, nil)
 	if err != nil {
 		t.Fatalf("create their top: %v", err)
 	}
-	theirChild, err := svc.CreateTeam(ctx, other.ID, "Platform", "", &theirTop.ID, nil)
+	theirChild, err := svc.CreateTeam(ctx, other.ID, adminActor, "Platform", "", &theirTop.ID, nil)
 	if err != nil {
 		t.Fatalf("create their child: %v", err)
 	}
 
-	top, err := svc.CreateTeam(ctx, org.ID, "Engineering", "", nil, nil)
+	top, err := svc.CreateTeam(ctx, org.ID, adminActor, "Engineering", "", nil, nil)
 	if err != nil {
 		t.Fatalf("create top: %v", err)
 	}
-	child, err := svc.CreateTeam(ctx, org.ID, "Platform", "", &top.ID, nil)
+	child, err := svc.CreateTeam(ctx, org.ID, adminActor, "Platform", "", &top.ID, nil)
 	if err != nil {
 		t.Fatalf("create child: %v", err)
 	}
@@ -907,7 +914,7 @@ func TestImportMembersReportsEveryRowSeparately(t *testing.T) {
 	ctx := context.Background()
 	org := testsupport.SeedOrg(t, pool)
 
-	team, err := svc.CreateTeam(ctx, org.ID, "Platform", "", nil, nil)
+	team, err := svc.CreateTeam(ctx, org.ID, adminActor, "Platform", "", nil, nil)
 	if err != nil {
 		t.Fatalf("create team: %v", err)
 	}
@@ -1008,7 +1015,7 @@ func TestImportMembersOnlySeesItsOwnOrganization(t *testing.T) {
 	org := testsupport.SeedOrg(t, pool)
 	other := testsupport.SeedOrg(t, pool)
 
-	theirs, err := svc.CreateTeam(ctx, other.ID, "Secret", "", nil, nil)
+	theirs, err := svc.CreateTeam(ctx, other.ID, adminActor, "Secret", "", nil, nil)
 	if err != nil {
 		t.Fatalf("create their team: %v", err)
 	}

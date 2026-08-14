@@ -25,14 +25,24 @@ func seedDefaultRoles(t *testing.T, svc *Service, orgID uuid.UUID) {
 
 // asRoles builds a router whose only middleware is a stand-in for the auth
 // middleware, so the tests can say who is calling without minting real tokens.
+// The caller is nobody in particular, which is what a test about roles alone
+// wants.
 func asRoles(t *testing.T, svc *Service, orgID string, roles ...string) *gin.Engine {
+	t.Helper()
+	return asUser(t, svc, orgID, "00000000-0000-0000-0000-000000000001", roles...)
+}
+
+// asUser is asRoles for the tests that turn on which person is calling rather
+// than which role they hold — team authority is read off the tree, so the
+// caller has to be a real row in it.
+func asUser(t *testing.T, svc *Service, orgID, userID string, roles ...string) *gin.Engine {
 	t.Helper()
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	api := r.Group("/api")
 	api.Use(func(c *gin.Context) {
 		c.Set("org_id", orgID)
-		c.Set("user_id", "00000000-0000-0000-0000-000000000001")
+		c.Set("user_id", userID)
 		c.Set("user_roles", roles)
 		c.Next()
 	})
@@ -179,7 +189,7 @@ func TestATeamsManagerCanAddSomebodyToIt(t *testing.T) {
 		t.Fatalf("add newcomer: %v", err)
 	}
 
-	team, err := svc.CreateTeam(ctx, org.ID, "Squad", "", nil, &manager.ID)
+	team, err := svc.CreateTeam(ctx, org.ID, adminActor, "Squad", "", nil, &manager.ID)
 	if err != nil {
 		t.Fatalf("create team: %v", err)
 	}
@@ -217,7 +227,7 @@ func TestManagingATeamReachesTeamsBeneathIt(t *testing.T) {
 		t.Fatalf("add head: %v", err)
 	}
 
-	parent, err := svc.CreateTeam(ctx, org.ID, "Engineering", "", nil, &head.ID)
+	parent, err := svc.CreateTeam(ctx, org.ID, adminActor, "Engineering", "", nil, &head.ID)
 	if err != nil {
 		t.Fatalf("create parent: %v", err)
 	}
@@ -252,10 +262,10 @@ func TestManagingATeamDoesNotReachOtherTeams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("add manager: %v", err)
 	}
-	if _, err := svc.CreateTeam(ctx, org.ID, "Theirs", "", nil, &manager.ID); err != nil {
+	if _, err := svc.CreateTeam(ctx, org.ID, adminActor, "Theirs", "", nil, &manager.ID); err != nil {
 		t.Fatalf("create their team: %v", err)
 	}
-	somebodyElses, err := svc.CreateTeam(ctx, org.ID, "Sales", "", nil, nil)
+	somebodyElses, err := svc.CreateTeam(ctx, org.ID, adminActor, "Sales", "", nil, nil)
 	if err != nil {
 		t.Fatalf("create other team: %v", err)
 	}
@@ -415,11 +425,11 @@ func TestUpdateTeamEndpointMovesATeamAroundTheTree(t *testing.T) {
 	}
 	seedDefaultRoles(t, svc, org.ID)
 
-	top, err := svc.CreateTeam(ctx, org.ID, "Engineering", "", nil, nil)
+	top, err := svc.CreateTeam(ctx, org.ID, adminActor, "Engineering", "", nil, nil)
 	if err != nil {
 		t.Fatalf("create top: %v", err)
 	}
-	child, err := svc.CreateTeam(ctx, org.ID, "Platform", "", nil, nil)
+	child, err := svc.CreateTeam(ctx, org.ID, adminActor, "Platform", "", nil, nil)
 	if err != nil {
 		t.Fatalf("create child: %v", err)
 	}
@@ -479,11 +489,11 @@ func TestUpdateTeamEndpointRefusesACycle(t *testing.T) {
 	}
 	seedDefaultRoles(t, svc, org.ID)
 
-	top, err := svc.CreateTeam(ctx, org.ID, "Engineering", "", nil, nil)
+	top, err := svc.CreateTeam(ctx, org.ID, adminActor, "Engineering", "", nil, nil)
 	if err != nil {
 		t.Fatalf("create top: %v", err)
 	}
-	child, err := svc.CreateTeam(ctx, org.ID, "Platform", "", &top.ID, nil)
+	child, err := svc.CreateTeam(ctx, org.ID, adminActor, "Platform", "", &top.ID, nil)
 	if err != nil {
 		t.Fatalf("create child: %v", err)
 	}
@@ -516,11 +526,11 @@ func TestUpdateTeamEndpointRefusesANonAdministrator(t *testing.T) {
 	}
 	seedDefaultRoles(t, svc, org.ID)
 
-	top, err := svc.CreateTeam(ctx, org.ID, "Engineering", "", nil, nil)
+	top, err := svc.CreateTeam(ctx, org.ID, adminActor, "Engineering", "", nil, nil)
 	if err != nil {
 		t.Fatalf("create top: %v", err)
 	}
-	child, err := svc.CreateTeam(ctx, org.ID, "Platform", "", nil, nil)
+	child, err := svc.CreateTeam(ctx, org.ID, adminActor, "Platform", "", nil, nil)
 	if err != nil {
 		t.Fatalf("create child: %v", err)
 	}

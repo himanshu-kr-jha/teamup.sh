@@ -764,24 +764,33 @@ function asTree(teams: any[]): Array<{ team: any; depth: number }> {
 
 /**
  * Where a team may legally be filed: anywhere except itself and the teams
- * below it. Mirrors the check the server makes, so an impossible move is never
- * offered rather than being offered and then refused.
+ * below it, and — for somebody who is not an administrator — only among the
+ * teams they run. Mirrors the checks the server makes, so an impossible move
+ * is never offered rather than being offered and then refused.
+ *
+ * This is convenience, not enforcement. The server decides, against the tree
+ * as it stands at the moment of the write; this list is only as fresh as the
+ * last time the teams were fetched.
+ *
+ * @param within  the ids the caller is allowed to file under at all, or
+ *                undefined for an administrator, who may use any of them.
  */
-function eligibleParents(teams: any[], teamId?: string): any[] {
-  if (!teamId) return teams;
-  const banned = new Set<string>([String(teamId)]);
-  for (let pass = 0; pass < teams.length; pass++) {
-    let grew = false;
-    for (const t of teams) {
-      const id = String(t.id);
-      if (!banned.has(id) && t.parentId && banned.has(String(t.parentId))) {
-        banned.add(id);
-        grew = true;
+function eligibleParents(teams: any[], teamId?: string, within?: Set<string>): any[] {
+  const banned = new Set<string>(teamId ? [String(teamId)] : []);
+  if (teamId) {
+    for (let pass = 0; pass < teams.length; pass++) {
+      let grew = false;
+      for (const t of teams) {
+        const id = String(t.id);
+        if (!banned.has(id) && t.parentId && banned.has(String(t.parentId))) {
+          banned.add(id);
+          grew = true;
+        }
       }
+      if (!grew) break;
     }
-    if (!grew) break;
   }
-  return teams.filter((t) => !banned.has(String(t.id)));
+  return teams.filter((t) => !banned.has(String(t.id)) && (!within || within.has(String(t.id))));
 }
 
 function TeamsTab({
@@ -797,12 +806,14 @@ function TeamsTab({
   const [createOpen, setCreateOpen] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [newParentId, setNewParentId] = useState(TOP_LEVEL);
+  // The top level is only an option for an administrator, so a lead starts
+  // with nothing chosen rather than with a choice they are not allowed.
+  const [newParentId, setNewParentId] = useState(isAdmin ? TOP_LEVEL : '');
   const [addTo, setAddTo] = useState<any | null>(null);
   const [memberId, setMemberId] = useState('');
   const [managerFor, setManagerFor] = useState<any | null>(null);
   const [movingTeam, setMovingTeam] = useState<any | null>(null);
-  const [moveToId, setMoveToId] = useState(TOP_LEVEL);
+  const [moveToId, setMoveToId] = useState(isAdmin ? TOP_LEVEL : '');
   const [viewing, setViewing] = useState<any | null>(null);
   const [managerId, setManagerId] = useState('');
 
@@ -811,6 +822,22 @@ function TeamsTab({
   const teams = data?.data ?? [];
   const users = usersData?.data ?? [];
   const tree = asTree(teams);
+
+  // An administrator may file a team anywhere; a lead only underneath one they
+  // run. Passing undefined rather than the whole set is what says "no limit".
+  const canParent = isAdmin ? undefined : managedTeamIds;
+  // A lead reshapes their own subtree, so they get the create and move
+  // affordances too — but only once they actually run something.
+  const canCreate = isAdmin || managedTeamIds.size > 0;
+  // Whether there is anywhere this team could go. For a lead the answer is no
+  // for the team at the top of their subtree: every parent they may choose
+  // sits beneath it, so moving it would be a cycle. That is the server's rule
+  // as well, so the button is simply not offered.
+  const canMove = (t: any) =>
+    isAdmin || (managedTeamIds.has(String(t.id)) && eligibleParents(teams, String(t.id), canParent).length > 0);
+  // An administrator's new team defaults to the top level; a lead has no
+  // default, because the top level is not theirs to choose.
+  const defaultParentChoice = isAdmin ? TOP_LEVEL : '';
 
   const remove = async (id: string) => {
     try {
@@ -829,7 +856,7 @@ function TeamsTab({
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Teams</CardTitle>
-          {isAdmin && (
+          {canCreate && (
             <Button size="sm" onClick={() => setCreateOpen(true)}>
               <Plus className="mr-1 h-4 w-4" />New team
             </Button>
@@ -865,13 +892,17 @@ function TeamsTab({
                   {isAdmin && (
                     <Button variant="outline" size="sm" onClick={() => setManagerFor(t)}>Set manager</Button>
                   )}
-                  {isAdmin && (
+                  {canMove(t) && (
                     <Button
                       variant="outline"
                       size="sm"
                       onClick={() => {
                         setMovingTeam(t);
-                        setMoveToId(t.parentId ? String(t.parentId) : TOP_LEVEL);
+                        // A lead's current parent is often above their reach,
+                        // and the top level is never theirs to choose, so they
+                        // start with nothing selected and have to pick.
+                        const current = t.parentId ? String(t.parentId) : TOP_LEVEL;
+                        setMoveToId(isAdmin || managedTeamIds.has(current) ? current : '');
                       }}
                     >
                       <CornerDownRight className="mr-1 h-4 w-4" />
@@ -897,12 +928,13 @@ function TeamsTab({
         onOpenChange={(o) => {
           if (!o) {
             setMovingTeam(null);
-            setMoveToId(TOP_LEVEL);
+            setMoveToId(defaultParentChoice);
           }
         }}
         title={movingTeam ? `Where does ${movingTeam.name} sit?` : 'Move team'}
         description="Whoever runs the team above also runs this one, and everything beneath it."
         submitLabel="Move team"
+        disabledReason={!moveToId ? 'Choose where it sits.' : undefined}
         onSubmit={async () => {
           await orgApi.updateTeam(movingTeam.id, {
             // An empty string is what tells the server to lift the team to the
@@ -912,7 +944,7 @@ function TeamsTab({
           queryClient.invalidateQueries({ queryKey: ['teams'] });
           queryClient.invalidateQueries({ queryKey: ['managed-teams'] });
           setMovingTeam(null);
-          setMoveToId(TOP_LEVEL);
+          setMoveToId(defaultParentChoice);
           toast.success('Team moved.');
         }}
       >
@@ -921,14 +953,16 @@ function TeamsTab({
           <Select value={moveToId} onValueChange={setMoveToId}>
             <SelectTrigger id="teamParent"><SelectValue /></SelectTrigger>
             <SelectContent>
-              <SelectItem value={TOP_LEVEL}>Nothing — top level</SelectItem>
-              {eligibleParents(teams, movingTeam?.id).map((p: any) => (
+              {/* Only an administrator can lift a team out of every subtree. */}
+              {isAdmin && <SelectItem value={TOP_LEVEL}>Nothing — top level</SelectItem>}
+              {eligibleParents(teams, movingTeam?.id, canParent).map((p: any) => (
                 <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>
               ))}
             </SelectContent>
           </Select>
           <p className="text-xs text-muted-foreground">
             A team cannot be moved underneath itself or one of the teams below it.
+            {!isAdmin && ' You can only move it to another team you run.'}
           </p>
         </div>
       </FormDialog>
@@ -978,14 +1012,22 @@ function TeamsTab({
           if (!o) {
             setName('');
             setDescription('');
-            setNewParentId(TOP_LEVEL);
+            setNewParentId(defaultParentChoice);
           }
           setCreateOpen(o);
         }}
         title="New team"
         description="Teams nest: put one under another and whoever runs the parent runs it too."
         submitLabel="Create team"
-        disabledReason={!name.trim() ? 'Give the team a name' : undefined}
+        disabledReason={
+          !name.trim()
+            ? 'Give the team a name'
+            : // A lead's team has to sit under one of theirs; the top level is
+              // not one of the options they are offered.
+              !newParentId
+              ? 'Choose which team it sits under'
+              : undefined
+        }
         onSubmit={async () => {
           await orgApi.createTeam({
             name: name.trim(),
@@ -996,7 +1038,7 @@ function TeamsTab({
           queryClient.invalidateQueries({ queryKey: ['managed-teams'] });
           setName('');
           setDescription('');
-          setNewParentId(TOP_LEVEL);
+          setNewParentId(defaultParentChoice);
         }}
       >
         <div className="space-y-2">
@@ -1008,16 +1050,24 @@ function TeamsTab({
           <Input id="teamDescription" value={description} onChange={(e) => setDescription(e.target.value)} />
         </div>
         <div className="space-y-2">
-          <Label htmlFor="newTeamParent">Sits under (optional)</Label>
+          <Label htmlFor="newTeamParent">{isAdmin ? 'Sits under (optional)' : 'Sits under'}</Label>
           <Select value={newParentId} onValueChange={setNewParentId}>
-            <SelectTrigger id="newTeamParent"><SelectValue /></SelectTrigger>
+            <SelectTrigger id="newTeamParent">
+              <SelectValue placeholder="Choose a team you run" />
+            </SelectTrigger>
             <SelectContent>
-              <SelectItem value={TOP_LEVEL}>Nothing — top level</SelectItem>
-              {teams.map((p: any) => (
+              {/* Only an administrator starts a new branch of the organization. */}
+              {isAdmin && <SelectItem value={TOP_LEVEL}>Nothing — top level</SelectItem>}
+              {eligibleParents(teams, undefined, canParent).map((p: any) => (
                 <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>
               ))}
             </SelectContent>
           </Select>
+          {!isAdmin && (
+            <p className="text-xs text-muted-foreground">
+              You run the new team, through the one it sits under.
+            </p>
+          )}
         </div>
       </FormDialog>
 

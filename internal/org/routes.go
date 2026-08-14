@@ -68,8 +68,17 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service, options ...func(*Hand
 	rg.DELETE("/users/:id/roles/:roleId", h.requireAdmin, h.RemoveRole)
 
 	rg.GET("/teams", h.ListTeams)
-	rg.POST("/teams", h.requireAdmin, h.CreateTeam)
-	rg.PATCH("/teams/:id", h.requireAdmin, h.UpdateTeam)
+	// Opening and moving a team are not gated here, because the gate depends
+	// on what the request asks for — which parent, which manager — and has to
+	// be applied to the same tree the write lands in. The service decides,
+	// inside the transaction that does the write; see Actor.
+	rg.POST("/teams", h.CreateTeam)
+	rg.PATCH("/teams/:id", h.UpdateTeam)
+	// Deleting stays an administrator's, deliberately. DeleteTeam grafts the
+	// children onto the deleted team's parent, so a lead deleting the top of
+	// their own subtree would push everything below it up to a team they do
+	// not run — the same giving-away that moving out refuses, reached by
+	// another route.
 	rg.DELETE("/teams/:id", h.requireAdmin, h.DeleteTeam)
 	rg.GET("/teams/:id/members", h.ListTeamMembers)
 	// Deciding who is on a team belongs to whoever runs it, as well as to the
@@ -123,6 +132,19 @@ func (h *Handler) requireAdmin(c *gin.Context) {
 		return
 	}
 	c.Next()
+}
+
+// callerActor says who is asking and whether they administer the organization,
+// for the handlers whose authority the service settles rather than a piece of
+// middleware.
+func callerActor(c *gin.Context) (Actor, bool) {
+	user := auth.GetUserFromContext(c)
+	userID, err := uuid.Parse(user.UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return Actor{}, false
+	}
+	return Actor{UserID: userID, IsAdmin: user.HasAnyRole("owner", "admin")}, true
 }
 
 // callerOrg resolves the organization every request is scoped to.
@@ -550,6 +572,10 @@ func (h *Handler) CreateTeam(c *gin.Context) {
 	if !ok {
 		return
 	}
+	actor, ok := callerActor(c)
+	if !ok {
+		return
+	}
 	var req struct {
 		Name        string  `json:"name" binding:"required"`
 		Description string  `json:"description"`
@@ -572,7 +598,7 @@ func (h *Handler) CreateTeam(c *gin.Context) {
 		return
 	}
 
-	team, err := h.service.CreateTeam(c.Request.Context(), orgID, req.Name, req.Description, parentID, managerID)
+	team, err := h.service.CreateTeam(c.Request.Context(), orgID, actor, req.Name, req.Description, parentID, managerID)
 	if err != nil {
 		httpx.Error(c, err, "failed to create team")
 		return
@@ -615,6 +641,10 @@ func (h *Handler) UpdateTeam(c *gin.Context) {
 	if !ok {
 		return
 	}
+	actor, ok := callerActor(c)
+	if !ok {
+		return
+	}
 	var req struct {
 		Name        *string `json:"name"`
 		Description *string `json:"description"`
@@ -646,7 +676,7 @@ func (h *Handler) UpdateTeam(c *gin.Context) {
 		parentRef = &parentID
 	}
 
-	team, err := h.service.UpdateTeam(c.Request.Context(), orgID, teamID, req.Name, req.Description, managerID, parentRef)
+	team, err := h.service.UpdateTeam(c.Request.Context(), orgID, teamID, actor, req.Name, req.Description, managerID, parentRef)
 	if err != nil {
 		httpx.Error(c, err, "failed to update team")
 		return
