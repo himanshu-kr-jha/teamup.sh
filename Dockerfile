@@ -4,7 +4,7 @@
 # GOARCH. Building `--platform linux/arm64` the ordinary way would run this
 # stage under QEMU, which is slow, and the hardcoded `GOARCH=amd64` it used to
 # carry would then have put an amd64 binary inside an arm64 image.
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
 
 # Supplied by buildx, one value per requested platform.
 ARG TARGETARCH
