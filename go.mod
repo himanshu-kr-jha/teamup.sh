@@ -16,7 +16,7 @@ require (
 	github.com/minio/minio-go/v7 v7.0.60
 	github.com/prometheus/client_golang v1.20.5
 	github.com/redis/go-redis/v9 v9.7.3
-	github.com/rs/zerolog v1.32.0
+	github.com/rs/zerolog v1.35.1
 	github.com/spf13/cobra v1.8.0
 	golang.org/x/crypto v0.37.0
 	golang.org/x/oauth2 v0.25.0
@@ -74,8 +74,8 @@ require (
 	github.com/livekit/mediatransportutil v0.0.0-20250310153736-45596af895b6 // indirect
 	github.com/livekit/psrpc v0.6.1-0.20250205181828-a0beed2e4126 // indirect
 	github.com/magefile/mage v1.15.0 // indirect
-	github.com/mattn/go-colorable v0.1.13 // indirect
-	github.com/mattn/go-isatty v0.0.19 // indirect
+	github.com/mattn/go-colorable v0.1.14 // indirect
+	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/minio/md5-simd v1.1.2 // indirect
 	github.com/minio/sha256-simd v1.0.1 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
@@ -107,7 +107,7 @@ require (
 	github.com/prometheus/common v0.55.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/puzpuzpuz/xsync/v3 v3.5.1 // indirect
-	github.com/rs/xid v1.5.0 // indirect
+	github.com/rs/xid v1.6.0 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/stoewer/go-strcase v1.3.0 // indirect
