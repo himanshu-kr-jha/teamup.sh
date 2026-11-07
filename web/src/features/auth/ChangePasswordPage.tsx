@@ -36,8 +36,8 @@ export function ChangePasswordPage() {
       setError('The two new passwords do not match.');
       return;
     }
-    if (newPassword.length < 8) {
-      setError('Choose a password of at least 8 characters.');
+    if (newPassword.length < 12) {
+      setError('Choose a password of at least 12 characters.');
       return;
     }
     setSaving(true);

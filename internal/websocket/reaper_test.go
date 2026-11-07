@@ -177,3 +177,35 @@ func TestTheHeartbeatRefreshesPresence(t *testing.T) {
 		t.Error("the ping went out but the presence entry was not refreshed, so its TTL expires under somebody who is still here")
 	}
 }
+
+// Somebody deactivated must not keep a socket until their access token runs out: it
+// carries on being sent messages, and can ask for a call token over it.
+func TestDisconnectingSomebodyClosesAllTheirSocketsAndNobodyElses(t *testing.T) {
+	hub := NewHub(nil, &recordingPresence{}, nil, zerolog.Nop())
+	pool := newSockets(t)
+	laptop, _ := pool.open(t, hub, "conn-laptop", "user-gone", "org-1")
+	phone, _ := pool.open(t, hub, "conn-phone", "user-gone", "org-1")
+	other, _ := pool.open(t, hub, "conn-other", "user-stays", "org-1")
+	hub.Register(laptop)
+	hub.Register(phone)
+	hub.Register(other)
+
+	hub.DisconnectUser("user-gone")
+
+	if hub.IsConnected("user-gone") {
+		t.Error("they are still connected")
+	}
+	for _, conn := range []*Connection{laptop, phone} {
+		select {
+		case <-conn.ctx.Done():
+		case <-time.After(2 * time.Second):
+			t.Errorf("%s was never stopped", conn.ID)
+		}
+	}
+	if !hub.IsConnected("user-stays") {
+		t.Error("somebody else lost their socket")
+	}
+	if other.ctx.Err() != nil {
+		t.Error("somebody else's connection was stopped")
+	}
+}

@@ -6,6 +6,7 @@ import { Textarea } from '@/shared/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
 import { FormDialog } from '@/shared/components/FormDialog';
 import { tasksApi } from '@/shared/api/client';
+import { endOfDueDay } from './dueDate';
 
 interface Props {
   open: boolean;
@@ -61,9 +62,10 @@ export function CreateTaskDialog({ open, onOpenChange, onCreated }: Props) {
           taskType,
           assigneeId: assigneeId === UNASSIGNED ? undefined : assigneeId,
           // The API takes RFC3339; a date input gives us a plain day.
-          dueDate: dueDate ? new Date(`${dueDate}T00:00:00`).toISOString() : undefined,
+          dueDate: dueDate ? endOfDueDay(dueDate) : undefined,
         });
         await queryClient.invalidateQueries({ queryKey: ['tasks'] });
+        queryClient.invalidateQueries({ queryKey: ['dashboard'] });
         onCreated?.(res.data.id);
         reset();
       }}

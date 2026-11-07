@@ -24,9 +24,20 @@
     --input: 214.3 31.8% 91.4%;
     --ring: 239 84% 67%;
     --radius: 0.5rem;
+    /* How far above the bottom of the window toasts sit: over the bottom navigation,
+       and over a call's controls while one fills the screen (ActiveCallProvider). */
+    --toast-bottom: 3.5rem;
+  }
+
+  @media (min-width: 1024px) {
+    :root {
+      --toast-bottom: 0px;
+    }
   }
 
   .dark {
+    /* Native controls follow too; a date picker's icon was dark on dark. */
+    color-scheme: dark;
     --background: 222.2 84% 4.9%;
     --foreground: 210 40% 98%;
     --card: 222.2 84% 4.9%;
@@ -65,7 +76,7 @@
    *
    * 100vh on a phone means the screen with the browser's address bar counted
    * as usable, so a page built to fill it is always taller than what you can
-   * see and the whole thing scrolls a little — which is exactly the amount
+   * see and the whole thing scrolls a little - which is exactly the amount
    * that made every screen feel loose. 100dvh is the space really there, and
    * follows the bar as it hides and returns. The 100vh above it is what older
    * browsers get.

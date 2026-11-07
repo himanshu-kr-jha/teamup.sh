@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -184,6 +185,21 @@ func (f *migrateFixture) recorded() (version int64, dirty bool, present bool) {
 
 // assertAt fails unless the database is recorded at exactly this version and
 // clean.
+// downTo rolls back one migration at a time until the database is at this version,
+// however many later ones exist.
+func (f *migrateFixture) downTo(want int64) {
+	f.t.Helper()
+	for i := 0; i < 100; i++ {
+		version, _, _ := f.recorded()
+		if version <= want {
+			f.assertAt(want)
+			return
+		}
+		f.mustRun("down")
+	}
+	f.t.Fatalf("never reached version %d", want)
+}
+
 func (f *migrateFixture) assertAt(want int64) {
 	f.t.Helper()
 	got, dirty, present := f.recorded()
@@ -336,6 +352,218 @@ func TestMigrateDownStepsBackExactlyOneMigration(t *testing.T) {
 	f.assertAt(head)
 	if got := f.schemaSnapshot(); got != atHead {
 		t.Errorf("schema did not return to head after down+up")
+	}
+}
+
+// Somebody who left and came back has two rows with one address, which the
+// constraint 0016 replaced cannot hold. Rolling back has to cope with that
+// rather than leave the operator stuck on a failed migration.
+func TestEmailMigrationRollsBackPastARejoinedMember(t *testing.T) {
+	f := newMigrateFixture(t)
+	f.mustRun("up")
+	for v := headVersion(t); v > 16; v-- {
+		f.mustRun("down")
+	}
+
+	ctx := context.Background()
+	conn := f.conn()
+	if _, err := conn.Exec(ctx, `
+		WITH o AS (
+			INSERT INTO organizations (name, subdomain) VALUES ('Rejoin', 'rejoin') RETURNING id
+		)
+		INSERT INTO users (org_id, email, password_hash, name, deleted_at)
+		SELECT id, 'a@example.test', 'x', v.name, v.deleted_at::timestamptz
+		FROM o, (VALUES ('left', '2024-03-01T00:00:00Z'), ('left again', '2024-04-01T00:00:00Z'), ('back', NULL)) AS v(name, deleted_at)
+	`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	f.mustRun("down")
+	f.assertAt(15)
+
+	var email string
+	if err := conn.QueryRow(ctx, `SELECT email FROM users WHERE name = 'back'`).Scan(&email); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if email != "a@example.test" {
+		t.Errorf("the person still here lost their address: %q", email)
+	}
+}
+
+// Tracking counts a task by completed_at, which tasks finished before it was
+// kept reliably do not have. 0015 backfills them, and rolling back must not undo
+// that: the value is true either way, and nothing else could restore it.
+func TestScrumsMigrationBackfillsCompletedAtOnFinishedTasks(t *testing.T) {
+	const scrumsVersion = 15
+
+	f := newMigrateFixture(t)
+	f.mustRun("up")
+	for v := headVersion(t); v >= scrumsVersion; v-- {
+		f.mustRun("down")
+	}
+	f.assertAt(scrumsVersion - 1)
+
+	ctx := context.Background()
+	conn := f.conn()
+
+	if _, err := conn.Exec(ctx, `
+		WITH o AS (
+			INSERT INTO organizations (name, subdomain) VALUES ('Backfill', 'backfill') RETURNING id
+		), u AS (
+			INSERT INTO users (org_id, email, password_hash, name)
+			SELECT id, 'a@example.test', 'x', 'A' FROM o RETURNING id, org_id
+		)
+		INSERT INTO tasks (org_id, reporter_id, title, status, updated_at, completed_at)
+		SELECT org_id, id, v.title, v.status, v.updated_at::timestamptz, v.completed_at::timestamptz
+		FROM u, (VALUES
+			('finished long ago', 'done', '2024-03-01T00:00:00Z', NULL),
+			('finished and tracked', 'done', '2024-03-01T00:00:00Z', '2024-02-01T00:00:00Z'),
+			('still open', 'todo', '2024-03-01T00:00:00Z', NULL)
+		) AS v(title, status, updated_at, completed_at)
+	`); err != nil {
+		t.Fatalf("seed tasks: %v", err)
+	}
+
+	check := func(when string) {
+		t.Helper()
+		for title, want := range map[string]string{
+			"finished long ago":    "2024-03-01",
+			"finished and tracked": "2024-02-01",
+			"still open":           "",
+		} {
+			var got string
+			if err := conn.QueryRow(ctx,
+				`SELECT COALESCE(to_char(completed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'), '') FROM tasks WHERE title = $1`,
+				title).Scan(&got); err != nil {
+				t.Fatalf("load %q: %v", title, err)
+			}
+			if got != want {
+				t.Errorf("%s: %q has completed_at %q, want %q", when, title, got, want)
+			}
+		}
+	}
+
+	f.mustRun("up")
+	check("after up")
+	f.mustRun("down")
+	check("after down")
+}
+
+// Scrums already saved on the live database have to read the same after the Added
+// to columns arrive, and rolling back must not leave an added-to task looking like
+// somebody's own work.
+func TestScrumAddedToMigrationKeepsSavedScrumsReadable(t *testing.T) {
+	const addedToVersion = 21
+
+	f := newMigrateFixture(t)
+	f.mustRun("up")
+	for v := headVersion(t); v >= addedToVersion; v-- {
+		f.mustRun("down")
+	}
+	f.assertAt(addedToVersion - 1)
+
+	ctx := context.Background()
+	conn := f.conn()
+	if _, err := conn.Exec(ctx, `
+		WITH o AS (
+			INSERT INTO organizations (name, subdomain) VALUES ('Saved', 'saved') RETURNING id
+		), s AS (
+			INSERT INTO scrums (org_id, scope, held_by_name, done_since)
+			SELECT id, 'org', 'Holder', NOW() FROM o RETURNING id
+		), p AS (
+			INSERT INTO scrum_participants (scrum_id, user_id, name, pending, ongoing, blocked, overdue, completed)
+			SELECT id, '00000000-0000-0000-0000-000000000001', 'Alice', 1, 2, 3, 4, 5 FROM s
+		)
+		INSERT INTO scrum_entries (scrum_id, user_id, task_id, title, status, priority, overdue)
+		SELECT id, '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002', 'Kept', 'todo', 'high', false FROM s
+	`); err != nil {
+		t.Fatalf("seed scrum: %v", err)
+	}
+
+	f.mustRun("up")
+	var pending, addedTo int
+	var title string
+	var flagged bool
+	if err := conn.QueryRow(ctx, `
+		SELECT p.pending, p.added_to, e.title, e.added_to
+		FROM scrum_participants p JOIN scrum_entries e USING (scrum_id, user_id)
+	`).Scan(&pending, &addedTo, &title, &flagged); err != nil {
+		t.Fatalf("read old scrum after up: %v", err)
+	}
+	if pending != 1 || addedTo != 0 || title != "Kept" || flagged {
+		t.Errorf("an old scrum reads as saved, with nothing added to, got %d %d %q %v", pending, addedTo, title, flagged)
+	}
+
+	// Now one that does record an added-to task.
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO scrum_entries (scrum_id, user_id, task_id, title, status, priority, overdue, added_to)
+		SELECT scrum_id, user_id, '00000000-0000-0000-0000-000000000003', 'Followed', 'todo', 'high', false, true
+		FROM scrum_participants
+	`); err != nil {
+		t.Fatalf("seed added-to entry: %v", err)
+	}
+	f.downTo(addedToVersion - 1)
+	var entries int
+	if err := conn.QueryRow(ctx, `SELECT COUNT(*) FROM scrum_entries WHERE title = 'Kept'`).Scan(&entries); err != nil {
+		t.Fatalf("read after down: %v", err)
+	}
+	if entries != 1 {
+		t.Errorf("the saved work survives rolling back, got %d", entries)
+	}
+	if err := conn.QueryRow(ctx, `SELECT COUNT(*) FROM scrum_entries WHERE title = 'Followed'`).Scan(&entries); err != nil {
+		t.Fatalf("read after down: %v", err)
+	}
+	if entries != 0 {
+		t.Error("without the column an added-to row would read as their own work")
+	}
+}
+
+// A meeting nobody has held means nothing without its columns, while calls that
+// really happened are history and stay.
+func TestRollingBackStandingMeetingsDropsMeetingsNeverHeldAndKeepsCalls(t *testing.T) {
+	const standingVersion = 19
+
+	f := newMigrateFixture(t)
+	f.mustRun("up")
+	for v := headVersion(t); v > standingVersion; v-- {
+		f.mustRun("down")
+	}
+	f.assertAt(standingVersion)
+
+	ctx := context.Background()
+	conn := f.conn()
+	if _, err := conn.Exec(ctx, `
+		WITH o AS (
+			INSERT INTO organizations (name, subdomain) VALUES ('Calls', 'calls') RETURNING id
+		), u AS (
+			INSERT INTO users (org_id, email, password_hash, name)
+			SELECT id, 'a@example.test', 'x', 'A' FROM o RETURNING id, org_id
+		)
+		INSERT INTO calls (org_id, room_name, title, status, created_by, scheduled_start, scheduled_end)
+		SELECT org_id, v.title, v.title, v.status, id, v.at::timestamptz, v.at::timestamptz
+		FROM u, (VALUES
+			('never held', 'scheduled', '2026-01-01T00:00:00Z'),
+			('called off', 'cancelled', '2026-01-01T00:00:00Z'),
+			('held', 'ended', '2026-01-01T00:00:00Z'),
+			('plain call', 'ended', NULL)
+		) AS v(title, status, at)
+	`); err != nil {
+		t.Fatalf("seed calls: %v", err)
+	}
+
+	f.mustRun("down")
+	f.assertAt(standingVersion - 1)
+
+	rows, err := conn.Query(ctx, `SELECT title FROM calls ORDER BY title`)
+	if err != nil {
+		t.Fatalf("read calls: %v", err)
+	}
+	titles, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read calls: %v", err)
+	}
+	if strings.Join(titles, ",") != "held,plain call" {
+		t.Errorf("want held,plain call, got %v", titles)
 	}
 }
 
@@ -673,5 +901,128 @@ func TestCreateRejectsNamesThatCannotBeMigrations(t *testing.T) {
 				t.Errorf("rejected name still wrote files: %v", entries)
 			}
 		})
+	}
+}
+
+// Calls whose last person closed a laptop stayed active for ever, and everybody ever
+// rung for one was busy on the calendar up to this minute.
+func TestClosingStaleCallsLeavesLiveOnesMeetingsAndADownAlone(t *testing.T) {
+	const closingVersion = 22
+	f := newMigrateFixture(t)
+	f.mustRun("up")
+	f.downTo(closingVersion - 1)
+	conn := f.conn()
+	ctx := context.Background()
+
+	if _, err := conn.Exec(ctx, `
+		WITH o AS (INSERT INTO organizations (name, subdomain) VALUES ('Stale', 'stale') RETURNING id),
+		u AS (INSERT INTO users (id, org_id, name, email, role, is_active)
+		      SELECT '00000000-0000-0000-0000-0000000000a1', id, 'Ann', 'ann@stale.test', 'member', true FROM o RETURNING id, org_id)
+		INSERT INTO calls (id, org_id, room_name, call_type, status, created_by, started_at, scheduled_start, scheduled_end)
+		SELECT v.id, u.org_id, v.room, 'video', 'active', u.id, v.started, v.sched_start, v.sched_end FROM u, (VALUES
+			('00000000-0000-0000-0000-0000000000c1'::uuid, 'old',     NOW() - interval '40 days', NULL::timestamptz, NULL::timestamptz),
+			('00000000-0000-0000-0000-0000000000c2'::uuid, 'never',   NOW() - interval '40 days', NULL, NULL),
+			('00000000-0000-0000-0000-0000000000c3'::uuid, 'today',   NOW() - interval '1 hour', NULL, NULL),
+			('00000000-0000-0000-0000-0000000000c4'::uuid, 'meeting', NOW() - interval '40 days', NOW() - interval '40 days', NOW() - interval '39 days')
+		) AS v(id, room, started, sched_start, sched_end)
+	`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `
+		WITH j AS (SELECT NOW() - interval '39 days' AS at)
+		INSERT INTO call_sessions (call_id, user_id, participant_sid, joined_at)
+		SELECT '00000000-0000-0000-0000-0000000000c1', '00000000-0000-0000-0000-0000000000a1', 'PA_1', at FROM j
+	`); err != nil {
+		t.Fatalf("seed session: %v", err)
+	}
+
+	f.mustRun("up")
+
+	statusOf := func(id string) (status string, ended *time.Time) {
+		t.Helper()
+		if err := conn.QueryRow(ctx, `SELECT status, ended_at FROM calls WHERE id = $1`, id).Scan(&status, &ended); err != nil {
+			t.Fatal(err)
+		}
+		return status, ended
+	}
+	status, ended := statusOf("00000000-0000-0000-0000-0000000000c1")
+	if status != "ended" || ended == nil || time.Since(*ended) < 38*24*time.Hour {
+		t.Errorf("over as of the last thing known about it, got %s %v", status, ended)
+	}
+	if status, ended = statusOf("00000000-0000-0000-0000-0000000000c2"); status != "ended" || ended == nil {
+		t.Errorf("nobody ever came, got %s %v", status, ended)
+	}
+	if status, _ = statusOf("00000000-0000-0000-0000-0000000000c3"); status != "active" {
+		t.Errorf("a call today may be going on, got %s", status)
+	}
+	if status, _ = statusOf("00000000-0000-0000-0000-0000000000c4"); status != "active" {
+		t.Errorf("a meeting is the sweep's to decide, got %s", status)
+	}
+	var open int
+	if err := conn.QueryRow(ctx, `SELECT COUNT(*) FROM call_sessions WHERE left_at IS NULL`).Scan(&open); err != nil {
+		t.Fatal(err)
+	}
+	if open != 0 {
+		t.Errorf("the session closed with the call, %d still open", open)
+	}
+	var trail int
+	if err := conn.QueryRow(ctx, `SELECT COUNT(*) FROM call_events WHERE type = 'left'`).Scan(&trail); err != nil {
+		t.Fatal(err)
+	}
+	if trail != 1 {
+		t.Errorf("the trail says they left, got %d", trail)
+	}
+	f.downTo(closingVersion - 1)
+	if status, _ = statusOf("00000000-0000-0000-0000-0000000000c1"); status != "ended" {
+		t.Errorf("rolling back does not resurrect a call, got %s", status)
+	}
+}
+
+// Who added whom, and what schedule ran when, are extra knowledge. Rolling them back
+// keeps the watchers and the meetings.
+func TestRollingBackAddedByAndSchedulesKeepsTheRows(t *testing.T) {
+	const schedulesVersion, addedByVersion = 24, 23
+	f := newMigrateFixture(t)
+	f.mustRun("up")
+	f.downTo(addedByVersion - 1)
+	conn := f.conn()
+	ctx := context.Background()
+	if _, err := conn.Exec(ctx, `
+		WITH o AS (INSERT INTO organizations (name, subdomain) VALUES ('Keep', 'keep') RETURNING id),
+		u AS (INSERT INTO users (id, org_id, name, email, role, is_active)
+		      SELECT '00000000-0000-0000-0000-0000000000a2', id, 'Ann', 'ann@keep.test', 'member', true FROM o RETURNING id, org_id),
+		t AS (INSERT INTO tasks (id, org_id, title, reporter_id)
+		      SELECT '00000000-0000-0000-0000-0000000000d1', org_id, 'Old', id FROM u RETURNING id),
+		w AS (INSERT INTO task_watchers (task_id, user_id) SELECT t.id, u.id FROM t, u)
+		INSERT INTO standing_meetings (org_id, name, time_of_day, time_zone, weekdays)
+		SELECT org_id, 'Scrum', '09:00', 'UTC', '{1,2}' FROM u
+	`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	f.mustRun("up")
+	f.assertAt(schedulesVersion)
+	var addedBy *string
+	if err := conn.QueryRow(ctx, `SELECT added_by::text FROM task_watchers`).Scan(&addedBy); err != nil {
+		t.Fatal(err)
+	}
+	if addedBy == nil || *addedBy != "00000000-0000-0000-0000-0000000000a2" {
+		t.Errorf("no notification was ever raised for it, so they followed it themself, got %v", addedBy)
+	}
+	var versions int
+	if err := conn.QueryRow(ctx, `SELECT COUNT(*) FROM standing_meeting_schedules`).Scan(&versions); err != nil {
+		t.Fatal(err)
+	}
+	if versions != 1 {
+		t.Errorf("an existing meeting starts with the schedule it has, got %d", versions)
+	}
+
+	f.downTo(addedByVersion - 1)
+	var watchers, meetings int
+	if err := conn.QueryRow(ctx, `SELECT (SELECT COUNT(*) FROM task_watchers), (SELECT COUNT(*) FROM standing_meetings)`).Scan(&watchers, &meetings); err != nil {
+		t.Fatal(err)
+	}
+	if watchers != 1 || meetings != 1 {
+		t.Errorf("both are kept, got %d watchers and %d meetings", watchers, meetings)
 	}
 }

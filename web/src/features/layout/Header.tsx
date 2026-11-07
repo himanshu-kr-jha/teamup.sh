@@ -8,7 +8,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Avatar, AvatarFallback, AvatarImage } from '@/shared/components/ui/avatar';
 import { NotificationBell } from '@/features/notifications/NotificationBell';
 import { SearchBox } from '@/features/search/SearchBox';
-import { useState } from 'react';
+import { applyTheme, useIsDark } from '@/shared/theme';
 import { useOrganizationAccess } from './useOrganizationAccess';
 
 export function Header() {
@@ -16,7 +16,7 @@ export function Header() {
   const { personOf } = usePresence();
   const navigate = useNavigate();
   const { allowed: mayAdminister } = useOrganizationAccess();
-  const [theme, setTheme] = useState<'light' | 'dark'>('light');
+  const isDark = useIsDark();
 
   return (
     // z-50, above the channel list: sticky positioning makes this a stacking
@@ -40,15 +40,10 @@ export function Header() {
         <Button
           variant="ghost"
           size="icon"
-          onClick={() => {
-            const newTheme = theme === 'light' ? 'dark' : 'light';
-            setTheme(newTheme);
-            document.documentElement.classList.toggle('dark', newTheme === 'dark');
-            localStorage.setItem('theme', newTheme);
-          }}
-          aria-label={theme === 'light' ? 'Switch to dark mode' : 'Switch to light mode'}
+          onClick={() => applyTheme(isDark ? 'light' : 'dark')}
+          aria-label={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
         >
-          {theme === 'light' ? <Moon className="h-5 w-5" /> : <Sun className="h-5 w-5" />}
+          {isDark ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
         </Button>
 
         {/* Notifications: real unread count and list */}

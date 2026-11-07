@@ -74,7 +74,7 @@ export function AdminPage() {
         </TabsList>
 
         <TabsContent value="members" className="p-4 md:p-6">
-          <MembersTab isAdmin={isAdmin} currentUserId={user?.id} />
+          <MembersTab isAdmin={isAdmin} isOwner={user?.roles?.includes('owner') ?? false} currentUserId={user?.id} />
         </TabsContent>
         <TabsContent value="roles" className="p-4 md:p-6">
           <RolesTab isAdmin={isAdmin} />
@@ -87,15 +87,24 @@ export function AdminPage() {
   );
 }
 
-function MembersTab({ isAdmin, currentUserId }: { isAdmin: boolean; currentUserId?: string }) {
+function MembersTab({
+  isAdmin,
+  isOwner,
+  currentUserId,
+}: {
+  isAdmin: boolean;
+  isOwner: boolean;
+  currentUserId?: string;
+}) {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [assignFor, setAssignFor] = useState<any | null>(null);
+  const [resetFor, setResetFor] = useState<any | null>(null);
   const [adding, setAdding] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<ImportOutcome[] | null>(null);
   const [newCredentials, setNewCredentials] = useState<
-    { name: string; email: string; password: string; emailed: boolean } | null
+    { name: string; email: string; password: string; emailed: boolean; reset?: boolean } | null
   >(null);
   const { statusOf } = usePresence();
 
@@ -178,10 +187,15 @@ function MembersTab({ isAdmin, currentUserId }: { isAdmin: boolean; currentUserI
                 )}
               </div>
               {isAdmin && (
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <Button variant="outline" size="sm" onClick={() => setAssignFor(u)}>
                     Assign role
                   </Button>
+                  {u.id !== currentUserId && (isOwner || !(u.roles ?? []).includes('owner')) && (
+                    <Button variant="outline" size="sm" onClick={() => setResetFor(u)}>
+                      Reset password
+                    </Button>
+                  )}
                   {u.id !== currentUserId && (
                     <Button variant="ghost" size="sm" onClick={() => deactivate(u.id)}>
                       <Trash2 className="h-4 w-4" />
@@ -203,6 +217,26 @@ function MembersTab({ isAdmin, currentUserId }: { isAdmin: boolean; currentUserI
           setNewCredentials(credentials);
         }}
       />
+
+      <FormDialog
+        open={!!resetFor}
+        onOpenChange={(o) => !o && setResetFor(null)}
+        title="Reset password"
+        description={`${resetFor?.name} will be signed out everywhere and their current password will stop working. You get a temporary password to pass on.`}
+        submitLabel="Reset password"
+        onSubmit={async () => {
+          const res = await orgApi.resetPassword(resetFor.id);
+          setNewCredentials({
+            name: resetFor.name,
+            email: resetFor.email,
+            password: res.data.temporaryPassword,
+            emailed: false,
+            reset: true,
+          });
+        }}
+      >
+        {null}
+      </FormDialog>
 
       <TemporaryPasswordDialog
         credentials={newCredentials}
@@ -326,7 +360,7 @@ function TemporaryPasswordDialog({
   credentials,
   onClose,
 }: {
-  credentials: { name: string; email: string; password: string; emailed: boolean } | null;
+  credentials: { name: string; email: string; password: string; emailed: boolean; reset?: boolean } | null;
   onClose: () => void;
 }) {
   const toast = useToast();
@@ -359,11 +393,11 @@ function TemporaryPasswordDialog({
     <Dialog open={!!credentials} onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Member added</DialogTitle>
+          <DialogTitle>{credentials?.reset ? 'Password reset' : 'Member added'}</DialogTitle>
           <DialogDescription>
             {credentials?.emailed
               ? `Sent to ${credentials?.email}. They will be asked to choose their own password the first time they sign in.`
-              : `Pass these on to ${credentials?.email}. They will be asked to choose their own password the first time they sign in.`}
+              : `Pass these on to ${credentials?.email}. They will be asked to choose their own password the next time they sign in.`}
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-2">
@@ -390,7 +424,7 @@ function TemporaryPasswordDialog({
           <p className="text-sm text-destructive">
             This will not be shown again. Copy it or download it before closing.
           </p>
-          {!credentials?.emailed && (
+          {!credentials?.emailed && !credentials?.reset && (
             <p className="text-sm text-muted-foreground">
               No email was sent — this installation has no mail server configured, so
               you will need to pass these on yourself.

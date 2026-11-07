@@ -10,6 +10,8 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+
+	"github.com/teamup/teamup/internal/testsupport"
 )
 
 // seedDefaultRoles mirrors what the setup wizard creates for a real
@@ -538,5 +540,86 @@ func TestUpdateTeamEndpointRefusesANonAdministrator(t *testing.T) {
 	r := asRoles(t, svc, org.ID.String(), "member")
 	if w := patchTeam(t, r, child.ID, map[string]any{"parentId": top.ID.String()}); w.Code != http.StatusForbidden {
 		t.Fatalf("want 403, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func postTeamMember(t *testing.T, r *gin.Engine, teamID, userID uuid.UUID) *httptest.ResponseRecorder {
+	t.Helper()
+	raw, err := json.Marshal(map[string]string{"userId": userID.String()})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/teams/"+teamID.String()+"/members", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// Every authority decision in tasks is read off team_members, so putting
+// somebody on your team is what makes you their manager. A lead may do that for
+// somebody nobody has yet and for somebody already in their chart, but not to
+// their own boss, a peer, or a peer's reports.
+//
+//	Company     (boss runs it; the lead is on it)
+//	├── Platform  (the lead runs it)
+//	│   └── Storage  (subLead runs it)
+//	└── Sales     (peer runs it)
+func TestWhoALeadMayAddToTheirTeam(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedOrg(t, pool)
+
+	user := func(name string) uuid.UUID {
+		return testsupport.SeedUser(t, pool, org, name+"@example.test", "member")
+	}
+	lead, boss, peer, subLead := user("lead"), user("boss"), user("peer"), user("sublead")
+	onStorage, onSales, unattached := user("onstorage"), user("onsales"), user("unattached")
+	onBoth := user("onboth")
+
+	company := testsupport.SeedTeam(t, pool, org, "Company", &boss, nil, lead)
+	platform := testsupport.SeedTeam(t, pool, org, "Platform", &lead, &company)
+	testsupport.SeedTeam(t, pool, org, "Storage", &subLead, &platform, onStorage, onBoth)
+	testsupport.SeedTeam(t, pool, org, "Sales", &peer, &company, onSales, onBoth)
+
+	asLead := asUser(t, svc, org.ID.String(), lead.String(), "member")
+	asAdmin := asUser(t, svc, org.ID.String(), org.OwnerID.String(), "owner")
+
+	cases := []struct {
+		name string
+		as   *gin.Engine
+		who  uuid.UUID
+		want int
+	}{
+		{"nobody has them yet", asLead, unattached, http.StatusOK},
+		{"already on a team beneath", asLead, onStorage, http.StatusOK},
+		{"runs a team beneath", asLead, subLead, http.StatusOK},
+		{"already in the chart and on a team beside it", asLead, onBoth, http.StatusOK},
+		{"the lead themselves", asLead, lead, http.StatusOK},
+		{"their own boss, who sits on no team", asLead, boss, http.StatusForbidden},
+		{"a peer, who sits on no team", asLead, peer, http.StatusForbidden},
+		{"a peer's report", asLead, onSales, http.StatusForbidden},
+		{"somebody in another organization", asLead, other.OwnerID, http.StatusNotFound},
+		{"an administrator adding anybody", asAdmin, boss, http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := postTeamMember(t, tc.as, platform, tc.who)
+			if w.Code != tc.want {
+				t.Fatalf("want %d, got %d: %s", tc.want, w.Code, w.Body.String())
+			}
+			members, err := svc.ListTeamMembers(ctx, org.ID, platform)
+			if err != nil {
+				t.Fatalf("list members: %v", err)
+			}
+			added := false
+			for _, m := range members {
+				added = added || m.ID == tc.who
+			}
+			if added != (tc.want == http.StatusOK) {
+				t.Errorf("on the team: %v, after a %d", added, tc.want)
+			}
+		})
 	}
 }

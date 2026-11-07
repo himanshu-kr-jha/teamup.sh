@@ -121,7 +121,7 @@ lint:
 	cd web && pnpm lint
 
 # Docker
-docker: build-all
+docker:
 	@echo "Building Docker image..."
 	docker build -t teamup:$(VERSION) -t teamup:latest .
 

@@ -318,21 +318,74 @@ func TestRingSkipsSomebodyFromAnotherOrganization(t *testing.T) {
 	}
 }
 
-func TestACallAcceptFrameUsesTheRoomItNames(t *testing.T) {
-	svc, pool := newService(t)
+func acceptFrame(room string) string {
+	return `{"type":"call.accept","payload":{"roomName":"` + room + `"}}`
+}
+
+// A join token used to be signed for whatever room name the frame carried, so
+// knowing or guessing a name was enough to join any live call on the instance.
+func TestACallAcceptFrameTokenIsOnlyForSomebodyEntitledToJoin(t *testing.T) {
+	svc, pool := newTokenService(t)
+	ctx := context.Background()
 	org := testsupport.SeedOrg(t, pool)
+	invitee := testsupport.SeedUser(t, pool, org, "invitee@example.test", "member")
+	member := testsupport.SeedUser(t, pool, org, "member@example.test", "member")
+	bystander := testsupport.SeedUser(t, pool, org, "bystander@example.test", "member")
+	other := testsupport.SeedOrg(t, pool)
+	channel := testsupport.SeedChannel(t, pool, org, "standup", org.OwnerID, member)
 
-	broadcaster := newRecordingBroadcaster()
-	svc.SetBroadcaster(broadcaster)
+	private, err := svc.CreateCall(ctx, org.ID, org.OwnerID, nil, "video", nil, []string{invitee.String()})
+	if err != nil {
+		t.Fatalf("create private call: %v", err)
+	}
+	team, err := svc.CreateCall(ctx, org.ID, org.OwnerID, nil, "video", &channel, nil)
+	if err != nil {
+		t.Fatalf("create channel call: %v", err)
+	}
+	ended, err := svc.CreateCall(ctx, org.ID, org.OwnerID, nil, "video", nil, []string{invitee.String()})
+	if err != nil {
+		t.Fatalf("create ended call: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE calls SET status = 'ended', ended_at = NOW() WHERE id = $1`, ended.ID); err != nil {
+		t.Fatalf("end call: %v", err)
+	}
 
-	callee := &wsConn{userID: org.OwnerID.String(), orgID: org.ID.String()}
-	svc.HandleCallAccept(context.Background(), callee,
-		decodeFrame(t, `{"type":"call.accept","payload":{"roomName":"call-abc123"}}`))
+	cases := []struct {
+		name    string
+		org     uuid.UUID
+		user    uuid.UUID
+		room    string
+		callID  uuid.UUID
+		allowed bool
+	}{
+		{"somebody invited", org.ID, invitee, private.RoomName, private.ID, true},
+		{"a member of the call's channel", org.ID, member, team.RoomName, team.ID, true},
+		{"somebody in another organization", other.ID, other.OwnerID, private.RoomName, private.ID, false},
+		{"a colleague who was not invited", org.ID, bystander, private.RoomName, private.ID, false},
+		{"somebody invited, once it has ended", org.ID, invitee, ended.RoomName, ended.ID, false},
+		{"a room that does not exist", org.ID, invitee, "call-abc123", uuid.Nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			broadcaster := newRecordingBroadcaster()
+			svc.SetBroadcaster(broadcaster)
 
-	var accepted protocol.CallInvitedPayload
-	decodePayload(t, broadcaster.firstToUser(t, org.OwnerID.String(), protocol.TypeCallInvited), &accepted)
-	if accepted.RoomName != "call-abc123" {
-		t.Errorf("room name from the frame: got %q want call-abc123", accepted.RoomName)
+			conn := &wsConn{userID: tc.user.String(), orgID: tc.org.String()}
+			svc.HandleCallAccept(ctx, conn, decodeFrame(t, acceptFrame(tc.room)))
+
+			if !tc.allowed {
+				broadcaster.nothingToUser(t, tc.user.String(), tc.name)
+				return
+			}
+			var accepted protocol.CallInvitedPayload
+			decodePayload(t, broadcaster.firstToUser(t, tc.user.String(), protocol.TypeCallInvited), &accepted)
+			if accepted.RoomName != tc.room || accepted.Token == "" {
+				t.Errorf("accepted: got room %q and token %q, want room %q and a token", accepted.RoomName, accepted.Token, tc.room)
+			}
+			if accepted.CallID != tc.callID.String() {
+				t.Errorf("call id: got %q want %s", accepted.CallID, tc.callID)
+			}
+		})
 	}
 }
 

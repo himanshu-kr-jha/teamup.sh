@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -193,6 +194,11 @@ func scanTask(row pgx.Row) (*Task, error) {
 	return &t, nil
 }
 
+// maxListedTasks bounds one list response. The board refetches on focus and on
+// a timer, so an organization's whole history must not come back every time.
+// Far more than a team of 50 has open at once.
+const maxListedTasks = 1000
+
 func (s *Service) ListTasks(ctx context.Context, orgID uuid.UUID, f Filters) ([]Task, error) {
 	where := []string{"t.org_id = $1", "t.deleted_at IS NULL"}
 	args := []any{orgID}
@@ -281,8 +287,15 @@ func (s *Service) ListTasks(ctx context.Context, orgID uuid.UUID, f Filters) ([]
 		where = append(where, clause)
 	}
 
-	query := taskColumns + " WHERE " + strings.Join(where, " AND ") +
-		" ORDER BY t.position, t.created_at DESC"
+	// Choose which rows survive the cap first and order them for the board
+	// afterwards: open work outranks finished work whatever its age, and within
+	// each the most recent activity stays.
+	args = append(args, maxListedTasks)
+	query := taskColumns + ` WHERE t.id IN (
+		SELECT t.id FROM tasks t WHERE ` + strings.Join(where, " AND ") + `
+		ORDER BY t.status = 'done', COALESCE(t.completed_at, t.created_at) DESC
+		LIMIT $` + strconv.Itoa(len(args)) + `
+	) ORDER BY t.position, t.created_at DESC`
 
 	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
@@ -489,6 +502,10 @@ func (s *Service) attachLabels(ctx context.Context, tasks []Task) ([]Task, error
 }
 
 func (s *Service) CreateTask(ctx context.Context, orgID, reporterID uuid.UUID, title, description, status, priority, taskType string, projectID, assigneeID *uuid.UUID, dueDate, startDate *time.Time, labels []string, isOrgAdmin bool) (*Task, error) {
+	title = strings.TrimSpace(title)
+	if !validTitle(title) {
+		return nil, apperrors.New(apperrors.CodeBadRequest, "invalid title")
+	}
 	if assigneeID != nil {
 		// Only UpdateTask used to confine the assignee to the organization, so
 		// creating a task assigned to another tenant's user went straight
@@ -530,10 +547,11 @@ func (s *Service) CreateTask(ctx context.Context, orgID, reporterID uuid.UUID, t
 	id := uuid.New()
 	_, err = tx.Exec(ctx, `
 		INSERT INTO tasks (id, org_id, project_id, reporter_id, assignee_id, title, description,
-		                   status, priority, task_type, due_date, start_date, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), $8, $9, $10, $11, $12, NOW(), NOW())
+		                   status, priority, task_type, due_date, start_date, completed_at, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), $8, $9, $10, $11, $12,
+		        CASE WHEN $13::boolean THEN NOW() END, NOW(), NOW())
 	`, id, orgID, projectID, reporterID, assigneeID, title, description,
-		status, priority, taskType, dueDate, startDate)
+		status, priority, taskType, dueDate, startDate, status == "done")
 	if err != nil {
 		return nil, fmt.Errorf("create task: %w", err)
 	}
@@ -616,6 +634,11 @@ var updatableFields = map[string]string{
 // is the caller's mistake, not a server fault.
 const titleMaxLength = 500
 
+// validTitle is the one rule for a task's title, on create and on update.
+func validTitle(title string) bool {
+	return strings.TrimSpace(title) != "" && len(title) <= titleMaxLength
+}
+
 // allowedStatuses and allowedPriorities mirror the binding tags on create.
 // PATCH takes a free-form map, so without these an update could set a status
 // no board column matches.
@@ -655,7 +678,7 @@ func (s *Service) validateUpdates(ctx context.Context, orgID, actorID uuid.UUID,
 	// back as a 500 carrying a constraint or encoding message.
 	if raw, ok := updates["title"]; ok {
 		title, isString := raw.(string)
-		if !isString || strings.TrimSpace(title) == "" || len(title) > titleMaxLength {
+		if !isString || !validTitle(title) {
 			return apperrors.New(apperrors.CodeBadRequest, "invalid title")
 		}
 	}
@@ -749,7 +772,7 @@ func (s *Service) validateUpdates(ctx context.Context, orgID, actorID uuid.UUID,
 // assign work to themselves. Organization owners and admins are not bounded by
 // the chart. Without this, any member could assign work to their manager.
 func (s *Service) MayAssign(ctx context.Context, orgID, actorID, assigneeID uuid.UUID, isOrgAdmin bool) (bool, error) {
-	return s.hasAuthorityOver(ctx, orgID, actorID, assigneeID, isOrgAdmin)
+	return s.HasAuthorityOver(ctx, orgID, actorID, assigneeID, isOrgAdmin)
 }
 
 // authorityFact is what the org chart says about one person, seen from one
@@ -824,12 +847,12 @@ func (s *Service) authorityFacts(ctx context.Context, orgID, actorID uuid.UUID, 
 	return facts, rows.Err()
 }
 
-// hasAuthorityOver answers whether actor may act on subject's behalf: they are
+// HasAuthorityOver answers whether actor may act on subject's behalf: they are
 // the same person, actor manages a team subject sits on (directly or further
 // down), or actor administers the organization. It is the one place this
 // package decides who outranks whom, so assigning work, deleting somebody's
 // task and drawing their card on a board cannot drift apart.
-func (s *Service) hasAuthorityOver(ctx context.Context, orgID, actorID, subjectID uuid.UUID, isOrgAdmin bool) (bool, error) {
+func (s *Service) HasAuthorityOver(ctx context.Context, orgID, actorID, subjectID uuid.UUID, isOrgAdmin bool) (bool, error) {
 	if isOrgAdmin || actorID == subjectID {
 		return true, nil
 	}
@@ -841,6 +864,22 @@ func (s *Service) hasAuthorityOver(ctx context.Context, orgID, actorID, subjectI
 	// reachable gets here — every caller looks its row up organization-scoped
 	// first — and a refusal is the fail-closed answer if one ever does.
 	return facts[subjectID].allows(), nil
+}
+
+// AuthorityOverAny answers whether actor outranks at least one of these people,
+// by the same facts. An organization admin is the caller's own question to ask
+// first; this reads only the chart.
+func (s *Service) AuthorityOverAny(ctx context.Context, orgID, actorID uuid.UUID, subjects []uuid.UUID) (bool, error) {
+	facts, err := s.authorityFacts(ctx, orgID, actorID, subjects)
+	if err != nil {
+		return false, err
+	}
+	for _, fact := range facts {
+		if fact.allows() {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // attachAbilities tells each task what this caller may do to it, in one pass
@@ -985,7 +1024,7 @@ func (s *Service) UpdateTask(ctx context.Context, orgID, id, actorID uuid.UUID, 
 	// own reports, and the board's reassign flag would be promising something
 	// the write path does not honour.
 	if _, reassigning := updates["assigneeId"]; reassigning && before.AssigneeID != nil {
-		mayTake, err := s.hasAuthorityOver(ctx, orgID, actorID, *before.AssigneeID, isOrgAdmin)
+		mayTake, err := s.HasAuthorityOver(ctx, orgID, actorID, *before.AssigneeID, isOrgAdmin)
 		if err != nil {
 			return nil, err
 		}
@@ -1010,10 +1049,12 @@ func (s *Service) UpdateTask(ctx context.Context, orgID, id, actorID uuid.UUID, 
 		// they would from a real change, abilities included.
 		return s.GetTaskFor(ctx, orgID, id, actorID, isOrgAdmin)
 	}
-	// Completing a task stamps completed_at; reopening clears it.
+	// Completing a task stamps completed_at; reopening clears it. Saving done
+	// over done keeps the first date, because tracking counts work by that date
+	// and a later edit must not move it.
 	if status, ok := updates["status"].(string); ok {
 		if status == "done" {
-			sets = append(sets, "completed_at = NOW()")
+			sets = append(sets, "completed_at = COALESCE(completed_at, NOW())")
 		} else {
 			sets = append(sets, "completed_at = NULL")
 		}
@@ -1041,7 +1082,7 @@ func (s *Service) UpdateTask(ctx context.Context, orgID, id, actorID uuid.UUID, 
 			continue
 		}
 		oldValue := beforeValue(before, key)
-		newValue := fmt.Sprintf("%v", value)
+		newValue := activityValue(value)
 		if oldValue == newValue {
 			continue
 		}
@@ -1064,6 +1105,8 @@ func (s *Service) UpdateTask(ctx context.Context, orgID, id, actorID uuid.UUID, 
 	return after, nil
 }
 
+// beforeValue is what a field holds now, written the way activityValue writes the
+// incoming value, so comparing the two says whether anything changed.
 func beforeValue(t *Task, field string) string {
 	switch field {
 	case "title":
@@ -1077,12 +1120,48 @@ func beforeValue(t *Task, field string) string {
 	case "taskType":
 		return t.TaskType
 	case "assigneeId":
-		if t.AssigneeID == nil {
-			return ""
-		}
-		return t.AssigneeID.String()
+		return activityValue(t.AssigneeID)
+	case "dueDate":
+		return activityValue(t.DueDate)
+	case "startDate":
+		return activityValue(t.StartDate)
+	case "storyPoints":
+		return activityValue(t.StoryPoints)
+	case "position":
+		return activityValue(t.Position)
+	case "parentTaskId":
+		return activityValue(t.ParentTaskID)
 	default:
 		return ""
+	}
+}
+
+// activityValue is how a value is written into the history: an empty field is the
+// empty string, never "<nil>", and a time is RFC3339 in UTC, so one instant reads
+// the same whichever zone it arrived in.
+func activityValue(value any) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case time.Time:
+		return v.UTC().Format(time.RFC3339)
+	case *time.Time:
+		if v == nil {
+			return ""
+		}
+		return activityValue(*v)
+	case *int:
+		if v == nil {
+			return ""
+		}
+		return activityValue(*v)
+	case *uuid.UUID:
+		if v == nil {
+			return ""
+		}
+		return v.String()
+	default:
+		return fmt.Sprintf("%v", v)
 	}
 }
 
@@ -1129,7 +1208,7 @@ func (s *Service) DeleteTask(ctx context.Context, orgID, id, actorID uuid.UUID, 
 		return fmt.Errorf("load task for delete: %w", err)
 	}
 
-	mayDelete, err := s.hasAuthorityOver(ctx, orgID, actorID, reporterID, isOrgAdmin)
+	mayDelete, err := s.HasAuthorityOver(ctx, orgID, actorID, reporterID, isOrgAdmin)
 	if err != nil {
 		return err
 	}
@@ -1442,30 +1521,37 @@ type Watcher struct {
 	Email  string    `json:"email"`
 }
 
-// AddWatcher is idempotent and refuses users from another organization.
-func (s *Service) AddWatcher(ctx context.Context, orgID, taskID, userID uuid.UUID) error {
+// AddWatcher is idempotent and refuses users from another organization. addedBy is
+// who did it: yourself is only following a task, and somebody else is what Added to
+// means (decision 38). It reports whether this call is what added them, because
+// somebody already on it has not been added to anything, unless until now they were
+// only following it themself.
+func (s *Service) AddWatcher(ctx context.Context, orgID, taskID, userID, addedBy uuid.UUID) (bool, error) {
 	tag, err := s.db.Exec(ctx, `
-		INSERT INTO task_watchers (task_id, user_id)
-		SELECT t.id, u.id FROM tasks t JOIN users u ON u.org_id = t.org_id
+		INSERT INTO task_watchers (task_id, user_id, added_by)
+		SELECT t.id, u.id, $4 FROM tasks t JOIN users u ON u.org_id = t.org_id
 		WHERE t.id = $1 AND u.id = $2 AND t.org_id = $3
 		  AND t.deleted_at IS NULL AND u.deleted_at IS NULL
-		ON CONFLICT DO NOTHING
-	`, taskID, userID, orgID)
+		ON CONFLICT (task_id, user_id) DO UPDATE SET added_by = EXCLUDED.added_by
+		WHERE task_watchers.added_by = task_watchers.user_id
+		  AND EXCLUDED.added_by <> task_watchers.user_id
+	`, taskID, userID, orgID, addedBy)
 	if err != nil {
-		return fmt.Errorf("add watcher: %w", err)
+		return false, fmt.Errorf("add watcher: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		var exists bool
-		if err := s.db.QueryRow(ctx,
-			`SELECT EXISTS (SELECT 1 FROM task_watchers WHERE task_id = $1 AND user_id = $2)`,
-			taskID, userID).Scan(&exists); err != nil {
-			return fmt.Errorf("verify watcher: %w", err)
-		}
-		if !exists {
-			return apperrors.New(apperrors.CodeNotFound, "task or user not found in this organization")
-		}
+	if tag.RowsAffected() > 0 {
+		return true, nil
 	}
-	return nil
+	var exists bool
+	if err := s.db.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM task_watchers WHERE task_id = $1 AND user_id = $2)`,
+		taskID, userID).Scan(&exists); err != nil {
+		return false, fmt.Errorf("verify watcher: %w", err)
+	}
+	if !exists {
+		return false, apperrors.New(apperrors.CodeNotFound, "task or user not found in this organization")
+	}
+	return false, nil
 }
 
 func (s *Service) RemoveWatcher(ctx context.Context, orgID, taskID, userID uuid.UUID) error {

@@ -5,6 +5,7 @@ import { useWebSocket } from '@/features/websocket/WSProvider';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { useChime } from '@/shared/hooks/useChime';
 import { useDesktopNotifications } from '@/shared/hooks/useDesktopNotifications';
+import { isEditFrame, watchChatChanges } from './liveChanges';
 
 /**
  * Watches for messages wherever you are in the app.
@@ -29,6 +30,8 @@ export function ChatNotifications() {
   const pathnameRef = useRef(location.pathname);
   pathnameRef.current = location.pathname;
 
+  useEffect(() => watchChatChanges(on, queryClient), [on, queryClient]);
+
   useEffect(() => {
     return on('chat.message', (msg) => {
       const incoming = ((msg.payload as any)?.message ?? msg.payload) as {
@@ -41,6 +44,8 @@ export function ChatNotifications() {
         replyTo?: string;
       };
       if (!incoming?.id || !incoming.channelId) return;
+      // Somebody fixing a typo is not a new message: no sound, no badge.
+      if (isEditFrame(incoming)) return;
       // Your own message coming back is not news.
       if (incoming.userId === user?.id) return;
 

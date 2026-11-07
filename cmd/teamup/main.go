@@ -18,12 +18,14 @@ import (
 
 	"github.com/caarlos0/env/v10"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
 
 	"github.com/teamup/teamup/internal/auth"
+	"github.com/teamup/teamup/internal/calendar"
 	"github.com/teamup/teamup/internal/calls"
 	"github.com/teamup/teamup/internal/chat"
 	"github.com/teamup/teamup/internal/files"
@@ -382,7 +384,15 @@ func main() {
 		},
 	}
 
-	rootCmd.AddCommand(serverCmd, migrateCmd, versionCmd, wizardCmd)
+	healthcheckCmd := &cobra.Command{
+		Use:           "healthcheck",
+		Short:         "Exit non-zero unless the server on this machine is ready",
+		RunE:          runHealthcheck,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+	}
+
+	rootCmd.AddCommand(serverCmd, migrateCmd, versionCmd, wizardCmd, healthcheckCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		// Plain, on stderr. log.Fatal stamps a timestamp on the first line
@@ -474,6 +484,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	presenceService := presence.NewService(redisClient)
 	presenceService.SetDB(dbPool)
 	tasksService := tasks.NewService(dbPool)
+	calendarService := calendar.NewService(dbPool)
 	wizardService := wizard.NewService(dbPool, redisClient, &authCfg, logger)
 
 	// Without this every service logs to a nil writer, so the fail-closed
@@ -484,6 +495,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	filesService.SetLogger(logger)
 	notificationsService.SetLogger(logger)
 	tasksService.SetLogger(logger)
+	calendarService.SetLogger(logger)
 
 	// Create combined service for WebSocket hub
 	combinedService := &combinedService{
@@ -539,6 +551,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// open, or somebody with the app closed is simply unreachable.
 	callsService.SetNotifier(notificationsService)
 	callsService.SetBroadcaster(wsHub)
+	// Somebody deactivated keeps nothing open.
+	orgService.OnDeactivated(func(ctx context.Context, orgID, userID uuid.UUID) {
+		wsHub.DisconnectUser(userID.String())
+		callsService.RemoveFromCalls(ctx, orgID, userID)
+	})
 
 	// Notifications reach the browser over the same socket, and the features
 	// that raise them talk to the service through a narrow Notifier interface.
@@ -551,6 +568,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// the setup wizard puts them.
 	mailService := mail.NewService(orgService, cfg.BaseURL, logger)
 	tasksService.SetNotifier(notificationsService)
+	calendarService.SetNotifier(notificationsService)
 	// A comment should appear for everybody following the task, not on their
 	// next reload.
 	tasksService.SetBroadcaster(wsHub)
@@ -667,7 +685,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 			notifications.RegisterRoutes(protected, notificationsService)
 			presence.RegisterRoutes(protected, presenceService)
 			tasks.RegisterRoutes(protected, tasksService)
+			calendar.RegisterRoutes(protected, calendarService)
 		}
+
+		// LiveKit has no session. The signature on the request is its credential.
+		calls.RegisterWebhook(api, callsService)
 	}
 
 	// WebSocket endpoint. Sessions are tracked so shutdown can close them; see
@@ -758,6 +780,12 @@ func runServer(cmd *cobra.Command, args []string) error {
 			}
 		}
 	}()
+
+	// Meeting reminders. Every replica sweeps, and claiming one is atomic.
+	go calendarService.RunReminders(sweepCtx, 30*time.Second)
+	// A call whose room finished while nothing was listening. Every replica sweeps,
+	// and ending a call is atomic.
+	go callsService.RunVanishedRoomSweep(sweepCtx, 5*time.Minute)
 
 	// Graceful shutdown.
 	//

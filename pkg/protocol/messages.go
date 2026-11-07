@@ -20,15 +20,19 @@ const (
 	TypeAuthRefreshed = "auth.refreshed"
 
 	// Chat
-	TypeChatSend       = "chat.send"
-	TypeChatSent       = "chat.sent"
-	TypeChatMessage    = "chat.message"
-	TypeChatEdit       = "chat.edit"
-	TypeChatDelete     = "chat.delete"
-	TypeChatReaction   = "chat.reaction"
-	TypeChatTyping     = "chat.typing"
-	TypeChatRead       = "chat.read"
-	TypeChatMembership = "chat.membership.changed"
+	TypeChatSend     = "chat.send"
+	TypeChatSent     = "chat.sent"
+	TypeChatMessage  = "chat.message"
+	TypeChatEdit     = "chat.edit"
+	TypeChatDelete   = "chat.delete"
+	TypeChatReaction = "chat.reaction"
+	TypeChatTyping   = "chat.typing"
+	TypeChatRead     = "chat.read"
+	// TypeChatReadReceipt travels the other way: somebody has read up to a
+	// point, and the people whose messages that covers are told so their tick
+	// can change while they are looking at it.
+	TypeChatReadReceipt = "chat.read.receipt"
+	TypeChatMembership  = "chat.membership.changed"
 
 	// Presence
 	TypePresenceUpdate  = "presence.update"
@@ -43,6 +47,12 @@ const (
 	TypeCallEnded          = "call.ended"
 	TypeCallSignaling      = "call.signaling"
 	TypeCallSignalingRelay = "call.signaling.relay"
+	// Somebody is at the door of a private call.
+	TypeCallKnock = "call.knock"
+	// The answer, to whoever knocked.
+	TypeCallKnockResult = "call.knock.result"
+	// Somebody else answered, so another member's prompt can go away.
+	TypeCallKnockResolved = "call.knock.resolved"
 
 	// Notifications
 	TypeNotificationNew  = "notification.new"
@@ -182,6 +192,24 @@ type ChatTypingPayload struct {
 type ChatReadPayload struct {
 	ChannelID string `json:"channelId"`
 	MessageID string `json:"messageId"`
+}
+
+// ChatReadReceiptPayload announces that one person's read marker has moved.
+//
+// It carries the window it moved through rather than the message it stopped
+// at, because the tick is a count of readers and a count must not be advanced
+// twice for the same person. A reader crosses any given message exactly once,
+// so a receiver can add one to every message of theirs that falls inside
+// (From, To] and never double-count — which counting "everything at or before
+// the new marker" would do on the reader's very next message.
+//
+// From is nil the first time somebody reads in a channel, meaning the window
+// opens at the beginning.
+type ChatReadReceiptPayload struct {
+	ChannelID string     `json:"channelId"`
+	UserID    string     `json:"userId"`
+	From      *time.Time `json:"from"`
+	To        time.Time  `json:"to"`
 }
 
 type ChatMembershipChangedPayload struct {
@@ -352,4 +380,31 @@ type Push struct {
 	Renotify           bool           `json:"renotify,omitempty"`
 	Data               map[string]any `json:"data,omitempty"`
 	RequireInteraction bool           `json:"requireInteraction,omitempty"`
+}
+
+// CallKnockPayload tells a member that somebody asks to join. Connected says
+// whether the member is in the call right now; when nobody is, the frame goes to
+// the organizer and invitees wherever they are, alongside their notification.
+type CallKnockPayload struct {
+	CallID    string `json:"callId"`
+	RequestID string `json:"requestId"`
+	UserID    string `json:"userId"`
+	UserName  string `json:"userName"`
+	Connected bool   `json:"connected"`
+}
+
+// CallKnockResultPayload tells the knocker what happened. Status is admitted,
+// denied or ended. Admitted means POST /calls/:id/token now succeeds.
+type CallKnockResultPayload struct {
+	CallID    string `json:"callId"`
+	RequestID string `json:"requestId"`
+	Status    string `json:"status"`
+}
+
+// CallKnockResolvedPayload clears the prompt on every other member.
+type CallKnockResolvedPayload struct {
+	CallID     string `json:"callId"`
+	RequestID  string `json:"requestId"`
+	Status     string `json:"status"`
+	AnsweredBy string `json:"answeredBy"`
 }

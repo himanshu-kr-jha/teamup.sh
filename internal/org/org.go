@@ -10,6 +10,7 @@ import (
 	"io"
 	"math/big"
 	netmail "net/mail"
+	"slices"
 	"strings"
 	"time"
 
@@ -27,6 +28,8 @@ type Service struct {
 	db       *pgxpool.Pool
 	logger   zerolog.Logger
 	enroller ChannelEnroller
+	// Told when somebody is deactivated.
+	onDeactivated []func(ctx context.Context, orgID, userID uuid.UUID)
 }
 
 type Organization struct {
@@ -250,7 +253,13 @@ func (s *Service) UpdateUser(ctx context.Context, orgID, userID uuid.UUID, name,
 // DeactivateUser is a soft delete: rows elsewhere reference the user, and an
 // audit trail that loses its actor is worse than a disabled account.
 func (s *Service) DeactivateUser(ctx context.Context, orgID, userID uuid.UUID) error {
-	tag, err := s.db.Exec(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, `
 		UPDATE users SET is_active = FALSE, deleted_at = NOW(), updated_at = NOW()
 		WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
 	`, userID, orgID)
@@ -260,7 +269,26 @@ func (s *Service) DeactivateUser(ctx context.Context, orgID, userID uuid.UUID) e
 	if tag.RowsAffected() == 0 {
 		return apperrors.ErrNotFound
 	}
+	// Removing somebody ends what they already have open.
+	if _, err := tx.Exec(ctx,
+		`UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`, userID); err != nil {
+		return fmt.Errorf("revoke sessions: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	// What they have open elsewhere goes too. Revoking sessions stops HTTP at once,
+	// but a socket and a connection to a room carry on by themselves.
+	for _, notify := range s.onDeactivated {
+		notify(ctx, orgID, userID)
+	}
 	return nil
+}
+
+// OnDeactivated adds something to run once somebody has been deactivated. It cannot
+// undo the deactivation, so it reports its own failures.
+func (s *Service) OnDeactivated(notify func(ctx context.Context, orgID, userID uuid.UUID)) {
+	s.onDeactivated = append(s.onDeactivated, notify)
 }
 
 // ── Roles ─────────────────────────────────────────────────────────────────
@@ -871,6 +899,47 @@ func (s *Service) AddTeamMember(ctx context.Context, orgID, teamID, userID uuid.
 	return nil
 }
 
+// AddTeamMemberAs is AddTeamMember on somebody's behalf. Authority over a person
+// is read off team_members, so adding them is claiming them: a lead may only
+// claim somebody with no ties outside their chart, or somebody already in it,
+// and running a team is a tie even for somebody who sits on none. Otherwise a
+// lead could put their own boss on their team and start managing them.
+func (s *Service) AddTeamMemberAs(ctx context.Context, orgID, teamID uuid.UUID, actor Actor, userID uuid.UUID) error {
+	if !actor.IsAdmin && actor.UserID != userID {
+		var allowed bool
+		err := s.db.QueryRow(ctx, `
+			WITH RECURSIVE managed AS (
+				SELECT t.id FROM teams t
+				WHERE t.manager_id = $2 AND t.org_id = $1 AND t.deleted_at IS NULL
+				UNION
+				SELECT child.id FROM teams child
+				JOIN managed ON child.parent_id = managed.id
+				WHERE child.deleted_at IS NULL
+			)
+			SELECT EXISTS (
+				SELECT 1 FROM team_members tm
+				JOIN managed ON managed.id = tm.team_id
+				WHERE tm.user_id = $3
+			) OR NOT EXISTS (
+				SELECT 1 FROM teams t
+				WHERE t.org_id = $1 AND t.deleted_at IS NULL
+				  AND t.id NOT IN (SELECT id FROM managed)
+				  AND (t.manager_id = $3 OR EXISTS (
+				      SELECT 1 FROM team_members tm
+				      WHERE tm.team_id = t.id AND tm.user_id = $3))
+			)
+		`, orgID, actor.UserID, userID).Scan(&allowed)
+		if err != nil {
+			return fmt.Errorf("check who may be added: %w", err)
+		}
+		if !allowed {
+			return apperrors.New(apperrors.CodeForbidden,
+				"that person belongs to another team; ask an administrator to add them")
+		}
+	}
+	return s.AddTeamMember(ctx, orgID, teamID, userID)
+}
+
 func (s *Service) RemoveTeamMember(ctx context.Context, orgID, teamID, userID uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `
 		DELETE FROM team_members tm USING teams t
@@ -1069,8 +1138,9 @@ func (s *Service) AddMember(ctx context.Context, orgID uuid.UUID, name, email, r
 		VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE, NOW(), NOW())
 	`, userID, orgID, name, email, hash, roleName, roleName == "owner" || roleName == "admin")
 	if err != nil {
-		// (org_id, email) is unique; report it as a conflict rather than a
-		// server error so the form can say something useful.
+		// (org_id, email) is unique among people who have not been deleted;
+		// report it as a conflict rather than a server error so the form can
+		// say something useful.
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return nil, "", apperrors.New(apperrors.CodeConflict, "somebody with that email is already in this organization")
@@ -1104,6 +1174,58 @@ func (s *Service) AddMember(ctx context.Context, orgID uuid.UUID, name, email, r
 		return nil, "", err
 	}
 	return member, password, nil
+}
+
+// ResetMemberPassword replaces a member's password with a generated one they
+// have to change at their next sign-in, ends their sessions, and returns the
+// password once. Only an owner may reset an owner: otherwise an admin could
+// sign in as somebody who outranks them.
+func (s *Service) ResetMemberPassword(ctx context.Context, orgID, userID uuid.UUID, callerIsOwner bool) (string, error) {
+	target, err := s.GetUser(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	// Another organization's member is "not found", so ids cannot be probed.
+	if target.OrgID != orgID {
+		return "", apperrors.ErrNotFound
+	}
+	if !callerIsOwner && slices.Contains(target.Roles, "owner") {
+		return "", apperrors.New(apperrors.CodeForbidden, "only an owner can reset an owner's password")
+	}
+
+	password, err := generateTemporaryPassword()
+	if err != nil {
+		return "", fmt.Errorf("generate temporary password: %w", err)
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", fmt.Errorf("hash temporary password: %w", err)
+	}
+
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(ctx)
+
+	tag, err := tx.Exec(ctx, `
+		UPDATE users SET password_hash = $3, must_change_password = TRUE, updated_at = NOW()
+		WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
+	`, userID, orgID, hash)
+	if err != nil {
+		return "", fmt.Errorf("store temporary password: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return "", apperrors.ErrNotFound
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`, userID); err != nil {
+		return "", fmt.Errorf("revoke sessions: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", err
+	}
+	return password, nil
 }
 
 // ── Bulk onboarding ───────────────────────────────────────────────────────

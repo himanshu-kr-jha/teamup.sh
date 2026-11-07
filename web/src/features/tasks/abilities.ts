@@ -3,7 +3,7 @@
  *
  * A manager's team board shows the work of everybody on their team, including
  * an organisation admin who happens to sit on it as an ordinary engineer. That
- * is deliberate — hiding somebody's work hides the work. What is not allowed is
+ * is deliberate: hiding somebody's work hides the work. What is not allowed is
  * the board offering an action the API will refuse, so every task comes back
  * carrying this, worked out from the same rule the write paths enforce.
  */
@@ -31,5 +31,5 @@ export function restrictionNote(can?: TaskAbilities): string | null {
   if (barred.length === 0) return null;
 
   const what = `You can see this task but cannot ${barred.join(' or ')} it`;
-  return can.reason ? `${what} — ${can.reason}.` : `${what}.`;
+  return can.reason ? `${what} - ${can.reason}.` : `${what}.`;
 }

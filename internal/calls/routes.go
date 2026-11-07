@@ -11,6 +11,7 @@ import (
 
 	"github.com/teamup/teamup/internal/auth"
 	"github.com/teamup/teamup/internal/httpx"
+	apperrors "github.com/teamup/teamup/pkg/errors"
 )
 
 type Handler struct {
@@ -33,6 +34,51 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.POST("/calls/:id/decline", h.DeclineCall)
 	rg.POST("/calls/:id/mute/:userId", h.MuteParticipant)
 	rg.DELETE("/calls/:id/record", h.StopRecording)
+
+	rg.GET("/calls/:id/log", h.GetCallLog)
+	rg.POST("/calls/:id/knock", h.Knock)
+	rg.GET("/calls/:id/requests", h.ListKnockRequests)
+	rg.POST("/calls/:id/requests/:rid/admit", h.AdmitKnock)
+	rg.POST("/calls/:id/requests/:rid/deny", h.DenyKnock)
+
+	rg.GET("/standing-meetings", h.ListStandingMeetings)
+	rg.POST("/standing-meetings", h.CreateStandingMeeting)
+	rg.PATCH("/standing-meetings/:id", h.UpdateStandingMeeting)
+	rg.DELETE("/standing-meetings/:id", h.ArchiveStandingMeeting)
+	rg.POST("/standing-meetings/:id/join", h.JoinStandingMeeting)
+	rg.GET("/standing-meetings/:id/attendance", h.StandingMeetingAttendance)
+}
+
+// RegisterWebhook mounts what LiveKit calls. It belongs outside the signed-in group,
+// because LiveKit has no session: the signature is the only credential.
+func RegisterWebhook(rg *gin.RouterGroup, service *Service) {
+	h := NewHandler(service)
+	rg.POST("/livekit/webhook", h.LiveKitWebhook)
+}
+
+// caller reads who is asking from the session, or answers for them when it cannot.
+func caller(c *gin.Context) (orgID, userID uuid.UUID, ok bool) {
+	user := auth.GetUserFromContext(c)
+	orgID, orgErr := uuid.Parse(user.OrgID)
+	userID, userErr := uuid.Parse(user.UserID)
+	if orgErr != nil || userErr != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return uuid.Nil, uuid.Nil, false
+	}
+	return orgID, userID, true
+}
+
+func pathID(c *gin.Context, name string) (uuid.UUID, bool) {
+	id, err := uuid.Parse(c.Param(name))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid " + name})
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+func isAdmin(c *gin.Context) bool {
+	return auth.GetUserFromContext(c).HasAnyRole("owner", "admin")
 }
 
 func (h *Handler) ListCalls(c *gin.Context) {
@@ -47,15 +93,26 @@ func (h *Handler) ListCalls(c *gin.Context) {
 
 	var channelID *uuid.UUID
 	if raw := c.Query("channelId"); raw != "" {
-		if id, err := uuid.Parse(raw); err == nil {
-			channelID = &id
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid channelId"})
+			return
 		}
+		channelID = &id
 	}
 
 	calls, err := h.service.ListCalls(c.Request.Context(), orgID, viewerID, status, channelID)
 	if err != nil {
 		httpx.Error(c, err, "failed to list calls")
 		return
+	}
+	for i := range calls {
+		readable, err := h.service.MayReadLog(c.Request.Context(), orgID, &calls[i], viewerID, isAdmin(c))
+		if err != nil {
+			httpx.Error(c, err, "failed to list calls")
+			return
+		}
+		calls[i].CanReadLog = &readable
 	}
 	c.JSON(http.StatusOK, gin.H{"calls": calls})
 }
@@ -168,6 +225,13 @@ func (h *Handler) DeclineCall(c *gin.Context) {
 		return
 	}
 
+	// Nobody is rung for a meeting, so there is nothing to turn down, and an
+	// invitee must not be able to end one this way.
+	if call.ScheduledStart != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": "a scheduled meeting cannot be declined"})
+		return
+	}
+
 	// Only somebody who was actually called can decline it.
 	invited, err := h.service.IsParticipant(ctx, id, userID)
 	if err != nil {
@@ -200,7 +264,7 @@ func (h *Handler) DeclineCall(c *gin.Context) {
 
 	// Tell the person who started it, not everybody: one person turning it
 	// down does not end the call for the rest.
-	go h.service.AnnounceCallOver(context.WithoutCancel(ctx), call, reason, callerName(user),
+	go h.service.AnnounceCallOver(context.WithoutCancel(ctx), call, reason, h.service.DisplayName(ctx, userID),
 		[]string{call.CreatedBy.String()})
 
 	// If nobody is left who might still pick up, the call is over. Otherwise
@@ -218,14 +282,14 @@ func (h *Handler) DeclineCall(c *gin.Context) {
 		}
 		// Only drop it if the call never actually got going.
 		if !joined {
-			if err := h.service.EndCall(ctx, call.RoomName); err != nil {
-				h.service.logger.Warn().Err(err).Str("room", call.RoomName).Msg("LiveKit room teardown failed")
-			}
-			if err := h.service.MarkCallEnded(ctx, orgID, id); err != nil {
+			ended, err := h.service.endRecordThenRoom(ctx, orgID, call)
+			if err != nil {
 				httpx.Error(c, err, "failed to end call")
 				return
 			}
-			go h.service.NoteIfMissed(context.WithoutCancel(ctx), id, reason)
+			if ended {
+				go h.service.NoteIfMissed(context.WithoutCancel(ctx), id, reason)
+			}
 		}
 	}
 
@@ -281,6 +345,25 @@ func (h *Handler) MuteParticipant(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "muted"})
 }
 
+// endRecordThenRoom closes the call and then its room, in that order, and says
+// whether this is what ended it. Deleting the room makes LiveKit report that it
+// finished, and if that report won, this caller would answer that the call could not
+// be ended and the conversation would say "Missed call" about a call turned down.
+func (s *Service) endRecordThenRoom(ctx context.Context, orgID uuid.UUID, call *CallModel) (bool, error) {
+	ended := true
+	if err := s.MarkCallEnded(ctx, orgID, call.ID); err != nil {
+		if !errors.Is(err, apperrors.ErrNotFound) {
+			return false, err
+		}
+		ended = false
+	}
+	if err := s.mediaOf().CloseRoom(ctx, call.RoomName); err != nil {
+		// The room may already be gone; the record is closed either way.
+		s.logger.Warn().Err(err).Str("room", call.RoomName).Msg("LiveKit room teardown failed")
+	}
+	return ended, nil
+}
+
 // callerName prefers something a callee will recognise over a bare id.
 func callerName(user *auth.UserContext) string {
 	if user.Email != "" {
@@ -289,15 +372,83 @@ func callerName(user *auth.UserContext) string {
 	return "Somebody"
 }
 
+// GetCall answers in full to whoever may read the call's log.
 func (h *Handler) GetCall(c *gin.Context) {
-	orgID, _ := uuid.Parse(auth.GetUserFromContext(c).OrgID)
-	id, _ := uuid.Parse(c.Param("id"))
-	call, err := h.service.GetCall(c.Request.Context(), orgID, id)
+	orgID, userID, ok := caller(c)
+	if !ok {
+		return
+	}
+	id, ok := pathID(c, "id")
+	if !ok {
+		return
+	}
+	ctx := c.Request.Context()
+	call, err := h.service.GetCall(ctx, orgID, id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "call not found"})
 		return
 	}
-	c.JSON(http.StatusOK, call)
+	view, err := h.service.callAsSeenBy(ctx, orgID, call, userID, isAdmin(c))
+	if err != nil {
+		httpx.Error(c, err, "failed to load call")
+		return
+	}
+	c.JSON(http.StatusOK, view)
+}
+
+// callAsSeenBy is the whole call for whoever may read its log. A link to a private
+// call reaches other people too, and they are told only enough to knock: its title,
+// who is on it and who came are what the log's rule protects.
+func (s *Service) callAsSeenBy(ctx context.Context, orgID uuid.UUID, call *CallModel, userID uuid.UUID, admin bool) (any, error) {
+	readable, err := s.MayReadLog(ctx, orgID, call, userID, admin)
+	if err != nil {
+		return nil, err
+	}
+	if readable {
+		call.CanReadLog = &readable
+		return call, nil
+	}
+	mayJoin, err := s.MayJoin(ctx, orgID, call.ID, userID)
+	if err != nil {
+		return nil, err
+	}
+	limited := gin.H{"id": call.ID, "status": call.Status, "callType": call.CallType, "canKnock": !mayJoin, "canReadLog": false}
+	if mayJoin {
+		// Everybody may be in a standing meeting, but only attendance's rule says
+		// who may see who else came.
+		limited["title"] = call.Title
+	}
+	return limited, nil
+}
+
+// mayRecord is the rank to record at all, and then a link to this call. Rank alone
+// does not walk anybody into a private call (decisions 7 and 11), so a manager with
+// no business there gets the same answer as for a call that does not exist. It
+// writes the refusal itself.
+func (h *Handler) mayRecord(c *gin.Context) (orgID, userID, id uuid.UUID, ok bool) {
+	if !auth.GetUserFromContext(c).HasAnyRole("owner", "admin", "manager") {
+		c.JSON(http.StatusForbidden, gin.H{"error": "you may not record calls"})
+		return orgID, userID, id, false
+	}
+	if orgID, userID, ok = caller(c); !ok {
+		return orgID, userID, id, false
+	}
+	if id, ok = pathID(c, "id"); !ok {
+		return orgID, userID, id, false
+	}
+	if isAdmin(c) {
+		return orgID, userID, id, true
+	}
+	mayJoin, err := h.service.MayJoin(c.Request.Context(), orgID, id, userID)
+	if err != nil {
+		httpx.Error(c, err, "failed to check call access")
+		return orgID, userID, id, false
+	}
+	if !mayJoin {
+		c.JSON(http.StatusNotFound, gin.H{"error": "call not found"})
+		return orgID, userID, id, false
+	}
+	return orgID, userID, id, true
 }
 
 // GetCallToken issues a LiveKit join grant. It previously signed a token for
@@ -317,13 +468,14 @@ func (h *Handler) GetCallToken(c *gin.Context) {
 		return
 	}
 
-	call, err := h.service.GetCall(c.Request.Context(), orgID, id)
+	ctx := c.Request.Context()
+	call, err := h.service.GetCall(ctx, orgID, id)
 	if err != nil {
 		httpx.Error(c, err, "call not found")
 		return
 	}
-	if call.Status == "ended" {
-		c.JSON(http.StatusConflict, gin.H{"error": "this call has ended"})
+	if call.Status == "cancelled" {
+		httpx.Error(c, apperrors.New(apperrors.CodeConflict, "this meeting was cancelled"), "this meeting was cancelled")
 		return
 	}
 
@@ -334,75 +486,72 @@ func (h *Handler) GetCallToken(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
 		return
 	}
-	mayJoin, err := h.service.MayJoin(c.Request.Context(), orgID, id, userID)
+	mayJoin, err := h.service.MayJoin(ctx, orgID, id, userID)
 	if err != nil {
 		httpx.Error(c, err, "failed to check call access")
 		return
 	}
 	if !mayJoin {
-		c.JSON(http.StatusForbidden, gin.H{"error": "you were not invited to this call"})
+		if call.Status == "ended" {
+			httpx.Error(c, ErrCallOver, "this call has ended")
+			return
+		}
+		// Something the client can act on: this person can ask to come in.
+		c.JSON(http.StatusForbidden, gin.H{
+			"error":    "you were not invited to this call",
+			"code":     "knock_required",
+			"canKnock": true,
+		})
+		return
+	}
+
+	if err := h.service.openForJoin(ctx, call); err != nil {
+		httpx.Error(c, err, "failed to open call")
 		return
 	}
 
 	// The name here is what labels their panel in the call, so it has to be
 	// the person's name rather than their address — initials taken from an
 	// address read as the domain rather than the person.
-	displayName := h.service.DisplayName(c.Request.Context(), userID)
+	displayName := h.service.DisplayName(ctx, userID)
 	if displayName == "" {
 		displayName = user.Email
 	}
-	token, err := h.service.GetToken(c.Request.Context(), call.RoomName, user.UserID, displayName)
+	token, err := h.service.GetToken(ctx, call.RoomName, user.UserID, displayName)
 	if err != nil {
 		httpx.Error(c, err, "failed to generate token")
 		return
 	}
 
-	// Issuing a join grant is the point at which someone actually joins.
-	if err := h.service.MarkParticipantJoined(c.Request.Context(), id, userID); err != nil {
-		h.service.logger.Warn().Err(err).Msg("could not record call attendance")
-	}
-	// Somebody other than the caller picking up is what makes this not a
-	// missed call, whatever happens to it afterwards.
-	if userID != call.CreatedBy {
-		if err := h.service.MarkAnswered(c.Request.Context(), id); err != nil {
-			h.service.logger.Warn().Err(err).Msg("could not record that a call was answered")
-		}
-	}
+	// A token is permission and not attendance: whether they really came is what
+	// LiveKit reports afterwards.
+	h.service.notePickedUp(ctx, call, userID)
 
 	c.JSON(http.StatusOK, gin.H{"token": token, "roomName": call.RoomName})
 }
 
 func (h *Handler) StartRecording(c *gin.Context) {
-	user := auth.GetUserFromContext(c)
-	if !user.HasAnyRole("owner", "admin", "manager") {
-		c.JSON(http.StatusForbidden, gin.H{"error": "you may not record calls"})
+	orgID, userID, id, ok := h.mayRecord(c)
+	if !ok {
 		return
 	}
-	orgID, _ := uuid.Parse(user.OrgID)
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
-		return
-	}
-
-	call, err := h.service.StartRecording(c.Request.Context(), orgID, id)
+	ctx := c.Request.Context()
+	call, err := h.service.StartRecording(ctx, orgID, id)
 	if err != nil {
 		httpx.Error(c, err, "failed to start recording")
 		return
 	}
-	c.JSON(http.StatusOK, call)
+	view, err := h.service.callAsSeenBy(ctx, orgID, call, userID, isAdmin(c))
+	if err != nil {
+		httpx.Error(c, err, "failed to start recording")
+		return
+	}
+	c.JSON(http.StatusOK, view)
 }
 
 func (h *Handler) StopRecording(c *gin.Context) {
-	user := auth.GetUserFromContext(c)
-	if !user.HasAnyRole("owner", "admin", "manager") {
-		c.JSON(http.StatusForbidden, gin.H{"error": "you may not record calls"})
-		return
-	}
-	orgID, _ := uuid.Parse(user.OrgID)
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+	orgID, _, id, ok := h.mayRecord(c)
+	if !ok {
 		return
 	}
 	if err := h.service.StopRecording(c.Request.Context(), orgID, id); err != nil {
@@ -419,6 +568,18 @@ func (h *Handler) EndCall(c *gin.Context) {
 	call, err := h.service.GetCall(c.Request.Context(), orgID, id)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "call not found"})
+		return
+	}
+
+	// A meeting that has not started is cancelled by its organizer, not ended by
+	// whoever was invited to it.
+	if call.Status == "scheduled" || call.Status == "cancelled" {
+		c.JSON(http.StatusConflict, gin.H{"error": "this meeting has not started"})
+		return
+	}
+	// LiveKit may already have said the room emptied.
+	if call.Status == "ended" {
+		c.JSON(http.StatusOK, gin.H{"message": "call ended"})
 		return
 	}
 
@@ -454,12 +615,14 @@ func (h *Handler) EndCall(c *gin.Context) {
 		return
 	}
 
-	if err := h.service.EndCall(c.Request.Context(), call.RoomName); err != nil {
-		// The room may already be gone; the record still has to be closed.
-		h.service.logger.Warn().Err(err).Str("room", call.RoomName).Msg("LiveKit room teardown failed")
-	}
-	if err := h.service.MarkCallEnded(c.Request.Context(), orgID, id); err != nil {
+	ended, err := h.service.endRecordThenRoom(c.Request.Context(), orgID, call)
+	if err != nil {
 		httpx.Error(c, err, "failed to end call")
+		return
+	}
+	// LiveKit saying the room finished got there first, and did all of this.
+	if !ended {
+		c.JSON(http.StatusOK, gin.H{"message": "call ended"})
 		return
 	}
 

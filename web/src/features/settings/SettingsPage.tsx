@@ -14,6 +14,7 @@ import { authApi, orgApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
 import { FormDialog } from '@/shared/components/FormDialog';
+import { applyTheme } from '@/shared/theme';
 import { formatRelativeTime } from '@/shared/utils/cn';
 
 export function SettingsPage() {
@@ -117,11 +118,7 @@ export function SettingsPage() {
                   value={theme}
                   onValueChange={(v) => {
                     setTheme(v);
-                    localStorage.setItem('theme', v);
-                    document.documentElement.classList.toggle(
-                      'dark',
-                      v === 'dark' || (v === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
-                    );
+                    applyTheme(v);
                   }}
                 >
                   <SelectTrigger id="theme"><SelectValue placeholder="Select theme" /></SelectTrigger>

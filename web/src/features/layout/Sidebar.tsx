@@ -1,5 +1,5 @@
 import { Link, NavLink } from 'react-router-dom';
-import { MessageSquare, Video, CheckSquare, Settings, Users, ChevronLeft, ChevronRight, Hash, User } from 'lucide-react';
+import { CalendarDays, MessageSquare, Video, CheckSquare, Settings, Users, ChevronLeft, ChevronRight, Hash, User } from 'lucide-react';
 import { useUIStore } from '@/shared/store';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { cn } from '@/shared/utils/cn';
@@ -16,6 +16,7 @@ export function Sidebar() {
   const navItems = [
     { path: '/chat', label: 'Chat', icon: MessageSquare },
     { path: '/calls', label: 'Calls', icon: Video },
+    { path: '/calendar', label: 'Calendar', icon: CalendarDays },
     { path: '/tasks', label: 'Tasks', icon: CheckSquare },
     ...(mayAdminister ? [{ path: '/organization', label: 'Organization', icon: Users }] : []),
     { path: '/settings', label: 'Settings', icon: Settings },

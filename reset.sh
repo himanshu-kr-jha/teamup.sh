@@ -78,10 +78,12 @@ docker exec "$PG" psql -U "$DB_USER" -d postgres -v ON_ERROR_STOP=1 -c \
   "CREATE DATABASE ${DB_NAME} OWNER ${DB_USER};" >/dev/null
 
 echo "🧹 Emptying the ${BUCKET} bucket..."
-docker exec "$MINIO" sh -c "
-  mc alias set local http://localhost:9000 '${TEAMUP_MINIO_ACCESS_KEY}' '${TEAMUP_MINIO_SECRET_KEY}' >/dev/null 2>&1 &&
-  mc rb --force 'local/${BUCKET}' >/dev/null 2>&1 || true
-" || echo "   (bucket was already empty or absent — the server recreates it)"
+# The MinIO image has no shell or mc, so a one-shot client shares its network.
+docker run --rm --network "container:$MINIO" \
+  -e "MC_HOST_local=http://${TEAMUP_MINIO_ACCESS_KEY}:${TEAMUP_MINIO_SECRET_KEY}@localhost:9000" \
+  cgr.dev/chainguard/minio-client@sha256:8dc1dceb7371c9091b17b450e4da67a492f6de3a22d716af14888a7d8597457e \
+  rb --force "local/${BUCKET}" >/dev/null 2>&1 \
+  || echo "   (bucket was already empty or absent - the server recreates it)"
 
 echo "🧼 Flushing redis..."
 docker exec "$REDIS" redis-cli FLUSHALL >/dev/null

@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState, useCallback, ReactNode } from 'react';
 import { useAuthStore } from '@/shared/store/authStore';
 import type { Message, WSMessageType } from '@/shared/types/protocol';
+import { newId } from '@/shared/utils/id';
 import { reconnectDelay, shouldReconnect } from './backoff';
 
 /**
@@ -69,7 +70,7 @@ export function WSProvider({ children }: { children: ReactNode }) {
       if (wsRef.current !== ws) return;
       setState(attemptRef.current > 0 ? 'reconnecting' : 'connecting');
       ws.send(JSON.stringify({
-        id: crypto.randomUUID(),
+        id: newId(),
         type: 'conn.init',
         payload: { clientInfo: { platform: navigator.platform, version: import.meta.env.VITE_APP_VERSION } },
       }));
@@ -95,7 +96,7 @@ export function WSProvider({ children }: { children: ReactNode }) {
         // silent here would have the server hang up on a perfectly live tab.
         if (msg.type === 'conn.ping') {
           ws.send(JSON.stringify({
-            id: crypto.randomUUID(),
+            id: newId(),
             type: 'conn.pong',
             payload: {},
           }));
@@ -161,7 +162,7 @@ export function WSProvider({ children }: { children: ReactNode }) {
   const send = useCallback((msg: Omit<Message, 'id' | 'timestamp' | 'version'>) => {
     const fullMsg: Message = {
       ...msg,
-      id: crypto.randomUUID(),
+      id: newId(),
       timestamp: new Date().toISOString(),
       version: 1,
     };

@@ -434,10 +434,50 @@ func (s *Service) RevokeSession(ctx context.Context, sessionID string) error {
 	return s.revokeSessionTokens(ctx, sessionID)
 }
 
+// EndPresentedSession revokes the session behind whichever tokens a logging-out
+// request carries. The refresh token is the one that matters: the access token
+// may well have expired by the time somebody logs out, and that must not leave
+// the session alive. The access token covers a browser still holding its refresh
+// cookie on the old path, which is not sent here. Anything unrecognised is
+// ignored, because logging out of nothing is not an error.
+func (s *Service) EndPresentedSession(ctx context.Context, refreshToken, accessToken string) error {
+	var sessions []string
+	if refreshToken != "" {
+		rt, err := s.findRefreshTokenByHash(ctx, refreshToken)
+		switch {
+		case err == nil:
+			sessions = append(sessions, rt.SessionID)
+		case !errors.Is(err, apperrors.ErrNotFound):
+			return err
+		}
+	}
+	if accessToken != "" {
+		if claims, err := s.ValidateAccessToken(ctx, accessToken); err == nil {
+			sessions = append(sessions, claims.SessionID)
+		}
+	}
+	for _, sessionID := range sessions {
+		if err := s.revokeSessionTokens(ctx, sessionID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // RevokeAllUserTokens revokes all sessions for a user
 func (s *Service) RevokeAllUserTokens(ctx context.Context, userID uuid.UUID) error {
 	return s.revokeAllUserTokens(ctx, userID)
 }
+
+const (
+	// refreshCookiePath covers the two routes that need the refresh token,
+	// /refresh and /logout, and keeps it away from the rest of the API.
+	refreshCookiePath = "/api/auth"
+	// legacyRefreshCookiePath is where rt lived before it had to reach /logout.
+	// Browsers signed in back then keep it there until told otherwise, so it can
+	// go once a refresh token's lifetime has passed since that change.
+	legacyRefreshCookiePath = "/api/auth/refresh"
+)
 
 // SetAuthCookies sets HttpOnly secure cookies for tokens
 func (s *Service) SetAuthCookies(w http.ResponseWriter, tokens *TokenPair) {
@@ -452,16 +492,19 @@ func (s *Service) SetAuthCookies(w http.ResponseWriter, tokens *TokenPair) {
 		MaxAge:   tokens.ExpiresIn,
 	})
 
-	// Refresh token cookie (only sent to refresh endpoint). A caller that lost
-	// a rotation race gets no refresh token, and must keep the cookie it has
-	// rather than have it overwritten with nothing.
+	// A caller that lost a rotation race gets no refresh token, and must keep the
+	// cookie it has rather than have it overwritten with nothing.
 	if tokens.RefreshToken == "" {
 		return
 	}
+	// Expired first, because a more specific path is sent first: left in place it
+	// would shadow the cookie below, and the server would go on reading a token
+	// that has already been rotated away.
+	s.expireCookie(w, "rt", legacyRefreshCookiePath)
 	http.SetCookie(w, &http.Cookie{
 		Name:     "rt",
 		Value:    tokens.RefreshToken,
-		Path:     "/api/auth/refresh",
+		Path:     refreshCookiePath,
 		HttpOnly: true,
 		Secure:   s.cookieSecure(),
 		SameSite: http.SameSiteStrictMode,
@@ -469,34 +512,42 @@ func (s *Service) SetAuthCookies(w http.ResponseWriter, tokens *TokenPair) {
 	})
 }
 
-// ClearAuthCookies clears auth cookies
+// ClearAuthCookies expires the auth cookies. A browser only lets go of a cookie
+// when it is expired on the path it was set with.
 func (s *Service) ClearAuthCookies(w http.ResponseWriter) {
-	for _, name := range []string{"at", "rt"} {
-		http.SetCookie(w, &http.Cookie{
-			Name:     name,
-			Value:    "",
-			Path:     "/",
-			MaxAge:   -1,
-			HttpOnly: true,
-			Secure:   s.cookieSecure(),
-			SameSite: http.SameSiteStrictMode,
-		})
+	s.expireCookie(w, "at", "/")
+	s.expireCookie(w, "rt", refreshCookiePath)
+	s.expireCookie(w, "rt", legacyRefreshCookiePath)
+}
+
+func (s *Service) expireCookie(w http.ResponseWriter, name, path string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     name,
+		Value:    "",
+		Path:     path,
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   s.cookieSecure(),
+		SameSite: http.SameSiteStrictMode,
+	})
+}
+
+// accessTokenFrom finds the access token on a request: the cookie, or failing
+// that the Authorization header.
+func accessTokenFrom(c *gin.Context) string {
+	if token, err := c.Cookie("at"); err == nil {
+		return token
 	}
+	if token, ok := strings.CutPrefix(c.GetHeader("Authorization"), "Bearer "); ok {
+		return token
+	}
+	return ""
 }
 
 // AuthMiddleware validates access token from cookie
 func (s *Service) AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Try cookie first
-		accessToken, err := c.Cookie("at")
-		if err != nil {
-			// Try Authorization header
-			authHeader := c.GetHeader("Authorization")
-			if strings.HasPrefix(authHeader, "Bearer ") {
-				accessToken = strings.TrimPrefix(authHeader, "Bearer ")
-			}
-		}
-
+		accessToken := accessTokenFrom(c)
 		if accessToken == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return

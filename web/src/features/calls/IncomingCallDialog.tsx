@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useMatch, useNavigate } from 'react-router-dom';
 import { Phone, PhoneOff, Video } from 'lucide-react';
 import {
   Dialog,
@@ -13,6 +13,7 @@ import { Button } from '@/shared/components/ui/button';
 import { useWebSocket } from '@/features/websocket/WSProvider';
 import { useChime } from '@/shared/hooks/useChime';
 import { callsApi } from '@/shared/api/client';
+import { useActiveCall } from './ActiveCallProvider';
 
 interface IncomingCall {
   callId: string;
@@ -23,7 +24,7 @@ interface IncomingCall {
 
 /** How long to keep ringing before treating it as missed. */
 const RING_FOR_MS = 45_000;
-/** Gap between rings — a repeated ring, not one continuous tone. */
+/** Gap between rings - a repeated ring, not one continuous tone. */
 const RING_EVERY_MS = 3_000;
 
 /**
@@ -40,11 +41,24 @@ export function IncomingCallDialog() {
   // A queue rather than one slot: two people calling at once used to overwrite
   // each other, so the first call vanished without ever being answered.
   const [queue, setQueue] = useState<IncomingCall[]>([]);
-  const call = queue[0] ?? null;
 
   const dismiss = useCallback((callId: string) => {
     setQueue((all) => all.filter((c) => c.callId !== callId));
   }, []);
+
+  // Already in the call, by its link or from another way in, is an answer. Left
+  // ringing it would time out and tell the caller you did not pick up while you
+  // sit there talking to them. So is being on its page on the way in: the socket
+  // says you are being rung while the token is still being asked for, and a phone
+  // should not ring at somebody who is walking through the door. Worked out here
+  // rather than removed by an effect, which would let one ring out first.
+  const { activeCall } = useActiveCall();
+  const onItsPage = useMatch('/calls/:roomName')?.params.roomName;
+  const call = queue.find((c) => c.callId !== activeCall?.callId && c.callId !== onItsPage) ?? null;
+  useEffect(() => {
+    if (activeCall) dismiss(activeCall.callId);
+    if (onItsPage) dismiss(onItsPage);
+  }, [activeCall, onItsPage, dismiss, queue]);
 
   const { ring: ringOnce, stop: stopTone } = useChime();
   const ringTimerRef = useRef<ReturnType<typeof setInterval>>();

@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -17,6 +19,18 @@ import (
 
 // newService builds a service with no LiveKit credentials, so CreateCall takes
 // its stub-room path and every test exercises the database behaviour.
+// markConnected puts in place what LiveKit reporting a connection leaves behind on
+// call_participants, for tests about what reads it. attendance_test.go tests the
+// webhook that really writes it.
+func markConnected(ctx context.Context, pool *pgxpool.Pool, callID, userID uuid.UUID) error {
+	_, err := pool.Exec(ctx, `
+		INSERT INTO call_participants (call_id, user_id, role, joined_at)
+		VALUES ($1, $2, 'participant', NOW())
+		ON CONFLICT (call_id, user_id) DO UPDATE SET joined_at = NOW(), left_at = NULL
+	`, callID, userID)
+	return err
+}
+
 func newService(t *testing.T) (*Service, *pgxpool.Pool) {
 	t.Helper()
 	pool := testsupport.DB(t)
@@ -149,7 +163,7 @@ func TestEndingACallClosesTheRecord(t *testing.T) {
 	org := testsupport.SeedOrg(t, pool)
 
 	call, _ := svc.CreateCall(ctx, org.ID, org.OwnerID, nil, "video", nil, nil)
-	if err := svc.MarkParticipantJoined(ctx, call.ID, org.OwnerID); err != nil {
+	if err := markConnected(ctx, pool, call.ID, org.OwnerID); err != nil {
 		t.Fatalf("join: %v", err)
 	}
 	time.Sleep(1100 * time.Millisecond) // so duration is measurably non-zero
@@ -215,7 +229,7 @@ func TestParticipantAttendanceIsTracked(t *testing.T) {
 	org := testsupport.SeedOrg(t, pool)
 	call, _ := svc.CreateCall(ctx, org.ID, org.OwnerID, nil, "video", nil, nil)
 
-	if err := svc.MarkParticipantJoined(ctx, call.ID, org.OwnerID); err != nil {
+	if err := markConnected(ctx, pool, call.ID, org.OwnerID); err != nil {
 		t.Fatalf("join: %v", err)
 	}
 	loaded, _ := svc.GetCall(ctx, org.ID, call.ID)
@@ -647,7 +661,7 @@ func TestACallSomebodyJoinedIsNotDroppedByAnotherDecline(t *testing.T) {
 		t.Fatalf("create call: %v", err)
 	}
 
-	if err := svc.MarkParticipantJoined(ctx, call.ID, answered); err != nil {
+	if err := markConnected(ctx, pool, call.ID, answered); err != nil {
 		t.Fatalf("join: %v", err)
 	}
 	if err := svc.MarkParticipantLeft(ctx, call.ID, declined); err != nil {
@@ -737,7 +751,7 @@ func TestPendingInvitationsExcludeTheCallerAndAnsweredCalls(t *testing.T) {
 		t.Errorf("the caller should not be rung by their own call, got %d", len(pending))
 	}
 
-	if err := svc.MarkParticipantJoined(ctx, call.ID, callee); err != nil {
+	if err := markConnected(ctx, pool, call.ID, callee); err != nil {
 		t.Fatalf("join: %v", err)
 	}
 	pending, err = svc.PendingInvitationsFor(ctx, callee)
@@ -879,6 +893,10 @@ func (r *rungDevices) PushToUsers(_ context.Context, _ []uuid.UUID, payload prot
 	r.payloads = append(r.payloads, payload)
 }
 
+func (r *rungDevices) Notify(context.Context, uuid.UUID, uuid.UUID, string, string, string, map[string]any) error {
+	return nil
+}
+
 // A call is the one thing that is worthless late, so it has to reach the phone
 // itself rather than only a browser tab that happens to still be open.
 func TestACallRingsTheDeviceAndStopsWhenItIsOver(t *testing.T) {
@@ -929,5 +947,73 @@ func TestACallRingsTheDeviceAndStopsWhenItIsOver(t *testing.T) {
 	}
 	if cancelled.Data["kind"] != "call.cancelled" {
 		t.Errorf("the device is told to take it away, got %v", cancelled.Data["kind"])
+	}
+}
+
+// A channel filter that could not be read used to be dropped, which listed
+// every call the person could see instead of the ones they asked about.
+func TestAMalformedChannelFilterIsRefused(t *testing.T) {
+	svc, pool := newService(t)
+	org := testsupport.SeedOrg(t, pool)
+
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	api := r.Group("/api")
+	api.Use(func(c *gin.Context) {
+		c.Set("org_id", org.ID.String())
+		c.Set("user_id", org.OwnerID.String())
+		c.Set("user_roles", []string{"owner"})
+		c.Next()
+	})
+	RegisterRoutes(api, svc)
+
+	for query, want := range map[string]int{
+		"?channelId=not-a-uuid":          http.StatusBadRequest,
+		"":                               http.StatusOK,
+		"?channelId=" + uuid.NewString(): http.StatusOK,
+	} {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/api/calls"+query, nil))
+		if w.Code != want {
+			t.Errorf("GET /calls%s: want %d, got %d: %s", query, want, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestTheCallListKeepsOnlyTheNewest(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedOrg(t, pool)
+	channel := testsupport.SeedChannel(t, pool, org, "standup", org.OwnerID)
+
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO calls (org_id, channel_id, room_name, title, call_type, status, created_by, created_at)
+		SELECT $1, $2, 'call-' || i, CASE WHEN i > $4::int THEN 'oldest' ELSE 'newer' END,
+		       'video', 'ended', $3, NOW() - (i * interval '1 minute')
+		FROM generate_series(1, $4::int + 5) i
+	`, org.ID, channel, org.OwnerID, maxListedCalls); err != nil {
+		t.Fatalf("seed calls: %v", err)
+	}
+
+	list, err := svc.ListCalls(ctx, org.ID, org.OwnerID, "", nil)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != maxListedCalls {
+		t.Fatalf("listed %d calls, want the cap of %d", len(list), maxListedCalls)
+	}
+	for _, call := range list {
+		if call.Title == nil || *call.Title != "newer" {
+			t.Fatalf("the cap kept an old call over a newer one: %+v", call.Title)
+		}
+	}
+
+	foreign, err := svc.ListCalls(ctx, other.ID, other.OwnerID, "", nil)
+	if err != nil {
+		t.Fatalf("list other: %v", err)
+	}
+	if len(foreign) != 0 {
+		t.Errorf("another organization listed %d of these calls", len(foreign))
 	}
 }

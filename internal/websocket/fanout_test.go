@@ -194,6 +194,25 @@ func TestADirectMessageReachesTheirSocketsOnAnotherProcess(t *testing.T) {
 	expect(t, there, protocol.TypeCallInvited)
 }
 
+// One replica deactivates somebody whose socket is on another.
+func TestDisconnectingSomebodyReachesTheirSocketOnAnotherProcess(t *testing.T) {
+	a, b := twoProcesses(t)
+
+	there := join(t, b, "conn-there", "user-gone", "org-1")
+	stays := join(t, b, "conn-stays", "user-stays", "org-1")
+
+	a.DisconnectUser("user-gone")
+
+	select {
+	case <-there.ctx.Done():
+	case <-time.After(5 * time.Second):
+		t.Fatal("the replica holding the socket never closed it")
+	}
+	if stays.ctx.Err() != nil {
+		t.Error("somebody else lost their socket")
+	}
+}
+
 // Presence is a shared view or it is worthless: somebody connected to one
 // replica has to show online to a colleague on another.
 func TestPresenceChangesAreSeenOnEveryProcess(t *testing.T) {

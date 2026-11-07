@@ -1,4 +1,15 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
+import type {
+  ContributionDetail,
+  Contributions,
+  Dashboard,
+  Scrum,
+  ScrumSummary,
+} from '@/shared/types/dashboard';
+import { loginPathFor } from '@/features/auth/nextPath';
+import type { AvailabilityPerson, CalendarItem, CalendarKind } from '@/features/calendar/layout';
+import type { CallLog } from '@/features/calls/callLog';
+import type { AttendanceDay, StandingForm, StandingMeeting } from '@/features/calls/standing/standing';
 
 export const api = axios.create({
   baseURL: '/api',
@@ -62,7 +73,7 @@ api.interceptors.response.use(
         const publicPaths = ['/login', '/wizard'];
         const isPublicPath = publicPaths.some(p => window.location.pathname === p || window.location.pathname.startsWith(p + '/'));
         if (!isPublicPath) {
-          window.location.href = '/login';
+          window.location.href = loginPathFor(window.location.pathname, window.location.search);
         }
         return Promise.reject(err);
       } finally {
@@ -99,7 +110,7 @@ export const orgApi = {
     }>('/users', data),
   /**
    * Create a whole CSV of colleagues at once. Every row is reported back
-   * separately — one bad address does not cost the rest of the batch — and the
+   * separately - one bad address does not cost the rest of the batch - and the
    * generated passwords come back with them, which is the only time they are
    * ever visible.
    */
@@ -119,6 +130,8 @@ export const orgApi = {
   getUser: (id: string) => api.get(`/users/${id}`),
   updateUser: (id: string, data: { name?: string; avatarUrl?: string }) => api.patch(`/users/${id}`, data),
   deactivateUser: (id: string) => api.delete(`/users/${id}`),
+  /** Ends their sessions; the password in the response is never visible again. */
+  resetPassword: (id: string) => api.post<{ temporaryPassword: string }>(`/users/${id}/reset-password`),
   listRoles: () => getList('/roles', 'roles'),
   createRole: (data: { name: string; description?: string; permissions?: string[] }) => api.post('/roles', data),
   updateRole: (id: string, data: { name?: string; description?: string; permissions?: string[] }) =>
@@ -251,6 +264,21 @@ export const tasksApi = {
   listComments: (id: string) => getList(`/tasks/${id}/comments`, 'comments'),
   listLabels: () => getList('/labels', 'labels'),
   createLabel: (data: { name: string; color?: string }) => api.post('/labels', data),
+  /** The caller's dashboard. The server decides how wide it is, by who is asking. */
+  dashboard: (teamId?: string) => api.get<Dashboard>('/tasks/dashboard', { params: { teamId } }),
+  contributions: (params: { from: string; to: string; teamId?: string }) =>
+    api.get<Contributions>('/tasks/contributions', { params }),
+  contributionDetail: (userId: string, params: { from: string; to: string }) =>
+    api.get<ContributionDetail>(`/tasks/contributions/${userId}`, { params }),
+};
+
+export const scrumsApi = {
+  /** Saves the snapshot. It can never be edited afterwards. */
+  complete: (data: { teamId?: string; notes?: string }) => api.post<Scrum>('/scrums', data),
+  get: (id: string) => api.get<Scrum>(`/scrums/${id}`),
+  /** Newest first. `before` is the last item's createdAt. */
+  list: (params: { teamId?: string; limit?: number; before?: string }) =>
+    getList<ScrumSummary>('/scrums', 'scrums', params),
 };
 
 export const callsApi = {
@@ -262,12 +290,82 @@ export const callsApi = {
   startRecording: (id: string) => api.post(`/calls/${id}/record`),
   end: (id: string) => api.post(`/calls/${id}/end`),
   /** Quietens somebody's microphone. Only the media server can do this, and
-   *  it is one way — nobody turns another person's microphone back on. */
+   *  it is one way - nobody turns another person's microphone back on. */
   muteParticipant: (callId: string, identity: string) =>
     api.post(`/calls/${callId}/mute/${identity}`),
   /** Turns a call down and tells whoever started it why. */
   decline: (id: string, reason: 'declined' | 'no_answer' = 'declined') =>
     api.post(`/calls/${id}/decline`, { reason }),
+  /** Asks to join a private call. A repeat while one is waiting is the same request. */
+  knock: (id: string) => api.post<{ request: KnockRequest }>(`/calls/${id}/knock`),
+  /** Who is waiting or has waited. Members only. */
+  requests: (id: string) => getList<KnockRequest>(`/calls/${id}/requests`, 'requests'),
+  admit: (id: string, requestId: string) => api.post(`/calls/${id}/requests/${requestId}/admit`),
+  deny: (id: string, requestId: string) => api.post(`/calls/${id}/requests/${requestId}/deny`),
+  /** The audit trail. Anybody who may not read it gets 404. */
+  log: (id: string) => api.get<CallLog>(`/calls/${id}/log`),
+};
+
+export interface KnockRequest {
+  id: string;
+  userId: string;
+  userName: string;
+  status: 'pending' | 'admitted' | 'denied' | 'ended';
+  createdAt: string;
+}
+
+export interface BlockBody {
+  kind: Exclude<CalendarKind, 'busy'>;
+  title?: string;
+  startsAt: string;
+  endsAt: string;
+}
+
+export interface MeetingBody {
+  title: string;
+  startsAt: string;
+  endsAt: string;
+  inviteeIds: string[];
+}
+
+export interface MeetingConflict {
+  userId: string;
+  kind: 'focus' | 'meeting';
+}
+
+export const calendarApi = {
+  /** One person's calendar, at the level the caller may see. */
+  get: (params: { userId?: string; from: string; to: string }) =>
+    getList<CalendarItem>('/calendar', 'items', params),
+  /** Whether people are free. Never carries a title. */
+  availability: (params: { userIds: string; from: string; to: string }) =>
+    getList<AvailabilityPerson>('/calendar/availability', 'people', params),
+  createBlock: (data: BlockBody) => api.post('/calendar/blocks', data),
+  updateBlock: (id: string, data: Partial<BlockBody>) => api.patch(`/calendar/blocks/${id}`, data),
+  deleteBlock: (id: string) => api.delete(`/calendar/blocks/${id}`),
+};
+
+export const meetingsApi = {
+  create: (data: MeetingBody) =>
+    api.post<{ meeting: { id: string }; conflicts: MeetingConflict[] | null }>('/meetings', data),
+  update: (id: string, data: Partial<MeetingBody>) =>
+    api.patch<{ meeting: { id: string }; conflicts: MeetingConflict[] | null }>(`/meetings/${id}`, data),
+  cancel: (id: string) => api.delete(`/meetings/${id}`),
+};
+
+export const standingApi = {
+  list: () => getList<StandingMeeting>('/standing-meetings', 'standingMeetings'),
+  create: (data: StandingForm) => api.post<{ standingMeeting: StandingMeeting }>('/standing-meetings', data),
+  update: (id: string, data: Partial<StandingForm>) =>
+    api.patch<{ standingMeeting: StandingMeeting }>(`/standing-meetings/${id}`, data),
+  /** Archives it: the room goes and its history stays. */
+  archive: (id: string) => api.delete(`/standing-meetings/${id}`),
+  /** Opens today's occurrence. */
+  join: (id: string) =>
+    api.post<{ callId: string; roomName: string; token: string; date: string }>(`/standing-meetings/${id}/join`),
+  /** Scope is decided by the server, by who is asking. */
+  attendance: (id: string, params: { from: string; to: string; teamId?: string }) =>
+    getList<AttendanceDay>(`/standing-meetings/${id}/attendance`, 'days', params),
 };
 
 /** An upload in progress, as the server describes it. */
@@ -342,7 +440,7 @@ export const filesApi = {
 
   /**
    * Presigned URLs for parts. Omit partNumbers to be given whatever is still
-   * missing — which is all a resuming browser knows how to ask for.
+   * missing - which is all a resuming browser knows how to ask for.
    */
   signParts: (id: string, partNumbers?: number[]) =>
     api.post<{ parts: PartUpload[] }>(`/files/multipart/${id}/parts`, { partNumbers: partNumbers ?? [] }),

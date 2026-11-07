@@ -15,8 +15,10 @@ import (
 	"github.com/teamup/teamup/internal/auth"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/teamup/teamup/internal/testsupport"
@@ -427,5 +429,39 @@ func TestADeadSubscriptionIsForgotten(t *testing.T) {
 	subs, _ := svc.getSubscriptions(ctx, org.OwnerID.String())
 	if len(subs) != 0 {
 		t.Errorf("a dead subscription should be dropped, got %d", len(subs))
+	}
+}
+
+// A title is built from something people named, which may be longer than the
+// column. Too long, the insert failed and the person was told nothing at all.
+func TestALongTitleIsShortenedRatherThanLosingTheNotification(t *testing.T) {
+	pool := testsupport.DB(t)
+	org := testsupport.SeedOrg(t, pool)
+	svc := NewService(pool, nil, Config{})
+	ctx := context.Background()
+	long := strings.Repeat("é", 400)
+
+	if err := svc.Notify(ctx, org.ID, org.OwnerID, "task.added", long, "body", nil); err != nil {
+		t.Fatalf("notify: %v", err)
+	}
+	if err := svc.NotifyMany(ctx, org.ID, []uuid.UUID{org.OwnerID}, "task.added", long, "body", nil); err != nil {
+		t.Fatalf("notify many: %v", err)
+	}
+	rows, err := pool.Query(ctx, `SELECT title FROM notifications WHERE user_id = $1`, org.OwnerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	titles, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(titles) != 2 {
+		t.Fatalf("both are there, got %d", len(titles))
+	}
+	for _, title := range titles {
+		runes := []rune(title)
+		if len(runes) != 255 || runes[254] != '…' || !utf8.ValidString(title) {
+			t.Errorf("255 characters ending in an ellipsis, cut on a character: %d, %q", len(runes), title)
+		}
 	}
 }

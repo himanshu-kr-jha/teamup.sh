@@ -38,10 +38,17 @@ if [ "${1:-}" = "--lan" ]; then
     exit 1
   fi
 
-  export TEAMUP_BASE_URL="http://${LAN_IP}:8080"
+  export TEAMUP_BASE_URL="http://${LAN_IP}:${TEAMUP_PORT:-8080}"
   # A browser discards a Secure cookie that arrives over plain HTTP, so
   # without this, signing in from another machine fails with no error.
   export TEAMUP_INSECURE_COOKIES=true
+  # Presigned URLs are opened by the browser, not by the server, so the host
+  # in them has to be one the other machine can reach. Left at localhost every
+  # upload and every download resolves, on that machine, to that machine.
+  export TEAMUP_MINIO_ENDPOINT="${LAN_IP}:${TEAMUP_MINIO_PORT:-9000}"
+  # The server's own calls to storage stay local: they must not depend on the
+  # LAN address still being routable from here.
+  export TEAMUP_MINIO_INTERNAL_ENDPOINT="localhost:${TEAMUP_MINIO_PORT:-9000}"
   # LiveKit otherwise asks a public STUN server where it is, and is told the
   # router's public address — which nothing on this network can route to.
   export TEAMUP_LIVEKIT_USE_EXTERNAL_IP=false
@@ -49,7 +56,7 @@ if [ "${1:-}" = "--lan" ]; then
 
   echo ""
   echo "🌐 Local network mode"
-  echo "   Open http://${LAN_IP}:8080 on any device on this Wi-Fi."
+  echo "   Open ${TEAMUP_BASE_URL} on any device on this Wi-Fi."
   echo ""
   echo "   The session cookie travels unencrypted, because a browser will not"
   echo "   keep a secure one over plain HTTP. Use this on a network you trust."

@@ -1,371 +1,764 @@
-# Running TeamUp somewhere other than your own machine
+# Deploying TeamUp
 
-There is one thing to understand before anything else, because it decides how
-much work each option is.
+## Recommendation
 
-## Why HTTPS decides what works
+Run TeamUp on one VM you control, with Docker Compose.
+For a company of up to 50 people, use **4 vCPU, 8 GB of memory and 100 GB of SSD**.
+One VM with a nightly backup is simple to operate and has far more capacity than 50 people use outside of calls.
 
-Browsers grant some abilities only to a "secure context": HTTPS, or `localhost`.
-Three things TeamUp does fall under that rule.
+The sizing comes from two different kinds of evidence.
 
-| Needs a secure context | What happens without one |
+- **Everything except calls was measured.**
+  It would fit in 2 vCPU and 4 GB.
+  See [What was measured](#what-was-measured).
+- **Calls are an estimate.**
+  They are the reason for the extra headroom.
+  See [Calls: an estimate](#calls-an-estimate).
+
+If nobody will use calls, 2 vCPU and 4 GB is enough.
+Disk depends on how many files people upload, because attachments dominate storage.
+2000 tasks took 13 MB of database, so you can grow the disk when you need it rather than guess now.
+
+The other options are compared under [Alternatives](#alternatives).
+
+## Walkthrough: from a fresh Ubuntu VM to a working team
+
+This assumes Ubuntu 24.04 and a domain you control.
+`teamup.example.com` stands for your own name throughout.
+The secrets, start, backup, restore and upgrade commands were extracted from this file and run as written, from an empty state, against this repository's `docker-compose.prod.yml` and `nginx.conf`.
+[What has not been verified](#what-has-not-been-verified) lists the parts that could not be tested on a local machine.
+
+### 1. Point DNS at the VM
+
+Create an A record for `teamup.example.com` pointing at the VM's public address.
+Wait until it resolves, because the certificate step needs it.
+
+```bash
+dig +short teamup.example.com
+```
+
+Do not create an AAAA record unless you have checked [the IPv6 note](#security-checklist) first.
+
+### 2. Open the firewall
+
+Open these in your cloud provider's firewall, or security group.
+
+| Port | Protocol | Why |
+| --- | --- | --- |
+| 22 | TCP | ssh, ideally from your own address only |
+| 80 | TCP | certificate issue and renewal, and the redirect to HTTPS |
+| 443 | TCP | the app, its WebSocket, file transfers and call signalling |
+| 7881 | TCP | call media when a network blocks UDP |
+| 7882 | UDP | call media |
+
+Port 7882 UDP is what makes calls work.
+Without it a call connects and then nobody can hear anybody.
+
+LiveKit usually asks for a UDP range such as 50000-60000, and this stack deliberately does not.
+Docker starts a separate `docker-proxy` process for every published port.
+A test of that range had started only 2575 of the 10001 proxies after 5 minutes, used about 2 MB each, and took a 15 GB machine close to running out of memory.
+All call media shares UDP 7882 instead.
+
+Then use `ufw` for what Docker does not publish.
+
+```bash
+sudo ufw allow 22/tcp
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw --force enable
+```
+
+`ufw` does not protect ports Docker publishes, because Docker writes its own iptables rules.
+That is why the compose file publishes only the ports in the table above, and why the provider's firewall matters.
+
+### 3. Install Docker and certbot
+
+```bash
+curl -fsSL https://get.docker.com | sudo sh
+sudo usermod -aG docker "$USER"
+newgrp docker
+sudo apt-get update && sudo apt-get install -y certbot git
+```
+
+### 4. Get the code
+
+```bash
+sudo mkdir -p /opt/teamup && sudo chown "$USER" /opt/teamup
+git clone https://github.com/himanshu-kr-jha/teamup.sh.git /opt/teamup
+cd /opt/teamup
+```
+
+Every later command runs in `/opt/teamup`.
+
+### 5. Write the secrets
+
+This generates every secret and puts all the configuration in one file.
+Change the first line to your own domain.
+
+```bash
+DOMAIN=teamup.example.com
+cat > .env <<EOF
+COMPOSE_FILE=docker-compose.prod.yml
+COMPOSE_PROJECT_NAME=teamup
+TEAMUP_DOMAIN=$DOMAIN
+TEAMUP_IMAGE=teamup:$(git rev-parse --short HEAD)
+TEAMUP_VERSION=$(git describe --tags --always)
+POSTGRES_PASSWORD=$(openssl rand -hex 24)
+REDIS_PASSWORD=$(openssl rand -hex 24)
+MINIO_ACCESS_KEY=$(openssl rand -hex 12)
+MINIO_SECRET_KEY=$(openssl rand -hex 24)
+LIVEKIT_API_KEY=API$(openssl rand -hex 8)
+LIVEKIT_API_SECRET=$(openssl rand -hex 32)
+AUTH_SECRET=$(openssl rand -hex 32)
+EOF
+chmod 600 .env
+```
+
+The first two lines mean a plain `docker compose` uses the production file and a fixed project name, so the commands below need no flags.
+Compose stops with a message naming any setting that is missing.
+
+**Copy `.env` somewhere other than this VM now.**
+`AUTH_SECRET` decrypts the key TeamUp signs sessions with, and a database backup is of no use without it.
+
+### 6. Get a certificate
+
+A browser grants the camera, the microphone, service workers and push only over HTTPS, and it drops TeamUp's `Secure` session cookie without it.
+So HTTPS is not optional.
+
+The simplest working option for this stack is certbot in standalone mode, with the files copied to where nginx reads them.
+It needs port 80, which is free at this point because nothing has started yet.
+
+```bash
+sudo certbot certonly --standalone -d "$DOMAIN" -m you@example.com --agree-tos -n
+
+mkdir -p certs
+sudo install -m 600 "/etc/letsencrypt/live/$DOMAIN/fullchain.pem" certs/tls.crt
+sudo install -m 600 "/etc/letsencrypt/live/$DOMAIN/privkey.pem" certs/tls.key
+```
+
+Now make renewal work.
+Certbot's timer renews by itself, and it runs these hooks.
+nginx has to stop for a few seconds, because standalone mode needs port 80.
+
+```bash
+sudo tee /etc/letsencrypt/renewal-hooks/pre/teamup.sh <<'EOF'
+#!/bin/sh
+cd /opt/teamup && docker compose stop nginx
+EOF
+sudo tee /etc/letsencrypt/renewal-hooks/deploy/teamup.sh <<'EOF'
+#!/bin/sh
+install -m 600 "$RENEWED_LINEAGE/fullchain.pem" /opt/teamup/certs/tls.crt
+install -m 600 "$RENEWED_LINEAGE/privkey.pem" /opt/teamup/certs/tls.key
+EOF
+sudo tee /etc/letsencrypt/renewal-hooks/post/teamup.sh <<'EOF'
+#!/bin/sh
+cd /opt/teamup && docker compose start nginx
+EOF
+sudo chmod +x /etc/letsencrypt/renewal-hooks/*/teamup.sh
+```
+
+After step 7, check it with `sudo certbot renew --dry-run`.
+
+### 7. Build and start
+
+No image is published to a registry yet, so you build one from the checkout.
+
+```bash
+docker compose build teamup
+docker compose up -d
+```
+
+The build includes the web app and needs no Node or Go on the VM.
+With no cache it took about 90 seconds on a 12-core machine, so expect several minutes on a smaller VM.
+The web app part fits in 1 GB of memory.
+The Go part was not measured on its own.
+
+`docker compose up -d` applies database migrations first, through the short-lived `migrate` service, and then starts the server.
+Check that all of it came up.
+
+```bash
+docker compose ps -a
+docker compose logs migrate
+```
+
+`migrate` should show `Exited (0)` and every other service `Up`.
+`teamup` reports `unhealthy` until you finish the wizard, because the wizard is what creates the storage bucket.
+
+### 8. Run the setup wizard, straight away
+
+Open `https://teamup.example.com`.
+
+**Do this immediately.**
+The wizard needs no sign-in until it has been completed, so the first person to reach it owns the instance.
+
+| Screen | What to enter |
 | --- | --- |
-| Cookies marked `Secure` | The browser silently discards the session cookie. Sign-in appears to succeed and you land back on the login page. |
-| Camera and microphone | Calls cannot start; `getUserMedia` is refused outright. |
-| Desktop notifications | The Notification API is unavailable. |
+| Organization | Your company's name and a subdomain |
+| Admin User | Your name, your email and a password of at least 12 characters. This is the owner account. |
+| Authentication | Leave the provider as it is and leave its fields empty. A provider has to be selected, but OIDC is a stub and password sign-in is the real path. |
+| Services: MinIO | Endpoint `minio:9000`, bucket `teamup-files`, and `MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY` from `.env` |
+| Services: LiveKit | URL `http://livekit:7880`, and `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` from `.env` |
+| Services: SMTP | Optional. Without it, new members' passwords appear on screen for you to pass on. |
 
-`localhost` is exempt, which is why everything works on the machine running it
-and stops working the moment you open `http://192.168.x.x:8080` on a phone.
+Use `grep -E 'MINIO|LIVEKIT' .env` to read the values.
+Press both Test buttons, then **Next**, then **Create Organization**.
+Then check the stack is healthy.
 
-So there are two shapes of deployment:
+```bash
+docker compose ps
+docker compose exec -T nginx wget -qO- http://teamup:8080/readyz
+```
 
-- **Plain HTTP on a local network** — quick, no certificates, but no calls and no
-  desktop notifications. Fine for testing chat, tasks, files, presence and
-  search.
-- **HTTPS** — everything works. Needed on EC2 anyway.
+The second command should begin `{"status":"ready"`.
 
----
+### 9. Create your people and teams
 
-## On your own network, for a phone or a second laptop
+Sign in with the owner account, and go to **Organization**.
 
-The short way — one command, which works out the address and sets everything
-that has to be set together:
+1.
+   On **Members**, use **Add member** for one person or **Import CSV** for everybody at once.
+2.
+   Without SMTP, each person's temporary password is shown once, so pass it on then.
+   They must change it the first time they sign in.
+3.
+   On **Teams**, create your teams, set each team's manager and add its members.
+
+A team's manager is who sees that team's scrum tab and contribution view under **Tasks**.
+
+### 10. Set up backups
+
+Follow [Backups](#backups) now, before anybody relies on the system.
+
+## What was measured
+
+The production stack ran with the CPU and memory limits in `docker-compose.prod.yml`, seeded through the API with 50 users, 5 teams and 2000 tasks.
+A small script then simulated 50 people through nginx over TLS.
+
+- 48 people polled `GET /api/tasks/dashboard` every 30 seconds, each with a WebSocket open.
+- One organization admin did the same, which is the widest dashboard.
+- One manager ran the scrum tab about every 15 seconds: the team dashboard, the scrum history and the contribution view, saving a scrum every 90 seconds or so.
+
+The second run polled every 3 seconds instead, to see how much headroom there is.
+There were no errors in either run and all 50 WebSockets stayed open.
+
+| Latency in ms | 5 min, 30 s polling: p50 | p95 | max | 2.5 min, 3 s polling: p50 | p95 | max |
+| --- | --- | --- | --- | --- | --- | --- |
+| Person's dashboard | 14.8 | 22.8 | 72 | 8.3 | 14.9 | 2864 |
+| Admin's dashboard | 38.8 | 44.9 | 45 | 30.4 | 49.2 | 49 |
+| Manager's team dashboard | 15.3 | 18.4 | 18 | 13.8 | 20.8 | 21 |
+| Scrum history | 5.8 | 9.6 | 10 | 7.1 | 10.6 | 11 |
+| Contribution view | 12.4 | 20.7 | 21 | 11.1 | 13.4 | 13 |
+| Saving a scrum | 32.4 | 35.6 | 36 | 32.9 | 32.9 | 33 |
+
+The 2864 ms maximum came while all 50 people were signing in at once.
+Sign-in deliberately costs CPU to verify a password, and the app is limited to one CPU, so a simultaneous rush queues for a few seconds.
+
+| Container, 30 s polling | CPU, % of one core: avg | max | Memory: avg MiB | max MiB | 3 s polling: CPU avg | CPU max | Memory max MiB |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| teamup | 4.8 | 100.8 | 31 | 32 | 11.7 | 100.8 | 33 |
+| postgres | 1.4 | 6.4 | 125 | 127 | 4.6 | 10.7 | 128 |
+| redis | 1.7 | 6.1 | 11 | 13 | 1.6 | 5.9 | 12 |
+| nginx | 1.0 | 3.4 | 16 | 17 | 1.7 | 2.3 | 17 |
+| minio | 0.1 | 1.7 | 64 | 65 | 0.1 | 0.2 | 64 |
+| livekit, no calls | 0.5 | 4.8 | 49 | 50 | 0.5 | 4.4 | 50 |
+
+The 100.8% peak for `teamup` is the sign-in rush too.
+Postgres held 26 connections throughout, which is the app's fixed pool of 25 plus the measuring session, against a limit of 100.
+The six containers together used about 300 MiB and well under one core.
+
+Read these numbers with their limits in mind.
+
+- The test ran on a shared 12-core laptop over loopback, so there was no real network, and the VM's CPU may be slower.
+- It models dashboards and open sockets.
+  A real browser makes more varied requests, and no chat traffic or file transfer was simulated.
+- 2000 tasks is a modest history.
+  Latency will rise with data, though these numbers leave a lot of room.
+
+So this shows that 50 people are far from the limit of a small VM, and it is not a capacity figure beyond that.
+
+### Calls: an estimate
+
+Nothing here measured a real call with many people, and these numbers cannot be measured with a script.
+They are estimates, with the reasoning shown so you can redo them for your own meetings.
+
+LiveKit forwards video without re-encoding it.
+So the server's outgoing bandwidth is roughly the sum, over everybody watching, of what they watch.
+The one data point available is a two-person test call with a fake camera, where the publisher sent about 1.3 Mbit/s and the other person received about 0.8 Mbit/s.
+
+| Meeting | Into the server | Out of the server | Reasoning |
+| --- | --- | --- | --- |
+| 5 people, cameras on | 8 Mbit/s | 15 Mbit/s | 5 × 1.5 up, and 5 people each watching 4 tiles at about 0.75 |
+| 10 people, cameras on | 15 Mbit/s | 40 Mbit/s | 10 × 1.5 up, and 10 people each watching 9 small tiles at about 0.4 |
+| All-hands: 1 presenter, 49 watching | 2 Mbit/s | 75 Mbit/s | 49 × about 1.5 |
+
+Allow about 4 GB per hour for each 10 Mbit/s going out, and check what your provider charges for it.
+For CPU, assume one vCPU per 100 to 200 Mbit/s forwarded, which is a rule of thumb rather than something tested here.
+Compose limits LiveKit to 2 CPUs and 4 GB, which is what those meetings need at that rule of thumb, and it is why the recommendation is 4 vCPU rather than 2.
+Run a real all-hands as a test before relying on it, and watch `docker stats`.
+
+## Backups
+
+Two things hold durable data: Postgres and the MinIO volume.
+Redis holds presence and wizard sessions only, so it needs no backup.
+
+Create this script once.
+It stops MinIO for a moment so that the copy is consistent, so uploads fail during that moment.
+
+```bash
+cat > /opt/teamup/backup.sh <<'EOF'
+#!/bin/sh
+set -e
+cd /opt/teamup
+mkdir -p backups
+D=$(date +%F)
+docker compose exec -T postgres pg_dump -U teamup -Fc teamup > "backups/postgres-$D.dump"
+docker compose stop minio
+docker run --rm -v teamup_minio-data:/data:ro -v "$PWD/backups":/backup alpine:3.20 \
+  tar czf "/backup/minio-$D.tar.gz" -C /data .
+docker compose start minio
+cp .env "backups/env-$D"
+find backups -type f -mtime +14 -delete
+EOF
+chmod +x /opt/teamup/backup.sh
+```
+
+Run it nightly, and copy `backups/` off the VM, because a backup on the same disk does not survive losing the VM.
+
+```bash
+(crontab -l 2>/dev/null; echo '0 3 * * * /opt/teamup/backup.sh >> /opt/teamup/backups/backup.log 2>&1') | crontab -
+```
+
+The backups hold every message and the secrets in `.env`, so encrypt them wherever they go.
+
+### Restore
+
+This was tested by destroying every volume with `docker compose down -v` and restoring.
+All 2003 tasks, 51 users and 9 saved scrums came back, the owner signed in, and a file uploaded before the backup downloaded with the same contents.
+
+The `.env` has to be the one from the same deployment, because of `AUTH_SECRET`.
+
+```bash
+D=2026-11-06    # the date of the backup
+docker compose down -v
+docker compose up -d --wait postgres
+docker compose exec -T postgres pg_restore -U teamup -d teamup --no-owner < "backups/postgres-$D.dump"
+docker compose create minio
+docker run --rm -v teamup_minio-data:/data -v "$PWD/backups":/backup:ro alpine:3.20 \
+  tar xzpf "/backup/minio-$D.tar.gz" -C /data
+docker compose up -d
+```
+
+`down -v` deletes the data, so check that the backup files exist before you run it.
+Plain `docker compose down` keeps all data, which was tested as well.
+Do not skip `--wait`: on an empty volume Postgres restarts once during its first start, and a restore that begins too early fails to connect.
+
+Test a restore on another machine now and then.
+A backup you have never restored is only a hope.
+
+## Upgrades and rollback
+
+### Upgrading
+
+Back up, build the new version under a new tag, and start it.
+Keep the old image, because it is what makes rollback possible.
+
+```bash
+cd /opt/teamup
+./backup.sh
+git fetch && git checkout <the version you want>
+sed -i "s/^TEAMUP_IMAGE=.*/TEAMUP_IMAGE=teamup:$(git rev-parse --short HEAD)/" .env
+docker compose build teamup
+docker compose up -d
+docker compose restart nginx
+docker compose logs migrate
+docker compose ps
+```
+
+`migrate` runs first and the new server starts only if it succeeds.
+The log should end `version <old> -> <new>`, and `migrate` should show `Exited (0)`.
+nginx follows the new container by itself, and it is restarted here only to pick up any change to `nginx.conf`.
+
+If `/opt/teamup` was copied onto the VM rather than cloned, there is no `git` step.
+Copy the new tree over it instead, and do not overwrite `.env`, `certs/` or `backups/`.
+
+To update Postgres, Redis, nginx, MinIO or LiveKit, change the pinned version in `docker-compose.prod.yml` and run `docker compose up -d`.
+Minor versions of Postgres are safe this way.
+A new major version of Postgres is not, because its data format changes: dump and restore instead.
+
+Do not run `docker image prune -a`, because it deletes the previous version you would roll back to.
+
+### What people with TeamUp open see
+
+Upgrading the server briefly disconnects everybody's socket, and it reconnects by itself.
+The web app itself changes only when somebody chooses to.
+A new version never reloads an open tab, because a reload would drop whoever is in a call there.
+Instead the page offers **A new version of TeamUp is available** with a **Reload** button, once nobody is in a call in that tab.
+Pressing it in one tab leaves other tabs alone, so a call in another tab carries on.
+A tab left open looks for a new version once an hour.
+
+An upgrade does end calls in progress if it changes LiveKit's container, because the room is on that container.
+A change to `LIVEKIT_CONFIG` in the compose file does that, so tell people first.
+
+### Upgrading to migration 0024 from migration 0016
+
+This upgrade adds eight migrations.
+
+| Migration | What it does to existing data |
+| --- | --- |
+| `0017_call_attendance` | New tables for who joined and left a call. No existing row changes. |
+| `0018_call_knock_requests` | New table. No existing row changes. |
+| `0019_standing_meetings` | New table and new columns on `calls`. No existing row changes. |
+| `0020_calendar` | New table and a new column on `calls`. No existing row changes. |
+| `0021_scrum_added_to` | New columns on the scrum tables. Saved scrums read as they did. |
+| `0022_close_stale_calls` | Ends every unscheduled call still marked active a day after it started, as of the last time anybody was seen in it. |
+| `0023_task_watchers_added_by` | Records who added each watcher. An old row counts as added by somebody else only if a `task.added` notification exists for it, and otherwise counts as the person following the task themselves, so it stops counting towards **Added to**. |
+| `0024_standing_meeting_schedules` | New table, filled from any standing meetings. |
+
+It also changes the compose file, because LiveKit gets its webhook, so LiveKit's container is recreated and calls in progress end.
+It is the first upgrade away from the old way of updating the web app, so tabs opened before it behave differently once.
+They do not reload, which is the point, but they also have no offer to show, and reloading one tab keeps the old version while its service worker waits.
+People get the new version by closing every TeamUp tab and opening it again.
+Until they do they run the old web app against the new server, and the rehearsal below saw such a tab stay open and reload but did not try its features.
+
+**Rehearsal.**
+The steps above were run on one machine against a copy of the 2026-11-06 backup of the live pilot, with a browser held open throughout.
+
+| Check | Result |
+| --- | --- |
+| Migrations | `version 16 -> 24`, not dirty |
+| Existing rows | 36 of 37 tables identical row for row on the columns they had before; `schema_migrations` differs because it holds the version |
+| `./backup.sh` equivalent | 1.6 seconds |
+| `docker compose up -d` | 11.9 seconds, most of it waiting for LiveKit to report healthy |
+| Site unavailable to a client polling every 200 ms | 16.3 seconds, including the nginx restart |
+| Sign-in, tasks, chat, calls, calendar and settings in a real browser | All load, with no page errors |
+| A tab left open through the upgrade | Not reloaded |
+| A real call through nginx | Signed `room_started`, `participant_joined`, `participant_left` and `room_finished` all answered 200, and one session was recorded |
+
+The backup is small: 2 people, 1 task, 2 messages and 1 call, and the time will grow with real data.
+Building the image is not in those times, and takes several minutes on a small VM.
+`0022` closed 0 calls and `0023` had 0 watcher rows to classify, because the pilot had no stale calls and no watchers.
+Both were therefore also checked with rows planted on a copy of the backup.
+A call 5 days old whose only person left after an hour ended with a duration of 60 minutes.
+A call 3 days old whose person was last seen joining 10 minutes in ended with a duration of 10 minutes.
+A call 2 hours old stayed active.
+A watcher with a `task.added` notification counted as added by somebody else, and one without counted as self-added.
+
+The rehearsal could not use the live image, because it was built from an uncommitted tree that no longer exists.
+An image of commit `9b339c9` stood in for it, with the files for migrations 15 and 16 added.
+The stand-in has no scrum features, it was checked only for sign-in, pages and basic writes, and the live image was never run.
+It also ran with throwaway secrets, so `signing_keys` was replaced and the owner's password set on the copy, and with `node_ip: 127.0.0.1` so that a call could connect on one machine.
+
+### Rolling back
+
+A migration changes the database, and the old code does not know about the change.
+If you only point `TEAMUP_IMAGE` back at the old image, the old `migrate` refuses to run, the server does not start and the site answers 502.
+
+```
+Error: migrate up: no migration found for version 24: read down for version 24 .: file does not exist
+```
+
+That failure is protecting you, and you have two ways through it.
+Both were run against the rehearsal above, and each brought the old version back with sign-in, tasks, chat and calls working.
+
+**Roll the migrations back first**, using the new image, because only it has the files to do that.
+Run the middle command once for each migration the new version added, which is eight going from 0024 to 0016.
+`ls migrations` in each version shows how many that is.
+
+```bash
+docker compose stop teamup
+docker compose run --rm --no-deps migrate migrate down
+# Put the old version's docker-compose.prod.yml and nginx.conf back, set TEAMUP_IMAGE in .env to the old tag, then:
+docker compose up -d
+```
+
+Eight steps took 6 seconds.
+The resulting schema was identical to the one in the backup, with no difference at all in `pg_dump --schema-only`.
+Tasks, messages and calls written since the upgrade were kept.
+What the rolled-back migrations own is gone for good, so read the `.down.sql` files before you run them.
+From 0024 to 0016 that is calendar blocks, standing meetings, meetings not yet held and cancelled ones, the attendance log of every call, knock requests, who added each watcher, and any saved scrum rows for tasks people were added to.
+Calls that `0022` closed stay closed.
+Going forward again afterwards also worked, and applied `version 16 -> 24`.
+
+**Or restore the backup you took before upgrading**, as described under [Restore](#restore), with the old version's files and image in place.
+It took 26 seconds here, and every table's row count matched the moment before the upgrade.
+It loses everything since the backup, so prefer it only when a migration failed or a down migration would lose something you care about more.
+
+**Running the old server on the new schema is not a rollback.**
+Starting it past `migrate` with `docker compose up -d --no-deps teamup` did work: the stand-in signed in, loaded every page and wrote tasks, messages and calls with no errors.
+But that is one stand-in image and not a promise, a watcher it adds has no `added_by`, and so it would count as added by somebody else when the new version returns.
+Use it only to get through an emergency while you do one of the two above.
+
+If a migration fails partway, `docker compose logs migrate` prints what to do.
+Check with `docker compose run --rm --no-deps migrate migrate version`.
+
+### Where images come from
+
+- **Build on the VM.**
+  This is the path above, and it always matches your checkout.
+- **Build elsewhere and copy it.**
+  On another machine, run `docker build -t teamup:v1 .` and `docker save teamup:v1 | ssh vm docker load`, then set `TEAMUP_IMAGE=teamup:v1` in `.env`.
+- **A registry.**
+  `release.yml` publishes to `ghcr.io/himanshu-kr-jha/teamup.sh` when a `v*` tag is pushed.
+  No tag exists yet, so no image exists yet, and pulling it currently fails with `denied`.
+  Once there is one, set `TEAMUP_IMAGE` to its exact version and use `docker compose pull`.
+
+Avoid `latest` on anything in production.
+It changes under you, a rebuilt VM would run something you never tested, and rollback has nothing to name.
+That is why the compose file pins all six images, and why the example above tags images by commit.
+
+### Object storage
+
+MinIO has archived its open-source project and no longer issues security updates for it.
+It removed its images: `minio/minio` on Docker Hub now answers "pull access denied", `quay.io/minio/minio` answers 401 and `dl.min.io` answers 410 Gone.
+Machines with the image already cached keep working, which hides the problem until you build a new one.
+
+So the compose file uses `cgr.dev/chainguard/minio`, which Chainguard still builds.
+It was the only working source found, and it is what all the testing here ran against, version `RELEASE.2026-10-23T20-06-51Z`.
+Its free tier publishes only `latest`, so the file pins a digest.
+Chainguard does not promise to keep old digests, so if a pull ever fails, take the current digest with `docker buildx imagetools inspect cgr.dev/chainguard/minio:latest`.
+A VM that already holds the image is not affected, and your data lives in the volume rather than in the image.
+
+Your risk here is limited because MinIO is not published directly and is reached only through the signed `/teamup-files/` path on nginx.
+If you would rather not run it at all, TeamUp speaks plain S3, so you can point `TEAMUP_MINIO_*` at Amazon S3, Cloudflare R2 or Backblaze B2.
+That variation has not been tested.
+
+## Security checklist
+
+Each item here is true of this code, and most were checked against the running stack.
+
+- [ ] **Complete the wizard the moment the stack is up.**
+      It needs no sign-in until then.
+- [ ] **Keep `/metrics` private.**
+      It has no authentication.
+      The shipped `nginx.conf` answers 404 for `/metrics` and for the readiness endpoints, which name internal hosts and the version, and the app's own port is not published.
+      To scrape it, run Prometheus on the compose network and use `http://teamup:8080/metrics`.
+- [ ] **Use password sign-in.**
+      OIDC is a stub that creates a fabricated in-memory user, so do not configure a provider's client ID.
+      The login page therefore offers password sign-in only.
+      They cannot yet be hidden.
+- [ ] **Know that login is rate limited only at nginx.**
+      The app has no limit of its own.
+      `nginx.conf` allows a burst of 50 attempts per address and then one every 6 seconds.
+      In a test, 70 quick failed attempts gave 52 rejections from the app and then 18 `429`s from nginx.
+      The login page shows those as "Login failed".
+      If you put anything else in front of the app, you need your own limit.
+- [ ] **Check the address nginx sees.**
+      The limit is per client address.
+      Run `docker compose logs nginx | tail` after signing in, and confirm it shows real client addresses.
+      If every line shows a `172.x` Docker address, everyone shares one limit.
+      That is what happens when a connection goes through Docker's userland proxy, which it does for IPv6 unless Docker's IPv6 support is set up, so leave the AAAA record out unless you have checked this.
+- [ ] **Publish only what is listed in step 2.**
+      Check with `docker compose ps`.
+      Postgres, Redis, MinIO and the app must show no host port.
+- [ ] **Protect `.env` and the backups.**
+      `AUTH_SECRET` decrypts the signing key.
+      With the wrong one the server refuses to start and says so, and without the original you have to delete the key from the database, which signs everybody out.
+- [ ] **Never set `TEAMUP_INSECURE_COOKIES` here.**
+      The server refuses to start with it in production.
+- [ ] **Keep the OS patched,** for example with `unattended-upgrades`, and review the pinned image versions every few months.
+
+**Resetting a forgotten password.**
+There is no email reset, because email is optional here, so the login page tells people to ask an administrator.
+An owner or admin opens the Organization page, finds the member and chooses **Reset password**.
+The temporary password is shown once, the member is signed out everywhere, and they have to choose a new password at their next sign-in.
+An admin cannot reset an owner, and nobody can reset their own password this way.
+If the only owner forgets theirs, a second owner is the way back in, so make one.
+A deleted member can be added back with the same email, and they come back as a new account.
+
+## Alternatives
+
+| | Single VM, Compose (recommended) | Managed DB and storage, plus a VM | Kubernetes, Helm chart | Single binary and systemd |
+| --- | --- | --- | --- | --- |
+| **Status here** | Run end to end for this guide | The app supports it, but this exact setup is untested | **Beta.** Templates render and validate, but it has never been installed on a live cluster | The binary is real and `release.yml` builds it, but this setup is untested |
+| **You operate** | One VM, six containers | One VM with app, nginx and LiveKit, plus provider services | A cluster, plus Postgres, Redis, S3 and LiveKit, none of which the chart bundles | One VM, and installing and upgrading every service by hand |
+| **Backups** | Your script, your job | The provider's point-in-time recovery | Depends on the services you choose | Your job |
+| **Survives losing the machine** | No: restore from backup, likely about an hour | Data yes, app after a re-deploy | Yes for the app, if you set it up that way | No |
+| **Upgrade downtime** | A few seconds | A few seconds | Potentially none, with rolling updates across replicas | A few seconds |
+| **Extra monthly cost, beyond the VM** | None | Managed Postgres and object storage | Control plane, nodes, and more of your time | None |
+| **LiveKit** | Works: one UDP port | Same as Compose, on the VM | Needs cluster-specific UDP and external address setup that no chart default gets right | LiveKit's own install, with host networking and no port problem |
+| **Choose it when** | You are starting out, up to about 50 to 100 people | You want someone else responsible for the data, or cannot accept losing up to a day of it | You already run Kubernetes and have people who know it | You cannot use Docker |
+
+### When to move off the single VM
+
+Do not move off for performance alone unless a measurement tells you to.
+The measured load here is a small fraction of the VM.
+These are the signals worth acting on.
+
+- **You cannot accept losing a day of data.**
+  Move Postgres to a managed service with point-in-time recovery.
+  This is the most likely first step, and it needs only `TEAMUP_DATABASE_URL` changing, in both places it appears in the compose file.
+- **Attachments outgrow the disk.**
+  Move files to S3 or R2 before you resize the disk again, since a large MinIO volume also makes the nightly backup slow.
+- **Calls hurt everything else.**
+  If large calls push the VM's CPU over about 70%, or your bandwidth bill grows, move LiveKit to a VM of its own or to LiveKit Cloud.
+  Set `TEAMUP_LIVEKIT_URL` and update the `/livekit/` location in `nginx.conf`.
+- **Downtime during a deploy or a VM failure is no longer acceptable.**
+  Several replicas of the app share state over Redis, and this is when the Helm chart becomes worth its cost.
+  Expect to spend real time on it, because nobody has installed it on a live cluster yet.
+
+## Reference
+
+### Why files go through nginx
+
+Uploads and inline images do not pass through the app.
+The server signs a URL and the browser opens it directly, at `https://<your domain>/teamup-files/<object key>`.
+A test from a real browser uploaded a 1 MiB file with one PUT and a 20 MiB file in parts, both through nginx, and downloaded the first back.
+Three things about the `location /teamup-files/` block in `nginx.conf` matter, because an S3 signature covers the path, the query string and the `Host` header.
+
+- **The location prefix is the bucket name.**
+  Rename the bucket and you must rename the location.
+- **Nothing may rewrite the path.**
+- **`proxy_set_header Host $http_host;` must stay.**
+  Anything else produces `SignatureDoesNotMatch` on every upload.
+
+`TEAMUP_MINIO_ENDPOINT` is the address the browser uses, and it is set from `TEAMUP_DOMAIN`.
+`TEAMUP_MINIO_INTERNAL_ENDPOINT` is what the server itself dials, on the compose network.
+`TEAMUP_MINIO_REGION` is part of the signing key, so leave it at `us-east-1` unless you also set `MINIO_REGION` on the minio service.
+
+### Upload limits
+
+`TEAMUP_MAX_UPLOAD_BYTES` (5 GiB here) is the largest file accepted, and it is signed into every URL, so storage rejects anything else.
+`TEAMUP_MULTIPART_THRESHOLD_BYTES` (16 MiB here) is where a file stops going up in one PUT and starts going up in resumable parts.
+Above the threshold no request carries more than one part, so raising the maximum does not mean touching nginx.
+`client_max_body_size` on `/teamup-files/` must stay above the threshold.
+
+An interrupted multipart upload holds its parts in storage without appearing as an object.
+An hourly sweep aborts ones that nobody has come back to for 24 hours, and no bucket lifecycle rule is needed.
+
+### Attendance: the LiveKit webhook
+
+Who was in a call, and when, comes from LiveKit calling the app.
+`docker-compose.prod.yml` sets this in `LIVEKIT_CONFIG`.
+
+- **URL:** `http://teamup:8080/api/livekit/webhook`, straight to the app over the compose network.
+  It does not pass through nginx, and nginx needs no route for it.
+- **Signing key:** `LIVEKIT_API_KEY`.
+  LiveKit signs each post with that key's secret, and the app checks it against `LIVEKIT_API_SECRET`.
+  So the two values must be the same ones on both services, which `.env` ensures.
+
+nginx does forward every `/api/` path, so the same address is reachable from the internet.
+That is safe because of the signature: an unsigned post through nginx gets a 401.
+Do not add an exception for it.
+
+To check it, make a call with one person in it and look for the events.
+
+```bash
+docker compose logs livekit | grep 'sent webhook'
+docker compose logs teamup | grep livekit/webhook
+```
+
+Expect `room_started`, `participant_joined`, `participant_left` and `room_finished`, each answered with status 200.
+`participant_connection_aborted` with no `participant_joined` means the browser reached the signalling socket and never got media through, so check UDP 7882.
+If webhooks are not arriving, calls still work, but no attendance is recorded, and scrum days read as unknown rather than marking anybody absent.
+
+### Restarting a VM that has no fixed address
+
+An AWS EC2 instance without an Elastic IP gets a new public address each time it is stopped and started.
+A reboot from inside the machine keeps it.
+If `TEAMUP_DOMAIN` is built from the address, as an `sslip.io` name is, or your DNS points at it, all of the following need redoing, and until they are done the site is unreachable or presents the wrong name.
+
+Attaching an Elastic IP before the next stop, or pointing a real domain at it, avoids all of this, so do that if you plan to stop the VM again.
+Otherwise, with `NEW` as the new name, in this order.
+
+```bash
+cd /opt/teamup
+OLD=$(grep '^TEAMUP_DOMAIN=' .env | cut -d= -f2)
+NEW=<the new name>
+
+# 1. If you use your own domain, repoint its A record and wait until it resolves. An sslip.io name resolves by itself.
+dig +short "$NEW"
+
+# 2. The certificate is for the old name, and standalone mode needs port 80.
+docker compose stop nginx
+sudo certbot certonly --standalone -d "$NEW" -m you@example.com --agree-tos -n
+sudo install -m 600 "/etc/letsencrypt/live/$NEW/fullchain.pem" certs/tls.crt
+sudo install -m 600 "/etc/letsencrypt/live/$NEW/privkey.pem" certs/tls.key
+
+# 3. Renewal. This removes the old name's certificate and its file in /etc/letsencrypt/renewal/.
+#    Otherwise its renewal keeps failing, because that name no longer points here. The hooks follow whichever certificate renewed, so they need no change.
+sudo certbot delete --cert-name "$OLD" -n
+sudo certbot renew --dry-run
+
+# 4. The name, which the app signs into file URLs and hands to browsers.
+sed -i "s/^TEAMUP_DOMAIN=.*/TEAMUP_DOMAIN=$NEW/" .env
+docker compose up -d
+```
+
+`docker compose up -d` recreates the app and nginx with the new name.
+Restart LiveKit too with `docker compose restart livekit`, because it finds its public address once, at start, and calls connect and carry no sound if that is the old one.
+Check with `docker compose logs livekit | grep -i nodeIP`.
+
+To browsers this is a different site.
+Everybody signs in again, enables push again, and installs the app again if they had, and links people saved to the old name stop working.
+
+These commands have not been run on a real VM.
+The renewal hooks are the ones from step 6.
+
+### Recording
+
+Recording is not available in this stack, because `docker-compose.prod.yml` has no LiveKit Egress service.
+Trying it fails with "failed to start recording".
+`docker-compose.yml`, the development stack, shows how Egress is wired in.
+Adding it is untested here, and it needs a publicly trusted certificate, because it uploads to the public address.
+
+### Trying it on a local network
+
+For a phone or a second laptop on your own network, you do not need any of this.
 
 ```bash
 ./start.sh --lan
 ```
 
-It prints the address to open on the phone, and says plainly what will not work.
-The rest of this section is what that command does, for when you want to do it
-by hand.
-
-Find this machine's address on the network:
-
-```bash
-ip -4 route get 1.1.1.1 | awk '{print $7; exit}'    # Linux
-ipconfig getifaddr en0                              # macOS
-```
-
-Say it is `192.168.0.121`. Start the infrastructure, then the server:
-
-```bash
-./start.sh    # once, to bring up postgres, redis, minio, livekit
-```
-
-Stop it (Ctrl-C leaves the containers running) and start the server with three
-settings:
-
-```bash
-set -a; . ./.env; set +a
-
-export TEAMUP_BASE_URL="http://192.168.0.121:8080"
-export TEAMUP_INSECURE_COOKIES=true      # see the warning below
-
-./bin/teamup server
-```
-
-Then open `http://192.168.0.121:8080` on the phone. It must be on the same
-network — the same Wi-Fi, not mobile data.
-
-**`TEAMUP_INSECURE_COOKIES=true` drops the `Secure` flag from the session
-cookie.** That is the only way a browser will keep it over plain HTTP. It also
-means the session token travels in clear text over your network, so use it on a
-network you trust and nowhere else. It defaults to off; nothing turns it on for
-you.
-
-If the firewall blocks the port:
-
-```bash
-sudo ufw allow 8080/tcp        # Ubuntu
-```
-
-### If you want calls to work on the local network too
-
-Calls need HTTPS, and they need LiveKit to advertise an address the phone can
-reach. By default LiveKit asks a public STUN server for its address and gets the
-router's public IP, which nothing on the LAN can route to. Point it at the LAN
-address instead:
-
-```bash
-export TEAMUP_LIVEKIT_USE_EXTERNAL_IP=false
-export TEAMUP_LIVEKIT_NODE_IP=192.168.0.121
-docker compose up -d livekit
-```
-
-For the HTTPS half, the least painful route is a tunnel. It hands you a real
-certificate without touching your network, your router, or DNS.
-
-```bash
-# Once, to install it
-curl -fL -o cloudflared \
-  https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
-chmod +x cloudflared && sudo mv cloudflared /usr/local/bin/
-```
-
-On macOS, `brew install cloudflared` instead.
-
-Then, with TeamUp already running on port 8080, in a second terminal:
-
-```bash
-cloudflared tunnel --url http://localhost:8080
-```
-
-It prints an address like `https://some-words-here.trycloudflare.com`. No
-Cloudflare account is needed for this; the address is temporary and changes each
-time you start it.
-
-Restart TeamUp pointed at that address:
-
-```bash
-set -a; . ./.env; set +a
-export TEAMUP_BASE_URL="https://some-words-here.trycloudflare.com"
-./bin/teamup server
-```
-
-Leave `TEAMUP_INSECURE_COOKIES` **off** — the tunnel is HTTPS, so the cookie
-should stay Secure. Then open that address on the phone. It does not need to be
-on your Wi-Fi any more; the tunnel reaches it from anywhere.
-
-Everything works this way, calls included: the app proxies LiveKit's signalling
-socket at `/livekit`, so it travels through the same tunnel and inherits its
-certificate.
-
-Two things to know. The address is public while the tunnel is open — anybody
-who has it can reach your login page — so stop the tunnel when you are done. And
-media still needs a route between the two devices; if a call connects but nobody
-can hear anything, `TEAMUP_LIVEKIT_NODE_IP` is likely still pointing somewhere
-the other side cannot reach.
-
----
-
-## On EC2
-
-### The instance
-
-- **Type**: `t3.small` is enough for a handful of people. Postgres, Redis, MinIO
-  and LiveKit all run alongside the app, and the frontend build wants about 2 GB
-  of memory. `t3.micro` will run out during `npm run build`.
-- **Disk**: 20 GB is comfortable; attachments and recordings land in MinIO on the
-  same disk.
-- **Security group**:
-
-  | Port | Protocol | Why |
-  | --- | --- | --- |
-  | 22 | TCP | ssh |
-  | 80 | TCP | certificate issue and the redirect to HTTPS |
-  | 443 | TCP | the app |
-  | 7881 | TCP | LiveKit media fallback when UDP is blocked |
-  | 50000–60000 | UDP | LiveKit media |
-
-  The UDP range is what makes calls work. Without it a call connects and then
-  nobody can hear anybody.
-
-### Setting it up
-
-```bash
-sudo apt update && sudo apt install -y docker.io docker-compose-plugin git
-sudo usermod -aG docker $USER && newgrp docker
-
-git clone <your repository> teamup && cd teamup
-cp .env.example .env
-```
-
-Edit `.env`. What matters:
-
-```ini
-TEAMUP_BASE_URL=https://teamup.yourdomain.com
-TEAMUP_ENV=production
-
-# Encrypts the key TeamUp signs tokens with. The value in .env.example is a
-# published placeholder — anyone who has read the repository could mint valid
-# tokens against it. Generate your own:  openssl rand -hex 32
-TEAMUP_AUTH_SECRET=<64 random hex characters>
-
-# Change every one of these from the defaults.
-TEAMUP_DATABASE_URL=postgres://teamup:<a real password>@postgres:5432/teamup?sslmode=disable
-TEAMUP_MINIO_ACCESS_KEY=<not minioadmin>
-TEAMUP_MINIO_SECRET_KEY=<not minioadmin>
-# The address the BROWSER uses for object storage — see below. Not minio:9000.
-TEAMUP_MINIO_ENDPOINT=teamup.yourdomain.com
-TEAMUP_LIVEKIT_API_KEY=<not devkey>
-TEAMUP_LIVEKIT_API_SECRET=<not devsecret>
-
-# So new members are actually sent their password.
-TEAMUP_SMTP_HOST=...
-TEAMUP_SMTP_PORT=587
-TEAMUP_SMTP_USER=...
-TEAMUP_SMTP_PASSWORD=...
-TEAMUP_SMTP_FROM=teamup@yourdomain.com
-```
-
-Leave `TEAMUP_INSECURE_COOKIES` unset. On HTTPS it is not needed and turning it
-on would send session tokens in clear.
-
-**Back up `TEAMUP_AUTH_SECRET` somewhere other than the server.** It decrypts
-the signing key held in the database; if you lose it, that key cannot be read
-back, every session ends at once, and a new key has to be generated. Restoring
-a database backup without the matching secret does not get you back.
-
-**Create the object storage bucket before first boot.** Nothing in the server's
-startup path creates it, so without it `/readyz` reports MinIO unhealthy and
-every upload fails. `./setup.sh` does this for a local install; for a production
-one, create `TEAMUP_MINIO_BUCKET` by hand in your object store.
-
-### The certificate
-
-Point an A record at the instance's public IP, then:
-
-```bash
-sudo apt install -y certbot
-sudo certbot certonly --standalone -d teamup.yourdomain.com
-mkdir -p certs
-sudo cp /etc/letsencrypt/live/teamup.yourdomain.com/fullchain.pem certs/tls.crt
-sudo cp /etc/letsencrypt/live/teamup.yourdomain.com/privkey.pem  certs/tls.key
-sudo chown $USER certs/*
-```
-
-Replace `teamup.example.com` with your own name in three places:
-
-| File | What |
-| --- | --- |
-| `nginx.conf` | `server_name`, twice — the redirect and the TLS server |
-| `docker-compose.prod.yml` | `TEAMUP_MINIO_ENDPOINT`, `TEAMUP_BASE_URL`, and the nginx service's network `aliases` entry |
-
-The alias is what lets the other containers resolve your public name from
-inside the compose network, so LiveKit's recording upload does not have to
-leave the host and come back through NAT to reach object storage. Use a real
-certificate rather than a self-signed one: those containers verify it.
-
-### Object storage has to be reachable from the browser
-
-Uploads and inline images do not pass through the app. The server signs a URL
-and the browser opens it directly, which means the address in
-`TEAMUP_MINIO_ENDPOINT` has to be one a *browser* can resolve and load over
-TLS. `minio:9000` is neither: the name does not exist outside Docker, and an
-`http://` URL on an HTTPS page is blocked as mixed content before it is even
-tried. The shipped configuration therefore looks like this:
-
-```ini
-TEAMUP_MINIO_ENDPOINT=teamup.yourdomain.com     # what the browser opens
-TEAMUP_MINIO_SECURE=true
-TEAMUP_MINIO_INTERNAL_ENDPOINT=minio:9000       # what this server dials
-TEAMUP_MINIO_INTERNAL_SECURE=false
-TEAMUP_MINIO_BUCKET=teamup-files
-TEAMUP_MINIO_REGION=us-east-1
-```
-
-and `nginx.conf` carries a matching `location /teamup-files/` block. Three
-things about that block are load-bearing, because an S3 signature covers the
-request path, the query string and the `Host` header, and MinIO recomputes it
-from whatever actually arrives:
-
-- **The location prefix is the bucket name.** URLs are path-style —
-  `https://teamup.yourdomain.com/<bucket>/<object key>`. Rename the bucket and
-  you must rename the location.
-- **Nothing may rewrite the path.** No `rewrite`, and `proxy_pass` without a
-  URI part so nginx forwards the request line as the browser sent it.
-- **`proxy_set_header Host $http_host;`.** Not `$host`, which drops a
-  non-default port, and not nginx's default, which substitutes the upstream
-  name. Either one produces `SignatureDoesNotMatch` on every upload.
-
-If you put object storage on its own hostname instead — `files.yourdomain.com`
-with its own certificate and server block — set `TEAMUP_MINIO_ENDPOINT` to that
-name and keep the bucket-named location. Everything above still applies.
-
-### Upload limits, and the two upload paths
-
-Two settings, and they do different jobs.
-
-`TEAMUP_MAX_UPLOAD_BYTES` (default 5 GiB) is the largest file the server will
-accept by either path. It is not advisory: the exact content length is signed
-into every URL, so object storage rejects a body of any other size, and the
-attachment row records the size storage measured rather than the one the
-browser claimed. The browser is told the limit too, so an over-sized file is
-refused before anything is sent.
-
-`TEAMUP_MULTIPART_THRESHOLD_BYTES` (default 16 MiB) is where a file stops going
-up in one PUT and starts going up in resumable parts:
-
-- **At or below it** — one presigned PUT, as before.
-- **Above it** — a real S3 multipart upload. The server fixes the plan (how
-  many parts, and each part's exact byte count) when the upload starts, signs
-  one URL per part, and assembles the object itself. A connection that dies at
-  80% resumes: the browser asks the server which parts object storage already
-  holds and sends only what is missing. That survives a page reload as well,
-  provided the same file is chosen again — the browser cannot re-open a file
-  handle across a reload, so the user has to re-select it, and the parts
-  already uploaded are then kept.
-
-A single PUT above the threshold is **refused**, not merely discouraged. That
-is what guarantees no request ever carries more than one part.
-
-Which is why raising `TEAMUP_MAX_UPLOAD_BYTES` no longer means touching nginx.
-`client_max_body_size` on the `/teamup-files/` location has to cover the
-largest single *request*, and above the threshold that is one part — so it
-needs to be at least `TEAMUP_MULTIPART_THRESHOLD_BYTES` plus a little slack,
-not the size of the largest file. The shipped `100m` covers the default 16 MiB
-threshold with room to spare. Raise `client_max_body_size` only if you raise
-the threshold.
-
-The threshold must not exceed the ceiling — the server refuses to start with a
-configuration where nothing could ever use multipart.
-
-**Reclaiming abandoned uploads.** An interrupted multipart upload holds its
-parts in object storage without ever appearing as an object, so nothing that
-walks the bucket finds them. The hourly sweep that removes staged-but-never-sent
-single uploads also aborts multipart uploads nobody came back to after 24
-hours. A day is deliberate: it is long enough to resume a paused 2 GB upload
-the next morning. No bucket lifecycle rule is required, and none is configured.
-
-Multipart was previously removed from this codebase because it was a lie:
-`initiate` handed back an ordinary single-PUT URL and `complete` wrote no
-record at all. What is there now does the work — the size a client declares is
-what it is authorised for and all it can deliver, and completing writes a real
-attachment row measured from storage.
-
-`TEAMUP_MINIO_REGION` is part of the signing key. Leave it at `us-east-1`
-unless you set `MINIO_REGION` on the minio service, in which case set both to
-the same value. A mismatch shows up in the readiness probe at start-up rather
-than as a user's failed upload.
-
-### Running it
-
-```bash
-docker compose -f docker-compose.prod.yml up -d
-```
-
-nginx terminates TLS and proxies the app, the WebSocket, and LiveKit's
-signalling socket at `/livekit`. The browser works that out for itself: on
-HTTPS it connects to `wss://<your host>/livekit` rather than to port 7880, which
-a secure page is not allowed to do.
-
-Open `https://teamup.yourdomain.com` and the setup wizard runs.
-
-### Afterwards
-
-- **Renewal**: `certbot renew` writes new files; copy them into `certs/` again
-  and `docker compose -f docker-compose.prod.yml restart nginx`. Worth putting
-  in a cron job.
-- **Backups**: everything durable is in the `postgres-data` and `minio-data`
-  volumes. `docker exec teamup-postgres pg_dump -U teamup teamup` for the
-  database.
-- **Logs**: `docker compose -f docker-compose.prod.yml logs -f teamup`.
-
----
-
-## When something does not work
+It prints the address to open.
+Over plain HTTP, calls and desktop notifications do not work, because browsers grant those only on HTTPS or `localhost`.
+Chat, tasks, files, presence and search work.
+It sets `TEAMUP_INSECURE_COOKIES=true`, which sends the session token in clear text, so use it only on a network you trust.
+
+For HTTPS without touching DNS, `cloudflared tunnel --url http://localhost:8080` gives you a temporary public address.
+Set `TEAMUP_BASE_URL` to it and leave `TEAMUP_INSECURE_COOKIES` off.
+The address is public while the tunnel is open, so stop it when you are done.
+
+## What has not been verified
+
+The test machine has no public address, so these could not be run, and the walkthrough is otherwise what was run.
+
+- Obtaining a real Let's Encrypt certificate, and a real renewal.
+  A self-signed certificate was used.
+  Replacing the files and stopping and starting nginx were each tested, and these are the things the hooks do.
+- Installing on a real Ubuntu VM.
+  Steps 1 to 3 and the first half of step 6 were not run.
+- A call between people on different networks, and STUN finding the VM's public address.
+  A two-person call with fake cameras connected through `wss://.../livekit` and carried media over UDP 7882, on one machine.
+- The TCP fallback on port 7881.
+- Push notifications to a real device, and email through a real mail server.
+- The steps under [Restarting a VM that has no fixed address](#restarting-a-vm-that-has-no-fixed-address).
+- An upgrade from the image that is really live, on the real VM.
+  The rehearsal used a stand-in image and a copy of the data, and a call there connected through `node_ip: 127.0.0.1` rather than a public address.
+- Survival of a full VM reboot.
+  `restart: unless-stopped` is set on every service, and the app was seen restarting by itself and recovering when Postgres came back.
+
+## Troubleshooting
+
+These are all things that were hit while testing this guide, except the last three, which come from earlier work.
 
 | Symptom | Cause |
 | --- | --- |
-| Sign-in returns to the login page | The session cookie was discarded. Either you are on plain HTTP without `TEAMUP_INSECURE_COOKIES`, or on HTTPS with it set when it should not be. |
-| Nothing arrives without a refresh | The WebSocket is not connecting. Check that the proxy passes `Upgrade` and `Connection` headers on `/ws`. |
-| A call connects but nobody hears anything | UDP 50000–60000 is not open, or LiveKit is advertising an address the other side cannot reach. `docker logs teamup-livekit | grep nodeIP` shows what it settled on. |
-| The camera never starts | The page is not on HTTPS or localhost. |
-| Every upload and every inline image fails | `TEAMUP_MINIO_ENDPOINT` is not an address the browser can reach over TLS, or nginx has no `location` matching the bucket name. Open one of the failing URLs directly: a DNS error or a mixed-content block in the console says which. |
-| Uploads fail with 403 `SignatureDoesNotMatch` | The proxy altered something the signature covers. Check that the `/teamup-files/` location sets `Host $http_host` and does not rewrite the path, and that `TEAMUP_MINIO_REGION` matches the object store. |
-| Uploads fail with 413 | `client_max_body_size` on the `/teamup-files/` location is smaller than `TEAMUP_MULTIPART_THRESHOLD_BYTES`, which is the largest single request either path ever makes. |
-| A large file is refused before anything is sent | It is over `TEAMUP_MAX_UPLOAD_BYTES`. The message says what the limit is. |
-| A large file is refused with "has to go up as a resumable multipart upload" | A client asked for a single PUT above `TEAMUP_MULTIPART_THRESHOLD_BYTES`. The bundled web client never does; an old cached build or a third-party client might. |
-| A big upload restarts from zero after a reload | The same file has to be re-selected — the browser cannot re-open a file handle across a reload. A different file, or the same file re-saved, is treated as a new upload on purpose: the parts already in storage are not re-read, so a wrong match would silently splice two files together. |
-| Object storage fills with nothing visible in the bucket | Abandoned multipart parts. They are not objects, so listing the bucket does not show them. The hourly sweep aborts them after 24 hours; check the logs for "could not sweep abandoned uploads". |
-| New members get no email | No SMTP is configured. The screen says so, and offers the credentials as a file instead. |
+| `pull access denied for minio/minio` | Those images were removed. Use the compose file from this repository, or see [Object storage](#object-storage). |
+| `ghcr.io/...teamup.sh: denied` | No image has been published. Run `docker compose build teamup`. |
+| `required variable ... is missing a value` | A setting is missing from `.env`, or you are not in `/opt/teamup`. |
+| `teamup` shows `unhealthy` on a new install | Expected until the wizard finishes, because it creates the bucket. `docker compose exec -T nginx wget -qO- http://teamup:8080/readyz` says which check fails. |
+| `service "migrate" didn't complete successfully` and a 502 | Read `docker compose logs migrate`. `no migration found for version N` means the image is older than the database. See [rollback](#rolling-back). |
+| `relation "signing_keys" does not exist` | The server started on a database with no schema, so migrations did not run. Start it with `docker compose up -d` rather than running the image by hand. |
+| `docker compose run teamup migrate up` starts a server | You have an image built before this was fixed. Rebuild it. |
+| `TEAMUP_AUTH_SECRET does not match` and restarts in a loop | `.env` is not the one this database was created with. Restore the original. |
+| `pg_restore: error: connection to server on socket` | Postgres was still doing its first start. Use `docker compose up -d --wait postgres`. |
+| A change to `nginx.conf` has no effect | `git checkout` replaces the file, and a running container keeps the old one until it restarts. `nginx -s reload` is not enough. Run `docker compose restart nginx`. |
+| Compose appears to hang starting LiveKit, and memory runs out | A wide UDP range was added to the ports. Keep the single port. |
+| WebSocket 403, `request Origin ... is not authorized for Host` | nginx is published on a port other than 443, and `$host` in `nginx.conf` drops the port. Publish 443, or pass `$http_host` in the `/ws` location. |
+| A person still sees the old version after an upgrade | Expected until they press **Reload**. A tab from before the upgrade to migration 0024 has no such offer: close every TeamUp tab and open it again. |
+| `participant_connection_aborted` in the LiveKit log and nothing in the call log | The browser got no media through. See [the webhook note](#attendance-the-livekit-webhook). |
+| `failed to start recording` | Recording is not in this stack. See [Recording](#recording). |
+| "Login failed" for everybody, from one office | The login burst of 50 has been used up from one address, or nginx sees everybody as one address. See the [checklist](#security-checklist). It refills at one attempt every 6 seconds. |
+| Sign-in returns to the login page | The session cookie was discarded, because the site is on plain HTTP. |
+| A call connects but nobody hears anything | UDP 7882 is not open, or LiveKit advertises an address nobody can reach. `docker compose logs livekit \| grep -i nodeIP` shows what it settled on. |
+| Nothing arrives without a refresh | The WebSocket is not connecting. Check that a proxy in front of nginx, if any, passes `Upgrade` and `Connection` on `/ws`. |

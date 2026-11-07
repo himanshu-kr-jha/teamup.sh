@@ -50,6 +50,7 @@ logs/
 dist/
 build/
 web/dist/
+web/dev-dist/
 cmd/teamup/web/dist/
 
 # Database
@@ -92,6 +93,7 @@ web/coverage/
 # Playwright
 web/test-results/
 web/playwright-report/
+web/e2e-shots/
 
 # Turbo
 .turbo/
@@ -105,3 +107,6 @@ next-env.d.ts
 
 # Agent worktrees are git-managed checkouts, not repository content.
 .claude/worktrees/
+
+# Database dumps and object storage archives, from docs/DEPLOYMENT.md.
+backups/

@@ -1,0 +1,9 @@
+DROP INDEX IF EXISTS idx_task_comments_user;
+DROP INDEX IF EXISTS idx_task_watchers_user;
+DROP INDEX IF EXISTS idx_tasks_assignee_completed;
+DROP INDEX IF EXISTS idx_scrums_holder_created;
+DROP INDEX IF EXISTS idx_scrums_team_created;
+DROP INDEX IF EXISTS idx_scrums_org_created;
+DROP TABLE IF EXISTS scrum_entries;
+DROP TABLE IF EXISTS scrum_participants;
+DROP TABLE IF EXISTS scrums;

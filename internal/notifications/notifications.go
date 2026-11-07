@@ -339,6 +339,7 @@ func (s *Service) CreateNotification(ctx context.Context, notif *Notification) e
 	if notif.ID == uuid.Nil {
 		notif.ID = uuid.New()
 	}
+	notif.Title = fitTitle(notif.Title)
 	if len(notif.Data) == 0 {
 		notif.Data = json.RawMessage(`{}`)
 	}
@@ -363,6 +364,20 @@ func (s *Service) CreateNotification(ctx context.Context, notif *Notification) e
 	return nil
 }
 
+// maxTitleRunes is the size of notifications.title. Titles are built from things
+// people named, which can be longer: a task or a meeting may be 500 characters.
+const maxTitleRunes = 255
+
+// fitTitle shortens a title that would not fit. Over-long, the insert fails, and
+// the person is told nothing at all about the thing they most needed to hear of.
+func fitTitle(title string) string {
+	runes := []rune(title)
+	if len(runes) <= maxTitleRunes {
+		return title
+	}
+	return string(runes[:maxTitleRunes-1]) + "\u2026"
+}
+
 // Notify is the convenience entry point used by the features that raise
 // notifications: it records the in-app item and fans out a web push.
 // NotifyMany raises the same notification for a set of people in one
@@ -372,6 +387,7 @@ func (s *Service) NotifyMany(ctx context.Context, orgID uuid.UUID, userIDs []uui
 	if len(userIDs) == 0 {
 		return nil
 	}
+	title = fitTitle(title)
 	raw, err := json.Marshal(data)
 	if err != nil {
 		raw = []byte(`{}`)

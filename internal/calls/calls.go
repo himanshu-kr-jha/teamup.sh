@@ -16,6 +16,7 @@ import (
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/rs/zerolog"
 
+	"github.com/teamup/teamup/internal/tasks"
 	"github.com/teamup/teamup/internal/websocket"
 	apperrors "github.com/teamup/teamup/pkg/errors"
 	"github.com/teamup/teamup/pkg/protocol"
@@ -41,6 +42,9 @@ type Config struct {
 	MaxCallParticipants int
 }
 
+// ErrCallOver is somebody asking to join a call that has ended and cannot reopen.
+var ErrCallOver = apperrors.New(apperrors.CodeConflict, "this call has ended")
+
 type Broadcaster interface {
 	BroadcastToUser(userID string, msg *protocol.Message)
 	BroadcastToChannel(channelID string, msg *protocol.Message, excludeUserID string)
@@ -56,6 +60,13 @@ type Service struct {
 	broadcaster   Broadcaster
 	roomService   *lksdk.RoomServiceClient
 	egressService *lksdk.EgressClient
+	// The org chart lives with tasks; this reads it so there is one statement of
+	// who outranks whom.
+	chart *tasks.Service
+	clock func() time.Time
+	// What this service asks of LiveKit, replaceable so that a test can stand in for
+	// the server, and for the moment it answers. Nil means the real one.
+	media mediaServer
 }
 
 // Serialised straight onto the wire by the create handler, so the tags have to
@@ -95,8 +106,10 @@ type CallParticipant struct {
 
 func NewService(db *pgxpool.Pool, cfg Config) *Service {
 	s := &Service{
-		db:  db,
-		cfg: cfg,
+		db:    db,
+		cfg:   cfg,
+		chart: tasks.NewService(db),
+		clock: time.Now,
 	}
 
 	// Initialize LiveKit room service client
@@ -118,6 +131,10 @@ func (s *Service) SetLogger(l zerolog.Logger) {
 func (s *Service) SetBroadcaster(b Broadcaster) {
 	s.broadcaster = b
 }
+
+// SetClock replaces what this service takes the time to be, so a test can cross
+// a midnight rather than wait for one.
+func (s *Service) SetClock(now func() time.Time) { s.clock = now }
 
 // GenerateToken creates a LiveKit access token
 func (s *Service) GenerateToken(ctx context.Context, roomName, userID, userName string, canPublish, canSubscribe bool) (string, error) {
@@ -143,22 +160,9 @@ func (s *Service) GenerateToken(ctx context.Context, roomName, userID, userName 
 func (s *Service) CreateCall(ctx context.Context, orgID, createdBy uuid.UUID, title *string, callType string, channelID *uuid.UUID, invitees []string) (*Call, error) {
 	roomName := "call-" + uuid.New().String()[:8]
 
-	var liveKitRoomSID *string
-
-	if s.roomService != nil {
-		room, err := s.roomService.CreateRoom(ctx, &livekit.CreateRoomRequest{
-			Name:            roomName,
-			EmptyTimeout:    300, // 5 minutes
-			MaxParticipants: uint32(s.MaxParticipants()),
-		})
-		if err != nil {
-			return nil, fmt.Errorf("failed to create LiveKit room: %w", err)
-		}
-		liveKitRoomSID = &room.Sid
-	} else {
-		// Fallback: stub room SID
-		stubSID := "stub-" + roomName
-		liveKitRoomSID = &stubSID
+	liveKitRoomSID, err := s.createRoom(ctx, roomName)
+	if err != nil {
+		return nil, err
 	}
 
 	call := &Call{
@@ -210,6 +214,25 @@ func (s *Service) CreateCall(ctx context.Context, orgID, createdBy uuid.UUID, ti
 	}
 
 	return call, nil
+}
+
+// createRoom asks LiveKit for a room. Asking for one that already exists returns
+// it, so this is safe to repeat.
+func (s *Service) createRoom(ctx context.Context, roomName string) (*string, error) {
+	if s.roomService == nil {
+		// Fallback: stub room SID
+		stubSID := "stub-" + roomName
+		return &stubSID, nil
+	}
+	room, err := s.roomService.CreateRoom(ctx, &livekit.CreateRoomRequest{
+		Name:            roomName,
+		EmptyTimeout:    300, // 5 minutes
+		MaxParticipants: uint32(s.MaxParticipants()),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create LiveKit room: %w", err)
+	}
+	return &room.Sid, nil
 }
 
 // DefaultMaxCallParticipants is what a LiveKit room is created with unless the
@@ -485,15 +508,17 @@ func (s *Service) StartRecording(ctx context.Context, orgID, callID uuid.UUID) (
 	if call.RecordingStatus != nil && *call.RecordingStatus == "recording" {
 		return nil, apperrors.New(apperrors.CodeConflict, "this call is already being recorded")
 	}
-	if s.egressService == nil {
+	if s.media == nil && s.egressService == nil {
 		return nil, apperrors.New(apperrors.CodeUnavailable, "recording is not configured on this instance")
 	}
 	if s.cfg.StorageBucket == "" {
 		return nil, apperrors.New(apperrors.CodeUnavailable, "recording storage is not configured")
 	}
 
-	objectKey := fmt.Sprintf("org-%s/recordings/%s/%s.mp4", orgID, callID, callID)
-	res, err := s.egressService.StartRoomCompositeEgress(ctx, &livekit.RoomCompositeEgressRequest{
+	// A meeting or an occurrence can reopen on the same row and be recorded again,
+	// which must not replace the first file.
+	objectKey := fmt.Sprintf("org-%s/recordings/%s/%s-%d.mp4", orgID, callID, callID, s.clock().UnixNano())
+	egressID, err := s.mediaOf().StartRecording(ctx, &livekit.RoomCompositeEgressRequest{
 		RoomName: call.RoomName,
 		Layout:   "grid",
 		Output: &livekit.RoomCompositeEgressRequest_File{
@@ -525,7 +550,7 @@ func (s *Service) StartRecording(ctx context.Context, orgID, callID uuid.UUID) (
 	`, callID, orgID, objectKey); err != nil {
 		return nil, fmt.Errorf("record recording state: %w", err)
 	}
-	s.logger.Info().Str("call", callID.String()).Str("egress", res.EgressId).Msg("recording started")
+	s.logger.Info().Str("call", callID.String()).Str("egress", egressID).Msg("recording started")
 
 	if s.broadcaster != nil {
 		s.broadcaster.BroadcastToChannel(callID.String(), protocol.NewMessage(
@@ -593,7 +618,7 @@ func (s *Service) EndCall(ctx context.Context, callID string) error {
 
 	for _, room := range rooms.Rooms {
 		if room.Name == callID {
-			_, err := s.roomService.DeleteRoom(ctx, &livekit.DeleteRoomRequest{Room: room.Sid})
+			_, err := s.roomService.DeleteRoom(ctx, &livekit.DeleteRoomRequest{Room: room.Name})
 			return err
 		}
 	}
@@ -710,21 +735,43 @@ func (s *Service) refuseInvite(conn websocket.WSConnection) {
 	}))
 }
 
+// HandleCallAccept hands a join token to somebody answering a call. The room
+// name comes from the client, so it decides nothing by itself: the same rules
+// as POST /calls/:id/token apply, and a refusal is silent so that asking cannot
+// be used to find out which rooms exist.
 func (s *Service) HandleCallAccept(ctx context.Context, conn websocket.WSConnection, msg *protocol.Message) {
 	var payload protocol.CallAcceptPayload
 	if err := json.Unmarshal(msg.Payload, &payload); err != nil {
 		return
 	}
-
-	acceptName := ""
-	if id, err := uuid.Parse(conn.UserID()); err == nil {
-		acceptName = s.DisplayName(ctx, id)
+	userID, err := uuid.Parse(conn.UserID())
+	if err != nil {
+		return
 	}
-	token, _ := s.GenerateToken(ctx, payload.RoomName, conn.UserID(), acceptName, true, true)
+	orgID, err := uuid.Parse(conn.OrgID())
+	if err != nil {
+		return
+	}
+
+	// Only a live call is answered. A scheduled meeting does not ring, so there is
+	// nothing to accept, and it opens through POST /calls/:id/token.
+	call, err := scanCall(s.db.QueryRow(ctx,
+		callColumns+` WHERE c.room_name = $1 AND c.org_id = $2 AND c.status = 'active'`,
+		payload.RoomName, orgID))
+	if err != nil {
+		return
+	}
+	if mayJoin, err := s.MayJoin(ctx, orgID, call.ID, userID); err != nil || !mayJoin {
+		return
+	}
+
+	token, _ := s.GenerateToken(ctx, call.RoomName, conn.UserID(), s.DisplayName(ctx, userID), true, true)
+	s.notePickedUp(ctx, call, userID)
 
 	if s.broadcaster != nil {
 		s.broadcaster.BroadcastToUser(conn.UserID(), protocol.NewMessage(protocol.TypeCallInvited, protocol.CallInvitedPayload{
-			RoomName: payload.RoomName,
+			CallID:   call.ID.String(),
+			RoomName: call.RoomName,
 			Token:    token,
 		}))
 	}
@@ -778,6 +825,14 @@ type CallModel struct {
 	DurationSeconds *int       `json:"durationSeconds,omitempty"`
 	RecordingURL    *string    `json:"recordingUrl,omitempty"`
 	RecordingStatus *string    `json:"recordingStatus,omitempty"`
+	// Set on a scheduled meeting and on one day of a standing meeting.
+	ScheduledStart    *time.Time `json:"scheduledStart,omitempty"`
+	ScheduledEnd      *time.Time `json:"scheduledEnd,omitempty"`
+	StandingMeetingID *uuid.UUID `json:"standingMeetingId,omitempty"`
+	OccurrenceDate    *string    `json:"occurrenceDate,omitempty"`
+	// CanReadLog says whether whoever asked may read this call's log, so that nobody
+	// is offered a button whose only answer is a refusal. Set for a reader, not stored.
+	CanReadLog *bool `json:"canReadLog,omitempty"`
 
 	CreatedBy        uuid.UUID          `json:"createdBy"`
 	CreatedByName    string             `json:"createdByName"`
@@ -791,8 +846,9 @@ type CallModel struct {
 const callColumns = `
 	SELECT c.id, c.org_id, c.channel_id, c.room_name, c.livekit_room_sid, c.title,
 	       c.call_type, c.status, c.started_at, c.ended_at, c.duration_seconds,
-	       c.recording_url, c.recording_status, c.created_by, u.name,
-	       c.created_at, c.updated_at,
+	       c.recording_url, c.recording_status,
+	       c.scheduled_start, c.scheduled_end, c.standing_meeting_id, c.occurrence_date::text,
+	       c.created_by, u.name, c.created_at, c.updated_at,
 	       (SELECT COUNT(*) FROM call_participants p WHERE p.call_id = c.id)
 	FROM calls c JOIN users u ON u.id = c.created_by`
 
@@ -800,8 +856,9 @@ func scanCall(row pgx.Row) (*CallModel, error) {
 	var m CallModel
 	err := row.Scan(&m.ID, &m.OrgID, &m.ChannelID, &m.RoomName, &m.LiveKitRoomSID, &m.Title,
 		&m.CallType, &m.Status, &m.StartedAt, &m.EndedAt, &m.DurationSeconds,
-		&m.RecordingURL, &m.RecordingStatus, &m.CreatedBy, &m.CreatedByName,
-		&m.CreatedAt, &m.UpdatedAt, &m.ParticipantCount)
+		&m.RecordingURL, &m.RecordingStatus,
+		&m.ScheduledStart, &m.ScheduledEnd, &m.StandingMeetingID, &m.OccurrenceDate,
+		&m.CreatedBy, &m.CreatedByName, &m.CreatedAt, &m.UpdatedAt, &m.ParticipantCount)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, apperrors.ErrNotFound
@@ -810,6 +867,9 @@ func scanCall(row pgx.Row) (*CallModel, error) {
 	}
 	return &m, nil
 }
+
+// maxListedCalls bounds one list response; only the newest are kept.
+const maxListedCalls = 1000
 
 // ListCalls returns the organization's calls, most recent first, optionally
 // narrowed by status or the channel the call belongs to.
@@ -832,6 +892,9 @@ func (s *Service) ListCalls(ctx context.Context, orgID, viewerID uuid.UUID, stat
 	if status != "" && status != "all" {
 		args = append(args, status)
 		where = append(where, fmt.Sprintf("c.status = $%d", len(args)))
+	} else {
+		// A cancelled meeting never happened, so it is not history.
+		where = append(where, "c.status <> 'cancelled'")
 	}
 	if channelID != nil {
 		args = append(args, *channelID)
@@ -839,7 +902,8 @@ func (s *Service) ListCalls(ctx context.Context, orgID, viewerID uuid.UUID, stat
 	}
 
 	rows, err := s.db.Query(ctx,
-		callColumns+" WHERE "+strings.Join(where, " AND ")+" ORDER BY c.created_at DESC", args...)
+		callColumns+" WHERE "+strings.Join(where, " AND ")+
+			fmt.Sprintf(" ORDER BY c.created_at DESC LIMIT %d", maxListedCalls), args...)
 	if err != nil {
 		return nil, fmt.Errorf("list calls: %w", err)
 	}
@@ -847,14 +911,11 @@ func (s *Service) ListCalls(ctx context.Context, orgID, viewerID uuid.UUID, stat
 
 	calls := []CallModel{}
 	for rows.Next() {
-		var m CallModel
-		if err := rows.Scan(&m.ID, &m.OrgID, &m.ChannelID, &m.RoomName, &m.LiveKitRoomSID, &m.Title,
-			&m.CallType, &m.Status, &m.StartedAt, &m.EndedAt, &m.DurationSeconds,
-			&m.RecordingURL, &m.RecordingStatus, &m.CreatedBy, &m.CreatedByName,
-			&m.CreatedAt, &m.UpdatedAt, &m.ParticipantCount); err != nil {
+		m, err := scanCall(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan call: %w", err)
 		}
-		calls = append(calls, m)
+		calls = append(calls, *m)
 	}
 	return calls, rows.Err()
 }
@@ -888,20 +949,8 @@ func (s *Service) GetCall(ctx context.Context, orgID, id uuid.UUID) (*CallModel,
 	return call, rows.Err()
 }
 
-// MarkParticipantJoined and MarkParticipantLeft keep the attendance record
-// that the call detail page shows.
-func (s *Service) MarkParticipantJoined(ctx context.Context, callID, userID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
-		INSERT INTO call_participants (call_id, user_id, role, joined_at)
-		VALUES ($1, $2, 'participant', NOW())
-		ON CONFLICT (call_id, user_id) DO UPDATE SET joined_at = COALESCE(call_participants.joined_at, NOW()), left_at = NULL
-	`, callID, userID)
-	if err != nil {
-		return fmt.Errorf("mark joined: %w", err)
-	}
-	return nil
-}
-
+// MarkParticipantLeft records somebody turning a ring down. Connecting and leaving
+// are not recorded here: those come from LiveKit, see webhook.go.
 func (s *Service) MarkParticipantLeft(ctx context.Context, callID, userID uuid.UUID) error {
 	_, err := s.db.Exec(ctx,
 		`UPDATE call_participants SET left_at = NOW() WHERE call_id = $1 AND user_id = $2`,
@@ -940,6 +989,7 @@ func (s *Service) SetChatRecorder(c ChatRecorder) { s.chat = c }
 // Notifier reaches somebody's devices, including ones with nothing open.
 type Notifier interface {
 	PushToUsers(ctx context.Context, userIDs []uuid.UUID, payload protocol.Push)
+	Notify(ctx context.Context, orgID, userID uuid.UUID, kind, title, body string, data map[string]any) error
 }
 
 // SetNotifier wires how a phone is made to ring when nobody is looking.
@@ -1006,17 +1056,20 @@ func (s *Service) NoteIfMissed(ctx context.Context, callID uuid.UUID, reason str
 		createdBy   uuid.UUID
 		channelKind string
 		answered    bool
+		scheduled   bool
 	)
 	if err := s.db.QueryRow(ctx, `
-		SELECT c.org_id, c.created_by, COALESCE(ch.type, ''), COALESCE(c.answered, false)
+		SELECT c.org_id, c.created_by, COALESCE(ch.type, ''), COALESCE(c.answered, false),
+		       c.scheduled_start IS NOT NULL
 		FROM calls c
 		LEFT JOIN channels ch ON ch.id = c.channel_id
 		WHERE c.id = $1
-	`, callID).Scan(&orgID, &createdBy, &channelKind, &answered); err != nil {
+	`, callID).Scan(&orgID, &createdBy, &channelKind, &answered, &scheduled); err != nil {
 		s.logger.Warn().Err(err).Msg("could not tell whether a call was answered")
 		return
 	}
-	if answered || (channelKind != "" && channelKind != "dm") {
+	// A meeting nobody came to was never a call anybody missed.
+	if answered || scheduled || (channelKind != "" && channelKind != "dm") {
 		return
 	}
 
@@ -1087,7 +1140,9 @@ type PendingInvitation struct {
 }
 
 // PendingInvitationsFor lists calls this person was invited to that are still
-// within the ring window and which they have neither joined nor turned down.
+// within the ring window and which they have neither picked up nor turned down.
+// Scheduled meetings and standing meetings never ring: people were told about
+// them ahead of time, so joining one opens it and nobody's phone goes off.
 //
 // Somebody who was away when the phone rang should hear it when they get back,
 // provided whoever called is still waiting.
@@ -1099,8 +1154,10 @@ func (s *Service) PendingInvitationsFor(ctx context.Context, userID uuid.UUID) (
 		LEFT JOIN users u ON u.id = c.created_by
 		WHERE p.user_id = $1
 		  AND p.joined_at IS NULL
+		  AND p.answered_at IS NULL
 		  AND p.left_at IS NULL
 		  AND c.status = 'active'
+		  AND c.scheduled_start IS NULL
 		  AND c.created_by <> $1
 		  AND c.started_at > NOW() - $2::interval
 	`, userID, RingWindow.String())
@@ -1156,6 +1213,23 @@ func (s *Service) DeliverPendingInvitations(ctx context.Context, userID uuid.UUI
 			"userId":    userID.String(),
 			"reachable": true,
 		}))
+	}
+}
+
+// notePickedUp records somebody asking for a token: the ring stops for them, and
+// if they are not the caller this is no longer a missed call. It is deliberately
+// not attendance, and deliberately does not wait for a webhook, so that missed
+// calls and ringing keep working when webhooks are not arriving.
+func (s *Service) notePickedUp(ctx context.Context, call *CallModel, userID uuid.UUID) {
+	if _, err := s.db.Exec(ctx,
+		`UPDATE call_participants SET answered_at = $3 WHERE call_id = $1 AND user_id = $2`,
+		call.ID, userID, s.clock()); err != nil {
+		s.logger.Warn().Err(err).Msg("could not record that somebody picked up")
+	}
+	if userID != call.CreatedBy {
+		if err := s.MarkAnswered(ctx, call.ID); err != nil {
+			s.logger.Warn().Err(err).Msg("could not record that a call was answered")
+		}
 	}
 }
 
@@ -1268,12 +1342,14 @@ func (s *Service) AnybodyLeftToAnswer(ctx context.Context, callID, callerID uuid
 }
 
 // SomebodyJoined reports whether anybody other than the caller actually picked
-// up, which is what separates "declined" from "nobody answered".
+// up, which is what separates "declined" from "nobody answered". Asking for a
+// token counts as much as a connection LiveKit reported, or a call somebody is on
+// would be dropped by another person's decline while webhooks are not arriving.
 func (s *Service) SomebodyJoined(ctx context.Context, callID, callerID uuid.UUID) (bool, error) {
 	var joined int
 	err := s.db.QueryRow(ctx, `
 		SELECT COUNT(*) FROM call_participants
-		WHERE call_id = $1 AND user_id <> $2 AND joined_at IS NOT NULL
+		WHERE call_id = $1 AND user_id <> $2 AND (joined_at IS NOT NULL OR answered_at IS NOT NULL)
 	`, callID, callerID).Scan(&joined)
 	if err != nil {
 		return false, fmt.Errorf("count joined participants: %w", err)
@@ -1290,7 +1366,7 @@ func (s *Service) MarkCallEnded(ctx context.Context, orgID, callID uuid.UUID) er
 		    ended_at = NOW(),
 		    duration_seconds = GREATEST(0, EXTRACT(EPOCH FROM (NOW() - COALESCE(started_at, created_at)))::int),
 		    updated_at = NOW()
-		WHERE id = $1 AND org_id = $2 AND status <> 'ended'
+		WHERE id = $1 AND org_id = $2 AND status = 'active'
 	`, callID, orgID)
 	if err != nil {
 		return fmt.Errorf("mark call ended: %w", err)
@@ -1303,12 +1379,18 @@ func (s *Service) MarkCallEnded(ctx context.Context, orgID, callID uuid.UUID) er
 		s.logger.Warn().Err(err).Str("call", callID.String()).Msg("could not finalise recording on call end")
 	}
 
-	// Anyone still marked present has now left.
+	// Anyone still connected has now left.
+	if err := s.closeOpenSessions(ctx, callID, s.clock()); err != nil {
+		return fmt.Errorf("close sessions: %w", err)
+	}
+	// Calls already running when attendance moved to webhooks have no sessions.
 	if _, err := s.db.Exec(ctx,
-		`UPDATE call_participants SET left_at = NOW() WHERE call_id = $1 AND joined_at IS NOT NULL AND left_at IS NULL`,
-		callID); err != nil {
+		`UPDATE call_participants SET left_at = $2 WHERE call_id = $1 AND joined_at IS NOT NULL AND left_at IS NULL`,
+		callID, s.clock()); err != nil {
 		return fmt.Errorf("close participants: %w", err)
 	}
+	// A request cannot outlive its call.
+	s.endPendingKnocks(ctx, callID)
 	return nil
 }
 
@@ -1329,8 +1411,39 @@ func (s *Service) IsParticipant(ctx context.Context, callID, userID uuid.UUID) (
 // joinable by everyone else who can list it.
 //
 // A call attached to a channel is open to that channel's members, which is how
-// "join the standup" works without inviting people one by one.
+// "join the standup" works without inviting people one by one. A day of a live
+// standing meeting is open to everybody in the organization.
 func (s *Service) MayJoin(ctx context.Context, orgID, callID, userID uuid.UUID) (bool, error) {
+	member, err := s.IsMember(ctx, orgID, callID, userID)
+	if err != nil || member {
+		return member, err
+	}
+
+	var ok bool
+	err = s.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM calls c
+			JOIN standing_meetings sm ON sm.id = c.standing_meeting_id AND sm.archived_at IS NULL
+			JOIN users u ON u.org_id = c.org_id AND u.id = $3
+			             AND u.deleted_at IS NULL AND COALESCE(u.is_active, true)
+			WHERE c.id = $1 AND c.org_id = $2)
+	`, callID, orgID, userID).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("check standing meeting access: %w", err)
+	}
+	return ok, nil
+}
+
+// IsMember is the spec's member of a call: invited to it, admitted to it, or a
+// member of its channel. Members answer knocks; being let in is wider than this
+// only for a standing meeting, whose room is open without making anybody a member.
+//
+// Somebody deactivated is nobody's member, whatever rows they left behind.
+func (s *Service) IsMember(ctx context.Context, orgID, callID, userID uuid.UUID) (bool, error) {
+	active, err := s.isActivePerson(ctx, orgID, userID)
+	if err != nil || !active {
+		return false, err
+	}
 	invited, err := s.IsParticipant(ctx, callID, userID)
 	if err != nil {
 		return false, err
@@ -1350,4 +1463,68 @@ func (s *Service) MayJoin(ctx context.Context, orgID, callID, userID uuid.UUID) 
 		return false, fmt.Errorf("check call channel membership: %w", err)
 	}
 	return ok, nil
+}
+
+// reopenableDates is which days of a standing meeting may still come back: today in
+// its zone, and whichever day its slot running now belongs to.
+func (s *Service) reopenableDates(ctx context.Context, call *CallModel, now time.Time) ([]string, error) {
+	if call.StandingMeetingID == nil {
+		return nil, nil
+	}
+	m, err := s.standingMeeting(ctx, call.OrgID, *call.StandingMeetingID)
+	if err != nil {
+		return nil, err
+	}
+	loc, err := time.LoadLocation(m.TimeZone)
+	if err != nil {
+		return nil, fmt.Errorf("load zone: %w", err)
+	}
+	slot, err := m.occurrenceDay(now)
+	if err != nil {
+		return nil, err
+	}
+	return []string{now.In(loc).Format("2006-01-02"), slot.Format("2006-01-02")}, nil
+}
+
+// openForJoin brings a meeting or an occurrence to life when somebody comes to
+// join it. This is how a scheduled meeting starts: it does not ring anybody,
+// because everybody was told when they were invited and reminded before the
+// start. An ended one comes back while its time is still running: a scheduled
+// meeting until its end, an occurrence for the rest of its day. An ordinary call
+// that has ended stays ended, which reports as ErrCallOver. An occurrence whose slot
+// runs past midnight comes back until the end of that slot.
+func (s *Service) openForJoin(ctx context.Context, call *CallModel) error {
+	if call.Status == "active" {
+		return nil
+	}
+	now := s.clock()
+	dates, err := s.reopenableDates(ctx, call, now)
+	if err != nil {
+		return err
+	}
+	tag, err := s.db.Exec(ctx, `
+		UPDATE calls c
+		SET status = 'active', started_at = COALESCE(c.started_at, $2),
+		    ended_at = NULL, duration_seconds = NULL, updated_at = NOW()
+		WHERE c.id = $1 AND (
+		    -- Somebody arriving at the same moment may have opened it already.
+		    c.status IN ('scheduled', 'active')
+		    OR (c.status = 'ended' AND c.standing_meeting_id IS NULL AND c.scheduled_end > $2)
+		    OR (c.status = 'ended' AND EXISTS (
+		        SELECT 1 FROM standing_meetings sm
+		        WHERE sm.id = c.standing_meeting_id AND sm.archived_at IS NULL
+		          AND c.occurrence_date::text = ANY($3::text[]))))
+	`, call.ID, now, dates)
+	if err != nil {
+		return fmt.Errorf("open call: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrCallOver
+	}
+	// LiveKit would make the room on first connection anyway, without the size
+	// limit, so a failure here is worth a warning and not a refused join.
+	if _, err := s.createRoom(ctx, call.RoomName); err != nil {
+		s.logger.Warn().Err(err).Str("room", call.RoomName).Msg("could not create the room for a meeting")
+	}
+	return nil
 }

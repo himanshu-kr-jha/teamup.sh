@@ -53,6 +53,9 @@ import {
   summariseReactions,
   type ReactionMap,
 } from './reactions';
+import { applyReadReceipt, type ReadReceipt } from './readReceipts';
+import { restoreDraft, restoreStaged, whenVisible } from './composerDraft';
+import { applyDelete, applyEdit, isEditFrame } from './liveChanges';
 
 interface Message {
   id: string;
@@ -328,6 +331,49 @@ export function ChatPage() {
   );
 
   /**
+   * Somebody has read up to a point, so the tick under the messages they just
+   * crossed becomes a double one, without anybody reloading.
+   *
+   * A message lives in up to three places on this page — the pages of history
+   * above, the newest page in the query cache, and an open thread — and a
+   * receipt has to reach all three for the same reason an edit does: a tick
+   * that only updates in one of them is a tick that changes when you scroll.
+   */
+  const applyReceipt = useCallback(
+    (receipt: ReadReceipt) => {
+      const me = user?.id;
+      if (!me || receipt.channelId !== channelId) return;
+      const applyTo = (list: Message[]) => applyReadReceipt(list, receipt, me);
+
+      setOlder(applyTo);
+      queryClient.setQueryData(['messages', channelId], (old: any) => {
+        if (!old) return old;
+        const data = applyTo(old.data ?? []);
+        return data === old.data ? old : { ...old, data };
+      });
+      if (openThreadId) {
+        queryClient.setQueryData(['thread', openThreadId], (old: any) => {
+          if (!old?.data) return old;
+          const replies = applyTo(old.data.replies ?? []);
+          const [root] = applyTo(old.data.root ? [old.data.root] : []);
+          if (replies === old.data.replies && root === old.data.root) return old;
+          return { ...old, data: { ...old.data, root: root ?? old.data.root, replies } };
+        });
+      }
+    },
+    [channelId, openThreadId, queryClient, user?.id]
+  );
+
+  useEffect(() => {
+    const unsubscribe = on('chat.read.receipt', (msg) => {
+      const receipt = msg.payload as unknown as ReadReceipt;
+      if (!receipt?.channelId || !receipt.to) return;
+      applyReceipt(receipt);
+    });
+    return unsubscribe;
+  }, [on, applyReceipt]);
+
+  /**
    * Puts a reaction on, or takes it off — the same click either way.
    *
    * Optimistic, because a reaction is a gesture and a gesture that waits for a
@@ -433,11 +479,17 @@ export function ChatPage() {
       } else {
         writeMessages(variables.channelId, (messages) => [...messages, tempMessage]);
       }
-      return { previous, key };
+      return { previous, key, attachments: tempMessage.attachments as UploadedFile[] };
     },
-    onError: (err, _variables, context) => {
+    onError: (err, variables, context) => {
       if (context?.key) queryClient.setQueryData(context.key, context.previous);
       toast.error(apiErrorMessage(err, 'Could not send that message.'));
+      // The composer was cleared on the way out, so a failure hands it back. A
+      // reply keeps its own box in the thread panel, and a draft belongs to the
+      // conversation it was written in.
+      if (variables.replyTo || variables.channelId !== channelId) return;
+      setMessage((current) => restoreDraft(current, variables.content));
+      setStaged((current) => restoreStaged(current, context?.attachments ?? []));
     },
     onSuccess: (data, variables) => {
       const sent = { ...(data.data as Message), pending: false };
@@ -480,8 +532,8 @@ export function ChatPage() {
       // channel and the new text. It is not a new message and must not be
       // appended as one: a message the page is not already holding would
       // otherwise arrive as a ghost with no author and no timestamp. Edits are
-      // applied where the message actually is, by patchMessage.
-      if (!incoming.userId) return;
+      // applied where the message actually is, by the effect below.
+      if (isEditFrame(incoming)) return;
       // The sound and the desktop notification are raised by
       // ChatNotifications, which listens wherever you are in the app. This
       // only keeps the conversation on screen up to date.
@@ -514,8 +566,9 @@ export function ChatPage() {
         messages.some((m) => m.id === incoming.id) ? messages : [...messages, incoming]
       );
 
-      if (incoming.channelId === channelId) {
-        // You are reading it, so it is already read.
+      // You are reading it, so it is already read. In a hidden tab you are not:
+      // the effect on the last message below marks it when you come back.
+      if (incoming.channelId === channelId && document.visibilityState === 'visible') {
         markChannelRead(incoming.channelId, incoming.id);
       }
       // Anything for another channel is counted by ChatNotifications, which
@@ -524,6 +577,26 @@ export function ChatPage() {
     return unsubscribe;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channelId, on, queryClient]);
+
+  // Somebody else's edit or delete lands wherever the message is on screen,
+  // with the same patch your own does. Its own effect, because patchMessage
+  // changes with the open thread and the handler above does not resubscribe.
+  useEffect(() => {
+    const stopEdits = on('chat.message', (msg) => {
+      const frame = (msg.payload as any)?.message as Message | undefined;
+      if (!frame?.id || !isEditFrame(frame)) return;
+      patchMessage(frame.id, (m) => applyEdit(m, frame));
+    });
+    const stopDeletes = on('chat.delete', (msg) => {
+      const messageId = (msg.payload as { messageId?: string })?.messageId;
+      if (!messageId) return;
+      patchMessage(messageId, (m) => applyDelete(m, new Date().toISOString()));
+    });
+    return () => {
+      stopEdits();
+      stopDeletes();
+    };
+  }, [on, patchMessage]);
 
   // Anything sent while the socket was down was never delivered here, so the
   // history is read once when it comes back.
@@ -596,7 +669,7 @@ export function ChatPage() {
     if (!channelId || messages.length === 0) return;
     const latest = messages[messages.length - 1];
     if (!latest?.id || latest.pending) return;
-    markChannelRead(channelId, latest.id);
+    return whenVisible(document, () => markChannelRead(channelId, latest.id));
     // Keyed on the last message so re-reading the same history is one call.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [channelId, messages[messages.length - 1]?.id]);
@@ -1275,7 +1348,7 @@ function MessageBubble({
     try {
       await channelsApi.editMessage(message.id, content);
       setEditing(false);
-      onPatch(message.id, (m) => ({ ...m, content, editedAt: new Date().toISOString() }));
+      onPatch(message.id, (m) => applyEdit(m, { content, editedAt: new Date().toISOString() }));
     } catch (err) {
       toast.error(apiErrorMessage(err, 'Could not edit that message.'));
     }
@@ -1284,12 +1357,7 @@ function MessageBubble({
   const remove = async () => {
     try {
       await channelsApi.deleteMessage(message.id);
-      onPatch(message.id, (m) => ({
-        ...m,
-        deletedAt: new Date().toISOString(),
-        content: '',
-        attachments: [],
-      }));
+      onPatch(message.id, (m) => applyDelete(m, new Date().toISOString()));
     } catch (err) {
       toast.error(apiErrorMessage(err, 'Could not delete that message.'));
     }

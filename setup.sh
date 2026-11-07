@@ -158,8 +158,11 @@ port_busy() {
 # CLAIMED remembers what has already been handed out in this run. Nothing is
 # bound until compose starts, so without it two services asked for adjacent
 # defaults can both be given the same free port and only collide later.
+#
+# 7882 starts out taken because docker-compose.yml always publishes it for
+# LiveKit's media, whichever port the signalling moves to.
 FOUND_PORT=""
-CLAIMED=""
+CLAIMED="7882"
 find_free_port() {
   local p="$1" limit=$(( $1 + 200 ))
   while [ "$p" -lt "$limit" ]; do
@@ -333,11 +336,22 @@ done
 # here instead of leaving people to discover it.
 step "Creating the object storage bucket"
 BUCKET="${TEAMUP_MINIO_BUCKET:-teamup-files}"
+# The server image has no shell or mc, so a one-shot client shares its network.
+# It retries because MinIO has no healthcheck to wait for, so it may still be
+# starting.
+MINIO_CLIENT="cgr.dev/chainguard/minio-client@sha256:8dc1dceb7371c9091b17b450e4da67a492f6de3a22d716af14888a7d8597457e"
 MINIO_CID="$($COMPOSE ps -q minio 2>/dev/null || true)"
-if [ -n "$MINIO_CID" ] && docker exec "$MINIO_CID" sh -c "
-      mc alias set local http://localhost:9000 '${TEAMUP_MINIO_ACCESS_KEY:-minioadmin}' '${TEAMUP_MINIO_SECRET_KEY:-minioadmin}' >/dev/null 2>&1 &&
-      mc mb --ignore-existing 'local/${BUCKET}' >/dev/null 2>&1
-   "; then
+bucket_ready=""
+for _ in $(seq 1 30); do
+  if [ -n "$MINIO_CID" ] && docker run --rm --network "container:$MINIO_CID" \
+      -e "MC_HOST_local=http://${TEAMUP_MINIO_ACCESS_KEY:-minioadmin}:${TEAMUP_MINIO_SECRET_KEY:-minioadmin}@localhost:9000" \
+      "$MINIO_CLIENT" mb --ignore-existing "local/$BUCKET" >/dev/null 2>&1; then
+    bucket_ready=1
+    break
+  fi
+  sleep 1
+done
+if [ -n "$bucket_ready" ]; then
   ok "Bucket '$BUCKET' is ready"
 else
   warn "Could not create the '$BUCKET' bucket automatically"

@@ -1,10 +1,7 @@
-# The image build only needs Go sources, migrations and the already-built SPA
-# at cmd/teamup/web/dist. Everything below would otherwise be shipped into the
-# build context — web/node_modules alone is hundreds of megabytes once the
-# frontend has been built on the same machine.
-#
-# Note what is NOT here: cmd/teamup/web/dist. It is gitignored but the Go embed
-# needs it, so it must reach the build context.
+# The image build only needs Go sources, migrations and the SPA's source.
+# Everything below would otherwise be shipped into the build context:
+# web/node_modules alone is hundreds of megabytes once the frontend has been
+# built on the same machine.
 
 .git
 .github
@@ -12,9 +9,20 @@
 .scratch
 .agents
 
+# Secrets. The build stages are discarded, but they stay in the local layer
+# cache, and web/.env would be compiled into the SPA.
+.env
+.env.*
+web/.env
+web/.env.*
+certs/
+backups/
+
 web/node_modules
 web/dist
 web/.vite
+# Built inside the image, so a stale copy on disk can never ship.
+cmd/teamup/web/dist
 node_modules
 
 bin/

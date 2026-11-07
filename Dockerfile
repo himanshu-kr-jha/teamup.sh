@@ -1,3 +1,18 @@
+# SPA stage
+#
+# Node runs on the build machine's architecture: the output is the same files
+# whichever image they end up in.
+FROM --platform=$BUILDPLATFORM node:20-alpine AS web
+
+RUN npm install -g pnpm@9
+
+WORKDIR /src/web
+COPY web/package.json web/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY web/ ./
+# Vite writes to ../cmd/teamup/web/dist, which is what the Go binary embeds.
+RUN pnpm build
+
 # Build stage
 #
 # Pinned to the build machine's own architecture and cross-compiled with
@@ -23,14 +38,13 @@ RUN apk add --no-cache git make gcc musl-dev
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source code. This must already contain cmd/teamup/web/dist — the SPA is
-# gitignored, so build it (`make build-frontend`) before building the image.
+# Copy source code, and the SPA built above.
 COPY . .
+COPY --from=web /src/cmd/teamup/web/dist cmd/teamup/web/dist
 
 # Build Go binary
 WORKDIR /app
-RUN go mod tidy && \
-    CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build \
     -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${BUILD_DATE}" \
     -o /teamup ./cmd/teamup
 
@@ -44,4 +58,8 @@ EXPOSE 8080
 
 USER nonroot:nonroot
 
-ENTRYPOINT ["/teamup", "server"]
+# Split so that `docker compose run teamup migrate up` runs the migrate command.
+# With "server" in the entrypoint it ran the server, which then fails on the
+# schema the command was meant to create.
+ENTRYPOINT ["/teamup"]
+CMD ["server"]

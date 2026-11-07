@@ -519,6 +519,33 @@ func (h *Hub) deliverToUser(userID string, msg *protocol.Message) {
 	}
 }
 
+// DisconnectUser closes every socket somebody has, on every replica, for when they
+// have been deactivated. Otherwise a socket lives until the access token that opened
+// it expires, and carries on being sent messages and asking for call tokens.
+func (h *Hub) DisconnectUser(userID string) {
+	h.closeUserConns(userID)
+	// The fan-out drops a publication with no message as malformed, so this carries
+	// one, though nothing is ever delivered to anybody.
+	h.publish(fanoutKindDisconnect, userID, "", protocol.NewMessage(fanoutKindDisconnect, struct{}{}))
+}
+
+func (h *Hub) closeUserConns(userID string) {
+	h.mu.RLock()
+	conns := make([]*Connection, 0, len(h.userConns[userID]))
+	for _, conn := range h.userConns[userID] {
+		conns = append(conns, conn)
+	}
+	h.mu.RUnlock()
+
+	for _, conn := range conns {
+		// As in cleanupStaleConnections: cancelling is what stops it, and the close
+		// frame waits on the far end, which must not hold anybody else up.
+		conn.cancel()
+		go conn.finish()
+		h.Unregister(conn)
+	}
+}
+
 func (h *Hub) BroadcastToOrg(orgID string, msg *protocol.Message, excludeUserID string) {
 	h.deliverToOrg(orgID, msg, excludeUserID)
 	h.publish(fanoutKindOrg, orgID, excludeUserID, msg)
@@ -604,6 +631,8 @@ func (h *Hub) deliverEnvelope(env *fanoutEnvelope) {
 		h.deliverToUser(env.Target, env.Msg)
 	case fanoutKindOrg:
 		h.deliverToOrg(env.Target, env.Msg, env.Exclude)
+	case fanoutKindDisconnect:
+		h.closeUserConns(env.Target)
 	default:
 		wsFanoutDropped.WithLabelValues("unknown_kind").Inc()
 		h.logger.Warn().Str("kind", env.Kind).

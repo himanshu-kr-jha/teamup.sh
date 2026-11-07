@@ -6,6 +6,8 @@ import { useUIStore } from "@/shared/store";
 import { useAuthStore } from "@/shared/store/authStore";
 import { IncomingCallDialog } from "@/features/calls/IncomingCallDialog";
 import { ActiveCallProvider } from "@/features/calls/ActiveCallProvider";
+import { UpdateOffer } from "@/sw/UpdateOffer";
+import { KnockCenter } from "@/features/calls/KnockCenter";
 import { ChatNotifications } from "@/features/chat/ChatNotifications";
 import { usePushSubscription } from "@/features/notifications/usePushSubscription";
 import { cn } from "@/shared/utils/cn";
@@ -28,7 +30,7 @@ export function Layout() {
       <div className="flex h-viewport overflow-hidden bg-background">
         <Sidebar />
         {/* The sidebar is position:fixed, so it is out of the flex flow and the
-          content column has to be offset by hand — otherwise every page renders
+          content column has to be offset by hand - otherwise every page renders
           underneath it and its left edge is unclickable. Only on a large
           screen: below that there is no sidebar to make room for. */}
         <div
@@ -50,9 +52,12 @@ export function Layout() {
         </div>
         {/* A call has to reach you wherever you are, not only on the calls page. */}
         <IncomingCallDialog />
+        {/* Somebody asking to join reaches every member, in the call or not. */}
+        <KnockCenter />
       {/* A message has to reach you wherever you are too, not only on the
           page that happens to be about chat. */}
       <ChatNotifications />
+        <UpdateOffer />
       </div>
     </ActiveCallProvider>
   );

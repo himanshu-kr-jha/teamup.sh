@@ -1,22 +1,23 @@
 import { NavLink } from 'react-router-dom';
-import { MessageSquare, Video, CheckSquare, Settings } from 'lucide-react';
+import { CalendarDays, MessageSquare, Video, CheckSquare, Settings } from 'lucide-react';
 import { cn } from '@/shared/utils/cn';
 
 /**
- * The four places worth going, along the bottom of a phone.
+ * The places worth going, along the bottom of a phone.
  *
  * Getting anywhere used to mean opening the drawer, which covers the page, and
- * choosing from it — two taps and a moment of not being able to see where you
+ * choosing from it - two taps and a moment of not being able to see where you
  * were. These are one tap and always visible, at the end of the screen a thumb
  * actually reaches.
  *
  * Organization is deliberately not here. It is for administrators, it is the
- * one destination most people never need, and four tabs fit a narrow screen in
- * a way five do not; the drawer still has it for whoever it is for.
+ * one destination most people never need, and five tabs is as many as fit a
+ * narrow screen; the drawer still has it for whoever it is for.
  */
 const tabs = [
   { path: '/chat', label: 'Chat', icon: MessageSquare },
   { path: '/calls', label: 'Calls', icon: Video },
+  { path: '/calendar', label: 'Calendar', icon: CalendarDays },
   { path: '/tasks', label: 'Tasks', icon: CheckSquare },
   { path: '/settings', label: 'Settings', icon: Settings },
 ];

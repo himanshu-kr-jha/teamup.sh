@@ -9,13 +9,22 @@ import { TasksPage } from '@/features/tasks/TasksPage';
 import { SettingsPage } from '@/features/settings/SettingsPage';
 import { AdminPage } from '@/features/admin/AdminPage';
 import { CallViewPage } from '@/features/calls/CallViewPage';
+import { AttendancePage } from '@/features/calls/standing/AttendancePage';
+import { CalendarPage } from '@/features/calendar/CalendarPage';
 import { TaskDetailPage } from '@/features/tasks/TaskDetailPage';
 import { useAuthStore } from '@/shared/store/authStore';
+import { loginPathFor } from '@/features/auth/nextPath';
+import { restoreSession } from '@/features/auth/session';
 import { useOrganizationAccess } from '@/features/layout/useOrganizationAccess';
 
-const requireAuth = async () => {
-  const { isAuthenticated } = useAuthStore.getState();
-  if (!isAuthenticated) return redirect('/login');
+const requireAuth = async (request: Request) => {
+  const { isAuthenticated, setUser } = useAuthStore.getState();
+  // What this browser remembers is only a hint: the session is in the cookie, so
+  // somebody whose local storage was cleared is still signed in.
+  if (!isAuthenticated && !(await restoreSession(setUser))) {
+    const { pathname, search } = new URL(request.url);
+    return redirect(loginPathFor(pathname, search));
+  }
   return null;
 };
 
@@ -36,10 +45,10 @@ const requireSetup = async () => {
 // Promise.all([...]) handed it an array, so both redirects were silently
 // dropped and a brand-new instance rendered the empty app instead of the
 // wizard. Setup is checked first: logging in is impossible before it runs.
-const requireSetupThenAuth = async () => {
+const requireSetupThenAuth = async ({ request }: { request: Request }) => {
   const setupRedirect = await requireSetup();
   if (setupRedirect) return setupRedirect;
-  return requireAuth();
+  return requireAuth(request);
 };
 
 export const router = createBrowserRouter([
@@ -75,6 +84,8 @@ export const router = createBrowserRouter([
       { path: 'chat/:channelId', element: <ChatPage /> },
       { path: 'calls', element: <CallsPage /> },
       { path: 'calls/:roomName', element: <CallViewPage /> },
+      { path: 'calls/standing/:id/attendance', element: <AttendancePage /> },
+      { path: 'calendar', element: <CalendarPage /> },
       { path: 'tasks', element: <TasksPage /> },
       { path: 'tasks/:taskId', element: <TaskDetailPage /> },
       { path: 'settings', element: <SettingsPage /> },

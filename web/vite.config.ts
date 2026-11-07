@@ -7,7 +7,11 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
+      // Not autoUpdate: that reloads every open tab when a new version activates, and a
+      // reload drops whoever is in a call there. src/sw/register.ts registers the worker
+      // and offers the reload itself, so the plugin must not inject its own registration.
+      registerType: 'prompt',
+      injectRegister: false,
       includeAssets: ['favicon.ico', 'robots.txt'],
       manifest: {
         name: 'TeamUp',
@@ -38,7 +42,10 @@ export default defineConfig({
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/.*\/api\/(channels|messages|tasks|users|presence)/,
-            handler: 'StaleWhileRevalidate',
+            // Network first, the cache only when offline. Serving the cached
+            // copy first handed every refetch the previous answer, so nothing
+            // that invalidates a query could show new data over HTTPS.
+            handler: 'NetworkFirst',
             options: {
               cacheName: 'api-get',
               expiration: { maxEntries: 200, maxAgeSeconds: 5 * 60 },

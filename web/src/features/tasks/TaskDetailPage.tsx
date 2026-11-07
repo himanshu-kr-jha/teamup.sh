@@ -21,6 +21,8 @@ import { AttachmentChip } from '@/features/files/AttachmentChip';
 import { useUpload, type UploadedFile } from '@/features/files/useUpload';
 import { cn } from '@/shared/utils/cn';
 import { restrictionNote, type TaskAbilities } from './abilities';
+import { endOfDueDay } from './dueDate';
+import { liveTaskQuery } from './liveQuery';
 
 interface Task {
   id: string;
@@ -88,6 +90,7 @@ export function TaskDetailPage() {
     queryKey: ['task', taskId],
     queryFn: () => tasksApi.get(taskId!),
     enabled: !!taskId,
+    ...liveTaskQuery,
   });
 
   const task = taskResponse?.data;
@@ -99,6 +102,7 @@ export function TaskDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['tasks'] });
       setEditing(false);
     },
+    onError: (err) => toast.error(apiErrorMessage(err, 'Could not update that task.')),
   });
 
   const deleteTaskMutation = useMutation({
@@ -107,6 +111,7 @@ export function TaskDetailPage() {
       queryClient.invalidateQueries({ queryKey: ['tasks'] });
       navigate('/tasks');
     },
+    onError: (err) => toast.error(apiErrorMessage(err, 'Could not delete that task.')),
   });
 
   const addCommentMutation = useMutation({
@@ -167,13 +172,13 @@ export function TaskDetailPage() {
     <div className="flex h-full flex-col bg-background">
       {/* Header */}
       <div className="flex h-16 items-center justify-between px-4 md:px-6 border-b border-border">
-        <Button variant="ghost" size="icon" onClick={() => navigate(-1)}>
+        <Button variant="ghost" size="icon" aria-label="Back" onClick={() => navigate(-1)}>
           <ChevronLeft className="h-5 w-5" />
         </Button>
         <div className="flex-1" />
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon">
+            <Button variant="ghost" size="icon" aria-label="Task actions">
               <MoreVertical className="h-5 w-5" />
             </Button>
           </DropdownMenuTrigger>
@@ -181,10 +186,17 @@ export function TaskDetailPage() {
             <DropdownMenuItem onSelect={() => setEditing(true)}>Edit</DropdownMenuItem>
             <DropdownMenuSeparator />
             {mayDelete ? (
-              <DropdownMenuItem className="text-destructive" onSelect={() => deleteTaskMutation.mutate()}>Delete</DropdownMenuItem>
+              <DropdownMenuItem
+                className="text-destructive"
+                onSelect={() => {
+                  if (window.confirm('Delete this task?')) deleteTaskMutation.mutate();
+                }}
+              >
+                Delete
+              </DropdownMenuItem>
             ) : (
               <DropdownMenuItem disabled>
-                Delete — {task.can?.reason ?? 'not yours to remove'}
+                Delete - {task.can?.reason ?? 'not yours to remove'}
               </DropdownMenuItem>
             )}
           </DropdownMenuContent>
@@ -354,7 +366,7 @@ export function TaskDetailPage() {
                         onChange={(e) =>
                           e.target.value &&
                           updateTaskMutation.mutate({
-                            dueDate: new Date(`${e.target.value}T00:00:00`).toISOString(),
+                            dueDate: endOfDueDay(e.target.value),
                           } as any)
                         }
                       />

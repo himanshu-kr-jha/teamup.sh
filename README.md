@@ -94,14 +94,14 @@ line-by-line detail.
 
 ### Solid
 
-- **Chat** — channels, DMs, private and announcement channels, editing,
-  deletion, reactions, read receipts, live delivery
+- **Chat** - channels, DMs, private and announcement channels, threaded
+  replies, editing, deletion, reactions, read receipts, live delivery
 - **Search** — full-text and fuzzy, over Postgres, permission-scoped and
   highlighted
 - **Tasks** — create, assign along the org chart, filter, comment with
   attachments, label, watch, per-field activity log
-- **Files** — presigned upload and download straight to S3; bytes never pass
-  through the app
+- **Files** - presigned upload and download straight to S3, with real resumable
+  multipart above 16 MiB; bytes never pass through the app
 - **Video calls** — LiveKit SFU, multi-party audio/video, screen share,
   recording to object storage, call events posted into the channel
 - **Presence** — online / away / in-call, availability and leave, with keys
@@ -120,11 +120,11 @@ Being straight about these, because discovering them yourself is worse:
 | | |
 | --- | --- |
 | **OIDC sign-in is a stub** | The Google / Entra / custom buttons complete the OAuth round-trip but provision a fabricated in-memory user. **Password login is the real path.** ([#15](https://github.com/himanshu-kr-jha/teamup.sh/issues/15)) |
-| **No typing indicators or threads** | The socket handshake now works, so typing is unblocked — but nothing in the UI sends or renders it yet. `replyTo` is stored and there is no thread view. ([#28](https://github.com/himanshu-kr-jha/teamup.sh/issues/28)) |
-| **`call.accept` trusts the room name** | Any authenticated user can join any call in any org by guessing a 32-bit room name. Not reachable from the UI. ([#34](https://github.com/himanshu-kr-jha/teamup.sh/issues/34)) |
+| **No typing indicators** | The socket handshake works, so typing is unblocked, but nothing in the UI sends or renders it yet. ([#28](https://github.com/himanshu-kr-jha/teamup.sh/issues/28)) |
 | **Offline mode is aspirational** | Installable service worker, yes; IndexedDB outbox, no ([#29](https://github.com/himanshu-kr-jha/teamup.sh/issues/29)) |
-| **Multipart upload is single-part** | Large files still upload fine, via one presigned PUT ([#26](https://github.com/himanshu-kr-jha/teamup.sh/issues/26)) |
-| **`/metrics` is unauthenticated** | Fine on a laptop, do not publish it ([#20](https://github.com/himanshu-kr-jha/teamup.sh/issues/20)) |
+| **`/metrics` is unauthenticated** | Fine on a laptop, do not publish it. The shipped `nginx.conf` refuses it from outside ([#20](https://github.com/himanshu-kr-jha/teamup.sh/issues/20)) |
+| **No login rate limit in the app** | The shipped `nginx.conf` applies one. Anything else in front of TeamUp has to bring its own |
+| **Recording is not in the production stack** | `docker-compose.prod.yml` has no LiveKit Egress service, so calls work and recording does not |
 
 Nothing here is architectural — most are small, well-scoped fixes. The open
 ones are tracked as
@@ -328,17 +328,19 @@ pass, 0 skip, 0 races.**
 
 ## Deploying
 
-[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) covers the options, starting with why
-HTTPS decides how much work each one is.
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) is a copy-paste walkthrough from a
+fresh Ubuntu VM to a running team, with sizing, backups, upgrades and the
+alternatives compared.
 
-- **Docker Compose** — `docker-compose.prod.yml`
-- **Kubernetes** — `helm/teamup`, which renders the deployment, service,
+- **One VM with Docker Compose** - `docker-compose.prod.yml`, the recommended
+  path. It runs all six services, and it is what the guide was tested against.
+- **Kubernetes** - `helm/teamup`, which renders the deployment, service,
   ingress, config, secrets and a migration `pre-install` hook. The templates
   render and validate, but **have not yet been installed against a live
-  cluster** — treat the chart as beta and expect to adjust LiveKit's networking.
-- **A binary and a systemd unit** — it is one file; this is a legitimate option
+  cluster**. Treat the chart as beta and expect to adjust LiveKit's networking.
+- **A binary and a systemd unit** - it is one file; this is a legitimate option
 
-Postgres, Redis, S3 and LiveKit are prerequisites in every case, not bundled.
+Outside Compose, Postgres, Redis, S3 and LiveKit are prerequisites you bring.
 
 ---
 
@@ -401,9 +403,8 @@ frame shares one envelope:
   `call.ended`, `call.signaling`
 - **Notifications** — `notification.new`, `notification.read`
 
-Today the socket is effectively **downstream only** — the server has no
-`conn.init` case and never sends `conn.ack`, so the client never reaches a state
-where it will send. See
+The client sends `conn.init` and the server answers `conn.ack`, after which the
+socket carries traffic both ways. See
 [the architecture doc](docs/ARCHITECTURE.md#the-websocket).
 
 </details>

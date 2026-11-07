@@ -192,7 +192,7 @@ func (s *Service) FinalizeSetup(ctx context.Context, data Data) error {
 	err = tx.QueryRow(ctx, `
 		INSERT INTO users (id, org_id, name, email, password_hash, role, is_admin, created_at)
 		VALUES ($1, $2, $3, $4, $5, 'owner', true, NOW())
-		ON CONFLICT (org_id, email) DO UPDATE
+		ON CONFLICT (org_id, email) WHERE deleted_at IS NULL DO UPDATE
 		SET name = EXCLUDED.name, password_hash = EXCLUDED.password_hash,
 		    role = 'owner', is_admin = true, updated_at = NOW()
 		RETURNING id

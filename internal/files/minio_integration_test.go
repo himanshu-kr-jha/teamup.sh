@@ -26,7 +26,7 @@ import (
 //
 //	docker run -d --name minio -p 9401:9000 \
 //	  -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin123 \
-//	  minio/minio server /data
+//	  cgr.dev/chainguard/minio@sha256:cee9a8e35885e93f14b3cb32960e5017aff74e2adfb52ba87c65003b0163886b server /data
 //	TEAMUP_TEST_MINIO_ENDPOINT=localhost:9401 \
 //	TEAMUP_TEST_MINIO_ACCESS_KEY=minioadmin \
 //	TEAMUP_TEST_MINIO_SECRET_KEY=minioadmin123 go test ./internal/files/...

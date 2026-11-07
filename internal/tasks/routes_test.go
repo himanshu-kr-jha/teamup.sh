@@ -365,3 +365,53 @@ func TestTheListAndTheDeleteGiveTheSameAnswer(t *testing.T) {
 		t.Errorf("another organization read the task: %d %s", foreign.Code, foreign.Body.String())
 	}
 }
+
+// "No filter" and "a filter I could not read" used to be the same thing, so a
+// typo got back a plausible and much wider answer than was asked for. An org
+// administrator running no team got the whole organization from scope=team&teamId=all.
+func TestAMalformedListFilterIsRefusedRatherThanIgnored(t *testing.T) {
+	svc, pool := newService(t)
+	org := testsupport.SeedOrg(t, pool)
+	createTask(t, svc, org, "a real task")
+	other := testsupport.SeedOrg(t, pool)
+	createTask(t, svc, other, "somebody else's task")
+	r := asOwner(t, svc, org)
+
+	list := func(query string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/tasks"+query, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w
+	}
+
+	for _, query := range []string{
+		"?assigneeId=not-a-uuid",
+		"?projectId=junk",
+		"?labelId=junk",
+		"?scope=team&teamId=all",
+		"?teamId=all",
+		"?scope=bogus",
+		"?scope=all",
+	} {
+		t.Run(query, func(t *testing.T) {
+			w := list(query)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("want 400, got %d: %s", w.Code, w.Body.String())
+			}
+		})
+	}
+
+	// What the web client actually sends still works, and stays in its own
+	// organization.
+	for _, query := range []string{"", "?scope=mine", "?scope=team", "?assigneeId=" + org.OwnerID.String()} {
+		t.Run("still fine "+query, func(t *testing.T) {
+			w := list(query)
+			if w.Code != http.StatusOK {
+				t.Errorf("want 200, got %d: %s", w.Code, w.Body.String())
+			}
+			if strings.Contains(w.Body.String(), "somebody else's task") {
+				t.Errorf("another organization's task came back: %s", w.Body.String())
+			}
+		})
+	}
+}

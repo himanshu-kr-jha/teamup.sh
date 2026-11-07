@@ -59,6 +59,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service, options ...func(*Hand
 	rg.GET("/users/:id", h.GetUser)
 	rg.PATCH("/users/:id", h.UpdateUser)
 	rg.DELETE("/users/:id", h.requireAdmin, h.DeleteUser)
+	rg.POST("/users/:id/reset-password", h.requireAdmin, h.ResetPassword)
 
 	rg.GET("/roles", h.ListRoles)
 	rg.POST("/roles", h.requireAdmin, h.CreateRole)
@@ -421,6 +422,32 @@ func (h *Handler) DeleteUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "deactivated"})
 }
 
+// ResetPassword is how somebody gets back in after forgetting their password.
+// The response is the only time the new password is ever visible.
+func (h *Handler) ResetPassword(c *gin.Context) {
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
+	userID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	caller := auth.GetUserFromContext(c)
+	// Changing your own password proves you know the current one; this would
+	// let a borrowed administrator session skip that.
+	if caller.UserID == userID.String() {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "change your own password from Settings"})
+		return
+	}
+	temporaryPassword, err := h.service.ResetMemberPassword(c.Request.Context(), orgID, userID, caller.HasAnyRole("owner"))
+	if err != nil {
+		httpx.Error(c, err, "failed to reset password")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"temporaryPassword": temporaryPassword})
+}
+
 // ── Roles ─────────────────────────────────────────────────────────────────
 
 func (h *Handler) ListRoles(c *gin.Context) {
@@ -738,7 +765,11 @@ func (h *Handler) AddTeamMember(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid userId"})
 		return
 	}
-	if err := h.service.AddTeamMember(c.Request.Context(), orgID, teamID, userID); err != nil {
+	actor, ok := callerActor(c)
+	if !ok {
+		return
+	}
+	if err := h.service.AddTeamMemberAs(c.Request.Context(), orgID, teamID, actor, userID); err != nil {
 		httpx.Error(c, err, "failed to add member")
 		return
 	}

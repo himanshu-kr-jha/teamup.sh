@@ -7,6 +7,18 @@
     <meta name="description" content="TeamUp - Self-hosted collaboration platform" />
     <meta name="theme-color" content="#4f46e5" />
     <title>TeamUp</title>
+    <script>
+      // Here and not in the bundle, so a dark page never paints white first. The
+      // rule is isDarkTheme in src/shared/theme.ts, which is tested against this.
+      (function () {
+        var saved = null;
+        try {
+          saved = localStorage.getItem('theme');
+        } catch (e) {}
+        var systemDark = matchMedia('(prefers-color-scheme: dark)').matches;
+        document.documentElement.classList.toggle('dark', saved === 'dark' || (saved !== 'light' && systemDark));
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -31,7 +31,9 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
       <AuthProvider>
         <WSProvider>
           <OfflineBanner />
-          <RouterProvider router={router} />
+          {/* The first loaders ask the server things, and until they answer the router
+              draws this. With nothing here that is a blank white page, whatever the theme. */}
+          <RouterProvider router={router} fallbackElement={<div className="h-viewport bg-background" />} />
           <Toaster />
         </WSProvider>
       </AuthProvider>

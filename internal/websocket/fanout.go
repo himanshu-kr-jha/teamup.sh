@@ -111,6 +111,8 @@ const (
 	fanoutKindChannel = "channel"
 	fanoutKindUser    = "user"
 	fanoutKindOrg     = "org"
+	// fanoutKindDisconnect closes somebody's sockets, carrying no message.
+	fanoutKindDisconnect = "disconnect"
 )
 
 // fanoutEnvelope is one broadcast, as one process tells the others about it.

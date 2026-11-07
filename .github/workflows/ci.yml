@@ -230,16 +230,17 @@ jobs:
         run: |
           docker run -d --name minio -p 9000:9000 \
             -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
-            minio/minio:latest server /data
+            cgr.dev/chainguard/minio@sha256:cee9a8e35885e93f14b3cb32960e5017aff74e2adfb52ba87c65003b0163886b server /data
           docker run -d --name livekit -p 7880:7880 \
             livekit/livekit-server:latest --dev --bind 0.0.0.0
 
           # The bucket is not created by anything on the boot path, so a
           # readiness probe that checks for it fails against an empty MinIO.
           for i in $(seq 1 30); do
-            docker run --rm --network host minio/mc:latest sh -c "
-              mc alias set ci http://127.0.0.1:9000 minioadmin minioadmin &&
-              mc mb --ignore-existing ci/teamup-files" && break
+            docker run --rm --network host \
+              -e MC_HOST_ci=http://minioadmin:minioadmin@127.0.0.1:9000 \
+              cgr.dev/chainguard/minio-client@sha256:8dc1dceb7371c9091b17b450e4da67a492f6de3a22d716af14888a7d8597457e \
+              mb --ignore-existing ci/teamup-files && break
             sleep 2
           done
 
@@ -346,11 +347,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: web-dist
-          path: cmd/teamup/web/dist
 
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3

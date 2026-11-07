@@ -328,6 +328,116 @@ func TestAChatEditFrameChangesThePersistedMessage(t *testing.T) {
 	}
 }
 
+// The five minute window exists so a conversation people have already read
+// stays what was said. REST enforced it; the frame did not, so anybody could
+// rewrite last week by sending the frame instead of using the button.
+func TestAChatEditFrameIsRefusedWhereTheRESTEditIs(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup string
+	}{
+		{"outside the edit window", `UPDATE messages SET created_at = NOW() - interval '1 hour' WHERE id = $1`},
+		{"already deleted", `UPDATE messages SET deleted_at = NOW() WHERE id = $1`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newWSHarness(t)
+			ctx := context.Background()
+			org := testsupport.SeedOrg(t, h.pool)
+			readerID := testsupport.SeedUser(t, h.pool, org, "reader@example.test", "member")
+			channelID := testsupport.SeedChannel(t, h.pool, org, "general", org.OwnerID, readerID)
+
+			msg, err := h.svc.SendMessage(ctx, org.ID, channelID, org.OwnerID, "what was said", nil, nil, false)
+			if err != nil {
+				t.Fatalf("send: %v", err)
+			}
+			if _, err := h.pool.Exec(ctx, tc.setup, msg.ID); err != nil {
+				t.Fatalf("set up message: %v", err)
+			}
+
+			author := h.dial(t, "author", org.ID, org.OwnerID)
+			reader := h.dial(t, "reader", org.ID, readerID)
+			author.send(t, protocol.TypeChatEdit, protocol.ChatEditPayload{
+				MessageID: msg.ID.String(),
+				Content:   "what I wish I had said",
+			})
+
+			reader.expectNothing(t, protocol.TypeChatMessage, time.Second)
+
+			var content string
+			if err := h.pool.QueryRow(ctx, `SELECT content FROM messages WHERE id = $1`, msg.ID).Scan(&content); err != nil {
+				t.Fatalf("load message: %v", err)
+			}
+			if content != "what was said" {
+				t.Errorf("the message was rewritten to %q", content)
+			}
+		})
+	}
+}
+
+// Somebody else's message stays theirs, however fresh it is.
+func TestAChatEditFrameFromSomebodyElseIsRefused(t *testing.T) {
+	h := newWSHarness(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, h.pool)
+	otherID := testsupport.SeedUser(t, h.pool, org, "other@example.test", "member")
+	channelID := testsupport.SeedChannel(t, h.pool, org, "general", org.OwnerID, otherID)
+
+	msg, err := h.svc.SendMessage(ctx, org.ID, channelID, org.OwnerID, "mine", nil, nil, false)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	author := h.dial(t, "author", org.ID, org.OwnerID)
+	other := h.dial(t, "other", org.ID, otherID)
+	other.send(t, protocol.TypeChatEdit, protocol.ChatEditPayload{MessageID: msg.ID.String(), Content: "yours"})
+
+	author.expectNothing(t, protocol.TypeChatMessage, time.Second)
+
+	var content string
+	if err := h.pool.QueryRow(ctx, `SELECT content FROM messages WHERE id = $1`, msg.ID).Scan(&content); err != nil {
+		t.Fatalf("load message: %v", err)
+	}
+	if content != "mine" {
+		t.Errorf("the message was rewritten to %q", content)
+	}
+}
+
+// What other tabs are shown live has to be what a reload would show them.
+func TestAChatEditFrameBroadcastsTheStoredText(t *testing.T) {
+	h := newWSHarness(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, h.pool)
+	readerID := testsupport.SeedUser(t, h.pool, org, "reader@example.test", "member")
+	channelID := testsupport.SeedChannel(t, h.pool, org, "general", org.OwnerID, readerID)
+
+	msg, err := h.svc.SendMessage(ctx, org.ID, channelID, org.OwnerID, "plain", nil, nil, false)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	author := h.dial(t, "author", org.ID, org.OwnerID)
+	reader := h.dial(t, "reader", org.ID, readerID)
+	author.send(t, protocol.TypeChatEdit, protocol.ChatEditPayload{
+		MessageID: msg.ID.String(),
+		Content:   "not " + HighlightStart + "plain" + HighlightEnd,
+	})
+
+	var edited protocol.ChatMessagePayload
+	decodePayload(t, reader.await(t, protocol.TypeChatMessage, 5*time.Second), &edited)
+
+	var stored string
+	if err := h.pool.QueryRow(ctx, `SELECT content FROM messages WHERE id = $1`, msg.ID).Scan(&stored); err != nil {
+		t.Fatalf("load message: %v", err)
+	}
+	if stored != "not plain" {
+		t.Fatalf("stored content: got %q", stored)
+	}
+	if edited.Message.Content != stored {
+		t.Errorf("broadcast %q, but a reload shows %q", edited.Message.Content, stored)
+	}
+}
+
 func TestAChatDeleteFrameRemovesThePersistedMessage(t *testing.T) {
 	h := newWSHarness(t)
 	org := testsupport.SeedOrg(t, h.pool)
@@ -361,6 +471,234 @@ func TestAChatDeleteFrameRemovesThePersistedMessage(t *testing.T) {
 	if deletedAt == nil {
 		t.Error("the message sent for deletion is still there")
 	}
+}
+
+// ── Edits and deletes over REST ───────────────────────────────────────────
+
+func restMessage(t *testing.T, r *gin.Engine, method string, id uuid.UUID, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, "/api/messages/"+id.String(), strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// restEditFixture is a message with one person in its channel who should hear
+// about changes to it, and two who should not: a colleague outside the channel
+// and somebody in another organization.
+type restEditFixture struct {
+	h         *wsHarness
+	org       *testsupport.Org
+	channelID uuid.UUID
+	messageID uuid.UUID
+	authorAPI *gin.Engine
+
+	author, reader, colleague, foreigner *wsClient
+}
+
+func newRESTEditFixture(t *testing.T) *restEditFixture {
+	t.Helper()
+	h := newWSHarness(t)
+	org := testsupport.SeedOrg(t, h.pool)
+	other := testsupport.SeedOrg(t, h.pool)
+	authorID := testsupport.SeedUser(t, h.pool, org, "author@example.test", "member")
+	readerID := testsupport.SeedUser(t, h.pool, org, "reader@example.test", "member")
+	colleagueID := testsupport.SeedUser(t, h.pool, org, "colleague@example.test", "member")
+	channelID := testsupport.SeedChannel(t, h.pool, org, "general", authorID, readerID)
+
+	msg, err := h.svc.SendMessage(context.Background(), org.ID, channelID, authorID, "frist", nil, nil, false)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	return &restEditFixture{
+		h: h, org: org, channelID: channelID, messageID: msg.ID,
+		authorAPI: asMember(t, h.svc, org.ID.String(), authorID.String()),
+		author:    h.dial(t, "author", org.ID, authorID),
+		reader:    h.dial(t, "reader", org.ID, readerID),
+		colleague: h.dial(t, "colleague", org.ID, colleagueID),
+		foreigner: h.dial(t, "foreigner", other.ID, other.OwnerID),
+	}
+}
+
+func (f *restEditFixture) nobodyElseHears(t *testing.T, msgType string) {
+	t.Helper()
+	f.author.expectNothing(t, msgType, 300*time.Millisecond)
+	f.colleague.expectNothing(t, msgType, 300*time.Millisecond)
+	f.foreigner.expectNothing(t, msgType, 300*time.Millisecond)
+}
+
+// The web client edits and deletes over REST, and only the frames broadcast, so
+// a message somebody deleted stayed on everybody else's screen until a reload.
+func TestARESTEditReachesTheChannelInTheFrameTheSocketPathSends(t *testing.T) {
+	f := newRESTEditFixture(t)
+
+	w := restMessage(t, f.authorAPI, http.MethodPatch, f.messageID, `{"content":"first \u0002post\u0003"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("edit: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var edited protocol.ChatMessagePayload
+	decodePayload(t, f.reader.await(t, protocol.TypeChatMessage, 5*time.Second), &edited)
+	if edited.Message.ID != f.messageID.String() {
+		t.Errorf("id: got %q want %s", edited.Message.ID, f.messageID)
+	}
+	if edited.Message.ChannelID != f.channelID.String() {
+		t.Errorf("channel: got %q want %s", edited.Message.ChannelID, f.channelID)
+	}
+	if edited.Message.Content != "first post" {
+		t.Errorf("content should be what was stored, got %q", edited.Message.Content)
+	}
+	if edited.Message.EditedAt == nil {
+		t.Error("an edit should say when it happened")
+	}
+	if edited.Message.UserID != "" {
+		t.Errorf("an edit is told apart from a new message by having no author, got %q", edited.Message.UserID)
+	}
+
+	f.nobodyElseHears(t, protocol.TypeChatMessage)
+}
+
+func TestARefusedRESTEditReachesNobody(t *testing.T) {
+	f := newRESTEditFixture(t)
+	if _, err := f.h.pool.Exec(context.Background(),
+		`UPDATE messages SET created_at = NOW() - interval '1 hour' WHERE id = $1`, f.messageID); err != nil {
+		t.Fatalf("age message: %v", err)
+	}
+
+	w := restMessage(t, f.authorAPI, http.MethodPatch, f.messageID, `{"content":"rewritten"}`)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("edit: want 403, got %d: %s", w.Code, w.Body.String())
+	}
+	f.reader.expectNothing(t, protocol.TypeChatMessage, 500*time.Millisecond)
+}
+
+func TestARESTDeleteReachesTheChannel(t *testing.T) {
+	f := newRESTEditFixture(t)
+
+	w := restMessage(t, f.authorAPI, http.MethodDelete, f.messageID, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("delete: want 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var removed protocol.ChatDeletePayload
+	decodePayload(t, f.reader.await(t, protocol.TypeChatDelete, 5*time.Second), &removed)
+	if removed.MessageID != f.messageID.String() {
+		t.Errorf("delete named %q, want %s", removed.MessageID, f.messageID)
+	}
+
+	f.nobodyElseHears(t, protocol.TypeChatDelete)
+}
+
+// ── Being added to something (chat.membership.changed) ────────────────────
+
+func awaitMembership(t *testing.T, c *wsClient, channelID uuid.UUID, wantUsers ...uuid.UUID) {
+	t.Helper()
+	var got protocol.ChatMembershipChangedPayload
+	decodePayload(t, c.await(t, protocol.TypeChatMembership, 5*time.Second), &got)
+	if got.ChannelID != channelID.String() {
+		t.Errorf("channel: got %q want %s", got.ChannelID, channelID)
+	}
+	if got.Action != "added" {
+		t.Errorf("action: got %q want added", got.Action)
+	}
+	users := map[string]bool{}
+	for _, id := range got.UserIDs {
+		users[id] = true
+	}
+	if len(users) != len(wantUsers) {
+		t.Errorf("users: got %v want %v", got.UserIDs, wantUsers)
+	}
+	for _, id := range wantUsers {
+		if !users[id.String()] {
+			t.Errorf("users: got %v, missing %s", got.UserIDs, id)
+		}
+	}
+}
+
+// The sidebar is a cached list, so a conversation that begins with you is not
+// on it until something says so. A foreign organization and colleagues outside
+// the channel must hear nothing about it.
+func TestStartingADirectMessageTellsTheOtherPerson(t *testing.T) {
+	h := newWSHarness(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, h.pool)
+	other := testsupport.SeedOrg(t, h.pool)
+	calleeID := testsupport.SeedUser(t, h.pool, org, "callee@example.test", "member")
+	colleagueID := testsupport.SeedUser(t, h.pool, org, "colleague@example.test", "member")
+
+	callee := h.dial(t, "callee", org.ID, calleeID)
+	colleague := h.dial(t, "colleague", org.ID, colleagueID)
+	foreigner := h.dial(t, "foreigner", other.ID, other.OwnerID)
+
+	dm, err := h.svc.OpenDirectMessage(ctx, org.ID, org.OwnerID, calleeID)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	awaitMembership(t, callee, dm.ID, org.OwnerID, calleeID)
+	colleague.expectNothing(t, protocol.TypeChatMembership, 300*time.Millisecond)
+	foreigner.expectNothing(t, protocol.TypeChatMembership, 300*time.Millisecond)
+
+	// Opening it again creates nothing, so there is nothing to tell.
+	if _, err := h.svc.OpenDirectMessage(ctx, org.ID, org.OwnerID, calleeID); err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	callee.expectNothing(t, protocol.TypeChatMembership, 300*time.Millisecond)
+}
+
+func TestBeingAddedToAChannelTellsThem(t *testing.T) {
+	h := newWSHarness(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, h.pool)
+	other := testsupport.SeedOrg(t, h.pool)
+	addedID := testsupport.SeedUser(t, h.pool, org, "added@example.test", "member")
+	colleagueID := testsupport.SeedUser(t, h.pool, org, "colleague@example.test", "member")
+	channelID := testsupport.SeedChannel(t, h.pool, org, "project", org.OwnerID)
+
+	added := h.dial(t, "added", org.ID, addedID)
+	colleague := h.dial(t, "colleague", org.ID, colleagueID)
+	foreigner := h.dial(t, "foreigner", other.ID, other.OwnerID)
+
+	if err := h.svc.AddMember(ctx, org.ID, channelID, addedID, ""); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	awaitMembership(t, added, channelID, addedID)
+	colleague.expectNothing(t, protocol.TypeChatMembership, 300*time.Millisecond)
+	foreigner.expectNothing(t, protocol.TypeChatMembership, 300*time.Millisecond)
+
+	// AddMember is idempotent, and the announcement has to be as well.
+	if err := h.svc.AddMember(ctx, org.ID, channelID, addedID, ""); err != nil {
+		t.Fatalf("add again: %v", err)
+	}
+	added.expectNothing(t, protocol.TypeChatMembership, 300*time.Millisecond)
+}
+
+// An org-wide channel enrols everybody the moment it exists.
+func TestCreatingAnOrgWideChannelTellsTheOrganization(t *testing.T) {
+	h := newWSHarness(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, h.pool)
+	other := testsupport.SeedOrg(t, h.pool)
+	memberID := testsupport.SeedUser(t, h.pool, org, "member@example.test", "member")
+
+	member := h.dial(t, "member", org.ID, memberID)
+	foreigner := h.dial(t, "foreigner", other.ID, other.OwnerID)
+
+	name := "everyone"
+	channel, err := h.svc.CreateChannel(ctx, org.ID, org.OwnerID, &name, "public", nil, nil)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	awaitMembership(t, member, channel.ID, org.OwnerID, memberID)
+	foreigner.expectNothing(t, protocol.TypeChatMembership, 300*time.Millisecond)
+
+	// A private channel has nobody in it yet but the person who made it.
+	private := "secret"
+	if _, err := h.svc.CreateChannel(ctx, org.ID, org.OwnerID, &private, "group", nil, nil); err != nil {
+		t.Fatalf("create private: %v", err)
+	}
+	member.expectNothing(t, protocol.TypeChatMembership, 300*time.Millisecond)
 }
 
 func TestAChatReadFrameAdvancesTheReadMarker(t *testing.T) {

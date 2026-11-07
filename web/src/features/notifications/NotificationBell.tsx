@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Bell, CheckCheck, Loader2, X, BellRing } from 'lucide-react';
@@ -14,6 +14,8 @@ import { useDesktopNotifications } from '@/shared/hooks/useDesktopNotifications'
 import { useToast } from '@/shared/hooks/useToast';
 import { useWebSocket } from '@/features/websocket/WSProvider';
 import { formatRelativeTime, cn } from '@/shared/utils/cn';
+import { refreshTasksFor } from '@/features/tasks/liveQuery';
+import { dayLabelKey } from '@/features/calendar/layout';
 
 interface NotificationItem {
   id: string;
@@ -23,6 +25,12 @@ interface NotificationItem {
   data?: Record<string, any>;
   readAt?: string | null;
   createdAt: string;
+}
+
+/** The calendar, on the day the meeting is, when the notification says which. */
+function calendarLink(startsAt?: string) {
+  const date = startsAt ? new Date(startsAt) : null;
+  return date && !Number.isNaN(date.getTime()) ? `/calendar?date=${dayLabelKey(date)}` : '/calendar';
 }
 
 /**
@@ -52,13 +60,15 @@ export function NotificationBell() {
   // A notification arriving while the tab is open should appear immediately
   // rather than waiting for the next poll.
   useEffect(() => {
-    return on('notification.new', () => {
+    return on('notification.new', (msg) => {
       queryClient.invalidateQueries({ queryKey: ['notifications'] });
       queryClient.invalidateQueries({ queryKey: ['notifications', 'unread-count'] });
+      refreshTasksFor(queryClient, msg.payload as { data?: { taskId?: string } });
     });
   }, [on, queryClient]);
 
   const { permission, request } = useDesktopNotifications();
+  const [menuOpen, setMenuOpen] = useState(false);
 
   const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ['notifications'] });
@@ -66,6 +76,9 @@ export function NotificationBell() {
   };
 
   const open = async (n: NotificationItem) => {
+    // Left open, the menu covers the page it just took you to and keeps it from being
+    // clicked or read until it is dismissed.
+    setMenuOpen(false);
     try {
       if (!n.readAt) await notificationsApi.markRead(n.id);
       refresh();
@@ -77,6 +90,8 @@ export function NotificationBell() {
     const channelId = n.data?.channelId;
     if (taskId) navigate(`/tasks/${taskId}`);
     else if (channelId) navigate(`/chat/${channelId}`);
+    else if (n.type.startsWith('meeting.')) navigate(calendarLink(n.data?.startsAt));
+    else if (n.type === 'call.knock' && n.data?.callId) navigate(`/calls/${n.data.callId}`);
   };
 
   const markAll = async () => {
@@ -98,7 +113,7 @@ export function NotificationBell() {
   };
 
   return (
-    <DropdownMenu>
+    <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
       <DropdownMenuTrigger asChild>
         <Button variant="ghost" size="icon" className="relative" aria-label={`Notifications${unread ? `, ${unread} unread` : ''}`}>
           <Bell className="h-5 w-5" aria-hidden="true" />

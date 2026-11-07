@@ -3,6 +3,7 @@ package tasks
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -360,6 +361,103 @@ func TestUnchangedFieldsDoNotCreateActivity(t *testing.T) {
 	}
 }
 
+// fieldActivity reads the history of one field, oldest first.
+func fieldActivity(t *testing.T, svc *Service, org *testsupport.Org, taskID uuid.UUID, field string) []TaskActivity {
+	t.Helper()
+	all, err := svc.GetActivities(context.Background(), org.ID, taskID)
+	if err != nil {
+		t.Fatalf("get activities: %v", err)
+	}
+	out := []TaskActivity{}
+	for _, a := range all {
+		if a.Field == field {
+			out = append([]TaskActivity{a}, out...)
+		}
+	}
+	return out
+}
+
+// Only title, status and a few others knew their prior value, so everything else
+// looked changed on every save: a card drag wrote a history row each time.
+func TestSavingTheSameValueRecordsNoHistoryForAnyField(t *testing.T) {
+	svc, pool := newService(t)
+	org := testsupport.SeedOrg(t, pool)
+	r := asOwner(t, svc, org)
+	parent := createTask(t, svc, org, "Parent")
+
+	cases := []struct {
+		name, field, first, again string
+	}{
+		{"position", "position", `5`, `5`},
+		{"story points", "storyPoints", `3`, `3`},
+		{"due date", "dueDate", `"2026-11-10T00:00:00Z"`, `"2026-11-10T00:00:00Z"`},
+		{"due date, same instant in another zone", "dueDate", `"2026-11-10T00:00:00Z"`, `"2026-11-10T05:30:00+05:30"`},
+		{"start date", "startDate", `"2026-11-01T09:00:00Z"`, `"2026-11-01T09:00:00Z"`},
+		{"parent task", "parentTaskId", `"` + parent.ID.String() + `"`, `"` + parent.ID.String() + `"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			task := createTask(t, svc, org, "Dragged")
+			body := func(value string) string { return `{"` + tc.field + `":` + value + `}` }
+			mustStatus(t, patchTask(t, r, task.ID.String(), body(tc.first)), http.StatusOK)
+			mustStatus(t, patchTask(t, r, task.ID.String(), body(tc.again)), http.StatusOK)
+			if got := fieldActivity(t, svc, org, task.ID, tc.field); len(got) != 1 {
+				t.Errorf("only the first save changed anything, got %d rows: %+v", len(got), got)
+			}
+		})
+	}
+}
+
+func TestClearingAFieldRecordsNothingAsTheNewValue(t *testing.T) {
+	svc, pool := newService(t)
+	org := testsupport.SeedOrg(t, pool)
+	r := asOwner(t, svc, org)
+
+	task := createTask(t, svc, org, "Handed over")
+	owner := org.OwnerID.String()
+	mustStatus(t, patchTask(t, r, task.ID.String(), `{"assigneeId":"`+owner+`","dueDate":"2026-11-10T00:00:00Z"}`), http.StatusOK)
+	mustStatus(t, patchTask(t, r, task.ID.String(), `{"assigneeId":null,"dueDate":null}`), http.StatusOK)
+
+	assignee := fieldActivity(t, svc, org, task.ID, "assigneeId")
+	if len(assignee) != 2 || assignee[1].OldValue != owner || assignee[1].NewValue != "" {
+		t.Errorf("unassigning should record the old assignee and an empty new value, got %+v", assignee)
+	}
+	due := fieldActivity(t, svc, org, task.ID, "dueDate")
+	if len(due) != 2 || due[1].OldValue != "2026-11-10T00:00:00Z" || due[1].NewValue != "" {
+		t.Errorf("clearing a date should record the old date and an empty new value, got %+v", due)
+	}
+
+	// Clearing what is already empty is not a change.
+	mustStatus(t, patchTask(t, r, task.ID.String(), `{"assigneeId":null,"dueDate":null,"storyPoints":null}`), http.StatusOK)
+	if got := fieldActivity(t, svc, org, task.ID, "assigneeId"); len(got) != 2 {
+		t.Errorf("clearing an empty assignee should record nothing, got %+v", got)
+	}
+	if got := fieldActivity(t, svc, org, task.ID, "storyPoints"); len(got) != 0 {
+		t.Errorf("clearing empty story points should record nothing, got %+v", got)
+	}
+}
+
+func TestDatesInHistoryAreRFC3339WhateverZoneTheyArrivedIn(t *testing.T) {
+	svc, pool := newService(t)
+	org := testsupport.SeedOrg(t, pool)
+	r := asOwner(t, svc, org)
+
+	task := createTask(t, svc, org, "Scheduled")
+	mustStatus(t, patchTask(t, r, task.ID.String(), `{"dueDate":"2026-11-10T05:30:00+05:30"}`), http.StatusOK)
+	mustStatus(t, patchTask(t, r, task.ID.String(), `{"dueDate":"2026-11-11T00:00:00Z"}`), http.StatusOK)
+
+	due := fieldActivity(t, svc, org, task.ID, "dueDate")
+	if len(due) != 2 {
+		t.Fatalf("want 2 rows, got %+v", due)
+	}
+	if due[0].NewValue != "2026-11-10T00:00:00Z" {
+		t.Errorf("first new value should be RFC3339 UTC, got %q", due[0].NewValue)
+	}
+	if due[1].OldValue != "2026-11-10T00:00:00Z" || due[1].NewValue != "2026-11-11T00:00:00Z" {
+		t.Errorf("second row should be RFC3339 on both sides, got %+v", due[1])
+	}
+}
+
 func TestCommentsRoundTrip(t *testing.T) {
 	svc, pool := newService(t)
 	ctx := context.Background()
@@ -414,7 +512,7 @@ func TestWatchersLifecycle(t *testing.T) {
 	task := createTask(t, svc, org, "Watch me")
 
 	for i := 0; i < 2; i++ {
-		if err := svc.AddWatcher(ctx, org.ID, task.ID, mate); err != nil {
+		if _, err := svc.AddWatcher(ctx, org.ID, task.ID, mate, org.OwnerID); err != nil {
 			t.Fatalf("add watcher (pass %d): %v", i, err)
 		}
 	}
@@ -446,7 +544,7 @@ func TestWatcherFromAnotherOrganizationIsRefused(t *testing.T) {
 	other := testsupport.SeedOrg(t, pool)
 	task := createTask(t, svc, org, "Mine")
 
-	if err := svc.AddWatcher(ctx, org.ID, task.ID, other.OwnerID); err == nil {
+	if _, err := svc.AddWatcher(ctx, org.ID, task.ID, other.OwnerID, org.OwnerID); err == nil {
 		t.Fatal("a user from another organization must not watch this task")
 	}
 }
@@ -463,10 +561,10 @@ func TestWatchersAreNotifiedOfChangesButNotTheirOwn(t *testing.T) {
 	notifier := &recordingNotifier{}
 	svc.SetNotifier(notifier)
 
-	if err := svc.AddWatcher(ctx, org.ID, task.ID, watcher); err != nil {
+	if _, err := svc.AddWatcher(ctx, org.ID, task.ID, watcher, org.OwnerID); err != nil {
 		t.Fatalf("watch: %v", err)
 	}
-	if err := svc.AddWatcher(ctx, org.ID, task.ID, org.OwnerID); err != nil {
+	if _, err := svc.AddWatcher(ctx, org.ID, task.ID, org.OwnerID, org.OwnerID); err != nil {
 		t.Fatalf("watch as owner: %v", err)
 	}
 
@@ -950,7 +1048,7 @@ func TestATaskYouWereAddedToIsInYourList(t *testing.T) {
 		t.Fatalf("nothing should be mine yet: %+v", titlesOf(before))
 	}
 
-	if err := svc.AddWatcher(ctx, org.ID, task.ID, me); err != nil {
+	if _, err := svc.AddWatcher(ctx, org.ID, task.ID, me, org.OwnerID); err != nil {
 		t.Fatalf("add to task: %v", err)
 	}
 
@@ -975,7 +1073,7 @@ func TestBeingRemovedFromATaskTakesItOutOfYourList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := svc.AddWatcher(ctx, org.ID, task.ID, me); err != nil {
+	if _, err := svc.AddWatcher(ctx, org.ID, task.ID, me, org.OwnerID); err != nil {
 		t.Fatalf("add: %v", err)
 	}
 	if err := svc.RemoveWatcher(ctx, org.ID, task.ID, me); err != nil {
@@ -1003,7 +1101,7 @@ func TestATaskYouAreBothAssignedAndAddedToAppearsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if err := svc.AddWatcher(ctx, org.ID, task.ID, me); err != nil {
+	if _, err := svc.AddWatcher(ctx, org.ID, task.ID, me, org.OwnerID); err != nil {
 		t.Fatalf("add: %v", err)
 	}
 
@@ -1040,7 +1138,7 @@ func TestWhoeverCanAddYouToATaskCanTakeYouOff(t *testing.T) {
 	if !mayAdd {
 		t.Fatal("a manager should be able to put their report on a task")
 	}
-	if err := svc.AddWatcher(ctx, org.ID, task.ID, report); err != nil {
+	if _, err := svc.AddWatcher(ctx, org.ID, task.ID, report, org.OwnerID); err != nil {
 		t.Fatalf("add: %v", err)
 	}
 
@@ -1182,12 +1280,12 @@ func TestACommentCannotClaimAnUploadFromAnotherTask(t *testing.T) {
 // A manager's team board shows the work of an organisation admin who sits on
 // their team as an ordinary engineer, because hiding somebody's work hides the
 // work. What must never happen is the board and the write paths disagreeing:
-// the list walked the managed subtree with no exclusions, hasAuthorityOver
+// the list walked the managed subtree with no exclusions, HasAuthorityOver
 // additionally excluded anybody who administers the organisation, and
 // AssignableUsers ran a third copy of the rule. Three surfaces, three answers.
 //
 // The invariant pinned below is that for every (caller, task) pair the board's
-// own answer and hasAuthorityOver — the one the write paths apply — agree.
+// own answer and HasAuthorityOver — the one the write paths apply — agree.
 
 type person struct {
 	name       string
@@ -1273,12 +1371,12 @@ func TestTheBoardAndHasAuthorityOverNeverDisagree(t *testing.T) {
 					t.Fatalf("the board did not say what %s may do to %q", caller.name, task.Title)
 				}
 
-				wantDelete, err := svc.hasAuthorityOver(ctx, c.org.ID, caller.id, task.ReporterID, caller.isOrgAdmin)
+				wantDelete, err := svc.HasAuthorityOver(ctx, c.org.ID, caller.id, task.ReporterID, caller.isOrgAdmin)
 				if err != nil {
 					t.Fatalf("authority over the reporter of %q: %v", task.Title, err)
 				}
 				if task.Can.Delete != wantDelete {
-					t.Errorf("%q: board says delete=%v, hasAuthorityOver over its reporter says %v",
+					t.Errorf("%q: board says delete=%v, HasAuthorityOver over its reporter says %v",
 						task.Title, task.Can.Delete, wantDelete)
 				}
 
@@ -1286,13 +1384,13 @@ func TestTheBoardAndHasAuthorityOverNeverDisagree(t *testing.T) {
 				// unassigned, so there is nobody to need authority over.
 				wantReassign := true
 				if task.AssigneeID != nil {
-					wantReassign, err = svc.hasAuthorityOver(ctx, c.org.ID, caller.id, *task.AssigneeID, caller.isOrgAdmin)
+					wantReassign, err = svc.HasAuthorityOver(ctx, c.org.ID, caller.id, *task.AssigneeID, caller.isOrgAdmin)
 					if err != nil {
 						t.Fatalf("authority over the assignee of %q: %v", task.Title, err)
 					}
 				}
 				if task.Can.Reassign != wantReassign {
-					t.Errorf("%q: board says reassign=%v, hasAuthorityOver over its assignee says %v",
+					t.Errorf("%q: board says reassign=%v, HasAuthorityOver over its assignee says %v",
 						task.Title, task.Can.Reassign, wantReassign)
 				}
 
@@ -1530,7 +1628,7 @@ func (c *countingTracer) count() int {
 	return c.n
 }
 
-// Asking hasAuthorityOver per card would be fifty round trips for a fifty-row
+// Asking HasAuthorityOver per card would be fifty round trips for a fifty-row
 // board. The whole page is resolved in one pass instead, and this pins it.
 func TestABoardResolvesItsAbilitiesInOnePassNotOnePerCard(t *testing.T) {
 	svc, pool := newService(t)
@@ -1577,5 +1675,90 @@ func TestABoardResolvesItsAbilitiesInOnePassNotOnePerCard(t *testing.T) {
 	if got := tracer.count(); got > budget {
 		t.Errorf("a %d-card board cost %d statements (budget %d): the abilities are being resolved per card",
 			cards, got, budget)
+	}
+}
+
+// The list is capped so a year of history is not sent on every refresh, and the
+// cap must fall on old finished work: open work is what the board is for, however
+// long it has been open.
+func TestTheTaskListCapDropsOldFinishedWorkBeforeOpenWork(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedOrg(t, pool)
+
+	seed := func(org *testsupport.Org, count int, title, status, age string, completed bool) {
+		t.Helper()
+		completedAt := "NULL"
+		if completed {
+			completedAt = "NOW() - $6::interval"
+		}
+		if _, err := pool.Exec(ctx, `
+			INSERT INTO tasks (org_id, reporter_id, title, status, created_at, completed_at)
+			SELECT $1, $2, $3, $4, NOW() - $6::interval - (i * interval '1 second'), `+completedAt+`
+			FROM generate_series(1, $5::int) i
+		`, org.ID, org.OwnerID, title, status, count, age); err != nil {
+			t.Fatalf("seed %s: %v", title, err)
+		}
+	}
+
+	seed(org, 3, "ancient done", "done", "4 years", true)
+	seed(org, 2, "old todo", "todo", "3 years", false)
+	seed(org, 2, "old blocked", "blocked", "3 years", false)
+	seed(org, 1, "old in progress", "in_progress", "3 years", false)
+	seed(org, maxListedTasks, "recent done", "done", "1 day", true)
+
+	list, err := svc.ListTasks(ctx, org.ID, Filters{})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(list) != maxListedTasks {
+		t.Fatalf("listed %d tasks, want the cap of %d", len(list), maxListedTasks)
+	}
+	titles := map[string]int{}
+	for _, task := range list {
+		if task.OrgID != org.ID {
+			t.Fatalf("a task from another organization came back: %+v", task)
+		}
+		titles[task.Title]++
+	}
+	for title, want := range map[string]int{"old todo": 2, "old blocked": 2, "old in progress": 1, "ancient done": 0} {
+		if titles[title] != want {
+			t.Errorf("%q: listed %d, want %d", title, titles[title], want)
+		}
+	}
+
+	// A task finished yesterday is recent work, however long ago it was filed.
+	if _, err := pool.Exec(ctx,
+		`UPDATE tasks SET completed_at = NOW(), created_at = NOW() - interval '5 years', title = 'just finished'
+		 WHERE id = (SELECT id FROM tasks WHERE org_id = $1 AND title = 'ancient done' LIMIT 1)`, org.ID); err != nil {
+		t.Fatalf("finish task: %v", err)
+	}
+	list, err = svc.ListTasks(ctx, org.ID, Filters{Status: "done"})
+	if err != nil {
+		t.Fatalf("list done: %v", err)
+	}
+	found := false
+	for _, task := range list {
+		found = found || task.Title == "just finished"
+	}
+	if !found || len(list) != maxListedTasks {
+		t.Errorf("listing done: %d tasks, recently finished one present: %v", len(list), found)
+	}
+
+	// With more open work than the cap, the newest of it is what stays.
+	seed(other, 2, "oldest todo", "todo", "2 years", false)
+	seed(other, maxListedTasks, "newer todo", "todo", "1 day", false)
+	list, err = svc.ListTasks(ctx, other.ID, Filters{})
+	if err != nil {
+		t.Fatalf("list other: %v", err)
+	}
+	if len(list) != maxListedTasks {
+		t.Fatalf("listed %d tasks, want the cap of %d", len(list), maxListedTasks)
+	}
+	for _, task := range list {
+		if task.Title == "oldest todo" {
+			t.Fatal("the cap kept the oldest open task over a newer one")
+		}
 	}
 }

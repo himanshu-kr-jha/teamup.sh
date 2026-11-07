@@ -30,7 +30,9 @@ services:
       retries: 5
 
   minio:
-    image: minio/minio:latest
+    # The same image as docker-compose.prod.yml, which says why it is not
+    # minio/minio. It has no shell, so it has no healthcheck of its own either.
+    image: cgr.dev/chainguard/minio@sha256:cee9a8e35885e93f14b3cb32960e5017aff74e2adfb52ba87c65003b0163886b
     container_name: teamup-minio
     command: server /data --console-address ":9001"
     ports:
@@ -41,11 +43,6 @@ services:
       MINIO_ROOT_PASSWORD: minioadmin
     volumes:
       - minio-data:/data
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
 
   livekit:
     image: livekit/livekit-server:latest
@@ -54,6 +51,10 @@ services:
       - "${TEAMUP_LIVEKIT_PORT:-7880}:7880"
       - "${TEAMUP_LIVEKIT_TCP_PORT:-7881}:7881"
       - "7882:7882"
+    # start.sh runs the app on the host and this file can run it in a container.
+    # The host address reaches it either way, through the published port.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
       LIVEKIT_CONFIG: |
         port: 7880
@@ -69,6 +70,11 @@ services:
           node_ip: "${TEAMUP_LIVEKIT_NODE_IP:-}"
         keys:
           "devkey": "devsecret"
+        # Who was in a call, and when, comes from these.
+        webhook:
+          api_key: "devkey"
+          urls:
+            - http://host.docker.internal:${TEAMUP_PORT:-8080}/api/livekit/webhook
         # Egress reports job status back over Redis; without it recordings
         # start but their completion is never observed.
         redis:
@@ -105,7 +111,7 @@ services:
       livekit:
         condition: service_healthy
       minio:
-        condition: service_healthy
+        condition: service_started
 
   # TeamUp application
   teamup:
@@ -136,7 +142,7 @@ services:
       TEAMUP_SETUP_ORG_NAME: "Demo Org"
       TEAMUP_SETUP_ORG_SUBDOMAIN: "demo"
       TEAMUP_SETUP_ADMIN_EMAIL: "admin@demo.local"
-      TEAMUP_SETUP_ADMIN_PASSWORD: "admin123456"
+      TEAMUP_SETUP_ADMIN_PASSWORD: "admin123456789"
       TEAMUP_SETUP_OIDC_PROVIDER: "custom"
     depends_on:
       postgres:
@@ -144,7 +150,7 @@ services:
       redis:
         condition: service_healthy
       minio:
-        condition: service_healthy
+        condition: service_started
       livekit:
         condition: service_healthy
     volumes:

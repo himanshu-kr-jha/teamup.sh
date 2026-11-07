@@ -384,13 +384,6 @@ binary. For day-to-day work run Vite's dev server instead
 
 ### Security items to know about
 
-- **`call.accept` trusts the room name it is given.** `HandleCallAccept`
-  (`calls.go:679`) mints a publish/subscribe LiveKit token for whatever room
-  the client names, with no check that the call exists, that the caller was
-  invited, or that it belongs to their organisation. Room names are
-  `"call-" + uuid[:8]` — 32 bits, enumerable. The shipped UI never sends this,
-  which is the only thing limiting it.
-  ([#34](https://github.com/himanshu-kr-jha/teamup.sh/issues/34))
 - `/metrics` is unauthenticated and outside every auth group (`main.go:507`).
   Fine on a laptop; **do not publish it** — it exposes user counts, message and
   call volumes, and per-route error rates.
@@ -469,19 +462,16 @@ how much work each option is.
 
 Good pieces of work, in rough order of value for effort:
 
-1. **Scope `call.accept` to a real call** ([#34](https://github.com/himanshu-kr-jha/teamup.sh/issues/34))
-   — the HTTP token route already does this correctly, so it is a matter of
-   making the WebSocket handler agree with it. Highest severity open item.
-2. **Wire up typing indicators** — the socket handshake and the server handler
+1. **Wire up typing indicators** — the socket handshake and the server handler
    are both done; only the UI is missing. Small and visible.
-3. **Make OIDC real** ([#15](https://github.com/himanshu-kr-jha/teamup.sh/issues/15))
+2. **Make OIDC real** ([#15](https://github.com/himanshu-kr-jha/teamup.sh/issues/15))
    — replace the mock `findOrCreateUser` with genuine provisioning, and read
    provider config from `org_configs` rather than only the environment
    ([#31](https://github.com/himanshu-kr-jha/teamup.sh/issues/31)). Larger, and
    the single biggest gap between what TeamUp claims and what it does.
-4. **Populate correlation IDs** ([#21](https://github.com/himanshu-kr-jha/teamup.sh/issues/21))
+3. **Populate correlation IDs** ([#21](https://github.com/himanshu-kr-jha/teamup.sh/issues/21))
    — the helpers exist and nothing calls them.
-5. **Decide the multipart question** ([#26](https://github.com/himanshu-kr-jha/teamup.sh/issues/26))
+4. **Decide the multipart question** ([#26](https://github.com/himanshu-kr-jha/teamup.sh/issues/26))
    — implement it, or remove the endpoints and document the single-PUT limit.
    The current state is the worst of both, because a client can reasonably
    assume resumability that is not there.

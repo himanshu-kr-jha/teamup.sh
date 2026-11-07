@@ -244,28 +244,17 @@ func (h *Handler) RefreshToken(c *gin.Context) {
 	c.JSON(http.StatusOK, tokens)
 }
 
+// Logout is public on purpose: somebody whose access token has expired can still
+// log out, so the session is found from the tokens on the request.
 func (h *Handler) Logout(c *gin.Context) {
-	userCtx := GetUserFromContext(c)
-
-	// Revoke session
-	if userCtx.SessionID != "" {
-		h.service.RevokeSession(c.Request.Context(), userCtx.SessionID)
-	}
-
-	// Clear cookies
+	refreshToken, _ := c.Cookie("rt")
+	err := h.service.EndPresentedSession(c.Request.Context(), refreshToken, accessTokenFrom(c))
 	h.service.ClearAuthCookies(c.Writer)
-
-	// RP-Initiated Logout: redirect to provider
-	if userCtx.AuthProvider != "" {
-		provider, ok := h.service.GetProvider(userCtx.AuthProvider)
-		if ok {
-			idToken := userCtx.IDToken
-			logoutURL := provider.EndSessionURL(idToken, h.service.cfg.BaseURL+"/logged-out")
-			c.Redirect(http.StatusFound, logoutURL)
-			return
-		}
+	if err != nil {
+		h.logger.Error().Err(err).Msg("Logout could not revoke the session")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to end the session"})
+		return
 	}
-
 	c.JSON(http.StatusOK, gin.H{"message": "logged out"})
 }
 

@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"regexp"
 	"strings"
 	"time"
@@ -294,32 +295,10 @@ func (s *Service) HandleEditMessage(ctx context.Context, conn websocket.WSConnec
 	if err != nil {
 		return
 	}
-	ownerID, err := s.getMessageOwner(ctx, messageID)
-	if err != nil || ownerID != userID {
-		return
-	}
-
-	now := time.Now()
-	if err := s.updateMessage(ctx, messageID, payload.Content, &now); err != nil {
-		return
-	}
-
-	if s.broadcaster != nil {
-		// Addressed to the message's own channel: this used to broadcast to
-		// "", which matches no channel, so an edit reached nobody.
-		channelID, err := s.messageChannel(ctx, messageID)
-		if err != nil {
-			s.logger.Warn().Err(err).Msg("could not resolve channel for edited message")
-			return
-		}
-		s.broadcaster.BroadcastToChannel(channelID.String(), protocol.NewMessage(protocol.TypeChatMessage, protocol.ChatMessagePayload{
-			Message: protocol.MessageData{
-				ID:        messageID.String(),
-				ChannelID: channelID.String(),
-				Content:   payload.Content,
-				EditedAt:  &now,
-			},
-		}), conn.UserID())
+	// The same rules as the REST edit, and the same broadcast.
+	if err := s.EditMessage(ctx, messageID, userID, payload.Content); err != nil {
+		s.logger.Warn().Err(err).Str("user", conn.UserID()).Str("message", payload.MessageID).
+			Msg("Refused to edit message")
 	}
 }
 
@@ -334,29 +313,13 @@ func (s *Service) HandleDeleteMessage(ctx context.Context, conn websocket.WSConn
 		return
 	}
 
-	ownerID, err := s.getMessageOwner(ctx, messageID)
+	userID, err := uuid.Parse(conn.UserID())
 	if err != nil {
 		return
 	}
-
-	userID, _ := uuid.Parse(conn.UserID())
-	isAdmin := s.isChannelAdmin(ctx, messageID, userID)
-	if ownerID != userID && !isAdmin {
-		return
-	}
-
-	now := time.Now()
-	if err := s.deleteMessage(ctx, messageID, &now); err != nil {
-		return
-	}
-
-	if s.broadcaster != nil {
-		channelID, err := s.messageChannel(ctx, messageID)
-		if err != nil {
-			s.logger.Warn().Err(err).Msg("could not resolve channel for deleted message")
-			return
-		}
-		s.broadcaster.BroadcastToChannel(channelID.String(), protocol.NewMessage(protocol.TypeChatDelete, payload), conn.UserID())
+	if err := s.DeleteMessage(ctx, messageID, userID); err != nil {
+		s.logger.Warn().Err(err).Str("user", conn.UserID()).Str("message", payload.MessageID).
+			Msg("Refused to delete message")
 	}
 }
 
@@ -408,7 +371,14 @@ func (s *Service) HandleRead(ctx context.Context, conn websocket.WSConnection, m
 	channelID, _ := uuid.Parse(payload.ChannelID)
 	messageID, _ := uuid.Parse(payload.MessageID)
 	userID, _ := uuid.Parse(conn.UserID())
-	s.updateLastRead(ctx, channelID, userID, messageID)
+	from, to, advanced, err := s.updateLastRead(ctx, channelID, userID, messageID)
+	if err != nil {
+		s.logger.Warn().Err(err).Str("channel", payload.ChannelID).Msg("could not advance the read marker")
+		return
+	}
+	if advanced {
+		s.announceRead(channelID, userID, from, to)
+	}
 }
 
 // ── Persistence ───────────────────────────────────────────────────────────
@@ -526,19 +496,22 @@ func (s *Service) createMessage(ctx context.Context, msg *Message) error {
 	return nil
 }
 
-func (s *Service) updateMessage(ctx context.Context, id uuid.UUID, content string, editedAt *time.Time) error {
-	content = sentinelStripper.Replace(content)
-	tag, err := s.db.Exec(ctx, `
+// updateMessage returns the text as stored, which is not quite what was asked
+// for, so that anything shown live matches what a reload shows.
+func (s *Service) updateMessage(ctx context.Context, id uuid.UUID, content string, editedAt *time.Time) (string, error) {
+	var stored string
+	err := s.db.QueryRow(ctx, `
 		UPDATE messages SET content = $2, edited_at = $3
 		WHERE id = $1 AND deleted_at IS NULL
-	`, id, content, editedAt)
+		RETURNING content
+	`, id, sentinelStripper.Replace(content), editedAt).Scan(&stored)
 	if err != nil {
-		return fmt.Errorf("update message: %w", err)
+		if err == pgx.ErrNoRows {
+			return "", apperrors.ErrNotFound
+		}
+		return "", fmt.Errorf("update message: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return apperrors.ErrNotFound
-	}
-	return nil
+	return stored, nil
 }
 
 // deleteMessage is a soft delete so replies keep their parent and history
@@ -617,20 +590,65 @@ func (s *Service) isChannelAdmin(ctx context.Context, messageID, userID uuid.UUI
 
 // updateLastRead advances the member's read marker, never backwards, so an
 // out-of-order acknowledgement cannot resurrect unread counts.
-func (s *Service) updateLastRead(ctx context.Context, channelID, userID uuid.UUID, messageID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
+// updateLastRead advances the marker and reports the window it moved through.
+//
+// The previous value comes from a CTE, which sees the row as it was at the
+// start of the statement, so one round trip yields both ends of the window.
+// The caller needs both: a tick is a count of readers, and knowing only where
+// the marker landed is not enough to add one to the right messages without
+// adding it again the next time the same person reads.
+//
+// advanced is false when the marker did not actually move — the row was not
+// there, the message was not in this channel, or this person had already read
+// past it. None of those are errors, and none of them are worth announcing.
+func (s *Service) updateLastRead(
+	ctx context.Context, channelID, userID uuid.UUID, messageID uuid.UUID,
+) (from *time.Time, to time.Time, advanced bool, err error) {
+	var before *time.Time
+	var after time.Time
+	row := s.db.QueryRow(ctx, `
+		WITH prev AS (
+			SELECT cm.user_id, cm.last_read_at
+			FROM channel_members cm
+			WHERE cm.channel_id = $1 AND cm.user_id = $2
+		)
 		UPDATE channel_members cm
 		SET last_read_at = GREATEST(COALESCE(cm.last_read_at, 'epoch'::timestamptz), m.created_at)
-		FROM messages m
+		FROM messages m, prev
 		WHERE m.id = $3 AND cm.channel_id = $1 AND cm.user_id = $2
 		  -- Without this a message id from another channel could advance this
 		  -- channel's read marker, permanently zeroing the unread count.
 		  AND m.channel_id = cm.channel_id
+		RETURNING prev.last_read_at, cm.last_read_at
 	`, channelID, userID, messageID)
-	if err != nil {
-		return fmt.Errorf("update last read: %w", err)
+	switch err := row.Scan(&before, &after); {
+	case errors.Is(err, pgx.ErrNoRows):
+		// Not a member of this channel, or the message belongs to another one.
+		return nil, time.Time{}, false, nil
+	case err != nil:
+		return nil, time.Time{}, false, fmt.Errorf("update last read: %w", err)
 	}
-	return nil
+	return before, after, before == nil || after.After(*before), nil
+}
+
+// announceRead tells the channel that somebody's read marker has moved, so a
+// sender watching their own message sees its tick change without reloading.
+// The reader is excluded: it is their own action, and their client has already
+// shown it.
+func (s *Service) announceRead(channelID, userID uuid.UUID, from *time.Time, to time.Time) {
+	if s.broadcaster == nil {
+		return
+	}
+	s.broadcaster.BroadcastToChannel(
+		channelID.String(),
+		protocol.NewMessage(protocol.TypeChatReadReceipt, protocol.ChatReadReceiptPayload{
+			ChannelID: channelID.String(),
+			UserID:    userID.String(),
+			From:      from,
+			To:        to,
+		}),
+		userID.String(),
+	)
 }
 
 // isMember previously returned true for everyone, so any authenticated user
@@ -832,7 +850,29 @@ func (s *Service) CreateChannel(ctx context.Context, orgID, userID uuid.UUID, na
 		`SELECT COUNT(*) FROM channel_members WHERE channel_id = $1`, c.ID).Scan(&c.MemberCount); err != nil {
 		c.MemberCount = 1
 	}
+	if isOpenToOrg(channelType) {
+		members, err := s.ChannelMemberIDs(ctx, c.ID.String())
+		if err != nil {
+			s.logger.Warn().Err(err).Msg("could not announce new channel")
+			return &c, nil
+		}
+		s.announceAdded(c.ID, members...)
+	}
 	return &c, nil
+}
+
+// announceAdded tells a channel that people have just joined it, which is the
+// only way they find out: their sidebar is a cached list. The hub reads the
+// membership as it delivers, so the people named here are reached too.
+func (s *Service) announceAdded(channelID uuid.UUID, userIDs ...string) {
+	if s.broadcaster == nil {
+		return
+	}
+	s.broadcaster.BroadcastToChannel(channelID.String(), protocol.NewMessage(protocol.TypeChatMembership, protocol.ChatMembershipChangedPayload{
+		ChannelID: channelID.String(),
+		UserIDs:   userIDs,
+		Action:    "added",
+	}), "")
 }
 
 // GetChannel is scoped to the organization so an id from another tenant reads
@@ -994,6 +1034,7 @@ func (s *Service) OpenDirectMessage(ctx context.Context, orgID, userID, otherID 
 		return nil, err
 	}
 	c.MemberCount = 2
+	s.announceAdded(c.ID, userID.String(), otherID.String())
 	return &c, nil
 }
 
@@ -1135,7 +1176,9 @@ func (s *Service) AddMember(ctx context.Context, orgID, channelID, userID uuid.U
 		if !exists {
 			return apperrors.New(apperrors.CodeNotFound, "channel or user not found in this organization")
 		}
+		return nil
 	}
+	s.announceAdded(channelID, userID.String())
 	return nil
 }
 
@@ -1974,12 +2017,12 @@ func (s *Service) pushToChannel(ctx context.Context, channelID, senderID uuid.UU
 const EditWindow = 5 * time.Minute
 
 func (s *Service) EditMessage(ctx context.Context, messageID, userID uuid.UUID, content string) error {
-	var owner uuid.UUID
+	var owner, channelID uuid.UUID
 	var createdAt time.Time
 	var deletedAt *time.Time
 	err := s.db.QueryRow(ctx,
-		`SELECT user_id, created_at, deleted_at FROM messages WHERE id = $1`, messageID).
-		Scan(&owner, &createdAt, &deletedAt)
+		`SELECT user_id, channel_id, created_at, deleted_at FROM messages WHERE id = $1`, messageID).
+		Scan(&owner, &channelID, &createdAt, &deletedAt)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return apperrors.ErrNotFound
@@ -1997,7 +2040,24 @@ func (s *Service) EditMessage(ctx context.Context, messageID, userID uuid.UUID, 
 			"messages can only be edited for five minutes after sending")
 	}
 	now := time.Now()
-	return s.updateMessage(ctx, messageID, content, &now)
+	stored, err := s.updateMessage(ctx, messageID, content, &now)
+	if err != nil {
+		return err
+	}
+
+	// An edit travels as a partial chat.message: no author, no createdAt. That
+	// missing author is how a client tells it from a new message.
+	if s.broadcaster != nil {
+		s.broadcaster.BroadcastToChannel(channelID.String(), protocol.NewMessage(protocol.TypeChatMessage, protocol.ChatMessagePayload{
+			Message: protocol.MessageData{
+				ID:        messageID.String(),
+				ChannelID: channelID.String(),
+				Content:   stored,
+				EditedAt:  &now,
+			},
+		}), userID.String())
+	}
+	return nil
 }
 
 func (s *Service) DeleteMessage(ctx context.Context, messageID, userID uuid.UUID) error {
@@ -2009,12 +2069,34 @@ func (s *Service) DeleteMessage(ctx context.Context, messageID, userID uuid.UUID
 		return apperrors.New(apperrors.CodeForbidden, "you cannot delete this message")
 	}
 	now := time.Now()
-	return s.deleteMessage(ctx, messageID, &now)
+	if err := s.deleteMessage(ctx, messageID, &now); err != nil {
+		return err
+	}
+
+	if s.broadcaster != nil {
+		channelID, err := s.messageChannel(ctx, messageID)
+		if err != nil {
+			s.logger.Warn().Err(err).Msg("could not resolve channel for deleted message")
+			return nil
+		}
+		s.broadcaster.BroadcastToChannel(channelID.String(), protocol.NewMessage(protocol.TypeChatDelete, protocol.ChatDeletePayload{
+			MessageID: messageID.String(),
+		}), userID.String())
+	}
+	return nil
 }
 
-// MarkRead advances the caller's read marker to the given message.
+// MarkRead advances the caller's read marker to the given message, and tells
+// the channel it moved.
 func (s *Service) MarkRead(ctx context.Context, channelID, userID, messageID uuid.UUID) error {
-	return s.updateLastRead(ctx, channelID, userID, messageID)
+	from, to, advanced, err := s.updateLastRead(ctx, channelID, userID, messageID)
+	if err != nil {
+		return err
+	}
+	if advanced {
+		s.announceRead(channelID, userID, from, to)
+	}
+	return nil
 }
 
 // FileResult is a file somebody shared, with enough context to open it and to

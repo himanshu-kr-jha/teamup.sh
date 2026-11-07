@@ -28,6 +28,9 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.GET("/tasks", h.ListTasks)
 	rg.GET("/tasks/managed-teams", h.ManagedTeams)
 	rg.GET("/tasks/assignable-users", h.AssignableUsers)
+	rg.GET("/tasks/dashboard", h.Dashboard)
+	rg.GET("/tasks/contributions", h.Contributions)
+	rg.GET("/tasks/contributions/:userId", h.ContributionDetail)
 	rg.POST("/tasks", h.CreateTask)
 	rg.GET("/tasks/:id", h.GetTask)
 	rg.PATCH("/tasks/:id", h.UpdateTask)
@@ -42,6 +45,9 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.DELETE("/tasks/:id/watchers/:userId", h.RemoveWatcher)
 	rg.GET("/labels", h.ListLabels)
 	rg.POST("/labels", h.CreateLabel)
+	rg.POST("/scrums", h.SaveScrum)
+	rg.GET("/scrums", h.ListScrums)
+	rg.GET("/scrums/:id", h.GetScrum)
 }
 
 type caller struct {
@@ -73,30 +79,34 @@ func pathUUID(c *gin.Context, param string) (uuid.UUID, bool) {
 	return id, true
 }
 
-func queryUUID(c *gin.Context, key string) *uuid.UUID {
-	raw := c.Query(key)
-	if raw == "" {
-		return nil
-	}
-	id, err := uuid.Parse(raw)
-	if err != nil {
-		return nil
-	}
-	return &id
-}
-
 func (h *Handler) ListTasks(c *gin.Context) {
 	cl, ok := callerFrom(c)
 	if !ok {
 		return
 	}
+	assigneeID, ok := optionalQueryUUID(c, "assigneeId")
+	if !ok {
+		return
+	}
+	projectID, ok := optionalQueryUUID(c, "projectId")
+	if !ok {
+		return
+	}
+	labelID, ok := optionalQueryUUID(c, "labelId")
+	if !ok {
+		return
+	}
+	teamID, ok := optionalQueryUUID(c, "teamId")
+	if !ok {
+		return
+	}
 	filters := Filters{
 		Status:     c.Query("status"),
-		AssigneeID: queryUUID(c, "assigneeId"),
-		ProjectID:  queryUUID(c, "projectId"),
-		LabelID:    queryUUID(c, "labelId"),
+		AssigneeID: assigneeID,
+		ProjectID:  projectID,
+		LabelID:    labelID,
 		Search:     c.Query("search"),
-		TeamID:     queryUUID(c, "teamId"),
+		TeamID:     teamID,
 		// Every card comes back saying what this caller may do to it. A board
 		// that shows work somebody cannot act on is the product decision; a
 		// board that does not say so is the bug.
@@ -110,6 +120,10 @@ func (h *Handler) ListTasks(c *gin.Context) {
 		filters.ManagedBy = &cl.UserID
 	case "mine":
 		filters.Involving = &cl.UserID
+	case "":
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid scope"})
+		return
 	}
 
 	tasks, err := h.service.ListTasks(c.Request.Context(), cl.OrgID, filters)
@@ -500,11 +514,14 @@ func (h *Handler) AddWatcher(c *gin.Context) {
 		}
 	}
 
-	if err := h.service.AddWatcher(ctx, cl.OrgID, id, target); err != nil {
+	added, err := h.service.AddWatcher(ctx, cl.OrgID, id, target, cl.UserID)
+	if err != nil {
 		httpx.Error(c, err, "failed to add watcher")
 		return
 	}
-	h.service.NotifyAddedToTask(ctx, cl.OrgID, id, target, cl.UserID)
+	if added {
+		h.service.NotifyAddedToTask(ctx, cl.OrgID, id, target, cl.UserID)
+	}
 	c.JSON(http.StatusOK, gin.H{"message": "watching"})
 }
 
