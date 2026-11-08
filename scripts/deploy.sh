@@ -2,8 +2,8 @@
 #
 # Deploys a commit to a TeamUp server that was set up as docs/DEPLOYMENT.md says.
 #
-#   scripts/deploy.sh                      deploy HEAD to the server in .deploy.env
-#   scripts/deploy.sh --ref v1.2.0         deploy a tag, branch or commit
+#   scripts/deploy.sh                      deploy the latest main to the server in .deploy.env
+#   scripts/deploy.sh --ref 56c6ac1        deploy an earlier commit of main, to roll back
 #   scripts/deploy.sh --domain new.host    also move to a new address (new IP, new DNS name)
 #   scripts/deploy.sh --check              only check the server and the commit, change nothing
 #
@@ -11,7 +11,11 @@
 #   --host user@host     TEAMUP_DEPLOY_HOST   who to ssh in as, and where
 #   --key path           TEAMUP_DEPLOY_KEY    the ssh key, if not your default one
 #   --dir path           TEAMUP_DEPLOY_DIR    where TeamUp lives there (default /opt/teamup)
-#   --ref ref            what to deploy (default HEAD)
+#   --ref ref            what to deploy (default: main as it is on GitHub)
+#
+# Only main is deployed. Whatever is asked for has to be a commit on main as it
+# is on GitHub, so what runs is always something everybody can see and that
+# went through review; anything else is refused. Merge to main first.
 #   --no-backup          skip ./backup.sh before upgrading (it runs when it exists)
 #   --ipv4               TEAMUP_DEPLOY_IPV4=1 ssh over IPv4 only, for networks whose IPv6 route is unreliable
 #   --domain name        point TeamUp at a new address and get it a certificate
@@ -33,7 +37,7 @@ cd "$ROOT"
 HOST="${TEAMUP_DEPLOY_HOST:-}"
 KEY="${TEAMUP_DEPLOY_KEY:-}"
 DIR="${TEAMUP_DEPLOY_DIR:-/opt/teamup}"
-REF=HEAD
+REF=origin/main
 BACKUP=1
 IPV4="${TEAMUP_DEPLOY_IPV4:-0}"
 DOMAIN=""
@@ -67,14 +71,14 @@ if [ "$IPV4" = 1 ]; then SSH+=(-4); SCP+=(-4); fi
 if [ -n "$KEY" ]; then SSH+=(-i "$KEY"); SCP+=(-i "$KEY"); fi
 
 # ── what is being deployed ────────────────────────────────────────────────────
+git fetch --quiet origin main || die "could not fetch main from GitHub"
 COMMIT="$(git rev-parse --verify --quiet "$REF^{commit}")" || die "no such commit: $REF"
 TAG="$(git rev-parse --short "$COMMIT")"
-step "Deploying $TAG ($(git log -1 --format=%s "$COMMIT"))"
-if [ "$REF" = HEAD ] && ! git diff --quiet HEAD; then
-  echo "note: you have uncommitted changes; they are NOT deployed, only commit $TAG is."
-fi
-if ! git branch -r --contains "$COMMIT" 2>/dev/null | grep -q .; then
-  echo "note: $TAG is not on any pushed branch, so nobody else can see what is running."
+git merge-base --is-ancestor "$COMMIT" origin/main \
+  || die "$TAG is not on main. Only main is deployed: merge it to main and push, then deploy."
+step "Deploying $TAG from main ($(git log -1 --format=%s "$COMMIT"))"
+if [ "$COMMIT" != "$(git rev-parse origin/main)" ]; then
+  echo "note: this is an earlier commit of main than the latest, $(git rev-parse --short origin/main): a rollback."
 fi
 
 # ── the server ────────────────────────────────────────────────────────────────

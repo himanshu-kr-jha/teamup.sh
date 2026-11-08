@@ -10,9 +10,9 @@ flowchart TD
   A[Change on a branch] --> B[make check<br/>web, Go and browser tests]
   B --> C[Push, open a pull request]
   C --> D[CI: lint, Vitest, build,<br/>Go tests with no skips, binaries]
-  D --> E[Review and merge]
+  D --> E[Review and merge to main]
   E --> F[make deploy-check]
-  F --> G[make deploy]
+  F --> G[make deploy<br/>the latest main]
   G --> H{Site answers,<br/>status page green?}
   H -- yes --> I[Look at what changed<br/>on a phone and a computer]
   H -- no --> J[Roll back]
@@ -22,8 +22,8 @@ flowchart TD
 | --- | --- | --- |
 | Check everything locally | `make check` | No |
 | See what is on the server | `make deploy-check` | No |
-| Deploy the current commit | `make deploy` | Yes: backs up, builds, migrates, restarts |
-| Deploy a particular commit or tag | `make deploy ARGS="--ref v1.2.0"` | Yes |
+| Deploy the latest `main` | `make deploy` | Yes: backs up, builds, migrates, restarts |
+| Roll back to an earlier commit of `main` | `make deploy ARGS="--ref <commit>"` | Yes |
 | Move to a new address | `make deploy ARGS="--domain new.example.com"` | Yes, and gets a certificate |
 
 ## What gets built
@@ -67,7 +67,9 @@ CI does not run the browser tests, because they need LiveKit's webhooks to reach
 CI also does not deploy.
 A pushed `v*` tag runs `release.yml`, which publishes an image to `ghcr.io`; no tag has been pushed yet.
 
-Work currently happens on `feat/calendar-meetings-attendance`, so CI runs on it only through a pull request to `main`.
+**Only `main` is deployed.**
+Work happens on branches and reaches the server by being merged to `main` and pushed.
+`scripts/deploy.sh` deploys `main` as it is on GitHub, and refuses any commit that is not on it, so what runs is always something everybody can see.
 
 ## Deploying
 
@@ -84,14 +86,14 @@ Then `make deploy-check` should print the server's current image and address.
 ### Every time
 
 ```bash
-git switch <the branch or tag to ship> && git pull
+# after the change is merged to main and pushed
 make deploy-check
 make deploy
 ```
 
 What `scripts/deploy.sh` does:
 
-1. Takes the **committed** tree of the commit; uncommitted changes are never deployed, and it says so if you have some.
+1. Fetches `main` from GitHub and takes the **committed** tree of its latest commit, or of the earlier commit of `main` given with `--ref`; a commit that is not on `main` is refused, and nothing uncommitted is ever deployed.
 2. Checks the server looks like a TeamUp install.
 3. Copies the tree over, keeping the server's `.env`, `certs/`, `backups/` and `backup.sh`.
 4. Runs `./backup.sh` first if the server has one, unless you pass `--no-backup`.

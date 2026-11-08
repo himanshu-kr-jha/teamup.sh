@@ -184,7 +184,7 @@ The type goes in `pkg/protocol/messages.go`, the broadcast in the service, and t
 ## 6. Shipping it
 
 Read [BUILD-AND-DEPLOY.md](BUILD-AND-DEPLOY.md).
-In short: merge, then `make deploy-check`, then `make deploy`, then look at the live site.
+In short: merge to `main` and push, then `make deploy-check`, then `make deploy`, which deploys the latest `main` and nothing else, then look at the live site.
 
 ## When something is wrong
 

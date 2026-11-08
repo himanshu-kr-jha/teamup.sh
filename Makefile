@@ -22,7 +22,7 @@ help:
 	@echo "  test-web        Lint, typecheck and unit-test the web app"
 	@echo "  e2e             Rebuild, then run every browser test against the real stack"
 	@echo "  check           Everything a change must pass before it is merged"
-	@echo "  deploy          Deploy HEAD to the server in .deploy.env (docs/BUILD-AND-DEPLOY.md)"
+	@echo "  deploy          Deploy the latest main to the server in .deploy.env (docs/BUILD-AND-DEPLOY.md)"
 	@echo "  deploy-check    Check the server and the commit, change nothing"
 	@echo "  test            Run all tests"
 	@echo "  test-unit       Run unit tests only"

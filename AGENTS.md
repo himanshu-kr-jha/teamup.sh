@@ -15,4 +15,4 @@ Single-context: CONTEXT.md + docs/adr/ at repo root. See `docs/agents/domain.md`
 ### Building, testing and deploying
 
 `docs/ONBOARDING.md` is the developer flow and `docs/BUILD-AND-DEPLOY.md` the release flow.
-`make check` is what a change must pass; `make deploy` ships a commit to the server named in the untracked `.deploy.env`.
+`make check` is what a change must pass; `make deploy` ships the latest `main` to the server named in the untracked `.deploy.env`, and refuses anything not on `main`.
