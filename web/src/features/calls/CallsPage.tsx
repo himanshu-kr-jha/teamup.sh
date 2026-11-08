@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { AlertTriangle, Video, Phone, Users, Search, Loader2, Clock, CheckCircle, XCircle, History, Link2 } from 'lucide-react';
+import { AlertTriangle, Video, Phone, Users, Search, Loader2, Clock, CheckCircle, XCircle, History, Link2, NotebookPen, ChevronRight } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Card, CardContent } from '@/shared/components/ui/card';
@@ -7,7 +7,7 @@ import { Badge } from '@/shared/components/ui/badge';
 import { formatDate, formatTime } from '@/shared/utils/cn';
 import { useQuery } from '@tanstack/react-query';
 import { callsApi } from '@/shared/api/client';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
 import { JOIN_EARLY_MINUTES, meetingStillOn } from '@/features/calendar/layout';
@@ -96,6 +96,16 @@ export function CallsPage() {
           <Button className="shrink-0" onClick={() => setCreateOpen(true)}>New Call</Button>
         </div>
       </div>
+
+      {/* The sidebar has it on a computer; a phone's bottom bar has no room. */}
+      <Link
+        to="/meeting-notes"
+        className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 text-sm font-medium transition-colors hover:bg-accent lg:hidden"
+      >
+        <NotebookPen className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+        <span className="flex-1">Meeting notes</span>
+        <ChevronRight className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+      </Link>
 
       {/* Calls List */}
       <div className="flex-1 space-y-6 overflow-auto p-4 md:p-6">

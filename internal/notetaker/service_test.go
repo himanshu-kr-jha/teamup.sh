@@ -28,14 +28,21 @@ import (
 type recorded struct {
 	mu       sync.Mutex
 	notified []uuid.UUID
+	failed   []uuid.UUID
 	mailed   []string
 }
 
 func (r *recorded) Notify(_ context.Context, _, userID uuid.UUID, kind, _, _ string, data map[string]any) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if kind == "minutes.ready" && strings.HasSuffix(data["url"].(string), "/minutes") {
+	if !strings.HasSuffix(data["url"].(string), "/minutes") {
+		return nil
+	}
+	switch kind {
+	case "minutes.ready":
 		r.notified = append(r.notified, userID)
+	case "minutes.failed":
+		r.failed = append(r.failed, userID)
 	}
 	return nil
 }
@@ -242,5 +249,185 @@ func TestTurnedOffItDoesNotJoin(t *testing.T) {
 	}
 	if got := call(t, w.router(t, w.ada, "member"), http.MethodGet, "/api/calls/"+w.callID.String()+"/minutes", nil); got.Code != http.StatusNotFound {
 		t.Errorf("no minutes: %d", got.Code)
+	}
+}
+
+// waitFor polls a call's minutes until they are done one way or the other.
+func (w *world) waitFor(t *testing.T, as *gin.Engine) Notes {
+	t.Helper()
+	var notes Notes
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		got := call(t, as, http.MethodGet, "/api/calls/"+w.callID.String()+"/minutes", nil)
+		_ = json.Unmarshal(got.Body.Bytes(), &notes)
+		if notes.Status == "ready" || notes.Status == "failed" || notes.Status == "empty" {
+			return notes
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("still %q", notes.Status)
+	return notes
+}
+
+// What happened in the first real meeting: NVIDIA had retired the model asked
+// for, and answered 410. The minutes are written by a Nemotron model it still
+// offers, even one that thinks aloud before answering.
+func TestARetiredNVIDIAModelStillGetsTheMinutesWritten(t *testing.T) {
+	w := newWorld(t)
+	stt := standIns(t)
+	var asked []string
+	var mu sync.Mutex
+	nv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/models":
+			_ = json.NewEncoder(rw).Encode(map[string]any{"data": []map[string]string{{"id": "meta/llama-4"}, {"id": "nvidia/nemotron-3-ultra-550b-a55b"}}})
+		case "/v1/chat/completions":
+			var body struct {
+				Model     string `json:"model"`
+				MaxTokens int    `json:"max_tokens"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			mu.Lock()
+			asked = append(asked, body.Model)
+			mu.Unlock()
+			if body.Model != "nvidia/nemotron-3-ultra-550b-a55b" {
+				http.Error(rw, `{"status":410,"title":"Gone"}`, http.StatusGone)
+				return
+			}
+			if body.MaxTokens < 4096 {
+				http.Error(rw, "too few tokens to think and answer", http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(rw).Encode(map[string]any{"choices": []map[string]any{{"message": map[string]string{
+				"content": `<think>They said {ship}. Shape: {"summary": ...}</think>{"summary": "Agreed to ship.", "decisions": ["Ship on Friday"], "actionItems": [], "openQuestions": []}`}}}})
+		}
+	}))
+	defer nv.Close()
+	ctx := context.Background()
+	if err := w.orgs.SetConfig(ctx, w.orgID, ConfigKey, Settings{Enabled: true, STTKey: "k", STTBaseURL: stt.URL,
+		LLMProvider: "nvidia", LLMKey: "nvapi-k", LLMModel: "nvidia/llama-3.3-nemotron-super-49b-v1", LLMBaseURL: nv.URL + "/v1"}, true); err != nil {
+		t.Fatal(err)
+	}
+	w.svc.PersonJoined(ctx, w.orgID, w.callID, "room-1")
+	notes := w.waitFor(t, w.router(t, w.ada, "member"))
+	if notes.Status != "ready" || notes.Minutes.Summary != "Agreed to ship." {
+		t.Fatalf("minutes: %+v", notes)
+	}
+	if len(asked) != 2 || asked[0] != "nvidia/llama-3.3-nemotron-super-49b-v1" {
+		t.Errorf("asked the chosen model, then one NVIDIA still offers: %v", asked)
+	}
+
+	// And an administrator naming a retired model is told so when saving.
+	got := call(t, w.router(t, w.ada, "admin"), http.MethodPut, "/api/org/notetaker", map[string]any{
+		"enabled": true, "llmProvider": "nvidia", "llmModel": "nvidia/llama-3.3-nemotron-super-49b-v1", "llmBaseUrl": nv.URL + "/v1"})
+	if got.Code != http.StatusBadRequest || !strings.Contains(got.Body.String(), "nemotron-3-ultra-550b-a55b") {
+		t.Errorf("a retired model is refused with one that works: %d %s", got.Code, got.Body.String())
+	}
+}
+
+func TestFailedMinutesAreWrittenAgainFromTheTranscriptAndListed(t *testing.T) {
+	w := newWorld(t)
+	stt := standIns(t)
+	broken := true
+	var mu sync.Mutex
+	model := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		down := broken
+		mu.Unlock()
+		if down {
+			http.Error(rw, "overloaded", http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(rw).Encode(map[string]any{"content": []map[string]string{{"type": "text",
+			"text": `{"summary": "The team agreed to ship on Friday.", "decisions": [], "actionItems": [{"owner": "Ada Archer", "task": "Tag it"}], "openQuestions": []}`}}})
+	}))
+	defer model.Close()
+	ctx := context.Background()
+	if err := w.orgs.SetConfig(ctx, w.orgID, ConfigKey, Settings{Enabled: true, STTKey: "k", STTBaseURL: stt.URL, LLMKey: "k", LLMBaseURL: model.URL}, true); err != nil {
+		t.Fatal(err)
+	}
+	w.svc.PersonJoined(ctx, w.orgID, w.callID, "room-1")
+	ada := w.router(t, w.ada, "member")
+	notes := w.waitFor(t, ada)
+	if notes.Status != "failed" || !strings.Contains(notes.Error, "503") || len(notes.Transcript) != 2 {
+		t.Fatalf("failed, with why, and the transcript kept: %+v", notes)
+	}
+	w.sent.mu.Lock()
+	failedTold := len(w.sent.failed)
+	w.sent.mu.Unlock()
+	if failedTold != 2 {
+		t.Errorf("both told the minutes failed: %d", failedTold)
+	}
+
+	retry := "/api/calls/" + w.callID.String() + "/minutes/retry"
+	if got := call(t, w.router(t, w.carol, "member"), http.MethodPost, retry, nil); got.Code != http.StatusNotFound {
+		t.Errorf("Carol was not there: %d", got.Code)
+	}
+	mu.Lock()
+	broken = false
+	mu.Unlock()
+	if got := call(t, ada, http.MethodPost, retry, nil); got.Code != http.StatusAccepted {
+		t.Fatalf("retry: %d %s", got.Code, got.Body.String())
+	}
+	notes = w.waitFor(t, ada)
+	if notes.Status != "ready" || notes.Error != "" {
+		t.Fatalf("written again: %+v", notes)
+	}
+	if got := call(t, ada, http.MethodPost, retry, nil); got.Code != http.StatusConflict {
+		t.Errorf("ready minutes are not written again: %d", got.Code)
+	}
+
+	// The Meeting notes page.
+	type page struct {
+		Items   []NotesItem `json:"items"`
+		HasMore bool        `json:"hasMore"`
+	}
+	list := func(r *gin.Engine, query string) page {
+		var p page
+		got := call(t, r, http.MethodGet, "/api/meeting-notes"+query, nil)
+		if got.Code != http.StatusOK {
+			t.Fatalf("list %s: %d %s", query, got.Code, got.Body.String())
+		}
+		_ = json.Unmarshal(got.Body.Bytes(), &p)
+		return p
+	}
+	mine := list(ada, "")
+	if len(mine.Items) != 1 || mine.Items[0].Title != "Weekly" || mine.Items[0].Status != "ready" ||
+		mine.Items[0].ActionItems != 1 || !mine.Items[0].Attended || len(mine.Items[0].Attendees) != 2 {
+		t.Errorf("Ada's: %+v", mine)
+	}
+	if got := list(ada, "?q=friday"); len(got.Items) != 1 {
+		t.Errorf("found by what the summary says: %+v", got)
+	}
+	if got := list(ada, "?q=budget"); len(got.Items) != 0 {
+		t.Errorf("not found: %+v", got)
+	}
+	if got := list(w.router(t, w.carol, "member"), "?scope=all"); len(got.Items) != 0 {
+		t.Errorf("a member sees only meetings they were in: %+v", got)
+	}
+	if got := list(w.router(t, w.carol, "admin"), "?scope=all"); len(got.Items) != 1 || got.Items[0].Attended {
+		t.Errorf("an administrator sees every meeting: %+v", got)
+	}
+	if got := list(w.router(t, w.carol, "admin"), ""); len(got.Items) != 0 {
+		t.Errorf("and by default only their own: %+v", got)
+	}
+
+	// Another organization's administrator sees none of it.
+	other := testsupport.SeedOrg(t, w.svc.db)
+	boss := testsupport.SeedUser(t, w.svc.db, other, "boss@other.example", "admin")
+	r := gin.New()
+	api := r.Group("/api")
+	api.Use(func(c *gin.Context) {
+		c.Set("org_id", other.ID.String())
+		c.Set("user_id", boss.String())
+		c.Set("user_roles", []string{"admin"})
+		c.Next()
+	})
+	RegisterRoutes(api, w.svc)
+	if got := list(r, "?scope=all"); len(got.Items) != 0 {
+		t.Errorf("another organization: %+v", got)
+	}
+	if got := call(t, r, http.MethodGet, "/api/calls/"+w.callID.String()+"/minutes", nil); got.Code != http.StatusNotFound {
+		t.Errorf("another organization's minutes: %d", got.Code)
 	}
 }

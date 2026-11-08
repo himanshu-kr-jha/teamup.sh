@@ -92,7 +92,7 @@ export function NotificationBell() {
     else if (channelId) navigate(`/chat/${channelId}`);
     else if (n.type.startsWith('meeting.')) navigate(calendarLink(n.data?.startsAt));
     else if (n.type === 'call.knock' && n.data?.callId) navigate(`/calls/${n.data.callId}`);
-    else if (n.type === 'minutes.ready' && n.data?.callId) navigate(`/calls/${n.data.callId}/minutes`);
+    else if (n.type.startsWith('minutes.') && n.data?.callId) navigate(`/calls/${n.data.callId}/minutes`);
   };
 
   const markAll = async () => {

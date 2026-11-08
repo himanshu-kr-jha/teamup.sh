@@ -12,6 +12,8 @@ import { apiAs, createCall, idOf, joinCall, leaveCall } from './support/meetings
 let standIn: Server;
 let standInUrl = '';
 const heard: string[] = [];
+// The model is down for the first attempt, as NVIDIA was for the first real meeting.
+let modelDown = true;
 
 test.describe('meeting notes', () => {
   test.beforeAll(async () => {
@@ -23,6 +25,9 @@ test.describe('meeting notes', () => {
         if (req.url === '/speech-to-text') {
           heard.push(String(req.headers['api-subscription-key']));
           res.end(JSON.stringify({ transcript: 'We will ship the release on Friday.' }));
+        } else if (req.url === '/v1/messages' && modelDown) {
+          res.statusCode = 503;
+          res.end(JSON.stringify({ error: { message: 'model overloaded' } }));
         } else if (req.url === '/v1/messages') {
           const asked = JSON.parse(body).messages[0].content as string;
           const ok = asked.includes('We will ship the release on Friday.');
@@ -81,7 +86,8 @@ test.describe('meeting notes', () => {
     const alice = await apiAs('alice');
     expect(await alice.status('put', '/org/notetaker', { enabled: false })).toBe(403);
 
-    const call = await createCall(owner, `Release sync ${Date.now()}`, [idOf('alice')]);
+    const title = `Release sync ${Date.now()}`;
+    const call = await createCall(owner, title, [idOf('alice')]);
     const aliceSession = await as('alice');
     await joinCall(olivia.page, call.id);
     await joinCall(aliceSession.page, call.id);
@@ -101,28 +107,57 @@ test.describe('meeting notes', () => {
     await leaveCall(olivia.page);
     await leaveCall(aliceSession.page);
 
-    // After the room has been empty for a little while, the minutes go out.
+    // After the room has been empty for a little while, the minutes are
+    // written; the model is down, so everybody who was there is told they
+    // could not be.
     const minutesPath = `/calls/${call.id}/minutes`;
-    await expect
-      .poll(
-        async () => {
-          const list = (await alice.get('/notifications')).notifications as Array<{ type: string; data?: { url?: string } }>;
-          return list.some((n) => n.type === 'minutes.ready' && n.data?.url === minutesPath);
-        },
-        { timeout: 90_000, intervals: [3_000] }
-      )
-      .toBe(true);
+    const told = (type: string) => async () => {
+      const list = (await alice.get('/notifications')).notifications as Array<{ type: string; data?: { url?: string } }>;
+      return list.some((n) => n.type === type && n.data?.url === minutesPath);
+    };
+    await expect.poll(told('minutes.failed'), { timeout: 90_000, intervals: [3_000] }).toBe(true);
 
-    await aliceSession.page.goto(minutesPath);
+    // Alice finds the meeting on the Meeting notes page.
+    const page = aliceSession.page;
+    await page.goto('/chat');
+    await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: 'Meeting notes' }).click();
+    await expect(page.getByRole('heading', { name: 'Meeting notes', level: 1 })).toBeVisible();
+    const row = page.getByTestId('meeting-note').filter({ hasText: title });
+    await expect(row).toContainText('Not written');
+    await expect(row).toContainText('Olivia Owner');
+    await row.click();
+    await expect(page.getByTestId('minutes-state')).toContainText('The minutes could not be written.');
+    await expect(page.getByTestId('minutes-state')).toContainText('503');
+    // What was said is kept, and readable already.
+    await page.getByRole('button', { name: 'Show the transcript' }).click();
+    await expect(page.getByRole('region', { name: 'Transcript' })).toContainText('We will ship the release on Friday.');
+
+    // The model is back; Alice has them written again.
+    modelDown = false;
+    await page.getByRole('button', { name: 'Write the minutes again' }).click();
+    await expect.poll(told('minutes.ready'), { timeout: 60_000, intervals: [2_000] }).toBe(true);
     const minutes = aliceSession.page.getByTestId('minutes');
     await expect(minutes).toContainText('The team agreed to ship the release on Friday.');
     await expect(minutes).toContainText('Ship on Friday');
     await expect(minutes).toContainText('Tag the release');
-    await aliceSession.page.getByRole('button', { name: 'Show the transcript' }).click();
-    await expect(aliceSession.page.getByRole('region', { name: 'Transcript' })).toContainText('We will ship the release on Friday.');
+    // The transcript she opened before stays open.
+    await expect(page.getByRole('button', { name: 'Hide the transcript' })).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Transcript' })).toContainText('We will ship the release on Friday.');
 
-    // Somebody who was not there cannot read them.
+    // Back on the list, with the summary, and found by searching for it.
+    await page.getByRole('link', { name: 'Meeting notes' }).first().click();
+    await page.getByLabel('Search meeting notes').fill('release on friday');
+    await expect(page.getByTestId('meeting-note').filter({ hasText: title })).toContainText(
+      'The team agreed to ship the release on Friday.'
+    );
+    await expect(page.getByTestId('meeting-note').filter({ hasText: title })).toContainText('1 action item');
+    await page.getByLabel('Search meeting notes').fill('nothing like this was said');
+    await expect(page.getByTestId('notes-empty')).toContainText('No meeting notes match');
+
+    // Somebody who was not there cannot read them, nor see them listed.
     const sam = await apiAs('sam');
     expect(await sam.status('get', `/calls/${call.id}/minutes`)).toBe(404);
+    const samList = (await sam.get('/meeting-notes?scope=all')).items as Array<{ callId: string }>;
+    expect(samList.some((i) => i.callId === call.id)).toBe(false);
   });
 });

@@ -10,6 +10,11 @@ package notetaker
 //
 // The audio stays as it arrives, Opus, written into an Ogg container: nothing is
 // decoded or re-encoded, so this needs no audio library.
+//
+// A clip's length is what its RTP timestamps say, because that is what the Ogg
+// file says and what speech-to-text measures. The clock on the wall is not
+// enough: a packet held over from before somebody muted, or a jump in the
+// timestamps, makes a file far longer than the time it took to record.
 
 import (
 	"bytes"
@@ -34,7 +39,17 @@ const (
 	minSpeech = 500 * time.Millisecond
 	// prerollPackets is about 300 ms of 20 ms Opus packets.
 	prerollPackets = 15
+	// prerollAge is the oldest a held packet may be and still lead into a
+	// clip; older ones are from another moment, such as before a mute.
+	prerollAge = 400 * time.Millisecond
+	// clockRate is Opus's RTP clock, 48 kHz.
+	clockRate = 48000
 )
+
+type held struct {
+	p  *rtp.Packet
+	at time.Time
+}
 
 // Speaker is whose microphone it is.
 type Speaker struct {
@@ -59,11 +74,15 @@ type recorder struct {
 	speaking   bool
 	quietSince time.Time
 
-	preroll []*rtp.Packet
+	preroll []held
 	buf     *bytes.Buffer
 	w       *oggwriter.OggWriter
 	started time.Time
 	last    time.Time
+	// firstTS and lastTS are the clip's first and latest RTP timestamps, and
+	// empty says nothing is written yet.
+	firstTS, lastTS uint32
+	empty           bool
 	// spoken counts the packets written while they were speaking.
 	spoken int
 }
@@ -77,9 +96,22 @@ func (r *recorder) Packet(p *rtp.Packet) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.now()
+	if r.w != nil {
+		step := int32(p.Timestamp - r.lastTS)
+		switch {
+		case step <= 0:
+			// Late or repeated: the Ogg file's position only moves forward.
+			return
+		case time.Duration(step)*time.Second/clockRate >= gap,
+			time.Duration(p.Timestamp-r.firstTS)*time.Second/clockRate > MaxClip:
+			// A jump in the audio, or the clip is full: this packet starts
+			// the next one.
+			r.close(now)
+		}
+	}
 	if r.w == nil {
 		if !r.speaking {
-			r.preroll = append(r.preroll, p)
+			r.preroll = append(r.preroll, held{p, now})
 			if len(r.preroll) > prerollPackets {
 				r.preroll = r.preroll[1:]
 			}
@@ -90,14 +122,24 @@ func (r *recorder) Packet(p *rtp.Packet) {
 			return
 		}
 	}
-	_ = r.w.WriteRTP(p)
-	r.last = now
+	r.write(p, now)
 	if r.speaking {
 		r.spoken++
 	}
-	if now.Sub(r.started) >= MaxClip {
-		r.close(now)
+}
+
+func (r *recorder) write(p *rtp.Packet, now time.Time) {
+	if !r.empty && int32(p.Timestamp-r.lastTS) <= 0 {
+		return
 	}
+	if err := r.w.WriteRTP(p); err != nil {
+		return
+	}
+	if r.empty {
+		r.firstTS, r.started, r.empty = p.Timestamp, now, false
+	}
+	r.lastTS = p.Timestamp
+	r.last = now
 }
 
 // Speaking is what LiveKit says about whether they are talking.
@@ -140,13 +182,15 @@ func (r *recorder) open(now time.Time) {
 		return
 	}
 	r.w = w
-	r.started = now.Add(-time.Duration(len(r.preroll)) * 20 * time.Millisecond)
-	for _, p := range r.preroll {
-		_ = r.w.WriteRTP(p)
+	r.started, r.empty, r.spoken = now, true, 0
+	// Only the moment just before they spoke.
+	for _, h := range r.preroll {
+		if now.Sub(h.at) <= prerollAge {
+			r.write(h.p, h.at)
+		}
 	}
 	r.preroll = nil
 	r.last = now
-	r.spoken = 0
 }
 
 func (r *recorder) close(now time.Time) {

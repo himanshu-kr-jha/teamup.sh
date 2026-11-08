@@ -116,8 +116,8 @@ line-by-line detail.
   voice calls from any conversation, knock to join, standing meetings with
   attendance from LiveKit's own webhooks, recording to object storage
 - **Meeting notes** — a visible note-taker in every call while an administrator
-  has it on, Sarvam speech to text, minutes written by Claude, OpenAI or your
-  own model, sent to everybody who was there
+  has it on, Sarvam speech to text, minutes written by Claude, OpenAI, NVIDIA or
+  your own model, sent to everybody who was there and kept under Meeting notes
 - **Calendar** — month, week and day views, focus time, open slots,
   meetings with a length from a list, availability across people, and
   meetings that run over shown as extended

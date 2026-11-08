@@ -89,3 +89,5 @@ Who: orchestrator = Opus (plans, verifies, reports). Senior developer = Opus sub
 
 - 2026-11-08, orchestrator: ticket 53 built (decision 63): the meeting note-taker, with Sarvam and Claude, OpenAI or the user's own model.
   Also: the status page now records an outage somebody saw on it, and samples every 15 seconds, because a short outage between samples vanished from the history (found by the full browser run).
+
+- 2026-11-08, orchestrator: the first real meeting had no minutes: NVIDIA had retired the default model, and a clip after a mute was refused as over 30 seconds. Both fixed (ticket 53), with a Meeting notes page, retry, and a notice when minutes fail.

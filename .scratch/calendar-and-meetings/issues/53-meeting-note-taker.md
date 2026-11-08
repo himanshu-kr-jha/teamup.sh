@@ -32,3 +32,12 @@ Found by the browser test and fixed: LiveKit can say somebody is speaking before
 Verified: Go tests (clips only of speech, the 30-second limit, a cough not sent, the providers' requests, the whole flow from two people joining to both notified and emailed, and who may read the minutes), and `web/e2e/meetings.y-notes.spec.ts` on the real LiveKit with stand-ins for Sarvam and Claude, three runs in a row.
 The browser tests now play speech-like audio as the microphone (`e2e/fixtures/speech.wav`), because Chromium's beep is too short to count as talking.
 Not verified: real Sarvam and real Claude, a real meeting's voices, and on the VM, where the server has to reach LiveKit's media ports from inside its container.
+
+2026-11-08, orchestrator: the first real meeting (deployed 82ee949, the user's own Sarvam and NVIDIA keys) produced a transcript but no minutes, and the minutes could only be found through the notification.
+Server log and database showed two faults.
+NVIDIA had retired the default model, `nvidia/llama-3.3-nemotron-super-49b-v1`, on 2026-08-26 and answered 410; the default is now `nvidia/nemotron-3-super-120b-a12b`, a retired model falls back to the first Nemotron model NVIDIA lists, and a model name it does not list is refused on saving.
+Reasoning models get a `max_tokens` of 16384 and their `<think>` text is skipped when reading the minutes.
+One clip was refused by Sarvam as over 30 seconds: the recorder held packets from before a mute and the Ogg file's length follows RTP timestamps, so 10 seconds of speech said 81.
+Clips are now cut and measured by RTP timestamp, held packets older than 400 ms are dropped, and late packets are skipped (`TestAClipAfterAMuteIsOnlyAsLongAsWhatWasSaid` failed on the old recorder with 81.2 s).
+New: the Meeting notes page (`/meeting-notes`, sidebar, and a link at the top of Calls on a phone), `GET /api/meeting-notes` (yours, or `scope=all` for administrators, with search), `POST /api/calls/:id/minutes/retry`, a `minutes.failed` notification, and the minutes page showing why they failed, the transcript, and **Write the minutes again**.
+Verified: Go tests for the retired model, the fallback, retry and the list across two organizations; `meetings.y-notes.spec.ts` now goes through a failed model, the list, retry and search on the real LiveKit.

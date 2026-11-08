@@ -10,6 +10,7 @@ import { SettingsPage } from '@/features/settings/SettingsPage';
 import { AdminPage } from '@/features/admin/AdminPage';
 import { CallViewPage } from '@/features/calls/CallViewPage';
 import { MinutesPage } from '@/features/calls/MinutesPage';
+import { MeetingNotesPage } from '@/features/calls/MeetingNotesPage';
 import { AttendancePage } from '@/features/calls/standing/AttendancePage';
 import { CalendarPage } from '@/features/calendar/CalendarPage';
 import { StatusPage } from '@/features/status/StatusPage';
@@ -94,6 +95,7 @@ export const router = createBrowserRouter([
       { path: 'calls', element: <CallsPage /> },
       { path: 'calls/:roomName', element: <CallViewPage /> },
       { path: 'calls/:callId/minutes', element: <MinutesPage /> },
+      { path: 'meeting-notes', element: <MeetingNotesPage /> },
       { path: 'calls/standing/:id/attendance', element: <AttendancePage /> },
       { path: 'calendar', element: <CalendarPage /> },
       { path: 'tasks', element: <TasksPage /> },

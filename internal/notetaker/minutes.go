@@ -82,6 +82,10 @@ func Write(ctx context.Context, w Writer, title string, date time.Time, attendee
 // parseMinutes reads the model's JSON, allowing for the code fence or the
 // sentence some models put around it.
 func parseMinutes(answer string) (Minutes, error) {
+	// A reasoning model may think aloud first, braces and all.
+	if i := strings.LastIndex(answer, "</think>"); i >= 0 {
+		answer = answer[i+len("</think>"):]
+	}
 	start := strings.Index(answer, "{")
 	end := strings.LastIndex(answer, "}")
 	if start < 0 || end <= start {

@@ -192,7 +192,7 @@ loop:
 	close(sess.clips)
 	workers.Wait()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	sess.svc.writeMinutes(ctx, sess)
 }
@@ -351,43 +351,70 @@ func (s *Service) markFailed(callID uuid.UUID, why string) {
 // writeMinutes turns what was said into minutes and sends them to everybody
 // who was there.
 func (s *Service) writeMinutes(ctx context.Context, sess *session) {
-	_, _ = s.db.Exec(ctx, `UPDATE meeting_notes SET status = 'writing' WHERE call_id = $1`, sess.callID)
-	segments, err := s.segments(ctx, sess.callID)
+	sttProblem := ""
+	sess.mu.Lock()
+	if sess.failures > 0 {
+		sttProblem = sess.lastError
+	}
+	sess.mu.Unlock()
+	s.compose(ctx, sess.orgID, sess.callID, sess.settings, sttProblem)
+}
+
+// compose writes a call's minutes from its saved transcript and delivers them,
+// or records why it could not and tells the people who were there, who can
+// try again from the minutes page once the reason is put right.
+func (s *Service) compose(ctx context.Context, orgID, callID uuid.UUID, set Settings, sttProblem string) {
+	_, _ = s.db.Exec(ctx, `UPDATE meeting_notes SET status = 'writing', error = NULL WHERE call_id = $1`, callID)
+	segments, err := s.segments(ctx, callID)
 	if err != nil {
-		s.markFailed(sess.callID, "Could not read the transcript.")
+		s.markFailed(callID, "Could not read the transcript.")
 		return
 	}
 	if len(segments) == 0 {
 		why := "Nothing was said that could be transcribed."
-		sess.mu.Lock()
-		if sess.failures > 0 {
-			why = "Speech to text did not work: " + sess.lastError
+		if sttProblem != "" {
+			why = "Speech to text did not work: " + sttProblem
 		}
-		sess.mu.Unlock()
-		_, _ = s.db.Exec(ctx, `UPDATE meeting_notes SET status = 'empty', error = $2, finished_at = NOW() WHERE call_id = $1`, sess.callID, why)
+		_, _ = s.db.Exec(ctx, `UPDATE meeting_notes SET status = 'empty', error = $2, finished_at = NOW() WHERE call_id = $1`, callID, why)
 		return
 	}
 
-	title, startedAt, attendees, err := s.meeting(ctx, sess.callID)
+	title, startedAt, attendees, err := s.meeting(ctx, callID)
 	if err != nil {
-		s.markFailed(sess.callID, "Could not read the meeting.")
+		s.markFailed(callID, "Could not read the meeting.")
 		return
 	}
 	names := make([]string, len(attendees))
 	for i, a := range attendees {
 		names[i] = a.name
 	}
-	minutes, err := Write(ctx, sess.settings.writer(), title, startedAt, names, segments, time.UTC)
+	minutes, err := Write(ctx, set.writer(), title, startedAt, names, segments, time.UTC)
 	if err != nil {
-		s.markFailed(sess.callID, err.Error())
+		s.logger.Warn().Err(err).Str("call", callID.String()).Msg("notetaker: the minutes could not be written")
+		s.markFailed(callID, err.Error())
+		s.notify(ctx, orgID, callID, attendees, "minutes.failed", "Minutes could not be written: "+title,
+			"The transcript is kept. Open it to see why, and to try again.")
 		return
 	}
 	raw, _ := json.Marshal(minutes)
-	if _, err := s.db.Exec(ctx, `UPDATE meeting_notes SET status = 'ready', minutes = $2, error = NULL, finished_at = NOW() WHERE call_id = $1`, sess.callID, raw); err != nil {
+	if _, err := s.db.Exec(ctx, `UPDATE meeting_notes SET status = 'ready', minutes = $2, error = NULL, finished_at = NOW() WHERE call_id = $1`, callID, raw); err != nil {
 		s.logger.Warn().Err(err).Msg("notetaker: could not save the minutes")
 		return
 	}
-	s.deliver(ctx, sess.orgID, sess.callID, minutes, attendees)
+	s.deliver(ctx, orgID, callID, minutes, attendees)
+}
+
+func (s *Service) notify(ctx context.Context, orgID, callID uuid.UUID, attendees []attendee, kind, title, body string) {
+	if s.notifier == nil {
+		return
+	}
+	link := "/calls/" + callID.String() + "/minutes"
+	for _, a := range attendees {
+		if err := s.notifier.Notify(ctx, orgID, a.id, kind, title, body,
+			map[string]any{"callId": callID.String(), "url": link}); err != nil {
+			s.logger.Warn().Err(err).Msg("notetaker: could not notify somebody")
+		}
+	}
 }
 
 type attendee struct {
@@ -450,22 +477,20 @@ func (s *Service) deliver(ctx context.Context, orgID, callID uuid.UUID, m Minute
 	if r := []rune(summary); len(r) > 140 {
 		summary = string(r[:140]) + "…"
 	}
-	mailing := s.mailer != nil && s.mailer.Configured(ctx, orgID)
+	s.notify(ctx, orgID, callID, attendees, "minutes.ready", "Minutes: "+m.Title, summary)
+	if s.mailer == nil || !s.mailer.Configured(ctx, orgID) {
+		return
+	}
 	for _, a := range attendees {
-		if s.notifier != nil {
-			if err := s.notifier.Notify(ctx, orgID, a.id, "minutes.ready", "Minutes: "+m.Title, summary,
-				map[string]any{"callId": callID.String(), "url": link}); err != nil {
-				s.logger.Warn().Err(err).Msg("notetaker: could not notify somebody of the minutes")
-			}
+		if a.email == "" {
+			continue
 		}
-		if mailing && a.email != "" {
-			body := m.Text(time.UTC)
-			if s.baseURL != "" {
-				body += "\nRead them, with the transcript: " + s.baseURL + link + "\n"
-			}
-			if err := s.mailer.Send(ctx, orgID, mail.Message{To: a.email, Subject: "Minutes: " + m.Title, Body: body}); err != nil {
-				s.logger.Warn().Err(err).Msg("notetaker: could not email the minutes")
-			}
+		body := m.Text(time.UTC)
+		if s.baseURL != "" {
+			body += "\nRead them, with the transcript: " + s.baseURL + link + "\n"
+		}
+		if err := s.mailer.Send(ctx, orgID, mail.Message{To: a.email, Subject: "Minutes: " + m.Title, Body: body}); err != nil {
+			s.logger.Warn().Err(err).Msg("notetaker: could not email the minutes")
 		}
 	}
 }
@@ -476,6 +501,17 @@ type Notes struct {
 	Error      string    `json:"error,omitempty"`
 	Minutes    *Minutes  `json:"minutes,omitempty"`
 	Transcript []Segment `json:"transcript"`
+}
+
+// mayRead says whether somebody may read a call's notes: they were in it, or
+// they administer the organization.
+func (s *Service) mayRead(ctx context.Context, callID, userID uuid.UUID, isAdmin bool) (bool, error) {
+	if isAdmin {
+		return true, nil
+	}
+	var was bool
+	err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM call_participants WHERE call_id = $1 AND user_id = $2 AND joined_at IS NOT NULL)`, callID, userID).Scan(&was)
+	return was, err
 }
 
 // ErrNoNotes is a call with no notes, or one the caller may not read.
@@ -494,14 +530,10 @@ func (s *Service) NotesFor(ctx context.Context, orgID, callID, userID uuid.UUID,
 	if err != nil {
 		return nil, fmt.Errorf("read notes: %w", err)
 	}
-	if !isAdmin {
-		var was bool
-		if err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM call_participants WHERE call_id = $1 AND user_id = $2 AND joined_at IS NOT NULL)`, callID, userID).Scan(&was); err != nil {
-			return nil, err
-		}
-		if !was {
-			return nil, ErrNoNotes
-		}
+	if ok, err := s.mayRead(ctx, callID, userID, isAdmin); err != nil {
+		return nil, err
+	} else if !ok {
+		return nil, ErrNoNotes
 	}
 	if errText != nil {
 		n.Error = *errText

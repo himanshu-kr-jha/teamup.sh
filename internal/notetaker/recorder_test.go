@@ -101,3 +101,71 @@ func TestLeavingFlushesWhatWasBeingSaid(t *testing.T) {
 		t.Errorf("the last words are not lost: %d", len(*clips))
 	}
 }
+
+// oggSeconds is how long an Ogg Opus file says it is: its last page's granule
+// position, in 48 kHz samples, which is what speech-to-text measures.
+func oggSeconds(t *testing.T, ogg []byte) float64 {
+	t.Helper()
+	at := bytes.LastIndex(ogg, []byte("OggS"))
+	if at < 0 || len(ogg) < at+14 {
+		t.Fatalf("not an Ogg file")
+	}
+	var granule uint64
+	for i := 7; i >= 0; i-- {
+		granule = granule<<8 | uint64(ogg[at+6+i])
+	}
+	return float64(granule) / 48000
+}
+
+// stream sends d of 20 ms packets whose RTP timestamps start at *ts.
+func stream(r *recorder, c *fakeClock, ts *uint32, d time.Duration) {
+	for elapsed := time.Duration(0); elapsed < d; elapsed += 20 * time.Millisecond {
+		*ts += 960
+		r.Packet(&rtp.Packet{Header: rtp.Header{Timestamp: *ts}, Payload: []byte{0xfc, 0xff, 0xfe}})
+		c.advance(20 * time.Millisecond)
+		r.Tick()
+	}
+}
+
+// What happened in the first real meeting: somebody muted, came back a minute
+// later and spoke, and the clip carried audio from before the mute, so the file
+// said it was over a minute long and Sarvam refused it.
+func TestAClipAfterAMuteIsOnlyAsLongAsWhatWasSaid(t *testing.T) {
+	r, clock, clips, _ := newTestRecorder()
+	ts := uint32(1000)
+	stream(r, clock, &ts, time.Second)
+	clock.advance(70 * time.Second) // muted: no packets, the sender's clock runs on
+	ts += 70 * 48000
+	r.Speaking(true)
+	stream(r, clock, &ts, 10*time.Second)
+	r.Speaking(false)
+	stream(r, clock, &ts, 2*time.Second)
+	if len(*clips) != 1 {
+		t.Fatalf("one clip, got %d", len(*clips))
+	}
+	if got := oggSeconds(t, (*clips)[0].Audio); got > 12 {
+		t.Errorf("the file says %.1f s for 10 s of speech", got)
+	}
+}
+
+func TestAJumpInTheAudioNeverMakesAFileOverTheLimit(t *testing.T) {
+	r, clock, clips, _ := newTestRecorder()
+	ts := uint32(1000)
+	r.Speaking(true)
+	stream(r, clock, &ts, 5*time.Second)
+	ts += 40 * 48000 // the sender's timestamps leap forward mid-speech
+	stream(r, clock, &ts, 5*time.Second)
+	ts -= 3 * 960 // and a few late packets arrive
+	stream(r, clock, &ts, 40*time.Millisecond)
+	stream(r, clock, &ts, 30*time.Second)
+	r.Speaking(false)
+	stream(r, clock, &ts, 2*time.Second)
+	if len(*clips) < 2 {
+		t.Fatalf("got %d clips", len(*clips))
+	}
+	for i, c := range *clips {
+		if got := oggSeconds(t, c.Audio); got > 26 {
+			t.Errorf("clip %d says %.1f s, over the limit", i, got)
+		}
+	}
+}

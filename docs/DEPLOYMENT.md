@@ -778,10 +778,19 @@ The note-taker is off until an administrator sets it up under **Organization, Me
 It needs a Sarvam API key (dashboard.sarvam.ai) and a model for the minutes: a Claude, OpenAI or NVIDIA (build.nvidia.com, Nemotron) key, or the address of a model you run that serves the OpenAI chat API, such as Nemotron on vLLM or NVIDIA NIM.
 Enter keys only on that page; it stores them as secrets and never shows them again.
 
+For NVIDIA, leave the model name empty to use `nvidia/nemotron-3-super-120b-a12b`.
+NVIDIA retires hosted models every few months, and a retired one answers 410.
+A model name NVIDIA no longer lists is refused when it is saved, with ones it does list; a model retired after that is replaced, when the minutes are written, by the first Nemotron model NVIDIA still lists.
+`curl -s https://integrate.api.nvidia.com/v1/models` lists what it offers today.
+
+Everybody finds the minutes of the meetings they were in under **Meeting notes** in the sidebar, or on a phone at the top of **Calls**, as well as by the notification and email they get when the minutes are ready.
+Administrators can also see every meeting's there.
+If the minutes could not be written, everybody who was there is told, the transcript is kept, and anybody who was there can press **Write the minutes again** on the minutes page once the reason, shown there, is put right.
+
 Two things on the server make it work:
 
 - The TeamUp container joins calls itself, so it has to reach LiveKit's media ports (UDP 7882 and TCP 7881) at the address LiveKit gives out.
-  If minutes never arrive, `docker compose logs teamup | grep notetaker` says whether it joined and whether it could hear anybody.
+  If minutes never arrive, `docker compose logs teamup | grep notetaker` says whether it joined, whether it could hear anybody, and what Sarvam and the model answered.
 - It calls `api.sarvam.ai` and your model's address over HTTPS, so outbound HTTPS must be allowed.
 
 Cost follows speech, not meeting length: only what people say is sent to Sarvam, in clips of up to 25 seconds.

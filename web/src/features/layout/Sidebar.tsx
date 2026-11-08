@@ -1,5 +1,5 @@
-import { Link, NavLink } from 'react-router-dom';
-import { CalendarDays, MessageSquare, Video, CheckSquare, Settings, Users, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Link, NavLink, useLocation } from 'react-router-dom';
+import { CalendarDays, MessageSquare, Video, CheckSquare, Settings, Users, ChevronLeft, ChevronRight, NotebookPen } from 'lucide-react';
 import { useUIStore } from '@/shared/store';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { cn } from '@/shared/utils/cn';
@@ -16,10 +16,13 @@ export function Sidebar() {
   // offered to them; administrators and whoever runs a team still have it.
   const { allowed: mayAdminister } = useOrganizationAccess();
   const unreadChats = useUnreadChatCount();
+  // A call's minutes live under /calls but belong with the meeting notes.
+  const onMinutes = useLocation().pathname.endsWith('/minutes');
 
   const navItems = [
     { path: '/chat', label: 'Chat', icon: MessageSquare },
     { path: '/calls', label: 'Calls', icon: Video },
+    { path: '/meeting-notes', label: 'Meeting notes', icon: NotebookPen },
     { path: '/calendar', label: 'Calendar', icon: CalendarDays },
     { path: '/tasks', label: 'Tasks', icon: CheckSquare },
     ...(mayAdminister ? [{ path: '/organization', label: 'Organization', icon: Users }] : []),
@@ -66,7 +69,7 @@ export function Sidebar() {
               className={({ isActive }) =>
                 cn(
                   'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
-                  isActive
+                  (item.path === '/meeting-notes' ? isActive || onMinutes : isActive && !(item.path === '/calls' && onMinutes))
                     ? 'bg-primary text-primary-foreground'
                     : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
                   !sidebarOpen && 'justify-center px-2'

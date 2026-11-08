@@ -1,8 +1,10 @@
 package notetaker
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Settings are the organization's, saved by an administrator. The keys are
@@ -30,7 +32,7 @@ const (
 	DefaultAnthropicURL   = "https://api.anthropic.com"
 	DefaultOpenAIURL      = "https://api.openai.com/v1"
 	DefaultNVIDIAURL      = "https://integrate.api.nvidia.com/v1"
-	DefaultNVIDIAModel    = "nvidia/llama-3.3-nemotron-super-49b-v1"
+	DefaultNVIDIAModel    = "nvidia/nemotron-3-super-120b-a12b"
 	DefaultAnthropicModel = "claude-sonnet-5-5"
 	DefaultLanguage       = "en-IN"
 )
@@ -71,6 +73,36 @@ func (s Settings) Validate() error {
 	return nil
 }
 
+// CheckModel asks NVIDIA whether it still offers the model named, so a retired
+// or misspelt one is caught when it is saved rather than after a meeting. If
+// NVIDIA cannot be asked, the settings are saved anyway: the minutes fall back
+// to a model it does offer.
+func (s Settings) CheckModel(ctx context.Context) error {
+	if s.LLMProvider != "nvidia" || s.LLMModel == "" {
+		return nil
+	}
+	base := s.LLMBaseURL
+	if base == "" {
+		base = DefaultNVIDIAURL
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	offered, err := ListModels(ctx, base, s.LLMKey)
+	if err != nil || len(offered) == 0 || contains(offered, s.LLMModel) {
+		return nil
+	}
+	var some []string
+	for _, m := range NVIDIAFallbacks {
+		if contains(offered, m) {
+			some = append(some, m)
+		}
+	}
+	if len(some) == 0 {
+		return fmt.Errorf("NVIDIA does not offer %s. Leave the model name empty to use its default", s.LLMModel)
+	}
+	return fmt.Errorf("NVIDIA does not offer %s. Leave the model name empty for %s, or try %s", s.LLMModel, some[0], strings.Join(some[1:], ", "))
+}
+
 func (s Settings) transcriber() Transcriber {
 	base := s.STTBaseURL
 	if base == "" {
@@ -100,7 +132,9 @@ func (s Settings) writer() Writer {
 		if model == "" {
 			model = DefaultNVIDIAModel
 		}
-		return OpenAICompatible{BaseURL: base, APIKey: s.LLMKey, Model: model}
+		// Reasoning models spend tokens thinking before they answer, and
+		// NVIDIA's default allowance is too small for minutes after that.
+		return NVIDIA{OpenAICompatible{BaseURL: base, APIKey: s.LLMKey, Model: model, MaxTokens: 16384}}
 	case "openai-compatible":
 		return OpenAICompatible{BaseURL: s.LLMBaseURL, APIKey: s.LLMKey, Model: s.LLMModel}
 	default:

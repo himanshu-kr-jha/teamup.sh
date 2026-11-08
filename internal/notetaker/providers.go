@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -26,7 +27,9 @@ type Writer interface {
 	Write(ctx context.Context, system, prompt string) (string, error)
 }
 
-var httpClient = &http.Client{Timeout: 2 * time.Minute}
+// The timeout is long because a reasoning model may think for minutes over a
+// long meeting before it answers.
+var httpClient = &http.Client{Timeout: 5 * time.Minute}
 
 // ── Sarvam ──────────────────────────────────────────────────────────────────
 
@@ -123,17 +126,24 @@ type OpenAICompatible struct {
 	BaseURL string
 	APIKey  string
 	Model   string
+	// MaxTokens is sent only when set: some services answer briefly without
+	// it, and OpenAI's newest models refuse it.
+	MaxTokens int
 }
 
 func (o OpenAICompatible) Write(ctx context.Context, system, prompt string) (string, error) {
-	payload, _ := json.Marshal(map[string]any{
+	body := map[string]any{
 		"model": o.Model,
 		"messages": []map[string]string{
 			{"role": "system", "content": system},
 			{"role": "user", "content": prompt},
 		},
 		"temperature": 0.2,
-	})
+	}
+	if o.MaxTokens > 0 {
+		body["max_tokens"] = o.MaxTokens
+	}
+	payload, _ := json.Marshal(body)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(o.BaseURL, "/")+"/chat/completions", bytes.NewReader(payload))
 	if err != nil {
 		return "", err
@@ -158,6 +168,92 @@ func (o OpenAICompatible) Write(ctx context.Context, system, prompt string) (str
 	return out.Choices[0].Message.Content, nil
 }
 
+// ── NVIDIA ──────────────────────────────────────────────────────────────────
+
+// NVIDIA is NVIDIA's hosted models (build.nvidia.com), which serve the OpenAI
+// chat API. NVIDIA retires models every few months, and a retired one answers
+// 404 or 410, so when the chosen model is gone the minutes are written by the
+// first of NVIDIAFallbacks that NVIDIA still lists, rather than not at all.
+type NVIDIA struct {
+	OpenAICompatible
+}
+
+// NVIDIAFallbacks are tried in order when the chosen model is retired.
+var NVIDIAFallbacks = []string{
+	"nvidia/nemotron-3-super-120b-a12b",
+	"nvidia/nemotron-3-ultra-550b-a55b",
+	"nvidia/nemotron-3.5-super-vl-120b-a12b",
+	"nvidia/nemotron-3.5-lightning-30b-a3b",
+}
+
+func (n NVIDIA) Write(ctx context.Context, system, prompt string) (string, error) {
+	text, err := n.OpenAICompatible.Write(ctx, system, prompt)
+	if !isGone(err) {
+		return text, err
+	}
+	offered, lerr := ListModels(ctx, n.BaseURL, n.APIKey)
+	if lerr != nil {
+		return "", err
+	}
+	for _, m := range NVIDIAFallbacks {
+		if m != n.Model && contains(offered, m) {
+			next := n.OpenAICompatible
+			next.Model = m
+			return next.Write(ctx, system, prompt)
+		}
+	}
+	return "", err
+}
+
+func isGone(err error) bool {
+	var he *httpError
+	return errors.As(err, &he) && (he.Status == http.StatusNotFound || he.Status == http.StatusGone)
+}
+
+func contains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// ListModels asks an OpenAI-compatible service which models it offers.
+func ListModels(ctx context.Context, baseURL, key string) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(baseURL, "/")+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	var out struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := do(req, &out); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(out.Data))
+	for _, m := range out.Data {
+		ids = append(ids, m.ID)
+	}
+	return ids, nil
+}
+
+// httpError is a service's refusal, with what it said and without the key.
+type httpError struct {
+	Host   string
+	Status int
+	Body   string
+}
+
+func (e *httpError) Error() string {
+	return fmt.Sprintf("%s answered %d: %s", e.Host, e.Status, e.Body)
+}
+
 // do sends a request and decodes a JSON answer, turning anything else into an
 // error that carries what the service said, without the key.
 func do(req *http.Request, out any) error {
@@ -172,7 +268,7 @@ func do(req *http.Request, out any) error {
 		if len(msg) > 300 {
 			msg = msg[:300]
 		}
-		return fmt.Errorf("%s answered %d: %s", req.URL.Host, resp.StatusCode, msg)
+		return &httpError{Host: req.URL.Host, Status: resp.StatusCode, Body: msg}
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
 		return fmt.Errorf("%s sent something that is not JSON", req.URL.Host)

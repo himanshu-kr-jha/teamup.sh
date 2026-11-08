@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -18,6 +19,54 @@ func RegisterRoutes(rg *gin.RouterGroup, s *Service) {
 	rg.GET("/org/notetaker", requireAdmin, s.getSettings)
 	rg.PUT("/org/notetaker", requireAdmin, s.putSettings)
 	rg.GET("/calls/:id/minutes", s.getMinutes)
+	rg.POST("/calls/:id/minutes/retry", s.retryMinutes)
+	rg.GET("/meeting-notes", s.listNotes)
+}
+
+// listNotes is the Meeting notes page: ?scope=all for an administrator's view
+// of every meeting, ?q= to search, ?before= for older ones.
+func (s *Service) listNotes(c *gin.Context) {
+	orgID, userID, isAdmin, ok := caller(c)
+	if !ok {
+		return
+	}
+	q := ListQuery{All: c.Query("scope") == "all", Search: c.Query("q")}
+	if b := c.Query("before"); b != "" {
+		t, err := time.Parse(time.RFC3339Nano, b)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid before"})
+			return
+		}
+		q.Before = &t
+	}
+	items, more, err := s.List(c.Request.Context(), orgID, userID, isAdmin, q)
+	if err != nil {
+		httpx.Error(c, err, "failed to list the meeting notes")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items, "hasMore": more})
+}
+
+func (s *Service) retryMinutes(c *gin.Context) {
+	orgID, userID, isAdmin, ok := caller(c)
+	if !ok {
+		return
+	}
+	callID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return
+	}
+	switch err := s.Retry(c.Request.Context(), orgID, callID, userID, isAdmin); {
+	case errors.Is(err, ErrNoNotes):
+		c.JSON(http.StatusNotFound, gin.H{"error": "there are no minutes for this call"})
+	case errors.Is(err, ErrCannotRetry):
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	case err != nil:
+		httpx.Error(c, err, "failed to write the minutes again")
+	default:
+		c.JSON(http.StatusAccepted, gin.H{"status": "writing"})
+	}
 }
 
 func requireAdmin(c *gin.Context) {
@@ -111,6 +160,10 @@ func (s *Service) putSettings(c *gin.Context) {
 		LLMBaseURL:  strings.TrimSpace(req.LLMBaseURL),
 	}
 	if err := next.Validate(); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := next.CheckModel(c.Request.Context()); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

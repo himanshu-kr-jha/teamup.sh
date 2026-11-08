@@ -134,7 +134,7 @@ func TestSettingsSayWhyTheyAreNotReady(t *testing.T) {
 	if ok, _ := nv.Ready(); !ok {
 		t.Errorf("NVIDIA needs only a key")
 	}
-	if w := nv.writer().(OpenAICompatible); w.BaseURL != DefaultNVIDIAURL || w.Model != DefaultNVIDIAModel {
+	if w := nv.writer().(NVIDIA); w.BaseURL != DefaultNVIDIAURL || w.Model != DefaultNVIDIAModel || !contains(NVIDIAFallbacks, w.Model) {
 		t.Errorf("NVIDIA's own address and a Nemotron model by default: %+v", w)
 	}
 	if ok, _ := (Settings{Enabled: true, STTKey: "k", LLMKey: "k"}).Ready(); !ok {

@@ -166,6 +166,19 @@ export interface MeetingMinutes {
   transcript: Array<{ speaker: string; startedAt: string; text: string }>;
 }
 
+export interface MeetingNotesItem {
+  callId: string;
+  title: string;
+  date: string;
+  status: MeetingMinutes['status'];
+  summary?: string;
+  actionItems: number;
+  attendees: string[];
+  error?: string;
+  /** False for a meeting an administrator sees without having been in it. */
+  attended: boolean;
+}
+
 export const notetakerApi = {
   get: () => api.get<NotetakerSettings>('/org/notetaker'),
   /** Keys left empty keep what is saved. */
@@ -181,6 +194,11 @@ export const notetakerApi = {
     llmBaseUrl: string;
   }) => api.put<NotetakerSettings>('/org/notetaker', data),
   minutes: (callId: string) => api.get<MeetingMinutes>(`/calls/${callId}/minutes`),
+  /** Writes failed minutes again from the saved transcript; they arrive as after a call. */
+  retry: (callId: string) => api.post<{ status: 'writing' }>(`/calls/${callId}/minutes/retry`),
+  /** Meetings with notes, newest first: the caller's own, or every one for an administrator's `scope: 'all'`. */
+  list: (params: { scope?: 'mine' | 'all'; q?: string; before?: string }) =>
+    api.get<{ items: MeetingNotesItem[]; hasMore: boolean }>('/meeting-notes', { params }),
 };
 
 export const statusApi = {
