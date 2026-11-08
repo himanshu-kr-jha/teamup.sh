@@ -1073,3 +1073,46 @@ func TestForwardedAndAvatarsMigrationIsReversible(t *testing.T) {
 		t.Errorf("messages kept, picture back to initials: %d %v", messages, avatar)
 	}
 }
+
+// Guest links go up empty beside existing calls, and going back takes the
+// links and the record of guests with them, and leaves the calls.
+func TestMeetingGuestsMigrationIsReversible(t *testing.T) {
+	const version = 27
+	f := newMigrateFixture(t)
+	f.mustRun("up")
+	f.downTo(version - 1)
+	conn := f.conn()
+	ctx := context.Background()
+	if _, err := conn.Exec(ctx, `
+		WITH o AS (INSERT INTO organizations (name, subdomain) VALUES ('Gst', 'gst') RETURNING id),
+		u AS (INSERT INTO users (id, org_id, name, email, role, is_active)
+		      SELECT '00000000-0000-0000-0000-0000000000b2', id, 'Gil', 'gil@gst.test', 'member', true FROM o RETURNING id, org_id)
+		INSERT INTO calls (id, org_id, room_name, title, call_type, status, created_by)
+		SELECT '00000000-0000-0000-0000-0000000000d1', org_id, 'room-g', 'Review', 'video', 'scheduled', id FROM u
+	`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	f.mustRun("up")
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO call_guest_links (call_id, org_id, token, passcode)
+		SELECT id, org_id, 'tok', '123456' FROM calls;
+		INSERT INTO call_guests (id, call_id, name) VALUES ('00000000-0000-0000-0000-0000000000e1', '00000000-0000-0000-0000-0000000000d1', 'Pat');
+		INSERT INTO call_guest_attempts (call_id, ip) VALUES ('00000000-0000-0000-0000-0000000000d1', '203.0.113.9');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, `INSERT INTO call_guest_links (call_id, org_id, token) SELECT id, org_id, 'tok' FROM calls`); err == nil {
+		t.Errorf("one link per meeting, and tokens are unique")
+	}
+
+	f.downTo(version - 1)
+	var calls int
+	var linksLeft bool
+	if err := conn.QueryRow(ctx, `SELECT (SELECT COUNT(*) FROM calls), to_regclass('call_guest_links') IS NOT NULL`).Scan(&calls, &linksLeft); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || linksLeft {
+		t.Errorf("calls kept, guest tables gone: %d %v", calls, linksLeft)
+	}
+}

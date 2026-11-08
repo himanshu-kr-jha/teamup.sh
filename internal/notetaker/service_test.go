@@ -238,6 +238,48 @@ func TestEverybodyWhoWasThereGetsTheMinutesAndNobodyElseCanReadThem(t *testing.T
 	}
 }
 
+// A guest let in by the meeting's link is heard, and named in the minutes,
+// though they have no account to receive them.
+func TestAGuestIsHeardAndNamedInTheMinutes(t *testing.T) {
+	w := newWorld(t)
+	srv := standIns(t)
+	ctx := context.Background()
+	pool := w.svc.db
+	guestID := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO call_guests (id, call_id, name) VALUES ($1, $2, 'Pat Partner')`, guestID, w.callID); err != nil {
+		t.Fatal(err)
+	}
+	join := w.svc.join
+	w.svc.join = func(sess *session) error {
+		start := time.Date(2026, 11, 8, 10, 0, 6, 0, time.UTC)
+		sess.clips <- Clip{Speaker: Speaker{UserID: "guest-" + guestID.String(), Name: "Pat Partner"}, StartedAt: start, EndedAt: start.Add(time.Second), Audio: []byte("Sounds good to us")}
+		return join(sess)
+	}
+	if err := w.orgs.SetConfig(ctx, w.orgID, ConfigKey, Settings{Enabled: true, STTKey: "k", STTBaseURL: srv.URL, LLMKey: "k", LLMBaseURL: srv.URL}, true); err != nil {
+		t.Fatal(err)
+	}
+	w.svc.PersonJoined(ctx, w.orgID, w.callID, "room-1")
+	notes := w.waitFor(t, w.router(t, w.ada, "member"))
+	if notes.Status != "ready" {
+		t.Fatalf("minutes: %+v", notes)
+	}
+	if got := notes.Minutes.Attendees; len(got) != 3 || got[2] != "Pat Partner (guest)" {
+		t.Errorf("attendees: %v", got)
+	}
+	heard := false
+	for _, s := range notes.Transcript {
+		heard = heard || (s.Speaker == "Pat Partner" && s.Text == "Sounds good to us")
+	}
+	if !heard {
+		t.Errorf("the guest is in the transcript: %+v", notes.Transcript)
+	}
+	w.sent.mu.Lock()
+	defer w.sent.mu.Unlock()
+	if len(w.sent.notified) != 2 {
+		t.Errorf("only members are sent the minutes: %d", len(w.sent.notified))
+	}
+}
+
 func TestTurnedOffItDoesNotJoin(t *testing.T) {
 	w := newWorld(t)
 	ctx := context.Background()

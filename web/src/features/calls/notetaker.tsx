@@ -12,7 +12,7 @@ export function isNotetaker(p: { identity: string; isAgent?: boolean }): boolean
  * Says, to everybody in the call, that notes are being taken and who gets the
  * minutes. The note-taker is never hidden: people should know what is written down.
  */
-export function NotesBanner() {
+export function NotesBanner({ asGuest = false }: { asGuest?: boolean }) {
   const participants = useParticipants();
   if (!participants.some(isNotetaker)) return null;
   return (
@@ -22,7 +22,11 @@ export function NotesBanner() {
       className="flex shrink-0 items-center justify-center gap-2 border-b border-border bg-primary/10 px-3 py-1.5 text-xs"
     >
       <NotebookPen className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden="true" />
-      <span>Notes are being taken. Everybody here gets the minutes when the call ends.</span>
+      <span>
+        {asGuest
+          ? 'Notes are being taken, including what you say, for the minutes of this meeting.'
+          : 'Notes are being taken. Everybody here gets the minutes when the call ends.'}
+      </span>
     </div>
   );
 }

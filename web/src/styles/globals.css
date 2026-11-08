@@ -86,6 +86,12 @@
     height: 100dvh;
   }
 
+  /* The same, as the least a page fills, for a page that may grow past it. */
+  .min-h-viewport {
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+
   /*
    * Breaks anywhere it has to, including inside a word.
    *

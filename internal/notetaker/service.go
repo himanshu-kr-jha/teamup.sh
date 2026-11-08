@@ -31,6 +31,9 @@ const ConfigKey = "notetaker"
 // the attendance record can tell it from a person.
 const IdentityPrefix = "notes-"
 
+// guestPrefix starts a guest's identity, as calls.GuestIdentityPrefix does.
+const guestPrefix = "guest-"
+
 // ConfigStore reads and writes the organization's settings.
 type ConfigStore interface {
 	GetConfigInto(ctx context.Context, orgID uuid.UUID, key string, dst interface{}) error
@@ -224,7 +227,8 @@ func (s *Service) joinRoom(sess *session) error {
 		if strings.HasPrefix(p.Identity(), IdentityPrefix) {
 			return
 		}
-		if _, err := uuid.Parse(p.Identity()); err != nil {
+		// A member, or a guest let in by the meeting's link.
+		if _, err := uuid.Parse(strings.TrimPrefix(p.Identity(), guestPrefix)); err != nil {
 			return
 		}
 		s.logger.Debug().Str("who", p.Name()).Bool("speaking", p.IsSpeaking()).Msg("notetaker: speaking")
@@ -384,9 +388,17 @@ func (s *Service) compose(ctx context.Context, orgID, callID uuid.UUID, set Sett
 		s.markFailed(callID, "Could not read the meeting.")
 		return
 	}
-	names := make([]string, len(attendees))
-	for i, a := range attendees {
-		names[i] = a.name
+	names := make([]string, 0, len(attendees))
+	for _, a := range attendees {
+		names = append(names, a.name)
+	}
+	// Guests are in the minutes, though they have no account to receive them.
+	guests, err := s.guestNames(ctx, callID)
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("notetaker: could not read the guests")
+	}
+	for _, g := range guests {
+		names = append(names, g+" (guest)")
 	}
 	minutes, err := Write(ctx, set.writer(), title, startedAt, names, segments, time.UTC)
 	if err != nil {
@@ -452,6 +464,14 @@ func (s *Service) meeting(ctx context.Context, callID uuid.UUID) (string, time.T
 		out = append(out, a)
 	}
 	return title, when, out, rows.Err()
+}
+
+func (s *Service) guestNames(ctx context.Context, callID uuid.UUID) ([]string, error) {
+	rows, err := s.db.Query(ctx, `SELECT name FROM call_guests WHERE call_id = $1 GROUP BY name ORDER BY MIN(created_at)`, callID)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[string])
 }
 
 func (s *Service) segments(ctx context.Context, callID uuid.UUID) ([]Segment, error) {

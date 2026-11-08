@@ -43,6 +43,10 @@ const EXPECTED_NOISE = [
   /status of 403 .*\/api\/calls\/[^/]+\/requests/,
   // The call log of a call you are not part of is refused with 404 and the dialog says so.
   /status of 404 .*\/api\/calls\/[^/]+\/log/,
+  // A guest's wrong passcode is refused with 401, and a link that was turned off with 404;
+  // the guest page says so.
+  /status of 401 .*\/api\/guest\/[^/]+\/join/,
+  /status of 404 .*\/api\/guest\/[^/]+$/,
 ];
 // Asking "who am I?" before signing in is answered 401 by design, and the browser logs every 401.
 const SIGNED_OUT_PROBES = /status of 401 .*\/api\/auth\/(me|refresh)\b/;

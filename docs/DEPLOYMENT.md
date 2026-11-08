@@ -772,6 +772,20 @@ It is linked from the sign-in page and from the user menu, and while something i
 The history lives in Redis, so it survives restarts of the app but not of Redis, and a time nothing was running to record shows as "no record".
 It carries no error text, host names or ports; for those, read `/readyz` from inside the network as below.
 
+## Guests in meetings
+
+A meeting's organizer, or an administrator, can let people from outside the organization join it: **Make a guest link** in the meeting's details in the calendar, or **Guests** at the top of the call.
+The link is `/join/<token>` on this server, with a six-digit passcode by default.
+A guest gives their name and the passcode, and comes in once somebody from the organization has started the meeting; they are shown as a guest to everybody.
+The organizer can remove a guest, change the passcode, make a new link, or turn the link off, which takes every guest out.
+
+The guest page and its two requests (`GET /api/guest/:token`, `POST /api/guest/:token/join`) need no account, so they have to be reachable from the internet like the rest of the site.
+Wrong passcodes are limited to 5 in 10 minutes from one address and 50 for the link as a whole.
+The address is the `X-Real-IP` the bundled nginx sets; behind another proxy, set the same header, or every guest counts as one address.
+A guest's call token lasts 10 minutes and LiveKit renews it while they stay; one who was removed, or whose link was turned off, is put out again if they come back.
+The note-taker hears guests and names them in the minutes, which only members receive.
+`0027_meeting_guests` adds the tables, and its down migration removes every guest link.
+
 ## Meeting notes
 
 The note-taker is off until an administrator sets it up under **Organization, Meeting notes** and turns it on.

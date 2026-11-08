@@ -51,7 +51,13 @@ api.interceptors.response.use(
   async (error: AxiosError) => {
     const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
 
-    if (error.response?.status === 401 && !originalRequest._retry && !originalRequest.url?.includes('/auth/refresh')) {
+    // A guest has no session to refresh: their 401 is a wrong passcode.
+    if (
+      error.response?.status === 401 &&
+      !originalRequest._retry &&
+      !originalRequest.url?.includes('/auth/refresh') &&
+      !originalRequest.url?.startsWith('/guest/')
+    ) {
       if (isRefreshing) {
         return new Promise((resolve, reject) => {
           failedQueue.push({ resolve, reject });
@@ -70,7 +76,7 @@ api.interceptors.response.use(
       } catch (err) {
         processQueue(err, null);
         // Redirect to login, but not if already on login or wizard pages
-        const publicPaths = ['/login', '/wizard', '/status'];
+        const publicPaths = ['/login', '/wizard', '/status', '/join'];
         const isPublicPath = publicPaths.some(p => window.location.pathname === p || window.location.pathname.startsWith(p + '/'));
         if (!isPublicPath) {
           window.location.href = loginPathFor(window.location.pathname, window.location.search);
@@ -418,7 +424,36 @@ export const scrumsApi = {
     getList<ScrumSummary>('/scrums', 'scrums', params),
 };
 
+export interface GuestLink {
+  enabled: boolean;
+  /** /join/<token>, when it is on. */
+  path?: string;
+  passcode?: string;
+  canManage: boolean;
+}
+
+export interface GuestMeeting {
+  title: string;
+  organization: string;
+  startsAt?: string;
+  endsAt?: string;
+  state: 'waiting' | 'open' | 'ended';
+  passcodeRequired: boolean;
+}
+
+/** What somebody from outside the organization uses, with a meeting's guest link and no account. */
+export const guestApi = {
+  meeting: (token: string) => api.get<GuestMeeting>(`/guest/${encodeURIComponent(token)}`),
+  join: (token: string, data: { name: string; passcode: string }) =>
+    api.post<{ token: string; roomName: string; identity: string; name: string }>(`/guest/${encodeURIComponent(token)}/join`, data),
+};
+
 export const callsApi = {
+  guestLink: (id: string) => api.get<GuestLink>(`/calls/${id}/guest-link`),
+  /** passcode: a new one, '' for none, or left out to keep it. */
+  setGuestLink: (id: string, data: { enabled: boolean; passcode?: string; newLink?: boolean }) =>
+    api.put<GuestLink>(`/calls/${id}/guest-link`, data),
+  removeGuest: (id: string, guestId: string) => api.post(`/calls/${id}/guests/${guestId}/remove`),
   list: (params?: { status?: string; channelId?: string }) => getList('/calls', 'calls', params),
   create: (data: { title?: string; channelId?: string; callType: 'video' | 'audio'; invitees?: string[] }) =>
     api.post<{ id: string; roomName: string }>('/calls', data),

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { GuestAccess } from '@/features/calls/GuestAccess';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { CalendarClock, History, Loader2, Lock, Pencil, Timer, Trash2, Video } from 'lucide-react';
@@ -131,6 +132,11 @@ export function EventDialog({
               <p className="text-muted-foreground">You can join from {JOIN_EARLY_MINUTES} minutes before it starts.</p>
             )}
           </div>
+
+          {/* Guests from outside, for a meeting that is still to come or on. */}
+          {item.source === 'meeting' && item.callId && (item.status === 'scheduled' || item.status === 'active' || stillOn) && (
+            <GuestAccess callId={item.callId} title={item.title} />
+          )}
 
           {confirming ? (
             <DialogFooter className="gap-2">

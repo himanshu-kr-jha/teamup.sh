@@ -11,6 +11,7 @@ import { AdminPage } from '@/features/admin/AdminPage';
 import { CallViewPage } from '@/features/calls/CallViewPage';
 import { MinutesPage } from '@/features/calls/MinutesPage';
 import { MeetingNotesPage } from '@/features/calls/MeetingNotesPage';
+import { GuestJoinPage } from '@/features/calls/GuestJoinPage';
 import { AttendancePage } from '@/features/calls/standing/AttendancePage';
 import { CalendarPage } from '@/features/calendar/CalendarPage';
 import { StatusPage } from '@/features/status/StatusPage';
@@ -65,6 +66,12 @@ export const router = createBrowserRouter([
   {
     path: '/status',
     element: <StatusPage />,
+    errorElement: <ErrorPage />,
+  },
+  // A meeting's guests, from outside the organization: no account, no app.
+  {
+    path: '/join/:token',
+    element: <GuestJoinPage />,
     errorElement: <ErrorPage />,
   },
   {

@@ -115,6 +115,8 @@ line-by-line detail.
 - **Calls and meetings** — LiveKit SFU, multi-party audio/video, screen share,
   voice calls from any conversation, knock to join, standing meetings with
   attendance from LiveKit's own webhooks, recording to object storage
+- **Guests** - people from outside the organization join a meeting by its
+  link, with their name and a passcode, and the organizer can remove them
 - **Meeting notes** — a visible note-taker in every call while an administrator
   has it on, Sarvam speech to text, minutes written by Claude, OpenAI, NVIDIA or
   your own model, sent to everybody who was there and kept under Meeting notes

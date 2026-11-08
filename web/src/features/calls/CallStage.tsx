@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import {
   ConnectionQualityIndicator,
   TrackRefContext,
@@ -10,7 +11,7 @@ import {
 } from '@livekit/components-react';
 import { Track } from 'livekit-client';
 import type { TrackReferenceOrPlaceholder } from '@livekit/components-react';
-import { ChevronLeft, ChevronRight, MicOff, MonitorUp, NotebookPen, Pin, PinOff, Volume2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, MicOff, MonitorUp, NotebookPen, Pin, PinOff, UserX, Volume2 } from 'lucide-react';
 import { isNotetaker } from './notetaker';
 import { Button } from '@/shared/components/ui/button';
 import { callsApi } from '@/shared/api/client';
@@ -40,7 +41,31 @@ import {
  * when the sharing stops. Several people can share at once: one is on stage and the
  * others wait in the strip, a click away.
  */
-export function CallStage({ callId, compact }: { callId: string; compact: boolean }) {
+/** The guest identity prefix (internal/calls). */
+export const GUEST_PREFIX = 'guest-';
+
+export function isGuest(p: { identity: string }): boolean {
+  return p.identity.startsWith(GUEST_PREFIX);
+}
+
+/** Who is looking at the stage: a guest has no account to mute or remove with. */
+const ViewerContext = createContext<{ asGuest: boolean; canRemoveGuests: boolean }>({ asGuest: false, canRemoveGuests: false });
+
+export function CallStage({ callId, compact, asGuest = false }: { callId: string; compact: boolean; asGuest?: boolean }) {
+  const { data: guestLink } = useQuery({
+    queryKey: ['guest-link', callId],
+    queryFn: async () => (await callsApi.guestLink(callId)).data,
+    enabled: !asGuest,
+  });
+  const viewer = useMemo(() => ({ asGuest, canRemoveGuests: !asGuest && !!guestLink?.canManage }), [asGuest, guestLink?.canManage]);
+  return (
+    <ViewerContext.Provider value={viewer}>
+      <Stage callId={callId} compact={compact} />
+    </ViewerContext.Provider>
+  );
+}
+
+function Stage({ callId, compact }: { callId: string; compact: boolean }) {
   const [pinnedIdentity, setPinnedIdentity] = useState<string | null>(null);
   const [chosenShare, setChosenShare] = useState<string | null>(null);
 
@@ -277,6 +302,9 @@ function ParticipantPanel({
   const participant = track.participant;
   const speaking = useIsSpeaking(participant);
   const [muting, setMuting] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const viewer = useContext(ViewerContext);
+  const guest = isGuest(participant);
 
   const name = nameOf(track);
   const isLocal = participant.isLocal;
@@ -293,7 +321,18 @@ function ParticipantPanel({
     ? isLocal
       ? 'You are presenting'
       : `${name} is presenting`
-    : `${name}${isLocal ? ' (you)' : ''}`;
+    : `${name}${guest ? ' (guest)' : ''}${isLocal ? ' (you)' : ''}`;
+
+  const remove = async () => {
+    setRemoving(true);
+    try {
+      await callsApi.removeGuest(callId, participant.identity.slice(GUEST_PREFIX.length));
+      toast.success(`${name} was removed from the meeting.`);
+    } catch (err) {
+      toast.error(apiErrorMessage(err, `Could not remove ${name}.`));
+      setRemoving(false);
+    }
+  };
 
   const mute = async () => {
     setMuting(true);
@@ -377,7 +416,20 @@ function ParticipantPanel({
             )}
             {/* Muting is one way: anybody can quieten a forgotten microphone,
                 but only its owner can turn it back on. */}
-            {!isLocal && !microphoneOff && (
+            {guest && !isLocal && viewer.canRemoveGuests && (
+              <Button
+                size="icon"
+                variant="secondary"
+                className="h-7 w-7"
+                disabled={removing}
+                onClick={remove}
+                aria-label={`Remove ${name} from the meeting`}
+                title={`Remove ${name}`}
+              >
+                <UserX className="h-3.5 w-3.5" />
+              </Button>
+            )}
+            {!isLocal && !microphoneOff && !viewer.asGuest && (
               <Button
                 size="icon"
                 variant="secondary"

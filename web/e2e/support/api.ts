@@ -17,7 +17,7 @@ export class Api {
     return new Api(ctx, body.user.id);
   }
 
-  async call<T = any>(method: 'get' | 'post' | 'patch' | 'delete', path: string, data?: unknown, expected = [200, 201, 204]): Promise<T> {
+  async call<T = any>(method: 'get' | 'post' | 'patch' | 'put' | 'delete', path: string, data?: unknown, expected = [200, 201, 204]): Promise<T> {
     const res = await this.ctx[method](`/api${path}`, data === undefined ? {} : { data });
     if (!expected.includes(res.status())) {
       throw new Error(`${method.toUpperCase()} ${path} -> ${res.status()} ${await res.text()}`);
@@ -29,6 +29,7 @@ export class Api {
   get = <T = any>(path: string) => this.call<T>('get', path);
   post = <T = any>(path: string, data?: unknown) => this.call<T>('post', path, data ?? {});
   patch = <T = any>(path: string, data: unknown) => this.call<T>('patch', path, data);
+  put = <T = any>(path: string, data: unknown) => this.call<T>('put', path, data);
   del = <T = any>(path: string) => this.call<T>('delete', path);
 
   /** Status only, for asserting what somebody is refused. */

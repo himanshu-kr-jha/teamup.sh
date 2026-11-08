@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -84,6 +85,13 @@ func (s *Service) HandleWebhook(ctx context.Context, event *livekit.WebhookEvent
 	}
 
 	participant := event.GetParticipant()
+	// A guest is not on the attendance trail; arriving is only checked.
+	if strings.HasPrefix(participant.GetIdentity(), GuestIdentityPrefix) {
+		if event.GetEvent() == webhook.EventParticipantJoined {
+			s.guestArrived(ctx, call, roomName, participant.GetIdentity())
+		}
+		return nil
+	}
 	userID, known, err := s.personInOrg(ctx, call.OrgID, participant.GetIdentity())
 	if err != nil || !known || participant.GetSid() == "" {
 		return err

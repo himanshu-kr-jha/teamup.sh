@@ -21,6 +21,7 @@ import { useQuery } from '@tanstack/react-query';
 import { CallStage } from './CallStage';
 import { NotesBanner } from './notetaker';
 import { CallControls, CompactCallControls, ShareUnavailableNote } from './CallControls';
+import { GuestAccess } from './GuestAccess';
 import { CallLogDialog } from './CallLogDialog';
 import { copyCallLink } from './copyLink';
 import { classifyJoinError, type JoinFailure } from './knock';
@@ -34,6 +35,7 @@ import {
   Minimize2,
   PhoneOff,
   Volume2,
+  UserPlus,
 } from 'lucide-react';
 import '@livekit/components-styles';
 import { Button } from '@/shared/components/ui/button';
@@ -168,7 +170,7 @@ function useJoinAnnouncements() {
  * how a page arrived at from a link starts. The call then shows people who cannot be
  * heard, and nothing else would retry: only a click on this does.
  */
-function BlockedAudioPrompt({ compact }: { compact: boolean }) {
+export function BlockedAudioPrompt({ compact }: { compact: boolean }) {
   const room = useRoomContext();
   const { canPlayAudio, startAudio } = useAudioPlayback(room);
   if (canPlayAudio) return null;
@@ -422,6 +424,7 @@ function CallFrame({
   const [position, setPosition] = useState(() => ({ x: 8, y: window.innerWidth < 1024 ? 72 : 24 }));
   const [asking, setAsking] = useState(false);
   const [showingLog, setShowingLog] = useState(false);
+  const [showingGuests, setShowingGuests] = useState(false);
   const dragState = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
 
   // Leaving is always just leaving. Anybody still in the call carries on, and
@@ -551,6 +554,16 @@ function CallFrame({
                 >
                   <Link2 className="h-4 w-4" />
                 </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7"
+                  aria-label="Guests"
+                  title="Guests"
+                  onClick={() => setShowingGuests(true)}
+                >
+                  <UserPlus className="h-4 w-4" />
+                </Button>
                 {canReadLog && (
                   <Button
                     variant="ghost"
@@ -596,6 +609,16 @@ function CallFrame({
       </div>
 
       <CallLogDialog callId={callId} open={showingLog} onOpenChange={setShowingLog} live />
+
+      <Dialog open={showingGuests} onOpenChange={setShowingGuests}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Guests</DialogTitle>
+            <DialogDescription>People from outside the organization, let in with a link.</DialogDescription>
+          </DialogHeader>
+          <GuestAccess callId={callId} title={title} />
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={asking} onOpenChange={(open) => !open && setAsking(false)}>
         <DialogContent className="max-w-sm">
@@ -683,7 +706,7 @@ function CallTiles({ callId, compact }: { callId: string; compact: boolean }) {
  * site's certificate. Over plain HTTP - a machine on a local network, say -
  * the port is addressed directly, because there is no proxy in front of it.
  */
-function liveKitURL() {
+export function liveKitURL() {
   if (import.meta.env.VITE_LIVEKIT_URL) return import.meta.env.VITE_LIVEKIT_URL;
   if (window.location.protocol === 'https:') {
     return `wss://${window.location.host}/livekit`;

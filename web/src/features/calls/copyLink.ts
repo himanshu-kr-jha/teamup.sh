@@ -4,7 +4,11 @@
  * that does nothing.
  */
 export async function copyCallLink(callId: string): Promise<boolean> {
-  const url = `${window.location.origin}/calls/${callId}`;
+  return copyText(`${window.location.origin}/calls/${callId}`);
+}
+
+/** Puts any text on the clipboard, the same way. */
+export async function copyText(url: string): Promise<boolean> {
   try {
     if (navigator.clipboard) {
       await navigator.clipboard.writeText(url);

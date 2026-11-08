@@ -699,6 +699,8 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// signed in or not.
 		status.RegisterRoutes(api, statusService)
 		org.RegisterPublicRoutes(api, orgService)
+		// A meeting's guests have no account; the guest link is their credential.
+		calls.RegisterGuestRoutes(api, callsService)
 
 		// Protected routes
 		protected := api.Group("/")

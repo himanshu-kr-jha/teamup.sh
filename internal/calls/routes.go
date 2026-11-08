@@ -47,6 +47,8 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.DELETE("/standing-meetings/:id", h.ArchiveStandingMeeting)
 	rg.POST("/standing-meetings/:id/join", h.JoinStandingMeeting)
 	rg.GET("/standing-meetings/:id/attendance", h.StandingMeetingAttendance)
+
+	registerGuestRoutes(rg, h)
 }
 
 // RegisterWebhook mounts what LiveKit calls. It belongs outside the signed-in group,
