@@ -503,6 +503,21 @@ func (h *Handler) ListMessages(c *gin.Context) {
 		}
 	}
 
+	// A day at a time, as the reader counts days: what the chat page asks for.
+	if c.Query("unit") == "day" {
+		loc, err := time.LoadLocation(c.Query("tz"))
+		if err != nil || c.Query("tz") == "" {
+			loc = time.UTC
+		}
+		messages, more, err := h.service.GetMessagesForDay(c.Request.Context(), channelID, before, beforeID, loc)
+		if err != nil {
+			httpx.Error(c, err, "failed to get messages")
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"messages": messages, "hasMore": more})
+		return
+	}
+
 	messages, err := h.service.GetMessages(c.Request.Context(), channelID, limit, before, beforeID)
 	if err != nil {
 		httpx.Error(c, err, "failed to get messages")

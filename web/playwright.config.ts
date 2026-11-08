@@ -1,3 +1,5 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { defineConfig, devices } from '@playwright/test';
 
 /**
@@ -45,6 +47,9 @@ export default defineConfig({
           args: [
             '--use-fake-ui-for-media-stream',
             '--use-fake-device-for-media-stream',
+            // Speech-like audio instead of the default short beep, so that LiveKit
+            // hears somebody talking, as the meeting note-taker needs.
+            `--use-file-for-fake-audio-capture=${path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'e2e/fixtures/speech.wav')}`,
             '--auto-select-desktop-capture-source=Entire screen',
             '--autoplay-policy=no-user-gesture-required',
           ],

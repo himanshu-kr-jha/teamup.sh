@@ -110,3 +110,6 @@ next-env.d.ts
 
 # Database dumps and object storage archives, from docs/DEPLOYMENT.md.
 backups/
+
+# Where scripts/deploy.sh deploys to. Server addresses stay out of the repository.
+.deploy.env

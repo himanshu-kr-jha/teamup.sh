@@ -135,6 +135,54 @@ export interface StatusReport {
   }>;
 }
 
+/** The meeting note-taker's settings, as an administrator sees them: keys only as set or not. */
+export interface NotetakerSettings {
+  enabled: boolean;
+  sttProvider: 'sarvam';
+  sttModel: string;
+  sttLanguage: string;
+  sttBaseUrl: string;
+  sttKeySet: boolean;
+  llmProvider: 'anthropic' | 'openai' | 'nvidia' | 'openai-compatible';
+  llmModel: string;
+  llmBaseUrl: string;
+  llmKeySet: boolean;
+  ready: boolean;
+  notReady?: string;
+}
+
+export interface MeetingMinutes {
+  status: 'taking' | 'writing' | 'ready' | 'empty' | 'failed';
+  error?: string;
+  minutes?: {
+    title: string;
+    date: string;
+    attendees: string[];
+    summary: string;
+    decisions: string[];
+    actionItems: Array<{ owner: string; task: string; due?: string }>;
+    openQuestions: string[];
+  };
+  transcript: Array<{ speaker: string; startedAt: string; text: string }>;
+}
+
+export const notetakerApi = {
+  get: () => api.get<NotetakerSettings>('/org/notetaker'),
+  /** Keys left empty keep what is saved. */
+  save: (data: {
+    enabled: boolean;
+    sttKey?: string;
+    sttModel: string;
+    sttLanguage: string;
+    sttBaseUrl: string;
+    llmProvider: string;
+    llmKey?: string;
+    llmModel: string;
+    llmBaseUrl: string;
+  }) => api.put<NotetakerSettings>('/org/notetaker', data),
+  minutes: (callId: string) => api.get<MeetingMinutes>(`/calls/${callId}/minutes`),
+};
+
 export const statusApi = {
   get: () => api.get<StatusReport>('/status'),
 };
@@ -245,6 +293,16 @@ export const channelsApi = {
   removeMember: (id: string, userId: string) => api.delete(`/channels/${id}/members/${userId}`),
   markRead: (id: string, messageId: string) => api.post(`/channels/${id}/read`, { messageId }),
   getMessages: (id: string, params?: { limit?: number; before?: string; after?: string }) => getList(`/channels/${id}/messages`, 'messages', params),
+  /**
+   * The newest day with anything in it before the cursor, as days fall where the
+   * reader is, and whether anything older is left.
+   */
+  getMessageDay: async (id: string, cursor?: { before: string; beforeId: string }) => {
+    const res = await api.get<{ messages: unknown[]; hasMore: boolean }>(`/channels/${id}/messages`, {
+      params: { unit: 'day', tz: Intl.DateTimeFormat().resolvedOptions().timeZone, ...cursor },
+    });
+    return { data: (res.data?.messages ?? []) as any[], hasMore: !!res.data?.hasMore };
+  },
   sendMessage: (id: string, data: { content: string; tempId: string; replyTo?: string; attachmentIds?: string[] }) =>
     api.post(`/channels/${id}/messages`, data),
   editMessage: (messageId: string, content: string) => api.patch(`/messages/${messageId}`, { content }),

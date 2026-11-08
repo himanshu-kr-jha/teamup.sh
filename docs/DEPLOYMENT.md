@@ -376,6 +376,9 @@ A backup you have never restored is only a hope.
 
 ### Upgrading
 
+From your own machine, `make deploy` does all of this for you, and keeps going if your connection drops.
+[BUILD-AND-DEPLOY.md](BUILD-AND-DEPLOY.md) describes it; the steps below are what it runs, for doing it by hand.
+
 Back up, build the new version under a new tag, and start it.
 Keep the old image, because it is what makes rollback possible.
 
@@ -464,6 +467,14 @@ The rehearsal could not use the live image, because it was built from an uncommi
 An image of commit `9b339c9` stood in for it, with the files for migrations 15 and 16 added.
 The stand-in has no scrum features, it was checked only for sign-in, pages and basic writes, and the live image was never run.
 It also ran with throwaway secrets, so `signing_keys` was replaced and the owner's password set on the copy, and with `node_ip: 127.0.0.1` so that a call could connect on one machine.
+
+### Upgrading past migration 0024
+
+| Migration | What it does to existing data |
+| --- | --- |
+| `0025_forwarded_messages_and_avatars` | Adds `messages.forwarded`, false for every existing message, and a new `user_avatars` table. Its down migration drops both and sets uploaded pictures back to initials. |
+
+The status page's history lives in Redis, under `teamup:status:*`, and needs no migration.
 
 ### Rolling back
 
@@ -760,6 +771,22 @@ The test machine has no public address, so these could not be run, and the walkt
 It is linked from the sign-in page and from the user menu, and while something is down a banner inside the app says what.
 The history lives in Redis, so it survives restarts of the app but not of Redis, and a time nothing was running to record shows as "no record".
 It carries no error text, host names or ports; for those, read `/readyz` from inside the network as below.
+
+## Meeting notes
+
+The note-taker is off until an administrator sets it up under **Organization, Meeting notes** and turns it on.
+It needs a Sarvam API key (dashboard.sarvam.ai) and a model for the minutes: a Claude, OpenAI or NVIDIA (build.nvidia.com, Nemotron) key, or the address of a model you run that serves the OpenAI chat API, such as Nemotron on vLLM or NVIDIA NIM.
+Enter keys only on that page; it stores them as secrets and never shows them again.
+
+Two things on the server make it work:
+
+- The TeamUp container joins calls itself, so it has to reach LiveKit's media ports (UDP 7882 and TCP 7881) at the address LiveKit gives out.
+  If minutes never arrive, `docker compose logs teamup | grep notetaker` says whether it joined and whether it could hear anybody.
+- It calls `api.sarvam.ai` and your model's address over HTTPS, so outbound HTTPS must be allowed.
+
+Cost follows speech, not meeting length: only what people say is sent to Sarvam, in clips of up to 25 seconds.
+Transcripts and minutes stay in the database with the call.
+`0026_meeting_notes` adds the two tables, and its down migration drops them with every transcript.
 
 ## Troubleshooting
 

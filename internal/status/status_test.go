@@ -278,3 +278,18 @@ func TestTheRedisStoreKeepsFailuresAndReadsTheWindowBack(t *testing.T) {
 	}
 	client.Del(ctx, store.key(100), store.key(102))
 }
+
+func TestAnOutageOnlyAVisitorSawStaysOnRecord(t *testing.T) {
+	w := newWorld()
+	w.minutes(t, 5)
+	// Down for less than a sampling interval, and seen on the page.
+	w.up["minio"] = false
+	w.svc.Report(context.Background())
+	w.up["minio"] = true
+	w.now = w.now.Add(time.Minute)
+
+	files := row(t, w.svc.Report(context.Background()), "minio")
+	if files.Status != "operational" || len(files.Incidents) != 1 || files.Incidents[0].End == nil {
+		t.Errorf("up again, with the outage on record: %+v", files)
+	}
+}

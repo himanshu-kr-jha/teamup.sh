@@ -58,6 +58,10 @@ var mentionPattern = regexp.MustCompile(`@([A-Za-z0-9._-]+)`)
 
 // notifyMentions raises a notification for each channel member named in the
 // message. Best effort, and never notifies the author about themselves.
+//
+// Somebody is named by their username, the part of their email before the @
+// (@alice), or by their name with the spaces taken out (@AliceArcher), in any
+// case. A full stop or comma straight after a name ends the sentence, not the name.
 func (s *Service) notifyMentions(ctx context.Context, msg *Message) {
 	if s.notifier == nil {
 		return
@@ -68,7 +72,9 @@ func (s *Service) notifyMentions(ctx context.Context, msg *Message) {
 	}
 	handles := make([]string, 0, len(names))
 	for _, m := range names {
-		handles = append(handles, m[1])
+		if h := strings.TrimRight(m[1], "._-"); h != "" {
+			handles = append(handles, h)
+		}
 	}
 
 	rows, err := s.db.Query(ctx, `
@@ -77,7 +83,8 @@ func (s *Service) notifyMentions(ctx context.Context, msg *Message) {
 		JOIN users u ON u.id = cm.user_id
 		JOIN channels c ON c.id = cm.channel_id
 		WHERE cm.channel_id = $1 AND u.id <> $2
-		  AND REPLACE(LOWER(u.name), ' ', '') = ANY($3)
+		  AND (REPLACE(LOWER(u.name), ' ', '') = ANY($3)
+		       OR LOWER(split_part(u.email, '@', 1)) = ANY($3))
 	`, msg.ChannelID, msg.UserID, lowerAll(handles))
 	if err != nil {
 		s.logger.Warn().Err(err).Msg("mention lookup failed")

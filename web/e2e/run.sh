@@ -33,7 +33,7 @@ psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d postgres -v ON_ERROR_STOP=1 -q
 # For specs that need to look at or move rows the UI cannot (psql is already required above).
 export E2E_DATABASE_URL="postgres://$PG_USER:$PG_PASSWORD@$PG_HOST:$PG_PORT/$DB_NAME?sslmode=disable"
 export E2E_PORT="$PORT"
-export TEAMUP_PORT="$PORT" TEAMUP_BASE_URL="http://localhost:$PORT" TEAMUP_ENV=development TEAMUP_LOG_LEVEL=info
+export TEAMUP_PORT="$PORT" TEAMUP_BASE_URL="http://localhost:$PORT" TEAMUP_ENV=development TEAMUP_LOG_LEVEL=${E2E_LOG_LEVEL:-info}
 export TEAMUP_DATABASE_URL="postgres://$PG_USER:$PG_PASSWORD@$PG_HOST:$PG_PORT/$DB_NAME?sslmode=disable"
 export TEAMUP_REDIS_URL="$REDIS_URL"
 export TEAMUP_MINIO_ENDPOINT="${E2E_MINIO_ENDPOINT:-localhost:9000}" TEAMUP_MINIO_ACCESS_KEY=minioadmin TEAMUP_MINIO_SECRET_KEY=minioadmin

@@ -19,6 +19,7 @@ import {
 import { ConnectionState, RoomEvent } from 'livekit-client';
 import { useQuery } from '@tanstack/react-query';
 import { CallStage } from './CallStage';
+import { NotesBanner } from './notetaker';
 import { CallControls, CompactCallControls, ShareUnavailableNote } from './CallControls';
 import { CallLogDialog } from './CallLogDialog';
 import { copyCallLink } from './copyLink';
@@ -655,6 +656,8 @@ function CallTiles({ callId, compact }: { callId: string; compact: boolean }) {
           <span>{mediaError}</span>
         </div>
       )}
+
+      {!compact && <NotesBanner />}
 
       <div className="min-h-0 flex-1">
         <CallStage callId={callId} compact={compact} />

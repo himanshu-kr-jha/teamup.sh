@@ -200,18 +200,20 @@ the others), `teamup_ws_fanout_{published,received,dropped}_total`,
 
 | Package | Lines | What it owns |
 | --- | --- | --- |
-| `internal/chat` | ~5,200 | Channels, messages, reactions, search |
-| `internal/tasks` | ~3,200 | Tasks, comments, labels, watchers, activity |
-| `internal/auth` | ~3,100 | Passwords, OIDC plumbing, JWT, refresh rotation, signing key |
-| `internal/calls` | ~2,700 | LiveKit rooms, join tokens, recordings, call events |
-| `internal/org` | ~2,400 | Organisations, teams, users, roles, RBAC |
-| `internal/wizard` | ~1,800 | First-run setup, stored configuration |
-| `internal/websocket` | ~1,100 | The connection hub, read/write loops |
-| `internal/files` | ~1,300 | Presigned upload/download |
-| `internal/notifications` | ~1,100 | Web Push (VAPID) and the in-app centre |
-| `internal/observability` | ~830 | Logging, metrics, health probes |
-| `internal/presence` | ~540 | Online/away/in-call, availability |
-| `internal/mail` | ~300 | SMTP |
+| `internal/calls` | ~4,100 | LiveKit rooms, join tokens, knock-to-join, attendance from LiveKit webhooks, standing meetings, recordings |
+| `internal/tasks` | ~3,400 | Tasks, comments, labels, watchers, activity, scrums and the dashboard |
+| `internal/chat` | ~3,300 | Channels, messages, threads, reactions, read receipts, forwarding, search |
+| `internal/org` | ~2,800 | Organisations, teams, users, roles, RBAC, mail settings, branding, profile pictures |
+| `internal/auth` | ~2,000 | Passwords, OIDC plumbing, JWT, refresh rotation, signing key |
+| `internal/files` | ~1,800 | Presigned upload and download, multipart, server-side copies |
+| `internal/websocket` | ~1,800 | The connection hub, read/write loops, fan-out across replicas |
+| `internal/calendar` | ~1,400 | Calendars, focus blocks, meetings, availability, reminders |
+| `internal/wizard` | ~1,200 | First-run setup, stored configuration |
+| `internal/notifications` | ~800 | Web Push (VAPID) and the in-app centre |
+| `internal/presence` | ~600 | Online/away/in-call, availability |
+| `internal/observability` | ~570 | Logging, metrics, health probes |
+| `internal/status` | ~370 | The public status page and its 24-hour history in Redis |
+| `internal/mail` | ~270 | SMTP, the welcome email |
 | `internal/testsupport` | ~300 | Template-database cloning for tests |
 | `pkg/protocol` | — | WebSocket envelope and message types |
 | `pkg/errors` | — | Shared error types |
@@ -400,7 +402,7 @@ you write a test that touches org-scoped data, put a second organisation in it
 
 Federation between instances · end-to-end encryption · native mobile apps (the
 PWA is the mobile story) · guest/external access · message retention and
-compliance export · calendar · i18n · AI features · Grafana dashboards and alert
+compliance export · i18n · AI features · Grafana dashboards and alert
 rules (the `ServiceMonitor` ships; the dashboards do not) · a Helm chart
 verified against a real cluster (templates render and `kubeconform` validates,
 but nobody has installed it live).

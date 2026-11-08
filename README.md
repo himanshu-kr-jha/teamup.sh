@@ -14,7 +14,8 @@ web app compiled into it. You run it, you own the data, there is no seat pricing
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
 
 [Quick start](#quick-start) · [What works](#what-works-today) ·
-[Architecture](docs/ARCHITECTURE.md) · [Deploying](docs/DEPLOYMENT.md) ·
+[Onboarding](docs/ONBOARDING.md) · [Architecture](docs/ARCHITECTURE.md) ·
+[Build and deploy](docs/BUILD-AND-DEPLOY.md) · [Server setup](docs/DEPLOYMENT.md) ·
 [Contributing](#contributing)
 
 </div>
@@ -82,7 +83,12 @@ as containers.
 | `./start.sh --lan` | Also reachable from your phone on the same Wi-Fi |
 | `./stop.sh` | Stop the containers |
 | `./reset.sh --yes` | Wipe all data and start from the wizard again |
-| `make test-db && make test-unit` | Run the test suite properly |
+| `make test-services` | Start the throwaway containers the tests run against |
+| `make check` | Every check a change must pass: web, Go and browser tests |
+| `make deploy` | Ship the current commit to your server ([how](docs/BUILD-AND-DEPLOY.md)) |
+
+New here? [docs/ONBOARDING.md](docs/ONBOARDING.md) takes you from clone to your
+first change in production.
 
 ---
 
@@ -95,20 +101,36 @@ line-by-line detail.
 ### Solid
 
 - **Chat** - channels, DMs, private and announcement channels, threaded
-  replies, editing, deletion, reactions, read receipts, live delivery
+  replies, editing, deletion, reactions, read receipts, live delivery,
+  forwarding with files, @mentions that notify, voice and video messages
+  recorded on the spot, several files at once, history loaded a day at a time,
+  unread counts per conversation and on the Chat tab, PDFs read in the
+  conversation, pictures and files downloaded from where they are
 - **Search** — full-text and fuzzy, over Postgres, permission-scoped and
   highlighted
 - **Tasks** — create, assign along the org chart, filter, comment with
   attachments, label, watch, per-field activity log
 - **Files** - presigned upload and download straight to S3, with real resumable
   multipart above 16 MiB; bytes never pass through the app
-- **Video calls** — LiveKit SFU, multi-party audio/video, screen share,
-  recording to object storage, call events posted into the channel
+- **Calls and meetings** — LiveKit SFU, multi-party audio/video, screen share,
+  voice calls from any conversation, knock to join, standing meetings with
+  attendance from LiveKit's own webhooks, recording to object storage
+- **Meeting notes** — a visible note-taker in every call while an administrator
+  has it on, Sarvam speech to text, minutes written by Claude, OpenAI or your
+  own model, sent to everybody who was there
+- **Calendar** — month, week and day views, focus time, open slots,
+  meetings with a length from a list, availability across people, and
+  meetings that run over shown as extended
+- **Email** — mail server set up by an administrator, welcome email with
+  sign-in details for every new member
 - **Presence** — online / away / in-call, availability and leave, with keys
   that expire so a crashed process does not leave people showing online
 - **Auth** — password login, RS256 JWTs with a persisted signing key, refresh
   rotation with reuse detection, custom roles and RBAC
-- **Admin** — people, roles and a team tree, gated on both client and server
+- **Admin** — people, roles and a team tree, gated on both client and server;
+  the organization's own colour and logo; profile pictures for everyone
+- **Status page** — `/status`, public, with 24 hours of history and a banner in
+  the app while something is down
 - **PWA** — installable, works on a phone
 - **Ops** — structured logs, Prometheus metrics, an honest `/readyz`, graceful
   shutdown that drains in-flight requests
@@ -134,7 +156,7 @@ ones are tracked as
 ### Not built
 
 Federation · end-to-end encryption · native mobile apps · guest access ·
-retention policies and compliance export · calendar · i18n
+retention policies and compliance export · i18n
 
 ---
 
@@ -299,30 +321,33 @@ does it.
 | Blank page, or "frontend not built" | `make build` — the binary refuses to start without an embedded `index.html` |
 | Camera/mic blocked off localhost | Browsers require HTTPS for media. See [DEPLOYMENT.md](docs/DEPLOYMENT.md) |
 | Signed out after changing `.env` | `TEAMUP_AUTH_SECRET` changed; the stored signing key can no longer be decrypted |
-| Tests all pass suspiciously fast | They skipped. Use `make test-db && make test-unit` |
+| Tests all pass suspiciously fast | They skipped. Use `make test-services && make test-go` |
 
 ---
 
 ## Testing
 
-Most tests run against a real PostgreSQL — no mocks for the database layer.
+Most tests run against real services: Postgres, Redis, MinIO and LiveKit in
+throwaway containers, and the browser tests against the real binary.
 
 ```bash
-make build          # the migrate command lives in the binary
-make test-db        # create and migrate the template database
-make test-unit      # go test -race
+make test-services   # once: start the test containers, migrate the test database
+make test-web        # ESLint, TypeScript, Vitest
+make test-go         # gofmt, go vet, every Go test against the containers
+make e2e             # rebuild, then every Playwright test against the real stack
+make check           # all of the above
 ```
 
-Each package clones the template into its own database and truncates between
-tests, so packages stay isolated and run in parallel. **With a database: 340
-pass, 0 skip, 0 races.**
+Each Go package clones a migrated template database into its own and truncates
+between tests, so packages stay isolated and run in parallel.
 
-> Database tests **skip** when `TEAMUP_TEST_DATABASE_URL` is unset — most
-> of them. A run can be entirely green having tested almost nothing, which is
-> exactly how a completely dead WebSocket path once survived 286 passing tests.
-> CI fails the build if any test reports SKIP.
+> Database tests **skip** when `TEAMUP_TEST_DATABASE_URL` is unset. A run can
+> be entirely green having tested almost nothing, which is exactly how a
+> completely dead WebSocket path once survived 286 passing tests. CI fails the
+> build if any test reports SKIP, and `make test-go` always sets it.
 
-`make lint` runs golangci-lint and eslint. `make test-e2e` runs Playwright.
+[docs/ONBOARDING.md](docs/ONBOARDING.md#4-the-tests) has the details, including
+running one browser test and reading a failure.
 
 ---
 
@@ -330,7 +355,9 @@ pass, 0 skip, 0 races.**
 
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) is a copy-paste walkthrough from a
 fresh Ubuntu VM to a running team, with sizing, backups, upgrades and the
-alternatives compared.
+alternatives compared. After that, every release is `make deploy`:
+[docs/BUILD-AND-DEPLOY.md](docs/BUILD-AND-DEPLOY.md) covers the flow, what
+people notice, moving to a new address and rolling back.
 
 - **One VM with Docker Compose** - `docker-compose.prod.yml`, the recommended
   path. It runs all six services, and it is what the guide was tested against.
@@ -357,7 +384,8 @@ Outside Compose, Postgres, Redis, S3 and LiveKit are prerequisites you bring.
 member add/remove
 
 **Messages** — `GET|POST /api/channels/:id/messages`,
-`PATCH|DELETE /api/messages/:id`, reactions, read markers
+`PATCH|DELETE /api/messages/:id`, `POST /api/messages/:id/forward`, reactions,
+read markers
 
 **Tasks** — `GET|POST /api/tasks`, `GET|PATCH|DELETE /api/tasks/:id`, comments,
 attachments, labels, watchers
@@ -372,6 +400,16 @@ attachments, labels, watchers
 subscribe / unsubscribe, `GET /api/notifications/vapid-key`
 
 **Search** — `GET /api/search/messages`, `GET /api/search/files`
+
+**Calendar and meetings** — `GET /api/calendar`, `GET /api/calendar/availability`,
+blocks, `POST|PATCH|DELETE /api/meetings/:id`, standing meetings and attendance
+
+**Organization** — users, roles, teams, `GET|PUT /api/org/mail`,
+`POST /api/org/mail/test`, `PUT /api/org/branding`,
+`GET|PUT|DELETE /api/users/:id/avatar`
+
+**Public, no session** — `GET /api/status`, `GET /api/branding`,
+`GET /api/branding/logo`
 
 **Wizard** — `GET /api/wizard/status`, `POST /api/wizard/step1` … `step5`
 
@@ -422,7 +460,9 @@ features.
 in the setup flow that was unclear when you followed it, and test coverage.
 
 1. Fork, and branch off `main`.
-2. Get it running (`./setup.sh`) so you can verify your change.
+2. Get it running and the tests passing:
+   [docs/ONBOARDING.md](docs/ONBOARDING.md) walks through it, and through
+   making a change from ticket to production.
 3. Install the commit hooks — the same fast checks the project expects:
    ```bash
    pip install pre-commit && pre-commit install

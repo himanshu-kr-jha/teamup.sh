@@ -13,9 +13,11 @@ import {
   CornerDownRight,
   Mail,
   Palette,
+  NotebookPen,
 } from 'lucide-react';
 import { MailSettingsTab, mailProblemText } from './MailSettingsTab';
 import { AppearanceTab } from './AppearanceTab';
+import { NotetakerTab } from './NotetakerTab';
 import { UserAvatar } from '@/shared/components/UserAvatar';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
@@ -79,6 +81,7 @@ export function AdminPage() {
           <TabsTrigger value="teams"><UsersRound className="mr-2 h-4 w-4" />Teams</TabsTrigger>
           {isAdmin && <TabsTrigger value="email"><Mail className="mr-2 h-4 w-4" />Email</TabsTrigger>}
           {isAdmin && <TabsTrigger value="appearance"><Palette className="mr-2 h-4 w-4" />Appearance</TabsTrigger>}
+          {isAdmin && <TabsTrigger value="notes"><NotebookPen className="mr-2 h-4 w-4" />Meeting notes</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="members" className="p-4 md:p-6">
@@ -98,6 +101,11 @@ export function AdminPage() {
         {isAdmin && (
           <TabsContent value="appearance" className="p-4 md:p-6">
             <AppearanceTab />
+          </TabsContent>
+        )}
+        {isAdmin && (
+          <TabsContent value="notes" className="p-4 md:p-6">
+            <NotetakerTab />
           </TabsContent>
         )}
       </Tabs>

@@ -251,6 +251,29 @@ These are readings of an ambiguous request, and they are cheap to change.
     It creates an `audio` call; the join token says so, and the page joins with the microphone on, for the caller and for whoever answers.
     Anybody can turn their camera on in the call. Meetings and calls started from Calls still join with both off.
 57. **End-to-end encryption is not built yet; see ticket 47 for what it would take.**
+58. **Somebody is mentioned as @username, the part of their email before the @, or as @NameWithoutSpaces, in any case.**
+    Typing @ in the message box suggests people; choosing one writes `@username`.
+    A message shows a mention of a real person as **@Their Name**, highlighted, and a mention of you more strongly; an @ that names nobody, or an email address, stays text.
+    Members of the conversation who are named get a notification, in the app and on their devices; anybody else named is not told, because they cannot read it.
+59. **A conversation opens on its newest day that has messages, and scrolling up brings the day before, whatever its date.**
+    Days are the reader's, from the browser's time zone; a day over 300 messages comes in more than one piece.
+    If what has loaded does not fill the window, the day before is loaded too, until it does or there is nothing older.
+    The REST API keeps its page-size reads for anything else (`unit=day` selects days).
+60. **Esc closes the open thread, or else the conversation, back to the list; something else using Esc first keeps it.**
+    With no conversation open, the right-hand side says so instead of showing an empty conversation with a message box.
+61. **Voice messages (up to 5 minutes) and video messages (up to 60 seconds) are recorded in the conversation and play where they were sent.**
+    They are ordinary attachments, WebM or MP4 by browser, staged like any file so text can go with them, and downloadable.
+62. **Several files can be chosen at once; each uploads in turn and they go in one message.**
+63. **A note-taker called Notes joins every call and meeting while an administrator has it on, visibly, and sends minutes to everybody who was there.**
+    Only an administrator turns it on or off, under Organization, Meeting notes; a member cannot remove it from a call, because their token cannot.
+    It joins when the first person really connects (LiveKit's participant_joined), claimed once per call in `meeting_notes`, so several servers do not each send one.
+    It shows as a participant with a notebook, "Notes, taking the minutes", and a line across every call says notes are being taken.
+    It listens to each person's own audio track, so it knows who said what, and keeps only what LiveKit hears as speech, in clips of up to 25 seconds sent to Sarvam's speech-to-text during the meeting.
+    Silence is never sent, which is most of a meeting and what speech-to-text charges by.
+    When the room has been empty for 30 seconds it writes the minutes, with Claude, OpenAI, NVIDIA's hosted models (Nemotron by default), or a model you run that speaks the OpenAI chat API (Nemotron on vLLM or NIM): summary, decisions, action items with owners, open questions.
+    Everybody who was in the call gets a notification and, when mail is set up, an email; the minutes and transcript are at `/calls/:id/minutes` for them and for administrators.
+    Keys are secrets, never sent back to a page; a blank key on save keeps the saved one.
+    A note-taker on a server that stops mid-meeting is not taken over by another server: the transcript so far is kept, and that call gets no minutes.
 
 ## Non-goals
 

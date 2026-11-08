@@ -39,7 +39,7 @@ async function fillMail(page: Page, port: number) {
   await page.getByLabel('Password', { exact: true }).fill('mailpit-accepts-any');
   await page.getByLabel('Send as').fill('TeamUp <teamup@e2e.test>');
   await page.getByRole('button', { name: 'Save' }).click();
-  await expect(page.getByText('Mail settings saved.', { exact: false })).toBeVisible();
+  await expect(page.getByText('Mail settings saved.', { exact: false }).first()).toBeVisible();
 }
 
 async function addMember(page: Page, name: string, email: string) {

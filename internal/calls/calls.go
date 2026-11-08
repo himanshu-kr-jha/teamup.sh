@@ -63,7 +63,10 @@ type Service struct {
 	// The org chart lives with tasks; this reads it so there is one statement of
 	// who outranks whom.
 	chart *tasks.Service
-	clock func() time.Time
+	// joined is told when a person really connects to a call's room; the
+	// note-taker uses it to join.
+	joined func(ctx context.Context, orgID, callID uuid.UUID, roomName string)
+	clock  func() time.Time
 	// What this service asks of LiveKit, replaceable so that a test can stand in for
 	// the server, and for the moment it answers. Nil means the real one.
 	media mediaServer
@@ -994,6 +997,11 @@ type Notifier interface {
 
 // SetNotifier wires how a phone is made to ring when nobody is looking.
 func (s *Service) SetNotifier(n Notifier) { s.notifier = n }
+
+// SetJoinHook is told whenever a person connects to a call that is not over.
+func (s *Service) SetJoinHook(f func(ctx context.Context, orgID, callID uuid.UUID, roomName string)) {
+	s.joined = f
+}
 
 // ringDevices makes the phone itself ring, rather than only a browser tab that
 // happens to still be open.

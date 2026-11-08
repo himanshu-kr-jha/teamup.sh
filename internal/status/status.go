@@ -169,6 +169,14 @@ func (s *Service) Report(ctx context.Context) Report {
 func (s *Service) build(ctx context.Context) Report {
 	now := s.now()
 	current := s.check(ctx)
+	// What a visitor saw is on the record too. Sampling alone misses an outage
+	// shorter than the time between samples, and the moment somebody saw one
+	// is exactly the one that must not vanish from the history.
+	if s.store != nil {
+		if err := s.store.Record(ctx, minuteOf(now), current); err != nil {
+			s.logger.Debug().Err(err).Msg("status: could not record what a visitor saw")
+		}
+	}
 
 	// Bars line up with the clock: the last one is the hour now under way.
 	last := minuteOf(now)

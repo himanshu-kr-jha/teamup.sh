@@ -30,6 +30,7 @@ import (
 	"github.com/teamup/teamup/internal/chat"
 	"github.com/teamup/teamup/internal/files"
 	"github.com/teamup/teamup/internal/mail"
+	"github.com/teamup/teamup/internal/notetaker"
 	"github.com/teamup/teamup/internal/notifications"
 	"github.com/teamup/teamup/internal/observability"
 	"github.com/teamup/teamup/internal/org"
@@ -570,6 +571,15 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// Outgoing mail reads its settings from the organization, which is where
 	// the setup wizard puts them.
 	mailService := mail.NewService(orgService, cfg.BaseURL, logger)
+
+	// The meeting note-taker joins every call while an administrator has it on,
+	// and sends the minutes to whoever was there.
+	notetakerService := notetaker.NewService(dbPool, orgService, notetaker.LiveKit{
+		URL: cfg.LiveKitURL, APIKey: cfg.LiveKitAPIKey, APISecret: cfg.LiveKitAPISecret,
+	}, cfg.BaseURL, logger)
+	notetakerService.SetNotifier(notificationsService)
+	notetakerService.SetMailer(mailService)
+	callsService.SetJoinHook(notetakerService.PersonJoined)
 	tasksService.SetNotifier(notificationsService)
 	calendarService.SetNotifier(notificationsService)
 	// A comment should appear for everybody following the task, not on their
@@ -705,6 +715,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 			presence.RegisterRoutes(protected, presenceService)
 			tasks.RegisterRoutes(protected, tasksService)
 			calendar.RegisterRoutes(protected, calendarService)
+			notetaker.RegisterRoutes(protected, notetakerService)
 		}
 
 		// LiveKit has no session. The signature on the request is its credential.
@@ -805,9 +816,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// A call whose room finished while nothing was listening. Every replica sweeps,
 	// and ending a call is atomic.
 	go callsService.RunVanishedRoomSweep(sweepCtx, 5*time.Minute)
-	// What the status page shows for the last day. Every replica records, and
-	// a failure any of them saw wins.
-	go statusService.Run(sweepCtx, 30*time.Second)
+	// What the status page shows for the last day. Every replica records four
+	// times a minute, and a failure any of them saw wins.
+	go statusService.Run(sweepCtx, 15*time.Second)
 
 	// Graceful shutdown.
 	//

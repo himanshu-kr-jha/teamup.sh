@@ -38,7 +38,12 @@ export function AttachmentChip({ attachment }: { attachment: Attachment }) {
   const [reading, setReading] = useState<ViewedPdf | null>(null);
 
   const isImage = attachment.contentType.startsWith('image/');
-  const isPdf = !isImage && isPdfFile(attachment);
+  const isAudio = attachment.contentType.startsWith('audio/');
+  const isVideo = attachment.contentType.startsWith('video/');
+  // Played where it was sent, like a picture is shown: voice and video messages
+  // are the point, not a file to fetch.
+  const playable = isAudio || isVideo;
+  const isPdf = !isImage && !playable && isPdfFile(attachment);
 
   const download = async () => {
     try {
@@ -52,7 +57,7 @@ export function AttachmentChip({ attachment }: { attachment: Attachment }) {
   // says "image.png" and making somebody click it to find out what it is
   // wastes the one thing a picture is good at.
   useEffect(() => {
-    if (!isImage || thumbnail) return;
+    if (!(isImage || playable) || thumbnail) return;
     let cancelled = false;
     (async () => {
       try {
@@ -69,7 +74,7 @@ export function AttachmentChip({ attachment }: { attachment: Attachment }) {
     return () => {
       cancelled = true;
     };
-  }, [isImage, thumbnail, attachment.objectKey, attachment.filename]);
+  }, [isImage, playable, thumbnail, attachment.objectKey, attachment.filename]);
 
   const open = async () => {
     // Read where it was sent, rather than downloaded to be read somewhere else.
@@ -99,6 +104,41 @@ export function AttachmentChip({ attachment }: { attachment: Attachment }) {
       setBusy(false);
     }
   };
+
+  if (playable && thumbnail) {
+    const downloadButton = (
+      <button
+        type="button"
+        onClick={download}
+        aria-label={`Download ${attachment.filename}`}
+        title="Download"
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+      >
+        <Download className="h-4 w-4" aria-hidden="true" />
+      </button>
+    );
+    return isAudio ? (
+      <span className="flex max-w-full items-center gap-1 rounded-lg border border-border bg-background p-1 text-foreground" data-testid="voice-message">
+        <audio src={thumbnail} controls preload="metadata" className="h-9 max-w-[16rem]" aria-label={attachment.filename} />
+        {downloadButton}
+      </span>
+    ) : (
+      <span className="relative inline-flex max-w-full flex-col gap-1 rounded-lg border border-border bg-background p-1 text-foreground" data-testid="video-message">
+        <video
+          src={thumbnail}
+          controls
+          playsInline
+          preload="metadata"
+          className="max-h-72 w-64 max-w-full rounded-md bg-black"
+          aria-label={attachment.filename}
+        />
+        <span className="flex items-center gap-1 pl-1 text-xs text-muted-foreground">
+          <span className="min-w-0 flex-1 truncate">{attachment.filename}</span>
+          {downloadButton}
+        </span>
+      </span>
+    );
+  }
 
   if (isImage && thumbnail) {
     return (

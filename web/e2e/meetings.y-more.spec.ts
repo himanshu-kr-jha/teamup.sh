@@ -60,7 +60,7 @@ test.describe('forwarding', () => {
     await dialog.getByRole('option', { name: `fwd-b-${stamp}` }).click();
     await expect(dialog.getByText('2 chosen')).toBeVisible();
     await dialog.getByRole('button', { name: 'Forward' }).click();
-    await expect(olivia.page.getByText('Forwarded to 2 conversations.')).toBeVisible();
+    await expect(olivia.page.getByText('Forwarded to 2 conversations.').first()).toBeVisible();
 
     // Sam, who was never in the original conversation, gets it in both.
     const sam = await as('sam');
@@ -150,7 +150,7 @@ test.describe('profile pictures', () => {
     const sam = await as('sam');
     await sam.page.goto('/settings');
     await sam.page.getByLabel('Profile picture file').setInputFiles({ name: 'me.png', mimeType: 'image/png', buffer: await landscapePng(sam.page) });
-    await expect(sam.page.getByText('Your picture has been updated.')).toBeVisible();
+    await expect(sam.page.getByText('Your picture has been updated.').first()).toBeVisible();
     const header = sam.page.getByRole('button', { name: 'User menu' }).getByRole('img');
     await expect(header).toBeVisible();
     const size = await header.evaluate((img: HTMLImageElement) => [img.naturalWidth, img.naturalHeight]);
@@ -168,7 +168,7 @@ test.describe('profile pictures', () => {
 
     // And back to initials.
     await sam.page.getByRole('button', { name: 'Remove' }).click();
-    await expect(sam.page.getByText('Your picture has been removed.')).toBeVisible();
+    await expect(sam.page.getByText('Your picture has been removed.').first()).toBeVisible();
     await expect(sam.page.getByRole('button', { name: 'User menu' }).getByRole('img')).toHaveCount(0);
   });
 });

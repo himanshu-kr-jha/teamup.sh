@@ -10,7 +10,8 @@ import {
 } from '@livekit/components-react';
 import { Track } from 'livekit-client';
 import type { TrackReferenceOrPlaceholder } from '@livekit/components-react';
-import { ChevronLeft, ChevronRight, MicOff, MonitorUp, Pin, PinOff, Volume2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, MicOff, MonitorUp, NotebookPen, Pin, PinOff, Volume2 } from 'lucide-react';
+import { isNotetaker } from './notetaker';
 import { Button } from '@/shared/components/ui/button';
 import { callsApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
@@ -284,8 +285,11 @@ function ParticipantPanel({
   // reference it can actually render.
   const hasVideo = isTrackReference(track) && (presenting || !track.publication.isMuted);
   const microphoneOff = !participant.isMicrophoneEnabled;
+  const notes = isNotetaker(participant);
 
-  const caption = presenting
+  const caption = notes
+    ? 'Notes, taking the minutes'
+    : presenting
     ? isLocal
       ? 'You are presenting'
       : `${name} is presenting`
@@ -327,7 +331,11 @@ function ParticipantPanel({
                 compact ? 'h-8 w-8 text-xs' : 'h-20 w-20 text-2xl'
               )}
             >
-              {initialsOf(name)}
+              {notes ? (
+                <NotebookPen className={compact ? 'h-4 w-4' : 'h-9 w-9'} aria-label="Notes" />
+              ) : (
+                initialsOf(name)
+              )}
             </span>
           </div>
         )}
@@ -335,6 +343,7 @@ function ParticipantPanel({
         {/* The name, and whether they can be heard. */}
         <div className="absolute inset-x-0 bottom-0 flex items-center gap-1.5 bg-gradient-to-t from-black/70 to-transparent px-2 py-1.5 text-white">
           {!presenting &&
+            !notes &&
             (microphoneOff ? (
               <MicOff className="h-3.5 w-3.5 shrink-0 text-red-400" aria-label="Microphone off" />
             ) : (
@@ -352,7 +361,7 @@ function ParticipantPanel({
 
         {/* Controls, out of the way until wanted. A touch screen has no hover, so
             there they simply stay. */}
-        {!compact && (
+        {!compact && !notes && (
           <div className="absolute right-1 top-1 flex gap-1 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 [@media(hover:none)]:opacity-100">
             {onTogglePin && (
               <Button

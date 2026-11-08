@@ -33,6 +33,17 @@ export function olderCursor<T extends HistoryEntry>(messages: T[]): string | und
 }
 
 /**
+ * The same position as olderCursor, with the id that settles a tie between
+ * messages sent in the same instant.
+ */
+export function olderPosition<T extends HistoryEntry>(messages: T[]): { before: string; beforeId: string } | undefined {
+  for (const message of messages) {
+    if (!message.pending) return { before: message.createdAt, beforeId: message.id };
+  }
+  return undefined;
+}
+
+/**
  * Puts a freshly fetched older page in front of what is already on screen.
  *
  * `before` is exclusive so the two halves do not normally overlap, but a

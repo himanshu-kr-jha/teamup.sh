@@ -1,4 +1,4 @@
-.PHONY: build build-frontend test lint docker helm migrate-up migrate-down migrate-version migrate-create run dev help
+.PHONY: build build-frontend test lint docker helm migrate-up migrate-down migrate-version migrate-create run dev help test-services test-services-down test-go test-web e2e check deploy deploy-check
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -17,6 +17,13 @@ help:
 	@echo "Targets:"
 	@echo "  build           Build Go binary (embeds frontend)"
 	@echo "  build-frontend  Build React frontend"
+	@echo "  test-services   Start the test containers and migrate the test database"
+	@echo "  test-go         Go tests against the test containers"
+	@echo "  test-web        Lint, typecheck and unit-test the web app"
+	@echo "  e2e             Rebuild, then run every browser test against the real stack"
+	@echo "  check           Everything a change must pass before it is merged"
+	@echo "  deploy          Deploy HEAD to the server in .deploy.env (docs/BUILD-AND-DEPLOY.md)"
+	@echo "  deploy-check    Check the server and the commit, change nothing"
 	@echo "  test            Run all tests"
 	@echo "  test-unit       Run unit tests only"
 	@echo "  test-integration Run integration tests"
@@ -190,3 +197,38 @@ install-tools:
 	go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 	go install github.com/golang-migrate/migrate/v4/cmd/migrate@latest
 	go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
+
+# ── The day-to-day flow (docs/ONBOARDING.md) ───────────────────────────────────
+#
+# The test services are throwaway containers, separate from ./setup.sh's stack.
+# Every target below sources their ports, so nothing has to be exported by hand.
+TEST_ENV := . web/e2e/test-services.env &&
+
+test-services:
+	@scripts/test-services.sh up
+
+test-services-down:
+	@scripts/test-services.sh down
+
+test-go:
+	@$(TEST_ENV) gofmt -l cmd internal pkg | (! grep .) || { echo "gofmt wants these formatted"; exit 1; }
+	@$(TEST_ENV) go vet ./...
+	@$(TEST_ENV) go test ./...
+
+test-web:
+	cd web && npm run --silent lint && npx tsc --noEmit && npx vitest run
+
+# The browser tests run the real binary, which embeds the web app and fixes
+# LiveKit's address at build time, so it is rebuilt with the test ports first.
+e2e:
+	@$(TEST_ENV) $(MAKE) --no-print-directory build
+	@web/e2e/run-meetings.sh $(ARGS)
+
+check: test-services test-web test-go e2e
+	@echo "All checks passed."
+
+deploy:
+	@scripts/deploy.sh $(ARGS)
+
+deploy-check:
+	@scripts/deploy.sh --check $(ARGS)

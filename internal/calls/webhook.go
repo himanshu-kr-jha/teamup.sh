@@ -102,6 +102,10 @@ func (s *Service) HandleWebhook(ctx context.Context, event *livekit.WebhookEvent
 			s.logger.Warn().Err(err).Msg("could not check whether somebody who connected is active")
 		} else if !active {
 			s.putOut(ctx, roomName, userID)
+			return nil
+		}
+		if s.joined != nil && call.Status != "ended" {
+			s.joined(context.WithoutCancel(ctx), call.OrgID, call.ID, roomName)
 		}
 		return nil
 	case webhook.EventParticipantLeft:

@@ -190,7 +190,7 @@ test.describe('appearance', () => {
     await expect(preview.getByRole('button', { name: 'Send' })).toHaveCSS('background-color', 'rgb(13, 148, 136)');
 
     await olivia.page.getByRole('button', { name: 'Save' }).click();
-    await expect(olivia.page.getByText('Appearance saved.', { exact: false })).toBeVisible();
+    await expect(olivia.page.getByText('Appearance saved.', { exact: false }).first()).toBeVisible();
     await expect.poll(() => primary(olivia.page)).toBe('174.7 83.9% 31.6%');
     await expect(olivia.page.getByRole('complementary', { name: 'Main navigation' }).getByTestId('brand-logo')).toBeVisible();
 

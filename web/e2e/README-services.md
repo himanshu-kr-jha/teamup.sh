@@ -3,6 +3,17 @@
 `meetings.spec.ts` needs a real LiveKit that calls the server's webhook, and the Go integration tests need the same containers.
 `test-services.env` holds the ports, `run-meetings.sh` runs the suite.
 
+**Start them with one command**, which creates any that are missing and migrates the test database:
+
+```bash
+scripts/test-services.sh up        # or: make test-services
+scripts/test-services.sh status
+scripts/test-services.sh down      # removes them and their data
+```
+
+Then `make test-go` and `make e2e` run against them.
+The rest of this page is what that script does, for when something needs looking at by hand.
+
 ```bash
 # The frontend is embedded in the binary and fixes LiveKit's address at build time, so source the env first.
 . web/e2e/test-services.env && make build

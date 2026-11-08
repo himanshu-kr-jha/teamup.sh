@@ -74,3 +74,18 @@ Who: orchestrator = Opus (plans, verifies, reports). Senior developer = Opus sub
   End-to-end encryption is written up in ticket 47 with its costs, waiting on a choice (decision 57).
   Migration 0025 adds `messages.forwarded` and `user_avatars`; its down migration clears uploaded avatars.
   Also fixed: the phone header cut the name to "T…".
+
+- 2026-11-08, orchestrator: onboarding and release flow, asked for by the user.
+  `docs/ONBOARDING.md` (tools, running, the repo, three test layers, making a change, recipes) and `docs/BUILD-AND-DEPLOY.md` (the flow, CI, deploying, a new address, rolling back).
+  `scripts/test-services.sh` starts every test container from nothing and migrates the test database; checked by removing them all and running the Go tests on fresh ones.
+  `scripts/deploy.sh` is what was done by hand for each deploy, with server details kept in the untracked `.deploy.env`; its `--check` was run against the live server.
+  New make targets: `test-services`, `test-go`, `test-web`, `e2e`, `check`, `deploy`, `deploy-check`.
+  README, ARCHITECTURE, DEPLOYMENT and the test-services notes updated to match what is built.
+
+- 2026-11-08, orchestrator: tickets 48 to 53.
+  Mentions by username or name with suggestions and notifications (decision 58), history a day at a time (59), Esc to close (60), voice and video messages (61), several files at once (62).
+  The meeting note-taker is written up in ticket 53, waiting on choices (63).
+  `make check` stalled when run in the background with its output piped; the targets themselves pass when run one at a time.
+
+- 2026-11-08, orchestrator: ticket 53 built (decision 63): the meeting note-taker, with Sarvam and Claude, OpenAI or the user's own model.
+  Also: the status page now records an outage somebody saw on it, and samples every 15 seconds, because a short outage between samples vanished from the history (found by the full browser run).

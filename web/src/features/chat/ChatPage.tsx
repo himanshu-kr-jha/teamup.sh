@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   Hash, Send, Paperclip, Smile, Bell, Settings, ChevronLeft, MessageSquare, User,
   Megaphone, MoreVertical, Pencil, Trash2, Eye, Ban, Check, CheckCheck, PhoneMissed,
-  MessagesSquare, X, Download, Phone, Forward,
+  MessagesSquare, X, Download, Phone, Forward, Mic, Video,
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
@@ -32,6 +32,9 @@ import { apiErrorMessage } from '@/shared/api/errors';
 import { AttachmentChip } from '@/features/files/AttachmentChip';
 import { downloadAttachment } from '@/features/files/download';
 import { ForwardContext, ForwardDialog, useForward, type ForwardableMessage } from './ForwardDialog';
+import { MentionSuggestions, MessageText, useMentionables } from './MentionUI';
+import { insertMention, mentionQuery, suggestPeople, type Mentionable } from './mentions';
+import { VideoNoteDialog, VoiceRecorder } from './Recorder';
 import { ChannelSettingsDialog } from './ChannelSettingsDialog';
 import { NewDirectMessageDialog } from './NewDirectMessageDialog';
 import { useAuth } from '@/features/auth/AuthProvider';
@@ -39,7 +42,7 @@ import { useUIStore } from '@/shared/store';
 import { CreateChannelDialog } from './CreateChannelDialog';
 import { usePresence, type PresenceStatus } from '@/features/presence/usePresence';
 import { PresenceDot, presenceLabel } from '@/features/presence/PresenceDot';
-import { HISTORY_PAGE_SIZE, mergeOlder, olderCursor, reachedStart } from './history';
+import { mergeOlder, olderPosition } from './history';
 import {
   bumpReplyCount,
   mergeReplies,
@@ -162,7 +165,10 @@ export function ChatPage() {
   // socket, the catch-up refetch after a reconnect — lands here.
   const { data: messagesResponse, isLoading: messagesLoading } = useQuery({
     queryKey: ['messages', channelId],
-    queryFn: () => channelsApi.getMessages(channelId!, { limit: HISTORY_PAGE_SIZE }),
+    // The newest day with anything in it; earlier days come as you scroll up.
+    // A whole day reads as one piece, and is usually far less than a fixed
+    // page, so a conversation opens faster.
+    queryFn: () => channelsApi.getMessageDay(channelId!),
     enabled: !!channelId,
     staleTime: 0,
     refetchOnMount: 'always',
@@ -184,6 +190,9 @@ export function ChatPage() {
   const [loadingOlder, setLoadingOlder] = useState(false);
   /** The server had no more to give, so stop asking. */
   const [atStart, setAtStart] = useState(false);
+  // The newest day says whether there is anything before it.
+  const newestDayIsAll = messagesResponse ? (messagesResponse as { hasMore?: boolean }).hasMore === false : false;
+  const reachedTheStart = atStart || (older.length === 0 && newestDayIsAll);
   const scrollRef = useRef<HTMLDivElement>(null);
   // The scroll height just before a prepend, so the position afterwards is
   // arithmetic rather than a guess.
@@ -222,8 +231,8 @@ export function ChatPage() {
   const messages = useMemo(() => partitionThreads(allMessages).timeline, [allMessages]);
 
   const loadOlder = useCallback(async () => {
-    if (!channelId || loadingOlder || atStart) return;
-    const cursor = olderCursor(messages);
+    if (!channelId || loadingOlder || reachedTheStart) return;
+    const cursor = olderPosition(messages);
     // Nothing accepted by the server yet, so there is no point in the history
     // to ask about.
     if (!cursor) return;
@@ -231,14 +240,11 @@ export function ChatPage() {
     setLoadingOlder(true);
     heightBeforePrependRef.current = scrollRef.current?.scrollHeight ?? null;
     try {
-      const page = await channelsApi.getMessages(channelId, {
-        limit: HISTORY_PAGE_SIZE,
-        before: cursor,
-      });
+      // The day before, whichever date that is.
+      const page = await channelsApi.getMessageDay(channelId, cursor);
       const rows = (page.data ?? []) as Message[];
-      // A short page means the server ran out. Without this the spinner sits
-      // at the top of a three-message channel asking for ever.
-      if (reachedStart(rows.length, HISTORY_PAGE_SIZE)) setAtStart(true);
+      // Without this the spinner sits at the top of a conversation asking for ever.
+      if (!page.hasMore) setAtStart(true);
       if (rows.length > 0) {
         setOlder((all) => mergeOlder(rows, all));
       } else {
@@ -252,7 +258,7 @@ export function ChatPage() {
     }
     // toast is rebuilt every render; the rest is what actually decides this.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channelId, loadingOlder, atStart, messages]);
+  }, [channelId, loadingOlder, reachedTheStart, messages]);
 
   /**
    * Keeps the reader where they were when older messages arrive above them.
@@ -269,6 +275,15 @@ export function ChatPage() {
     el.scrollTop += el.scrollHeight - before;
   }, [messages]);
 
+  // A quiet day may not fill the window, and a window with no scrollbar gives
+  // nobody a way to scroll up for more, so the day before is brought in until
+  // it does or there is nothing left.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || messagesLoading || loadingOlder || reachedTheStart || messages.length === 0) return;
+    if (el.scrollHeight <= el.clientHeight + 48) void loadOlder();
+  }, [messages, messagesLoading, loadingOlder, reachedTheStart, loadOlder]);
+
   const activeChannel = channels.find((c) => c.id === channelId);
   const { statusOf, personOf } = usePresence();
   // A reaction payload only carries user ids. Availability covers everybody in
@@ -277,6 +292,43 @@ export function ChatPage() {
   const nameOf = (id: string) => personOf(id)?.name;
   const toast = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const composerRef = useRef<HTMLInputElement>(null);
+
+  // Who is being named, while an @-word is typed.
+  const mentionables = useMentionables();
+  const [mention, setMention] = useState<{ query: string; start: number } | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const mentionChoices = useMemo(
+    () => (mention ? suggestPeople(mention.query, mentionables.filter((p) => p.id !== user?.id)) : []),
+    [mention, mentionables, user?.id]
+  );
+  const followCaret = (text: string, caret: number) => {
+    const next = mentionQuery(text, caret);
+    setMention(next);
+    if (next?.query !== mention?.query) setMentionIndex(0);
+  };
+  const pickMention = (person: Mentionable) => {
+    if (!mention) return;
+    const caret = composerRef.current?.selectionStart ?? message.length;
+    const next = insertMention(message, mention.start, caret, person);
+    setMessage(next.text);
+    setMention(null);
+    requestAnimationFrame(() => {
+      composerRef.current?.focus();
+      composerRef.current?.setSelectionRange(next.caret, next.caret);
+    });
+  };
+
+  // Recording a voice message replaces the message box; a video message has a dialog.
+  const [recordingVoice, setRecordingVoice] = useState(false);
+  const [recordingVideo, setRecordingVideo] = useState(false);
+  /** Uploads one file after another, so several chosen at once each go up with their own progress. */
+  const attachFiles = async (files: File[]) => {
+    for (const file of files) {
+      const uploaded = await upload(file);
+      if (uploaded) setStaged((all) => [...all, uploaded]);
+    }
+  };
   const { upload, progress, error: uploadError } = useUpload('chat', channelId || '');
 
   useEffect(() => {
@@ -792,6 +844,33 @@ export function ChatPage() {
   const rooms = channels.filter((c: any) => c.type !== 'dm');
   const directMessages = channels.filter((c: any) => c.type === 'dm');
 
+  /**
+   * Esc closes the open thread, or else the conversation, back to the list.
+   *
+   * Only when nothing else is using Esc first: a dialog, a menu, a viewer, the
+   * mention suggestions or a message being edited all close themselves, and
+   * those that do mark the key as handled.
+   */
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      if (document.querySelector('[role="dialog"], [role="menu"], [role="listbox"]')) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.getAttribute('aria-label') === 'Edit message') return;
+      if (openThreadId) {
+        setOpenThreadId(null);
+        return;
+      }
+      if (!channelId) return;
+      composerRef.current?.blur();
+      setActiveChannelId(null);
+      setShowSidebar(true);
+      navigate('/chat');
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [openThreadId, channelId, navigate, setActiveChannelId]);
+
   const handleChannelClick = (id: string) => {
     setActiveChannelId(id);
     navigate(`/chat/${id}`);
@@ -918,6 +997,16 @@ export function ChatPage() {
           'flex min-w-0 flex-1 flex-col',
           showSidebar ? 'hidden lg:flex' : 'flex'
         )}>
+          {!channelId ? (
+            // Nothing open: say so, rather than a conversation's header and a
+            // message box with nowhere to send to.
+            <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center text-muted-foreground" data-testid="no-conversation">
+              <MessageSquare className="h-12 w-12 opacity-40" aria-hidden="true" />
+              <p className="text-lg font-medium text-foreground">Pick a conversation</p>
+              <p className="text-sm">Choose one on the left, or start a new chat.</p>
+            </div>
+          ) : (
+          <>
           {/* Channel header */}
           <div className="flex h-16 items-center gap-4 px-4 border-b border-border">
             <div className="flex min-w-0 items-center gap-2">
@@ -1016,7 +1105,7 @@ export function ChatPage() {
                 <div className="flex h-12 shrink-0 items-center justify-center">
                   {loadingOlder ? (
                     <p className="text-xs text-muted-foreground">Loading earlier messages…</p>
-                  ) : atStart ? (
+                  ) : reachedTheStart ? (
                     <p className="px-4 text-center text-xs text-muted-foreground">
                       This is the beginning of{' '}
                       {activeChannel?.type === 'dm'
@@ -1112,14 +1201,14 @@ export function ChatPage() {
               <input
                 ref={fileInputRef}
                 type="file"
+                multiple
                 className="hidden"
                 aria-label="Attach a file"
                 onChange={async (e) => {
-                  const file = e.target.files?.[0];
+                  const files = Array.from(e.target.files ?? []);
                   e.target.value = '';
-                  if (!file || !channelId) return;
-                  const uploaded = await upload(file);
-                  if (uploaded) setStaged((all) => [...all, uploaded]);
+                  if (files.length === 0 || !channelId) return;
+                  await attachFiles(files);
                 }}
               />
               <Button
@@ -1137,10 +1226,38 @@ export function ChatPage() {
                   <Paperclip className="h-5 w-5" />
                 )}
               </Button>
+              {recordingVoice ? (
+                <VoiceRecorder
+                  onDone={(file) => {
+                    setRecordingVoice(false);
+                    void attachFiles([file]);
+                  }}
+                  onCancel={(problem) => {
+                    setRecordingVoice(false);
+                    if (problem) toast.error(problem);
+                  }}
+                />
+              ) : (
               <div className="flex-1 relative">
+                {mentionChoices.length > 0 && (
+                  <MentionSuggestions
+                    people={mentionChoices}
+                    active={Math.min(mentionIndex, mentionChoices.length - 1)}
+                    onPick={pickMention}
+                    onHover={setMentionIndex}
+                  />
+                )}
                 <Input
+                  ref={composerRef}
                   value={message}
-                  onChange={(e) => setMessage(e.target.value)}
+                  onChange={(e) => {
+                    setMessage(e.target.value);
+                    followCaret(e.target.value, e.target.selectionStart ?? e.target.value.length);
+                  }}
+                  onSelect={(e) => followCaret(e.currentTarget.value, e.currentTarget.selectionStart ?? 0)}
+                  onBlur={() => setMention(null)}
+                  aria-autocomplete="list"
+                  aria-expanded={mentionChoices.length > 0}
                   placeholder={
                     activeChannel?.type === 'dm'
                       ? `Message ${activeChannel?.name ?? ''}`.trim()
@@ -1152,6 +1269,25 @@ export function ChatPage() {
                   disabled={!channelId}
                   className="pr-10"
                   onKeyDown={(e) => {
+                    if (mentionChoices.length > 0) {
+                      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        const step = e.key === 'ArrowDown' ? 1 : -1;
+                        setMentionIndex((i) => (i + step + mentionChoices.length) % mentionChoices.length);
+                        return;
+                      }
+                      if (e.key === 'Enter' || e.key === 'Tab') {
+                        e.preventDefault();
+                        pickMention(mentionChoices[Math.min(mentionIndex, mentionChoices.length - 1)]);
+                        return;
+                      }
+                      if (e.key === 'Escape') {
+                        // Closes the suggestions, not the conversation.
+                        e.preventDefault();
+                        setMention(null);
+                        return;
+                      }
+                    }
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault();
                       handleSend(e);
@@ -1191,6 +1327,35 @@ export function ChatPage() {
                   </DropdownMenu>
                 </div>
               </div>
+              )}
+              {!recordingVoice && (
+                <>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="shrink-0"
+                    disabled={!channelId || progress !== null}
+                    onClick={() => setRecordingVoice(true)}
+                    aria-label="Record a voice message"
+                    title="Record a voice message"
+                  >
+                    <Mic className="h-5 w-5" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="shrink-0"
+                    disabled={!channelId || progress !== null}
+                    onClick={() => setRecordingVideo(true)}
+                    aria-label="Record a video message"
+                    title="Record a video message"
+                  >
+                    <Video className="h-5 w-5" />
+                  </Button>
+                </>
+              )}
               <Button
                 type="submit"
                 size="icon"
@@ -1202,6 +1367,8 @@ export function ChatPage() {
               </Button>
             </div>
           </form>
+          </>
+          )}
         </div>
 
         {/* The thread, beside the conversation it came out of — so the channel
@@ -1248,6 +1415,11 @@ export function ChatPage() {
       />
     </div>
       <ForwardDialog message={forwarding} onClose={() => setForwarding(null)} />
+      <VideoNoteDialog
+        open={recordingVideo}
+        onClose={() => setRecordingVideo(false)}
+        onDone={(file) => void attachFiles([file])}
+      />
     </ForwardContext.Provider>
   );
 }
@@ -1483,9 +1655,7 @@ function MessageBubble({
                       Forwarded
                     </p>
                   )}
-                  {message.content && (
-                    <p className="whitespace-pre-wrap break-anywhere">{message.content}</p>
-                  )}
+                  {message.content && <MessageText content={message.content} isOwn={isOwn} />}
                   {message.attachments?.length > 0 && (
                     <div className={cn('flex flex-wrap gap-2', message.content && 'mt-2')}>
                       {message.attachments.map((a: any) => (
