@@ -142,7 +142,11 @@ func (h *Handler) LoginWithPassword(c *gin.Context) {
 		TokenType:    "Bearer",
 	})
 
-	c.JSON(http.StatusOK, gin.H{"user": user})
+	perms, err := h.service.PermissionsOf(c.Request.Context(), user.ID)
+	if err != nil {
+		perms = []string{}
+	}
+	c.JSON(http.StatusOK, gin.H{"user": user, "permissions": perms})
 }
 
 func (h *Handler) HandleCallback(c *gin.Context) {
@@ -299,7 +303,13 @@ func (h *Handler) GetCurrentUser(c *gin.Context) {
 		httpx.Error(c, err, "failed to load current user")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"user": user})
+	perms, err := h.service.PermissionsOf(c.Request.Context(), userID)
+	if err != nil {
+		httpx.Error(c, err, "failed to load current user")
+		return
+	}
+	// The pages offer only what the server will allow; the server still checks.
+	c.JSON(http.StatusOK, gin.H{"user": user, "permissions": perms})
 }
 
 func (h *Handler) LinkAccount(c *gin.Context) {

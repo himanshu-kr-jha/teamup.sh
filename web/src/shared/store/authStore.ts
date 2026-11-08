@@ -9,6 +9,8 @@ interface User {
   roles: string[];
   orgId: string;
   mustChangePassword?: boolean;
+  /** What the person's roles let them do; see shared/permissions.ts. */
+  permissions?: string[];
 }
 
 interface AuthState {

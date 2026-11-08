@@ -368,7 +368,7 @@ func (s *Service) AssignableUsers(ctx context.Context, orgID, userID uuid.UUID, 
 			      AND u.role NOT IN ('owner', 'admin')
 			      AND NOT EXISTS (
 			          SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
-			          WHERE ur.user_id = u.id AND r.name IN ('owner', 'admin'))
+			          WHERE ur.user_id = u.id AND (r.permissions ? '*' OR r.permissions ? 'tasks.all'))
 			    )
 			  )
 			ORDER BY u.name`
@@ -823,7 +823,7 @@ func (s *Service) authorityFacts(ctx context.Context, orgID, actorID uuid.UUID, 
 		           OR EXISTS (
 		               SELECT 1 FROM user_roles ur
 		               JOIN roles r ON r.id = ur.role_id
-		               WHERE ur.user_id = u.id AND r.name IN ('owner', 'admin')),
+		               WHERE ur.user_id = u.id AND (r.permissions ? '*' OR r.permissions ? 'tasks.all')),
 		       EXISTS (
 		           SELECT 1 FROM team_members tm
 		           JOIN managed ON managed.id = tm.team_id

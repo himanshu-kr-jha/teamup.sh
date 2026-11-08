@@ -578,6 +578,17 @@ func (s *Service) AuthMiddleware() gin.HandlerFunc {
 		c.Set("id_token", claims.IDToken)
 		c.Set("must_change_password", claims.MustChangePassword)
 
+		// What their roles let them do, as the roles are now. Failing closed:
+		// a person whose permissions cannot be read gets none.
+		if uid, err := uuid.Parse(claims.UserID); err == nil {
+			perms, err := s.PermissionsOf(c.Request.Context(), uid)
+			if err != nil {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "could not read your permissions"})
+				return
+			}
+			c.Set("user_permissions", perms)
+		}
+
 		// Somebody still on an administrator-generated password may only look
 		// at themselves, change it, or sign out. Enforced here rather than in
 		// the interface so calling the API directly does not get around it.
@@ -614,7 +625,22 @@ func GetUserFromContext(c *gin.Context) *UserContext {
 		AuthProvider:       c.GetString("auth_provider"),
 		IDToken:            c.GetString("id_token"),
 		MustChangePassword: c.GetBool("must_change_password"),
+		Permissions:        permissionsFrom(c),
 	}
+}
+
+// permissionsFrom is nil when nothing worked them out, which Can reads as the
+// built-in roles' defaults.
+func permissionsFrom(c *gin.Context) []string {
+	v, ok := c.Get("user_permissions")
+	if !ok {
+		return nil
+	}
+	perms, _ := v.([]string)
+	if perms == nil {
+		perms = []string{}
+	}
+	return perms
 }
 
 type UserContext struct {
@@ -626,6 +652,8 @@ type UserContext struct {
 	AuthProvider       string
 	IDToken            string
 	MustChangePassword bool
+	// Permissions are what the person's roles let them do; see Can.
+	Permissions []string
 }
 
 func (u *UserContext) HasRole(role string) bool {

@@ -163,6 +163,8 @@ Add a test in `cmd/teamup/migrate_test.go` that goes up, down and up again over 
 Register it in the area's `routes.go`.
 Take the organization from the session (`callerOrg`), never from the request.
 Errors go through `httpx.Error`, which turns `pkg/errors` codes into statuses; something the caller may not see is a 404, not a 403.
+Anything beyond a person's own work is a permission, never a role name: `auth.GetUserFromContext(c).Can(auth.PermMeetingsAll)` on the server, `can(user, PERMS.meetingsAll)` on the page.
+A new kind of power is a new entry in `internal/auth/permissions.go` (and `web/src/shared/permissions.ts`), which puts it on the Roles screen's checklist; give it to the admin role in a migration.
 Add the call to `web/src/shared/api/client.ts`.
 
 **A page.**

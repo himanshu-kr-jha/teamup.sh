@@ -22,6 +22,16 @@ type Org struct {
 // DefaultRoles matches the set the setup wizard creates.
 var DefaultRoles = []string{"owner", "admin", "manager", "member"}
 
+// DefaultRolePermissions is auth.DefaultRolePermissions, written out because
+// auth's own tests use this package; TestTheSeededRolesAreTheRealOnes in
+// internal/org keeps the two the same.
+var DefaultRolePermissions = map[string]string{
+	"owner":   `["*"]`,
+	"admin":   `["org.settings","members.manage","roles.manage","teams.manage","tasks.all","channels.all","meetings.all","calls.record","notes.settings","notes.read_all"]`,
+	"manager": `["calls.record"]`,
+	"member":  `[]`,
+}
+
 // SeedOrg creates an organization, its four default roles, and an owner
 // holding the owner role.
 func SeedOrg(t *testing.T, p *pgxpool.Pool) *Org {
@@ -46,8 +56,8 @@ func SeedOrg(t *testing.T, p *pgxpool.Pool) *Org {
 		id := uuid.New()
 		if _, err := p.Exec(ctx, `
 			INSERT INTO roles (id, org_id, name, permissions, is_system, created_at)
-			VALUES ($1, $2, $3, '["*"]', true, NOW())
-		`, id, org.ID, name); err != nil {
+			VALUES ($1, $2, $3, $4::jsonb, true, NOW())
+		`, id, org.ID, name, DefaultRolePermissions[name]); err != nil {
 			t.Fatalf("seed role %s: %v", name, err)
 		}
 		org.RoleIDs[name] = id

@@ -18,6 +18,8 @@ import {
 import { MailSettingsTab, mailProblemText } from './MailSettingsTab';
 import { AppearanceTab } from './AppearanceTab';
 import { NotetakerTab } from './NotetakerTab';
+import { RolesTab, roleSummary, usePermissionCatalog, withinReach } from './RolesTab';
+import { PERMS, can } from '@/shared/permissions';
 import { UserAvatar } from '@/shared/components/UserAvatar';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
@@ -50,7 +52,14 @@ import { PresenceDot } from '@/features/presence/PresenceDot';
 export function AdminPage() {
   const { user } = useAuth();
   const [tab, setTab] = useState('members');
-  const isAdmin = user?.roles?.some((r) => r === 'owner' || r === 'admin') ?? false;
+  const may = {
+    settings: can(user, PERMS.orgSettings),
+    members: can(user, PERMS.members),
+    roles: can(user, PERMS.roles),
+    teams: can(user, PERMS.teams),
+    notes: can(user, PERMS.notesSettings),
+  };
+  const mayAnything = Object.values(may).some(Boolean);
   // Somebody who runs a team can manage that team without administering the
   // organization, so the notice has to allow for it.
   const { data: managedData } = useQuery({
@@ -65,11 +74,11 @@ export function AdminPage() {
         <h1 className="text-2xl font-bold">Organization</h1>
       </div>
 
-      {!isAdmin && (
+      {!mayAnything && (
         <div className="border-b border-border bg-muted/40 px-4 py-2 text-sm text-muted-foreground md:px-6">
           {managedTeamIds.size > 0
             ? 'You can see who is here, and manage the teams you run.'
-            : 'You can see who is here, but only an administrator can make changes.'}
+            : 'You can see who is here, but your role does not let you change anything.'}
         </div>
       )}
 
@@ -79,31 +88,37 @@ export function AdminPage() {
           <TabsTrigger value="members"><Users className="mr-2 h-4 w-4" />Members</TabsTrigger>
           <TabsTrigger value="roles"><Shield className="mr-2 h-4 w-4" />Roles</TabsTrigger>
           <TabsTrigger value="teams"><UsersRound className="mr-2 h-4 w-4" />Teams</TabsTrigger>
-          {isAdmin && <TabsTrigger value="email"><Mail className="mr-2 h-4 w-4" />Email</TabsTrigger>}
-          {isAdmin && <TabsTrigger value="appearance"><Palette className="mr-2 h-4 w-4" />Appearance</TabsTrigger>}
-          {isAdmin && <TabsTrigger value="notes"><NotebookPen className="mr-2 h-4 w-4" />Meeting notes</TabsTrigger>}
+          {may.settings && <TabsTrigger value="email"><Mail className="mr-2 h-4 w-4" />Email</TabsTrigger>}
+          {may.settings && <TabsTrigger value="appearance"><Palette className="mr-2 h-4 w-4" />Appearance</TabsTrigger>}
+          {may.notes && <TabsTrigger value="notes"><NotebookPen className="mr-2 h-4 w-4" />Meeting notes</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="members" className="p-4 md:p-6">
-          <MembersTab isAdmin={isAdmin} isOwner={user?.roles?.includes('owner') ?? false} currentUserId={user?.id} />
+          <MembersTab
+            canMembers={may.members}
+            canRoles={may.roles}
+            isOwner={user?.roles?.includes('owner') ?? false}
+            currentUserId={user?.id}
+            held={user?.permissions}
+          />
         </TabsContent>
         <TabsContent value="roles" className="p-4 md:p-6">
-          <RolesTab isAdmin={isAdmin} />
+          <RolesTab canManage={may.roles} />
         </TabsContent>
         <TabsContent value="teams" className="p-4 md:p-6">
-          <TeamsTab isAdmin={isAdmin} managedTeamIds={managedTeamIds} />
+          <TeamsTab isAdmin={may.teams} managedTeamIds={managedTeamIds} />
         </TabsContent>
-        {isAdmin && (
+        {may.settings && (
           <TabsContent value="email" className="p-4 md:p-6">
             <MailSettingsTab />
           </TabsContent>
         )}
-        {isAdmin && (
+        {may.settings && (
           <TabsContent value="appearance" className="p-4 md:p-6">
             <AppearanceTab />
           </TabsContent>
         )}
-        {isAdmin && (
+        {may.notes && (
           <TabsContent value="notes" className="p-4 md:p-6">
             <NotetakerTab />
           </TabsContent>
@@ -114,13 +129,18 @@ export function AdminPage() {
 }
 
 function MembersTab({
-  isAdmin,
+  canMembers,
+  canRoles,
   isOwner,
   currentUserId,
+  held,
 }: {
-  isAdmin: boolean;
+  canMembers: boolean;
+  canRoles: boolean;
   isOwner: boolean;
   currentUserId?: string;
+  /** What the person looking holds, so they are offered only roles within reach. */
+  held?: string[];
 }) {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -168,7 +188,7 @@ function MembersTab({
       <Card>
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 space-y-0">
           <CardTitle>Members</CardTitle>
-          {isAdmin && (
+          {canMembers && (
             <div className="flex gap-2">
               <Button size="sm" variant="outline" onClick={() => setImporting(true)}>
                 <Upload className="mr-2 h-4 w-4" />
@@ -199,7 +219,7 @@ function MembersTab({
                   return (
                     <Badge key={roleName} variant="secondary" className="gap-1">
                       {roleName}
-                      {isAdmin && role && (
+                      {canRoles && role && withinReach(role, held) && (
                         <button
                           onClick={() => removeRole(u.id, role.id)}
                           aria-label={`Remove ${roleName} from ${u.name}`}
@@ -215,17 +235,19 @@ function MembersTab({
                   <span className="text-xs text-muted-foreground">no roles</span>
                 )}
               </div>
-              {isAdmin && (
+              {(canMembers || canRoles) && (
                 <div className="flex flex-wrap gap-2">
-                  <Button variant="outline" size="sm" onClick={() => setAssignFor(u)}>
-                    Assign role
-                  </Button>
-                  {u.id !== currentUserId && (isOwner || !(u.roles ?? []).includes('owner')) && (
+                  {canRoles && (
+                    <Button variant="outline" size="sm" onClick={() => setAssignFor(u)}>
+                      Assign role
+                    </Button>
+                  )}
+                  {canMembers && u.id !== currentUserId && (isOwner || !(u.roles ?? []).includes('owner')) && (
                     <Button variant="outline" size="sm" onClick={() => setResetFor(u)}>
                       Reset password
                     </Button>
                   )}
-                  {u.id !== currentUserId && (
+                  {canMembers && u.id !== currentUserId && (
                     <Button variant="ghost" size="sm" onClick={() => deactivate(u.id)}>
                       <Trash2 className="h-4 w-4" />
                     </Button>
@@ -239,7 +261,7 @@ function MembersTab({
 
       <AddMemberDialog
         open={adding}
-        roles={roles}
+        roles={roles.filter((r: any) => withinReach(r, held))}
         onOpenChange={setAdding}
         onAdded={(credentials) => {
           refresh();
@@ -289,7 +311,7 @@ function MembersTab({
 
       <AssignRoleDialog
         member={assignFor}
-        roles={roles}
+        roles={roles.filter((r: any) => withinReach(r, held) && !(assignFor?.roles ?? []).includes(r.name))}
         onOpenChange={(open) => !open && setAssignFor(null)}
         onAssigned={refresh}
       />
@@ -383,7 +405,9 @@ function AddMemberDialog({
           <SelectTrigger id="memberRole"><SelectValue placeholder="member" /></SelectTrigger>
           <SelectContent>
             {roles.map((r: any) => (
-              <SelectItem key={r.id} value={r.name}>{r.name}</SelectItem>
+              <SelectItem key={r.id} value={r.name}>
+                <RoleOption role={r} />
+              </SelectItem>
             ))}
           </SelectContent>
         </Select>
@@ -682,7 +706,7 @@ function AssignRoleDialog({
         onOpenChange(o);
       }}
       title={member ? `Assign a role to ${member.name}` : 'Assign a role'}
-      description="Roles decide what someone is allowed to do. Changes take effect when their session next refreshes."
+      description="A role adds to what somebody may do, straight away; they may need to reload the page to see it. Only roles within your own permissions are offered."
       submitLabel="Assign role"
       disabledReason={!roleId ? 'Pick a role' : undefined}
       onSubmit={async () => {
@@ -698,7 +722,9 @@ function AssignRoleDialog({
           <SelectTrigger id="roleSelect"><SelectValue placeholder="Choose a role" /></SelectTrigger>
           <SelectContent>
             {roles.map((r: any) => (
-              <SelectItem key={r.id} value={r.id}>{r.name}</SelectItem>
+              <SelectItem key={r.id} value={r.id}>
+                <RoleOption role={r} />
+              </SelectItem>
             ))}
           </SelectContent>
         </Select>
@@ -707,102 +733,6 @@ function AssignRoleDialog({
   );
 }
 
-function RolesTab({ isAdmin }: { isAdmin: boolean }) {
-  const toast = useToast();
-  const queryClient = useQueryClient();
-  const [createOpen, setCreateOpen] = useState(false);
-  const [name, setName] = useState('');
-  const [permissions, setPermissions] = useState('');
-
-  const { data, isLoading } = useQuery({ queryKey: ['roles'], queryFn: () => orgApi.listRoles() });
-  const roles = data?.data ?? [];
-
-  const remove = async (id: string) => {
-    try {
-      await orgApi.deleteRole(id);
-      queryClient.invalidateQueries({ queryKey: ['roles'] });
-      toast.success('Role deleted.');
-    } catch (err) {
-      toast.error(apiErrorMessage(err, 'Could not delete that role.'));
-    }
-  };
-
-  if (isLoading) return <p className="text-sm text-muted-foreground">Loading roles…</p>;
-
-  return (
-    <>
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle>Roles</CardTitle>
-          {isAdmin && (
-            <Button size="sm" onClick={() => setCreateOpen(true)}>
-              <Plus className="mr-1 h-4 w-4" />New role
-            </Button>
-          )}
-        </CardHeader>
-        <CardContent className="space-y-2">
-          {roles.map((r: any) => (
-            <div key={r.id} className="flex items-start gap-3 rounded-lg border border-border p-3">
-              <div className="min-w-0 flex-1">
-                <p className="font-medium">
-                  {r.name}
-                  {r.isSystem && <Badge variant="secondary" className="ml-2">built in</Badge>}
-                </p>
-                <p className="truncate text-sm text-muted-foreground">
-                  {(r.permissions ?? []).join(', ') || 'no permissions'}
-                </p>
-              </div>
-              {isAdmin && !r.isSystem && (
-                <Button variant="ghost" size="sm" onClick={() => remove(r.id)}>
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              )}
-            </div>
-          ))}
-        </CardContent>
-      </Card>
-
-      <FormDialog
-        open={createOpen}
-        onOpenChange={(o) => {
-          if (!o) {
-            setName('');
-            setPermissions('');
-          }
-          setCreateOpen(o);
-        }}
-        title="New role"
-        description="Built-in roles cannot be changed; create your own for anything else."
-        submitLabel="Create role"
-        disabledReason={!name.trim() ? 'Give the role a name' : undefined}
-        onSubmit={async () => {
-          await orgApi.createRole({
-            name: name.trim(),
-            permissions: permissions.split(',').map((p) => p.trim()).filter(Boolean),
-          });
-          queryClient.invalidateQueries({ queryKey: ['roles'] });
-          setName('');
-          setPermissions('');
-        }}
-      >
-        <div className="space-y-2">
-          <Label htmlFor="roleName">Name</Label>
-          <Input id="roleName" value={name} onChange={(e) => setName(e.target.value)} placeholder="auditor" />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="rolePermissions">Permissions</Label>
-          <Input
-            id="rolePermissions"
-            value={permissions}
-            onChange={(e) => setPermissions(e.target.value)}
-            placeholder="tasks:read, reports:read"
-          />
-          <p className="text-xs text-muted-foreground">Comma separated.</p>
-        </div>
-      </FormDialog>
-    </>
-  );
-}
 
 /**
  * Radix will not accept an empty string as a Select value, and "no parent" is
@@ -1266,5 +1196,16 @@ function TeamMembersDialog({
         </ul>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/** A role in a list to choose from: its name, and what it lets somebody do. */
+function RoleOption({ role }: { role: any }) {
+  const catalog = usePermissionCatalog();
+  return (
+    <span className="flex min-w-0 flex-col py-0.5 text-left">
+      <span>{role.name}</span>
+      <span className="max-w-[18rem] truncate text-xs text-muted-foreground">{roleSummary(role, catalog)}</span>
+    </span>
   );
 }

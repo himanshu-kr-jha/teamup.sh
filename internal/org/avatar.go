@@ -38,7 +38,7 @@ func avatarAddress(userID uuid.UUID, data []byte) string {
 // mayChangeAvatar is the person themselves, or an administrator.
 func mayChangeAvatar(c *gin.Context, userID uuid.UUID) bool {
 	caller := auth.GetUserFromContext(c)
-	if caller.UserID == userID.String() || caller.HasAnyRole("owner", "admin") {
+	if caller.UserID == userID.String() || caller.Can(auth.PermMembers) {
 		return true
 	}
 	c.JSON(http.StatusForbidden, gin.H{"error": "you may only change your own picture"})

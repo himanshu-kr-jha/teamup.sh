@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
+import { PERMS, can } from '@/shared/permissions';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { tasksApi } from '@/shared/api/client';
 
@@ -16,7 +17,8 @@ import { tasksApi } from '@/shared/api/client';
  */
 export function useOrganizationAccess(): { allowed: boolean; resolved: boolean } {
   const { user } = useAuth();
-  const isAdmin = user?.roles?.some((r) => r === 'owner' || r === 'admin') ?? false;
+  // Anybody whose role lets them change something here.
+  const isAdmin = [PERMS.orgSettings, PERMS.members, PERMS.roles, PERMS.teams, PERMS.notesSettings].some((p) => can(user, p));
 
   // Same key the tasks page uses, so this is usually already answered.
   const { data, isPending } = useQuery({

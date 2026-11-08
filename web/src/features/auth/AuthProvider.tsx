@@ -12,6 +12,8 @@ interface User {
   roles: string[];
   orgId: string;
   mustChangePassword?: boolean;
+  /** What the person's roles let them do; see shared/permissions.ts. */
+  permissions?: string[];
 }
 
 interface AuthContextType {
@@ -37,7 +39,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       // /auth/me answers in the same envelope login does.
       const res = await api.get('/auth/me');
-      setUser(res.data.user);
+      setUser({ ...res.data.user, permissions: res.data.permissions ?? [] });
     } catch (err) {
       // Anything but a real 401 keeps the persisted user: a failed request at
       // load is not a sign-out, and clearing them closed the websocket for good.

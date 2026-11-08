@@ -20,7 +20,7 @@ export async function restoreSession<User>(setUser: (user: User) => void): Promi
     if (!res.ok) return false;
     const body = await res.json();
     if (!body?.user) return false;
-    setUser(body.user as User);
+    setUser({ ...body.user, permissions: body.permissions ?? [] } as User);
     return true;
   } catch {
     return false;

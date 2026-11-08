@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { PERMS, can } from '@/shared/permissions';
 import { GuestAccess } from '@/features/calls/GuestAccess';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
@@ -53,7 +54,7 @@ export function EventDialog({
   const nameOf = (id: string) => (id === user?.id ? 'You' : people.find((p) => p.id === id)?.name ?? 'Somebody');
   const target = joinTarget(item, now);
   const ownBlock = own && item.source === 'block' && !!item.id;
-  const isAdmin = user?.roles?.some((r) => r === 'owner' || r === 'admin') ?? false;
+  const isAdmin = can(user, PERMS.meetingsAll);
   // Both are checked again by the server, which is what really decides.
   const canChangeMeeting =
     item.source === 'meeting' && item.status === 'scheduled' && !!item.callId && (item.organizerId === user?.id || isAdmin);

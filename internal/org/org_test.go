@@ -250,8 +250,9 @@ func TestCreateDefaultRolesIsIdempotent(t *testing.T) {
 		if !r.IsSystem {
 			t.Errorf("%s should be a system role", r.Name)
 		}
-		if len(r.Permissions) == 0 {
-			t.Errorf("%s has no permissions", r.Name)
+		// A member's own work needs no permission; every other built-in role has some.
+		if (len(r.Permissions) == 0) != (r.Name == "member") {
+			t.Errorf("%s: %v", r.Name, r.Permissions)
 		}
 	}
 	_ = pool
@@ -262,13 +263,13 @@ func TestCustomRoleLifecycle(t *testing.T) {
 	ctx := context.Background()
 	org := testsupport.SeedOrg(t, pool)
 
-	role, err := svc.CreateRole(ctx, org.ID, "auditor", "Read-only", []string{"tasks:read"})
+	role, err := svc.CreateRole(ctx, org.ID, "auditor", "Read-only", []string{"tasks.all"}, everything)
 	if err != nil {
 		t.Fatalf("create role: %v", err)
 	}
 
-	newPerms := []string{"tasks:read", "reports:read"}
-	updated, err := svc.UpdateRole(ctx, org.ID, role.ID, nil, nil, newPerms)
+	newPerms := []string{"tasks.all", "notes.read_all"}
+	updated, err := svc.UpdateRole(ctx, org.ID, role.ID, nil, nil, newPerms, everything)
 	if err != nil {
 		t.Fatalf("update role: %v", err)
 	}
@@ -276,7 +277,7 @@ func TestCustomRoleLifecycle(t *testing.T) {
 		t.Errorf("permissions not updated: %v", updated.Permissions)
 	}
 
-	if err := svc.DeleteRole(ctx, org.ID, role.ID); err != nil {
+	if err := svc.DeleteRole(ctx, org.ID, role.ID, everything); err != nil {
 		t.Fatalf("delete role: %v", err)
 	}
 }
@@ -289,11 +290,11 @@ func TestSystemRolesCannotBeChangedOrDeleted(t *testing.T) {
 	org := testsupport.SeedOrg(t, pool)
 
 	ownerRole := org.RoleIDs["owner"]
-	if err := svc.DeleteRole(ctx, org.ID, ownerRole); err == nil {
+	if err := svc.DeleteRole(ctx, org.ID, ownerRole, everything); err == nil {
 		t.Error("a system role must not be deletable")
 	}
 	name := "hijacked"
-	if _, err := svc.UpdateRole(ctx, org.ID, ownerRole, &name, nil, nil); err == nil {
+	if _, err := svc.UpdateRole(ctx, org.ID, ownerRole, &name, nil, nil, everything); err == nil {
 		t.Error("a system role must not be editable")
 	}
 }
@@ -308,7 +309,7 @@ func TestAssignRoleIsIdempotentAndScoped(t *testing.T) {
 
 	adminRole := org.RoleIDs["admin"]
 	for i := 0; i < 2; i++ {
-		if err := svc.AssignRole(ctx, org.ID, member, adminRole, org.OwnerID); err != nil {
+		if err := svc.AssignRole(ctx, org.ID, member, adminRole, org.OwnerID, everything); err != nil {
 			t.Fatalf("assign (pass %d): %v", i, err)
 		}
 	}
@@ -322,7 +323,7 @@ func TestAssignRoleIsIdempotentAndScoped(t *testing.T) {
 	}
 
 	// A role belonging to another organization must not attach.
-	if err := svc.AssignRole(ctx, org.ID, member, other.RoleIDs["admin"], org.OwnerID); err == nil {
+	if err := svc.AssignRole(ctx, org.ID, member, other.RoleIDs["admin"], org.OwnerID, everything); err == nil {
 		t.Error("assigning a role from another organization must fail")
 	}
 }
@@ -337,7 +338,7 @@ func TestAssignRoleRefusesACrossOrganizationGrant(t *testing.T) {
 	victim := testsupport.SeedOrg(t, pool)
 
 	// Attacker's organization, victim's user and victim's role.
-	if err := svc.AssignRole(ctx, attacker.ID, victim.OwnerID, victim.RoleIDs["owner"], attacker.OwnerID); err == nil {
+	if err := svc.AssignRole(ctx, attacker.ID, victim.OwnerID, victim.RoleIDs["owner"], attacker.OwnerID, everything); err == nil {
 		t.Fatal("granting a role inside another organization must be refused")
 	}
 
@@ -379,10 +380,10 @@ func TestRemoveRole(t *testing.T) {
 	member := testsupport.SeedUser(t, pool, org, "demote@example.test", "member")
 
 	adminRole := org.RoleIDs["admin"]
-	if err := svc.AssignRole(ctx, org.ID, member, adminRole, org.OwnerID); err != nil {
+	if err := svc.AssignRole(ctx, org.ID, member, adminRole, org.OwnerID, everything); err != nil {
 		t.Fatalf("assign: %v", err)
 	}
-	if err := svc.RemoveRole(ctx, org.ID, member, adminRole); err != nil {
+	if err := svc.RemoveRole(ctx, org.ID, member, adminRole, everything); err != nil {
 		t.Fatalf("remove: %v", err)
 	}
 	u, _ := svc.GetUser(ctx, member)
@@ -919,7 +920,7 @@ func TestImportMembersReportsEveryRowSeparately(t *testing.T) {
 		t.Fatalf("create team: %v", err)
 	}
 
-	outcomes, err := svc.ImportMembers(ctx, org.ID, strings.Join([]string{
+	outcomes, err := svc.ImportMembers(ctx, org.ID, everything, strings.Join([]string{
 		"name,email,role,team",
 		"Ada Lovelace,ada@acme.test,member,",
 		"Grace Hopper,grace@acme.test,admin,Platform",
@@ -1020,7 +1021,7 @@ func TestImportMembersOnlySeesItsOwnOrganization(t *testing.T) {
 		t.Fatalf("create their team: %v", err)
 	}
 
-	outcomes, err := svc.ImportMembers(ctx, org.ID, strings.Join([]string{
+	outcomes, err := svc.ImportMembers(ctx, org.ID, everything, strings.Join([]string{
 		"name,email,role,team",
 		"Intruder,intruder@acme.test,member,Secret",
 	}, "\n"))
@@ -1057,7 +1058,7 @@ func TestImportMembersRefusesAnOversizedBatch(t *testing.T) {
 		rows = append(rows, fmt.Sprintf("Person %d,person%d@acme.test", i, i))
 	}
 
-	if _, err := svc.ImportMembers(context.Background(), org.ID, strings.Join(rows, "\n")); err == nil {
+	if _, err := svc.ImportMembers(context.Background(), org.ID, everything, strings.Join(rows, "\n")); err == nil {
 		t.Fatal("a batch past the cap must be refused rather than held open for minutes")
 	}
 
@@ -1079,7 +1080,7 @@ func TestImportMembersNeedsAUsableHeader(t *testing.T) {
 		"Ada Lovelace,ada@acme.test",
 		"forename,address\nAda,ada@acme.test",
 	} {
-		if _, err := svc.ImportMembers(context.Background(), org.ID, csv); err == nil {
+		if _, err := svc.ImportMembers(context.Background(), org.ID, everything, csv); err == nil {
 			t.Errorf("a file with no name/email header must be refused, accepted %q", csv)
 		}
 	}
@@ -1093,7 +1094,7 @@ func TestImportMembersRejectsAnAddressThatIsNotAnEmail(t *testing.T) {
 	ctx := context.Background()
 	org := testsupport.SeedOrg(t, pool)
 
-	outcomes, err := svc.ImportMembers(ctx, org.ID, strings.Join([]string{
+	outcomes, err := svc.ImportMembers(ctx, org.ID, everything, strings.Join([]string{
 		"name,email",
 		"Malformed,not-an-email",
 		"Fine,fine@acme.test",
@@ -1121,3 +1122,6 @@ func TestImportMembersRejectsAnAddressThatIsNotAnEmail(t *testing.T) {
 		}
 	}
 }
+
+// everything is what an owner holds.
+var everything = []string{"*"}

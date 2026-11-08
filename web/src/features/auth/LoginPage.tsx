@@ -26,7 +26,7 @@ export function LoginPage() {
 
     try {
       const res = await api.post('/auth/login', { email, password });
-      setUser(res.data.user);
+      setUser({ ...res.data.user, permissions: res.data.permissions ?? [] });
       navigate(safeNext(params.get('next')));
     } catch (err: any) {
       setError(err.response?.data?.error || 'Login failed');

@@ -103,6 +103,22 @@ export const authApi = {
     api.post('/auth/password', data),
 };
 
+/** One permission a role can have (internal/auth/permissions.go). */
+export interface PermissionInfo {
+  key: string;
+  area: string;
+  label: string;
+  description: string;
+}
+
+export interface Role {
+  id: string;
+  name: string;
+  description: string;
+  permissions: string[];
+  isSystem: boolean;
+}
+
 export interface MailSettings {
   host: string;
   port: number;
@@ -263,6 +279,8 @@ export const orgApi = {
   /** Ends their sessions; the password in the response is never visible again. */
   resetPassword: (id: string) => api.post<{ temporaryPassword: string }>(`/users/${id}/reset-password`),
   listRoles: () => getList('/roles', 'roles'),
+  /** Every permission a role can have, for the Roles screen. */
+  listPermissions: () => api.get<{ permissions: PermissionInfo[] }>('/permissions'),
   createRole: (data: { name: string; description?: string; permissions?: string[] }) => api.post('/roles', data),
   updateRole: (id: string, data: { name?: string; description?: string; permissions?: string[] }) =>
     api.patch(`/roles/${id}`, data),

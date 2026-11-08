@@ -159,7 +159,7 @@ func (h *Handler) requireChannelAdmin(c *gin.Context, cl caller, channelID uuid.
 		return true
 	}
 	// Organization admins can always administer a channel.
-	if auth.GetUserFromContext(c).HasAnyRole("owner", "admin") {
+	if auth.GetUserFromContext(c).Can(auth.PermChannelsAll) {
 		return true
 	}
 	httpx.Error(c, apperrors.New(apperrors.CodeForbidden,
@@ -208,7 +208,7 @@ func (h *Handler) mayAdminister(c *gin.Context, cl caller, channelID uuid.UUID) 
 	if h.service.IsChannelAdmin(c.Request.Context(), channelID, cl.UserID) {
 		return true
 	}
-	return auth.GetUserFromContext(c).HasAnyRole("owner", "admin")
+	return auth.GetUserFromContext(c).Can(auth.PermChannelsAll)
 }
 
 func (h *Handler) ListChannels(c *gin.Context) {
@@ -566,7 +566,7 @@ func (h *Handler) SendMessage(c *gin.Context) {
 		attachmentIDs = append(attachmentIDs, id)
 	}
 
-	isOrgAdmin := auth.GetUserFromContext(c).HasAnyRole("owner", "admin")
+	isOrgAdmin := auth.GetUserFromContext(c).Can(auth.PermChannelsAll)
 	msg, err := h.service.SendMessage(c.Request.Context(), cl.OrgID, channelID, cl.UserID,
 		req.Content, replyTo, attachmentIDs, isOrgAdmin)
 	if err != nil {
@@ -771,7 +771,7 @@ func (h *Handler) ForwardMessage(c *gin.Context) {
 		}
 		targets = append(targets, id)
 	}
-	isOrgAdmin := auth.GetUserFromContext(c).HasAnyRole("owner", "admin")
+	isOrgAdmin := auth.GetUserFromContext(c).Can(auth.PermChannelsAll)
 	sent, err := h.service.ForwardMessage(c.Request.Context(), cl.OrgID, messageID, cl.UserID, targets, isOrgAdmin)
 	if err != nil {
 		httpx.Error(c, err, "failed to forward the message")

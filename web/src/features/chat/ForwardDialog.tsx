@@ -1,4 +1,5 @@
 import { createContext, useContext, useMemo, useState } from 'react';
+import { PERMS, can } from '@/shared/permissions';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, Forward, Hash, Loader2, Megaphone, Paperclip, Search, User } from 'lucide-react';
 import {
@@ -51,7 +52,7 @@ export function ForwardDialog({
   const [query, setQuery] = useState('');
   const [chosen, setChosen] = useState<string[]>([]);
   const [sending, setSending] = useState(false);
-  const isAdmin = user?.roles?.some((r) => r === 'owner' || r === 'admin') ?? false;
+  const isAdmin = can(user, PERMS.channelsAll);
 
   const { data } = useQuery({ queryKey: ['channels'], queryFn: () => channelsApi.list(), enabled: !!message });
   const term = query.trim().toLowerCase();

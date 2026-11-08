@@ -18,10 +18,8 @@ import (
 // organization, so AddMember's default of "member" resolves.
 func seedDefaultRoles(t *testing.T, svc *Service, orgID uuid.UUID) {
 	t.Helper()
-	for _, name := range []string{"owner", "admin", "member"} {
-		if _, err := svc.CreateRole(context.Background(), orgID, name, name, []string{"*"}); err != nil {
-			t.Fatalf("seed role %s: %v", name, err)
-		}
+	if err := svc.CreateDefaultRoles(context.Background(), orgID); err != nil {
+		t.Fatalf("seed roles: %v", err)
 	}
 }
 

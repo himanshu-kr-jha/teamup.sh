@@ -1163,3 +1163,45 @@ func TestGuestInvitesMigrationIsReversible(t *testing.T) {
 		t.Errorf("links and guests kept: %d %d", links, guests)
 	}
 }
+
+// The built-in roles take the new list's defaults, and a role an organization
+// made keeps what its old permissions meant; going back restores old names.
+func TestRolePermissionsMigrationTranslatesOldNames(t *testing.T) {
+	const version = 29
+	f := newMigrateFixture(t)
+	f.mustRun("up")
+	f.downTo(version - 1)
+	conn := f.conn()
+	ctx := context.Background()
+	if _, err := conn.Exec(ctx, `
+		WITH o AS (INSERT INTO organizations (name, subdomain) VALUES ('Perm', 'perm') RETURNING id)
+		INSERT INTO roles (id, org_id, name, permissions, is_system)
+		SELECT gen_random_uuid(), id, n, p::jsonb, s FROM o, (VALUES
+		    ('admin', '["org:manage","users:manage"]', true),
+		    ('member', '["channels:read"]', true),
+		    ('Scheduler', '["calls:manage","channels:read","nonsense"]', false)) AS v(n, p, s)
+	`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	f.mustRun("up")
+	perms := func(name string) string {
+		var out string
+		if err := conn.QueryRow(ctx, `SELECT COALESCE((SELECT string_agg(p, ',' ORDER BY p) FROM jsonb_array_elements_text(permissions) p), '') FROM roles WHERE name = $1`, name).Scan(&out); err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		return out
+	}
+	if got := perms("admin"); got != "calls.record,channels.all,meetings.all,members.manage,notes.read_all,notes.settings,org.settings,roles.manage,tasks.all,teams.manage" {
+		t.Errorf("admin: %s", got)
+	}
+	if got := perms("member"); got != "" {
+		t.Errorf("member holds nothing extra: %q", got)
+	}
+	if got := perms("Scheduler"); got != "calls.record,meetings.all" {
+		t.Errorf("a made-up role keeps its meaning and loses what meant nothing: %s", got)
+	}
+	f.downTo(version - 1)
+	if got := perms("Scheduler"); got != "calls:manage" {
+		t.Errorf("back to the old name: %s", got)
+	}
+}

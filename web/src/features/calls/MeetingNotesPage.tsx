@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { PERMS, can } from '@/shared/permissions';
 import { Link } from 'react-router-dom';
 import { useInfiniteQuery } from '@tanstack/react-query';
 import { format, isToday, isYesterday } from 'date-fns';
@@ -44,7 +45,7 @@ function byDay(items: MeetingNotesItem[]): Array<{ day: string; items: MeetingNo
  */
 export function MeetingNotesPage() {
   const { user } = useAuth();
-  const isAdmin = user?.roles?.some((r) => r === 'owner' || r === 'admin') ?? false;
+  const isAdmin = can(user, PERMS.notesReadAll);
   const [scope, setScope] = useState<'mine' | 'all'>('mine');
   const [typed, setTyped] = useState('');
   const [q, setQ] = useState('');

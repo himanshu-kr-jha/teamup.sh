@@ -43,7 +43,7 @@ func caller(c *gin.Context) (orgID, userID uuid.UUID, ok bool) {
 }
 
 func isOrgAdmin(c *gin.Context) bool {
-	return auth.GetUserFromContext(c).HasAnyRole("owner", "admin")
+	return auth.GetUserFromContext(c).Can(auth.PermMeetingsAll)
 }
 
 func refuse(c *gin.Context, message string) {

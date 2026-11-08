@@ -71,7 +71,7 @@ browser
   → /api group                  cmd/teamup/main.go:542
   → auth middleware             internal/auth/auth.go:488  RS256 JWT from the "at" cookie;
                                                            silently refreshes from "rt" if expired;
-                                                           puts user_id / org_id / roles in context
+                                                           puts user_id / org_id / roles, and the roles' permissions read fresh from the database, in context
   → handler                     internal/<domain>/routes.go
   → service                     internal/<domain>/<domain>.go   rules, authorization, SQL
   → PostgreSQL (pgx/v5)

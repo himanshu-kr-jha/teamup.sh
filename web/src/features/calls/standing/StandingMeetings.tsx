@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { PERMS, can } from '@/shared/permissions';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
 import { Archive, CalendarClock, ClipboardList, Loader2, Pencil, Plus, Video } from 'lucide-react';
@@ -45,7 +46,7 @@ export function useJoinStanding() {
 /** The permanent rooms, pinned at the top of Calls. */
 export function StandingMeetings() {
   const { user } = useAuth();
-  const isAdmin = user?.roles?.some((r) => r === 'owner' || r === 'admin') ?? false;
+  const isAdmin = can(user, PERMS.meetingsAll);
   const queryClient = useQueryClient();
   const toast = useToast();
   const { joinStanding, joining } = useJoinStanding();

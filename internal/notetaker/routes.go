@@ -70,7 +70,7 @@ func (s *Service) retryMinutes(c *gin.Context) {
 }
 
 func requireAdmin(c *gin.Context) {
-	if !auth.GetUserFromContext(c).HasAnyRole("owner", "admin") {
+	if !auth.GetUserFromContext(c).Can(auth.PermNotesSettings) {
 		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "administrator access required"})
 		return
 	}
@@ -85,7 +85,7 @@ func caller(c *gin.Context) (orgID, userID uuid.UUID, isAdmin, ok bool) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
 		return uuid.Nil, uuid.Nil, false, false
 	}
-	return o, id, u.HasAnyRole("owner", "admin"), true
+	return o, id, u.Can(auth.PermNotesReadAll), true
 }
 
 // settingsView is the settings without the keys, which never go back to a page.

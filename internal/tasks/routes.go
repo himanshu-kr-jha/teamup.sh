@@ -111,7 +111,7 @@ func (h *Handler) ListTasks(c *gin.Context) {
 		// that shows work somebody cannot act on is the product decision; a
 		// board that does not say so is the bug.
 		Viewer:           &cl.UserID,
-		ViewerIsOrgAdmin: auth.GetUserFromContext(c).HasAnyRole("owner", "admin"),
+		ViewerIsOrgAdmin: auth.GetUserFromContext(c).Can(auth.PermTasksAll),
 	}
 	// scope=team asks for the work of the people this caller manages. It is
 	// always the caller — you cannot ask to see somebody else's reports.
@@ -157,7 +157,7 @@ func (h *Handler) AssignableUsers(c *gin.Context) {
 		return
 	}
 	people, err := h.service.AssignableUsers(c.Request.Context(), cl.OrgID, cl.UserID,
-		auth.GetUserFromContext(c).HasAnyRole("owner", "admin"))
+		auth.GetUserFromContext(c).Can(auth.PermTasksAll))
 	if err != nil {
 		httpx.Error(c, err, "failed to list assignable users")
 		return
@@ -211,7 +211,7 @@ func (h *Handler) CreateTask(c *gin.Context) {
 	task, err := h.service.CreateTask(c.Request.Context(), cl.OrgID, cl.UserID,
 		req.Title, req.Description, req.Status, req.Priority, req.TaskType,
 		projectID, assigneeID, dueDate, startDate, req.Labels,
-		auth.GetUserFromContext(c).HasAnyRole("owner", "admin"))
+		auth.GetUserFromContext(c).Can(auth.PermTasksAll))
 	if err != nil {
 		httpx.Error(c, err, "failed to create task")
 		return
@@ -251,7 +251,7 @@ func (h *Handler) GetTask(c *gin.Context) {
 		return
 	}
 	task, err := h.service.GetTaskFor(c.Request.Context(), cl.OrgID, id, cl.UserID,
-		auth.GetUserFromContext(c).HasAnyRole("owner", "admin"))
+		auth.GetUserFromContext(c).Can(auth.PermTasksAll))
 	if err != nil {
 		httpx.Error(c, err, "task not found")
 		return
@@ -274,7 +274,7 @@ func (h *Handler) UpdateTask(c *gin.Context) {
 		return
 	}
 	task, err := h.service.UpdateTask(c.Request.Context(), cl.OrgID, id, cl.UserID, req,
-		auth.GetUserFromContext(c).HasAnyRole("owner", "admin"))
+		auth.GetUserFromContext(c).Can(auth.PermTasksAll))
 	if err != nil {
 		httpx.Error(c, err, "failed to update task")
 		return
@@ -292,7 +292,7 @@ func (h *Handler) DeleteTask(c *gin.Context) {
 		return
 	}
 	if err := h.service.DeleteTask(c.Request.Context(), cl.OrgID, id, cl.UserID,
-		auth.GetUserFromContext(c).HasAnyRole("owner", "admin")); err != nil {
+		auth.GetUserFromContext(c).Can(auth.PermTasksAll)); err != nil {
 		httpx.Error(c, err, "failed to delete task")
 		return
 	}
@@ -502,7 +502,7 @@ func (h *Handler) AddWatcher(c *gin.Context) {
 	ctx := c.Request.Context()
 	if target != cl.UserID {
 		mayAdd, err := h.service.MayAssign(ctx, cl.OrgID, cl.UserID, target,
-			auth.GetUserFromContext(c).HasAnyRole("owner", "admin"))
+			auth.GetUserFromContext(c).Can(auth.PermTasksAll))
 		if err != nil {
 			httpx.Error(c, err, "failed to add watcher")
 			return
@@ -545,7 +545,7 @@ func (h *Handler) RemoveWatcher(c *gin.Context) {
 	ctx := c.Request.Context()
 	if userID != cl.UserID {
 		mayRemove, err := h.service.MayAssign(ctx, cl.OrgID, cl.UserID, userID,
-			auth.GetUserFromContext(c).HasAnyRole("owner", "admin"))
+			auth.GetUserFromContext(c).Can(auth.PermTasksAll))
 		if err != nil {
 			httpx.Error(c, err, "failed to remove watcher")
 			return

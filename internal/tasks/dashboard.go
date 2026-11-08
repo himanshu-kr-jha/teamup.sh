@@ -503,7 +503,7 @@ func (s *Service) Dashboard(ctx context.Context, orgID, callerID uuid.UUID, isOr
 }
 
 func isOrgAdmin(c *gin.Context) bool {
-	return auth.GetUserFromContext(c).HasAnyRole("owner", "admin")
+	return auth.GetUserFromContext(c).Can(auth.PermTasksAll)
 }
 
 // optionalQueryUUID reads an optional id filter. A malformed one is refused rather

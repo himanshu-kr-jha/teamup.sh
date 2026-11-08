@@ -80,7 +80,7 @@ func pathID(c *gin.Context, name string) (uuid.UUID, bool) {
 }
 
 func isAdmin(c *gin.Context) bool {
-	return auth.GetUserFromContext(c).HasAnyRole("owner", "admin")
+	return auth.GetUserFromContext(c).Can(auth.PermMeetingsAll)
 }
 
 func (h *Handler) ListCalls(c *gin.Context) {
@@ -335,7 +335,7 @@ func (h *Handler) MuteParticipant(c *gin.Context) {
 		httpx.Error(c, err, "failed to check call access")
 		return
 	}
-	if !mayJoin && !user.HasAnyRole("owner", "admin") {
+	if !mayJoin && !user.Can(auth.PermMeetingsAll) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "you are not part of this call"})
 		return
 	}
@@ -428,7 +428,7 @@ func (s *Service) callAsSeenBy(ctx context.Context, orgID uuid.UUID, call *CallM
 // no business there gets the same answer as for a call that does not exist. It
 // writes the refusal itself.
 func (h *Handler) mayRecord(c *gin.Context) (orgID, userID, id uuid.UUID, ok bool) {
-	if !auth.GetUserFromContext(c).HasAnyRole("owner", "admin", "manager") {
+	if !auth.GetUserFromContext(c).Can(auth.PermCallsRecord) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "you may not record calls"})
 		return orgID, userID, id, false
 	}
@@ -598,7 +598,7 @@ func (h *Handler) EndCall(c *gin.Context) {
 		httpx.Error(c, err, "failed to check call access")
 		return
 	}
-	if !mayEnd && !user.HasAnyRole("owner", "admin") {
+	if !mayEnd && !user.Can(auth.PermMeetingsAll) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "you are not part of this call"})
 		return
 	}

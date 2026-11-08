@@ -93,3 +93,5 @@ Who: orchestrator = Opus (plans, verifies, reports). Senior developer = Opus sub
 - 2026-11-08, orchestrator: the first real meeting had no minutes: NVIDIA had retired the default model, and a clip after a mute was refused as over 30 seconds. Both fixed (ticket 53), with a Meeting notes page, retry, and a notice when minutes fail.
 
 - 2026-11-08, orchestrator: ticket 54, guests in meetings by link, name and passcode. Links in task descriptions and comments.
+
+- 2026-11-08, orchestrator: ticket 55, role permissions made real and chosen from a checklist. Guests: direct link, rejoin, email invitations (ticket 54).

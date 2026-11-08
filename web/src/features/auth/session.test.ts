@@ -56,10 +56,11 @@ describe('restoreSession', () => {
     vi.stubGlobal('fetch', vi.fn(() => (result instanceof Error ? Promise.reject(result) : Promise.resolve(result))));
 
   it('takes who the cookie says is signed in', async () => {
-    answering({ ok: true, json: async () => ({ user: { id: 'u' } }) });
+    answering({ ok: true, json: async () => ({ user: { id: 'u' }, permissions: ['tasks.all'] }) });
     const setUser = vi.fn();
     expect(await restoreSession(setUser)).toBe(true);
-    expect(setUser).toHaveBeenCalledWith({ id: 'u' });
+    // With what their roles let them do, which the pages offer by.
+    expect(setUser).toHaveBeenCalledWith({ id: 'u', permissions: ['tasks.all'] });
     expect(fetch).toHaveBeenCalledWith('/api/auth/me', { credentials: 'include' });
   });
 

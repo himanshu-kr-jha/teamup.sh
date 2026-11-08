@@ -307,16 +307,7 @@ func upsertConfig(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, key string, v
 }
 
 func (s *Service) createDefaultRoles(ctx context.Context, tx pgx.Tx, orgID uuid.UUID) error {
-	roles := []struct {
-		Name        string
-		Permissions []string
-	}{
-		{"owner", []string{"*"}},
-		{"admin", []string{"org:manage", "users:manage", "roles:manage", "channels:manage", "tasks:manage", "calls:manage", "settings:manage"}},
-		{"manager", []string{"channels:read", "channels:write", "tasks:manage", "calls:manage", "reports:read"}},
-		{"member", []string{"channels:read", "channels:write", "tasks:read", "tasks:write:self", "calls:join"}},
-	}
-	for _, role := range roles {
+	for _, role := range auth.DefaultRolePermissions() {
 		permsJSON, err := json.Marshal(role.Permissions)
 		if err != nil {
 			return fmt.Errorf("encode %s permissions: %w", role.Name, err)

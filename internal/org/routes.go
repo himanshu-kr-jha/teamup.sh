@@ -52,31 +52,32 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service, options ...func(*Hand
 	}
 
 	rg.GET("/org", h.GetOrganization)
-	rg.PATCH("/org", h.requireAdmin, h.UpdateOrganization)
+	rg.PATCH("/org", h.require(auth.PermOrgSettings), h.UpdateOrganization)
 
-	rg.GET("/org/mail", h.requireAdmin, h.GetMailSettings)
-	rg.PUT("/org/mail", h.requireAdmin, h.UpdateMailSettings)
-	rg.POST("/org/mail/test", h.requireAdmin, h.TestMailSettings)
+	rg.GET("/org/mail", h.require(auth.PermOrgSettings), h.GetMailSettings)
+	rg.PUT("/org/mail", h.require(auth.PermOrgSettings), h.UpdateMailSettings)
+	rg.POST("/org/mail/test", h.require(auth.PermOrgSettings), h.TestMailSettings)
 
-	rg.PUT("/org/branding", h.requireAdmin, h.UpdateBranding)
+	rg.PUT("/org/branding", h.require(auth.PermOrgSettings), h.UpdateBranding)
 
 	rg.GET("/users", h.ListUsers)
-	rg.POST("/users", h.requireAdmin, h.AddMember)
-	rg.POST("/users/import", h.requireAdmin, h.ImportMembers)
+	rg.POST("/users", h.require(auth.PermMembers), h.AddMember)
+	rg.POST("/users/import", h.require(auth.PermMembers), h.ImportMembers)
 	rg.GET("/users/:id", h.GetUser)
 	rg.GET("/users/:id/avatar", h.GetAvatar)
 	rg.PUT("/users/:id/avatar", h.SetAvatar)
 	rg.DELETE("/users/:id/avatar", h.RemoveAvatar)
 	rg.PATCH("/users/:id", h.UpdateUser)
-	rg.DELETE("/users/:id", h.requireAdmin, h.DeleteUser)
-	rg.POST("/users/:id/reset-password", h.requireAdmin, h.ResetPassword)
+	rg.DELETE("/users/:id", h.require(auth.PermMembers), h.DeleteUser)
+	rg.POST("/users/:id/reset-password", h.require(auth.PermMembers), h.ResetPassword)
 
 	rg.GET("/roles", h.ListRoles)
-	rg.POST("/roles", h.requireAdmin, h.CreateRole)
-	rg.PATCH("/roles/:id", h.requireAdmin, h.UpdateRole)
-	rg.DELETE("/roles/:id", h.requireAdmin, h.DeleteRole)
-	rg.POST("/users/:id/roles", h.requireAdmin, h.AssignRole)
-	rg.DELETE("/users/:id/roles/:roleId", h.requireAdmin, h.RemoveRole)
+	rg.GET("/permissions", h.ListPermissions)
+	rg.POST("/roles", h.require(auth.PermRoles), h.CreateRole)
+	rg.PATCH("/roles/:id", h.require(auth.PermRoles), h.UpdateRole)
+	rg.DELETE("/roles/:id", h.require(auth.PermRoles), h.DeleteRole)
+	rg.POST("/users/:id/roles", h.require(auth.PermRoles), h.AssignRole)
+	rg.DELETE("/users/:id/roles/:roleId", h.require(auth.PermRoles), h.RemoveRole)
 
 	rg.GET("/teams", h.ListTeams)
 	// Opening and moving a team are not gated here, because the gate depends
@@ -90,7 +91,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service, options ...func(*Hand
 	// their own subtree would push everything below it up to a team they do
 	// not run — the same giving-away that moving out refuses, reached by
 	// another route.
-	rg.DELETE("/teams/:id", h.requireAdmin, h.DeleteTeam)
+	rg.DELETE("/teams/:id", h.require(auth.PermTeams), h.DeleteTeam)
 	rg.GET("/teams/:id/members", h.ListTeamMembers)
 	// Deciding who is on a team belongs to whoever runs it, as well as to the
 	// organization's administrators.
@@ -98,13 +99,11 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service, options ...func(*Hand
 	rg.DELETE("/teams/:id/members/:userId", h.requireTeamManager, h.RemoveTeamMember)
 }
 
-// requireAdmin gates the mutations that change who can do what. Without it any
-// member could grant themselves the owner role.
 // requireTeamManager admits the organization's administrators and the person
 // who runs this particular team. A manager needs to be able to put somebody on
 // their own team without being given the run of the organization.
 func (h *Handler) requireTeamManager(c *gin.Context) {
-	if auth.GetUserFromContext(c).HasAnyRole("owner", "admin") {
+	if auth.GetUserFromContext(c).Can(auth.PermTeams) {
 		return
 	}
 	orgID, ok := callerOrg(c)
@@ -136,13 +135,15 @@ func (h *Handler) requireTeamManager(c *gin.Context) {
 	}
 }
 
-func (h *Handler) requireAdmin(c *gin.Context) {
-	user := auth.GetUserFromContext(c)
-	if !user.HasAnyRole("owner", "admin") {
-		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "administrator access required"})
-		return
+// require admits whoever holds a permission through their roles.
+func (h *Handler) require(perm string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !auth.GetUserFromContext(c).Can(perm) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "your role does not allow this"})
+			return
+		}
+		c.Next()
 	}
-	c.Next()
 }
 
 // callerActor says who is asking and whether they administer the organization,
@@ -155,7 +156,7 @@ func callerActor(c *gin.Context) (Actor, bool) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
 		return Actor{}, false
 	}
-	return Actor{UserID: userID, IsAdmin: user.HasAnyRole("owner", "admin")}, true
+	return Actor{UserID: userID, IsAdmin: user.Can(auth.PermTeams)}, true
 }
 
 // callerOrg resolves the organization every request is scoped to.
@@ -248,6 +249,11 @@ func (h *Handler) AddMember(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+	// Nobody gives a new member a role that can do more than they can.
+	if err := h.service.RoleNameWithin(ctx, orgID, req.Role, auth.GetUserFromContext(c).Held()); err != nil {
+		httpx.Error(c, err, "failed to add member")
+		return
+	}
 	member, temporaryPassword, err := h.service.AddMember(ctx, orgID, req.Name, req.Email, req.Role)
 	if err != nil {
 		httpx.Error(c, err, "failed to add member")
@@ -315,7 +321,7 @@ func (h *Handler) ImportMembers(c *gin.Context) {
 		file = req.CSV
 	}
 
-	outcomes, err := h.service.ImportMembers(c.Request.Context(), orgID, file)
+	outcomes, err := h.service.ImportMembers(c.Request.Context(), orgID, auth.GetUserFromContext(c).Held(), file)
 	if err != nil {
 		httpx.Error(c, err, "failed to import members")
 		return
@@ -525,7 +531,7 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 	}
 
 	caller := auth.GetUserFromContext(c)
-	if caller.UserID != userID.String() && !caller.HasAnyRole("owner", "admin") {
+	if caller.UserID != userID.String() && !caller.Can(auth.PermMembers) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "you may only edit your own profile"})
 		return
 	}
@@ -585,7 +591,7 @@ func (h *Handler) ResetPassword(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "change your own password from Settings"})
 		return
 	}
-	temporaryPassword, err := h.service.ResetMemberPassword(c.Request.Context(), orgID, userID, caller.HasAnyRole("owner"))
+	temporaryPassword, err := h.service.ResetMemberPassword(c.Request.Context(), orgID, userID, caller.IsOwner())
 	if err != nil {
 		httpx.Error(c, err, "failed to reset password")
 		return
@@ -608,6 +614,11 @@ func (h *Handler) ListRoles(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"roles": roles})
 }
 
+// ListPermissions is every permission a role can have, for the Roles screen.
+func (h *Handler) ListPermissions(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"permissions": auth.Catalog})
+}
+
 func (h *Handler) CreateRole(c *gin.Context) {
 	orgID, ok := callerOrg(c)
 	if !ok {
@@ -622,7 +633,7 @@ func (h *Handler) CreateRole(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	role, err := h.service.CreateRole(c.Request.Context(), orgID, req.Name, req.Description, req.Permissions)
+	role, err := h.service.CreateRole(c.Request.Context(), orgID, req.Name, req.Description, req.Permissions, auth.GetUserFromContext(c).Held())
 	if err != nil {
 		httpx.Error(c, err, "failed to create role")
 		return
@@ -648,7 +659,7 @@ func (h *Handler) UpdateRole(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	role, err := h.service.UpdateRole(c.Request.Context(), orgID, roleID, req.Name, req.Description, req.Permissions)
+	role, err := h.service.UpdateRole(c.Request.Context(), orgID, roleID, req.Name, req.Description, req.Permissions, auth.GetUserFromContext(c).Held())
 	if err != nil {
 		httpx.Error(c, err, "failed to update role")
 		return
@@ -665,7 +676,7 @@ func (h *Handler) DeleteRole(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := h.service.DeleteRole(c.Request.Context(), orgID, roleID); err != nil {
+	if err := h.service.DeleteRole(c.Request.Context(), orgID, roleID, auth.GetUserFromContext(c).Held()); err != nil {
 		httpx.Error(c, err, "failed to delete role")
 		return
 	}
@@ -697,7 +708,7 @@ func (h *Handler) AssignRole(c *gin.Context) {
 	caller := auth.GetUserFromContext(c)
 	assigner, _ := uuid.Parse(caller.UserID)
 
-	if err := h.service.AssignRole(c.Request.Context(), orgID, userID, roleID, assigner); err != nil {
+	if err := h.service.AssignRole(c.Request.Context(), orgID, userID, roleID, assigner, caller.Held()); err != nil {
 		httpx.Error(c, err, "failed to assign role")
 		return
 	}
@@ -717,7 +728,7 @@ func (h *Handler) RemoveRole(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := h.service.RemoveRole(c.Request.Context(), orgID, userID, roleID); err != nil {
+	if err := h.service.RemoveRole(c.Request.Context(), orgID, userID, roleID, auth.GetUserFromContext(c).Held()); err != nil {
 		httpx.Error(c, err, "failed to remove role")
 		return
 	}

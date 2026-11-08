@@ -21,6 +21,7 @@ import (
 	"github.com/rs/zerolog"
 	"golang.org/x/crypto/bcrypt"
 
+	"github.com/teamup/teamup/internal/auth"
 	apperrors "github.com/teamup/teamup/pkg/errors"
 )
 
@@ -293,18 +294,8 @@ func (s *Service) OnDeactivated(notify func(ctx context.Context, orgID, userID u
 
 // ── Roles ─────────────────────────────────────────────────────────────────
 
-var defaultRolePermissions = []struct {
-	Name        string
-	Permissions []string
-}{
-	{"owner", []string{"*"}},
-	{"admin", []string{"org:manage", "users:manage", "roles:manage", "channels:manage", "tasks:manage", "calls:manage", "settings:manage"}},
-	{"manager", []string{"channels:read", "channels:write", "tasks:manage", "calls:manage", "reports:read"}},
-	{"member", []string{"channels:read", "channels:write", "tasks:read", "tasks:write:self", "calls:join"}},
-}
-
 func (s *Service) CreateDefaultRoles(ctx context.Context, orgID uuid.UUID) error {
-	for _, r := range defaultRolePermissions {
+	for _, r := range auth.DefaultRolePermissions() {
 		perms, err := json.Marshal(r.Permissions)
 		if err != nil {
 			return fmt.Errorf("encode %s permissions: %w", r.Name, err)
@@ -323,7 +314,8 @@ func (s *Service) CreateDefaultRoles(ctx context.Context, orgID uuid.UUID) error
 func (s *Service) ListRoles(ctx context.Context, orgID uuid.UUID) ([]Role, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT id, org_id, name, COALESCE(description, ''), permissions, COALESCE(is_system, false), created_at, updated_at
-		FROM roles WHERE org_id = $1 ORDER BY is_system DESC, name
+		FROM roles WHERE org_id = $1
+		ORDER BY is_system DESC, CASE name WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 WHEN 'manager' THEN 2 WHEN 'member' THEN 3 ELSE 4 END, lower(name)
 	`, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("list roles: %w", err)
@@ -342,9 +334,71 @@ func (s *Service) ListRoles(ctx context.Context, orgID uuid.UUID) ([]Role, error
 	return roles, rows.Err()
 }
 
-func (s *Service) CreateRole(ctx context.Context, orgID uuid.UUID, name, description string, permissions []string) (*Role, error) {
-	if permissions == nil {
-		permissions = []string{}
+// checkGrant refuses a permission that is not on the list, or that whoever is
+// granting it does not hold: nobody can make a role more powerful than they
+// are, which is what stops a role manager making themselves an owner.
+func checkGrant(permissions, held []string) ([]string, error) {
+	out := []string{}
+	for _, p := range permissions {
+		p = strings.TrimSpace(p)
+		if p == "" || slices.Contains(out, p) {
+			continue
+		}
+		if !auth.IsPermission(p) {
+			return nil, apperrors.New(apperrors.CodeValidation, fmt.Sprintf("%q is not a permission", p))
+		}
+		if !auth.Grants(held, p) {
+			return nil, apperrors.New(apperrors.CodeForbidden, fmt.Sprintf("you cannot grant %q, because you do not have it", p))
+		}
+		out = append(out, p)
+	}
+	return out, nil
+}
+
+// roleWithin refuses to let somebody hand out, take away or delete a role
+// with more power than they have.
+func (s *Service) roleWithin(ctx context.Context, orgID, roleID uuid.UUID, held []string) error {
+	var raw []byte
+	err := s.db.QueryRow(ctx, `SELECT permissions FROM roles WHERE id = $1 AND org_id = $2`, roleID, orgID).Scan(&raw)
+	if err == pgx.ErrNoRows {
+		return apperrors.New(apperrors.CodeNotFound, "user or role not found in this organization")
+	}
+	if err != nil {
+		return fmt.Errorf("read role: %w", err)
+	}
+	var perms []string
+	_ = json.Unmarshal(raw, &perms)
+	for _, p := range perms {
+		if !auth.Grants(held, p) {
+			return apperrors.New(apperrors.CodeForbidden, "that role can do more than you can")
+		}
+	}
+	return nil
+}
+
+// RoleNameWithin is roleWithin for a role given by name, as adding a member
+// does. A name that is no role here is left for the caller to refuse.
+func (s *Service) RoleNameWithin(ctx context.Context, orgID uuid.UUID, name string, held []string) error {
+	if name == "" {
+		return nil
+	}
+	var id uuid.UUID
+	if err := s.db.QueryRow(ctx, `SELECT id FROM roles WHERE org_id = $1 AND name = $2`, orgID, name).Scan(&id); err != nil {
+		return nil
+	}
+	return s.roleWithin(ctx, orgID, id, held)
+}
+
+// CreateRole makes a role with permissions from the list, each held by
+// whoever makes it.
+func (s *Service) CreateRole(ctx context.Context, orgID uuid.UUID, name, description string, permissions, held []string) (*Role, error) {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 60 {
+		return nil, apperrors.New(apperrors.CodeValidation, "a role needs a name of at most 60 characters")
+	}
+	permissions, err := checkGrant(permissions, held)
+	if err != nil {
+		return nil, err
 	}
 	perms, err := json.Marshal(permissions)
 	if err != nil {
@@ -358,16 +412,35 @@ func (s *Service) CreateRole(ctx context.Context, orgID uuid.UUID, name, descrip
 	`, orgID, name, description, perms).Scan(&r.ID, &r.OrgID, &r.Name, &r.Description,
 		&r.Permissions, &r.IsSystem, &r.CreatedAt, &r.UpdatedAt)
 	if err != nil {
+		if strings.Contains(err.Error(), "duplicate key") {
+			return nil, apperrors.New(apperrors.CodeConflict, "there is already a role with that name")
+		}
 		return nil, fmt.Errorf("create role: %w", err)
 	}
 	return &r, nil
 }
 
-func (s *Service) UpdateRole(ctx context.Context, orgID, roleID uuid.UUID, name, description *string, permissions []string) (*Role, error) {
+// UpdateRole changes a role the organization made; the built-in ones stay as
+// they are. Its permissions are checked as when it is made, and somebody may
+// not change a role that can already do more than they can.
+func (s *Service) UpdateRole(ctx context.Context, orgID, roleID uuid.UUID, name, description *string, permissions, held []string) (*Role, error) {
+	if err := s.roleWithin(ctx, orgID, roleID, held); err != nil {
+		return nil, err
+	}
+	if name != nil {
+		trimmed := strings.TrimSpace(*name)
+		if trimmed == "" || len(trimmed) > 60 {
+			return nil, apperrors.New(apperrors.CodeValidation, "a role needs a name of at most 60 characters")
+		}
+		name = &trimmed
+	}
 	var perms []byte
 	if permissions != nil {
-		var err error
-		if perms, err = json.Marshal(permissions); err != nil {
+		checked, err := checkGrant(permissions, held)
+		if err != nil {
+			return nil, err
+		}
+		if perms, err = json.Marshal(checked); err != nil {
 			return nil, apperrors.New(apperrors.CodeBadRequest, "invalid permissions")
 		}
 	}
@@ -394,7 +467,10 @@ func (s *Service) UpdateRole(ctx context.Context, orgID, roleID uuid.UUID, name,
 
 // DeleteRole refuses the four built-in roles: removing them would strip every
 // permission from everyone holding one, including the only owner.
-func (s *Service) DeleteRole(ctx context.Context, orgID, roleID uuid.UUID) error {
+func (s *Service) DeleteRole(ctx context.Context, orgID, roleID uuid.UUID, held []string) error {
+	if err := s.roleWithin(ctx, orgID, roleID, held); err != nil {
+		return err
+	}
 	tag, err := s.db.Exec(ctx,
 		`DELETE FROM roles WHERE id = $1 AND org_id = $2 AND is_system = FALSE`, roleID, orgID)
 	if err != nil {
@@ -410,7 +486,10 @@ func (s *Service) DeleteRole(ctx context.Context, orgID, roleID uuid.UUID) error
 // target user's and the role's must all agree. Requiring only that the user and
 // role agree with each other let an admin of one tenant grant a role inside
 // another.
-func (s *Service) AssignRole(ctx context.Context, orgID, userID, roleID, assignedBy uuid.UUID) error {
+func (s *Service) AssignRole(ctx context.Context, orgID, userID, roleID, assignedBy uuid.UUID, held []string) error {
+	if err := s.roleWithin(ctx, orgID, roleID, held); err != nil {
+		return err
+	}
 	var assigner any
 	if assignedBy != uuid.Nil {
 		assigner = assignedBy
@@ -443,7 +522,22 @@ func (s *Service) AssignRole(ctx context.Context, orgID, userID, roleID, assigne
 	return nil
 }
 
-func (s *Service) RemoveRole(ctx context.Context, orgID, userID, roleID uuid.UUID) error {
+func (s *Service) RemoveRole(ctx context.Context, orgID, userID, roleID uuid.UUID, held []string) error {
+	if err := s.roleWithin(ctx, orgID, roleID, held); err != nil {
+		return err
+	}
+	// The organization keeps at least one owner.
+	var lastOwner bool
+	if err := s.db.QueryRow(ctx, `
+		SELECT r.name = 'owner' AND r.is_system AND (
+		    SELECT COUNT(*) FROM user_roles ur2 JOIN users u ON u.id = ur2.user_id
+		    WHERE ur2.role_id = r.id AND u.deleted_at IS NULL) <= 1
+		FROM roles r WHERE r.id = $1 AND r.org_id = $2`, roleID, orgID).Scan(&lastOwner); err != nil && err != pgx.ErrNoRows {
+		return fmt.Errorf("check owners: %w", err)
+	}
+	if lastOwner {
+		return apperrors.New(apperrors.CodeConflict, "the organization must keep at least one owner")
+	}
 	_, err := s.db.Exec(ctx, `
 		DELETE FROM user_roles ur
 		USING users u, roles r
@@ -1280,7 +1374,7 @@ type ImportOutcome struct {
 // The error return is reserved for a file that cannot be used at all —
 // unparseable, no usable header, or past the cap. Anything wrong with an
 // individual row comes back as that row's outcome.
-func (s *Service) ImportMembers(ctx context.Context, orgID uuid.UUID, file string) ([]ImportOutcome, error) {
+func (s *Service) ImportMembers(ctx context.Context, orgID uuid.UUID, held []string, file string) ([]ImportOutcome, error) {
 	reader := csv.NewReader(strings.NewReader(file))
 	// Tolerate ragged rows: a spreadsheet often drops the trailing empty
 	// columns, and that is not a reason to reject somebody's whole team.
@@ -1389,6 +1483,13 @@ func (s *Service) ImportMembers(ctx context.Context, orgID uuid.UUID, file strin
 			teamID = id
 		}
 
+		// Nobody gives a new member a role that can do more than they can.
+		if err := s.RoleNameWithin(ctx, orgID, r.roleName, held); err != nil {
+			outcome.Status = ImportInvalid
+			outcome.Message = fmt.Sprintf("you cannot give the %s role", r.roleName)
+			outcomes = append(outcomes, outcome)
+			continue
+		}
 		member, password, err := s.AddMember(ctx, orgID, r.name, r.email, r.roleName)
 		if err != nil {
 			outcome.Status = importStatusFor(err)
