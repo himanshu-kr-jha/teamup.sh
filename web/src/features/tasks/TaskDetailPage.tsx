@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { LinkedText } from '@/shared/components/LinkedText';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ChevronLeft, Calendar, MessageSquare, MoreVertical, UserPlus, History, Paperclip } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
@@ -280,7 +281,7 @@ export function TaskDetailPage() {
                     />
                   ) : (
                     <div className="prose prose-sm max-w-none whitespace-pre-wrap break-anywhere">
-                      {task.description || <span className="text-muted-foreground">No description</span>}
+                      {task.description ? <LinkedText text={task.description} /> : <span className="text-muted-foreground">No description</span>}
                     </div>
                   )}
                 </div>
@@ -616,7 +617,9 @@ function CommentList({ taskId }: { taskId: string }) {
               <span className="text-muted-foreground">{formatRelativeTime(comment.createdAt)}</span>
             </p>
             {comment.content && (
-              <p className="whitespace-pre-wrap break-anywhere text-sm">{comment.content}</p>
+              <p className="whitespace-pre-wrap break-anywhere text-sm">
+                <LinkedText text={comment.content} />
+              </p>
             )}
             {comment.attachments?.length > 0 && (
               <div className={cn('flex flex-wrap gap-2', comment.content && 'mt-2')}>

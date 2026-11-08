@@ -85,6 +85,27 @@ test.describe('links', () => {
   });
 });
 
+test.describe('links in tasks', () => {
+  test('a task description and its comments link their web addresses', async ({ as }) => {
+    const owner = await apiAs('owner');
+    const task = await owner.post('/tasks', {
+      title: `Linked task ${Date.now()}`,
+      assigneeId: idOf('alice'),
+      description: 'Spec at https://example.com/spec.',
+    });
+    const alice = await as('alice');
+    await alice.page.goto(`/tasks/${task.id}`);
+    const spec = alice.page.getByRole('link', { name: 'https://example.com/spec' });
+    await expect(spec).toHaveAttribute('href', 'https://example.com/spec');
+    await expect(spec).toHaveAttribute('target', '_blank');
+
+    await alice.page.getByRole('button', { name: 'Add Comment' }).click();
+    await alice.page.getByPlaceholder('Write a comment…').fill('Draft is at www.example.org/draft');
+    await alice.page.getByRole('button', { name: 'Post comment' }).click();
+    await expect(alice.page.getByRole('link', { name: 'www.example.org/draft' })).toHaveAttribute('href', 'https://www.example.org/draft');
+  });
+});
+
 test.describe('history', () => {
   test('a conversation opens on its newest day and loads the day before on the way up', async ({ as }) => {
     const owner = await apiAs('owner');

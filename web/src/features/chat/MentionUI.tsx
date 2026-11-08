@@ -1,12 +1,11 @@
-import { Fragment, useMemo } from 'react';
-import { Link } from 'react-router-dom';
+import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { orgApi } from '@/shared/api/client';
 import { UserAvatar } from '@/shared/components/UserAvatar';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { cn } from '@/shared/utils/cn';
 import { splitMentions, usernameOf, type Mentionable } from './mentions';
-import { inAppPath, splitLinks } from './links';
+import { LinkedText } from '@/shared/components/LinkedText';
 
 /** Everybody in the organization, as mentions need them. The same query the rest of the app reads. */
 export function useMentionables(): Array<Mentionable & { avatarUrl?: string }> {
@@ -28,53 +27,31 @@ export function useMentionables(): Array<Mentionable & { avatarUrl?: string }> {
 export function MessageText({ content, isOwn }: { content: string; isOwn: boolean }) {
   const people = useMentionables();
   const { user } = useAuth();
-  const pieces = useMemo(
-    () => splitLinks(content).map((piece) => (piece.href ? piece : { ...piece, parts: splitMentions(piece.text, people) })),
-    [content, people]
-  );
-  const linkClass = cn(
-    'underline underline-offset-2',
-    isOwn ? 'decoration-primary-foreground/60 hover:decoration-primary-foreground' : 'text-primary decoration-primary/40 hover:decoration-primary'
-  );
+  const withMentions = (text: string) =>
+    splitMentions(text, people).map((part, i) =>
+      'person' in part ? (
+        <span
+          key={i}
+          data-testid="mention"
+          title={`@${usernameOf(part.person)}`}
+          className={cn(
+            'rounded px-0.5 font-semibold',
+            isOwn
+              ? 'bg-primary-foreground/20'
+              : part.person.id === user?.id
+                ? 'bg-amber-300/50 text-foreground dark:bg-amber-500/30'
+                : 'bg-primary/15 text-primary'
+          )}
+        >
+          @{part.person.name}
+        </span>
+      ) : (
+        <span key={i}>{part.text}</span>
+      )
+    );
   return (
     <p className="whitespace-pre-wrap break-anywhere">
-      {pieces.map((piece, j) => {
-        if (piece.href) {
-          const path = inAppPath(piece.href);
-          // A message's own menu and long-press must not fire for a click on its link.
-          const stop = (e: React.MouseEvent) => e.stopPropagation();
-          return path ? (
-            <Link key={j} to={path} className={linkClass} onClick={stop}>
-              {piece.text}
-            </Link>
-          ) : (
-            <a key={j} href={piece.href} target="_blank" rel="noopener noreferrer nofollow" className={linkClass} onClick={stop}>
-              {piece.text}
-            </a>
-          );
-        }
-        return <Fragment key={j}>{'parts' in piece && piece.parts.map((part, i) =>
-        'person' in part ? (
-          <span
-            key={i}
-            data-testid="mention"
-            title={`@${usernameOf(part.person)}`}
-            className={cn(
-              'rounded px-0.5 font-semibold',
-              isOwn
-                ? 'bg-primary-foreground/20'
-                : part.person.id === user?.id
-                  ? 'bg-amber-300/50 text-foreground dark:bg-amber-500/30'
-                  : 'bg-primary/15 text-primary'
-            )}
-          >
-            @{part.person.name}
-          </span>
-        ) : (
-          <span key={i}>{part.text}</span>
-        )
-      )}</Fragment>;
-      })}
+      <LinkedText text={content} onPrimary={isOwn} renderText={withMentions} />
     </p>
   );
 }
