@@ -11,7 +11,9 @@ import {
   Download,
   Upload,
   CornerDownRight,
+  Mail,
 } from 'lucide-react';
+import { MailSettingsTab, mailProblemText } from './MailSettingsTab';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Textarea } from '@/shared/components/ui/textarea';
@@ -66,11 +68,13 @@ export function AdminPage() {
         </div>
       )}
 
-      <Tabs value={tab} onValueChange={setTab} className="flex-1 overflow-auto">
-        <TabsList className="border-b border-border p-4 md:p-6">
+      <Tabs value={tab} onValueChange={setTab} className="flex-1 overflow-y-auto overflow-x-hidden">
+        {/* Four tabs are wider than a phone, so the row scrolls rather than the page. */}
+        <TabsList className="flex max-w-full justify-start overflow-x-auto border-b border-border p-4 scrollbar-hide md:inline-flex md:p-6">
           <TabsTrigger value="members"><Users className="mr-2 h-4 w-4" />Members</TabsTrigger>
           <TabsTrigger value="roles"><Shield className="mr-2 h-4 w-4" />Roles</TabsTrigger>
           <TabsTrigger value="teams"><UsersRound className="mr-2 h-4 w-4" />Teams</TabsTrigger>
+          {isAdmin && <TabsTrigger value="email"><Mail className="mr-2 h-4 w-4" />Email</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="members" className="p-4 md:p-6">
@@ -82,6 +86,11 @@ export function AdminPage() {
         <TabsContent value="teams" className="p-4 md:p-6">
           <TeamsTab isAdmin={isAdmin} managedTeamIds={managedTeamIds} />
         </TabsContent>
+        {isAdmin && (
+          <TabsContent value="email" className="p-4 md:p-6">
+            <MailSettingsTab />
+          </TabsContent>
+        )}
       </Tabs>
     </div>
   );
@@ -102,9 +111,9 @@ function MembersTab({
   const [resetFor, setResetFor] = useState<any | null>(null);
   const [adding, setAdding] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [importResult, setImportResult] = useState<ImportOutcome[] | null>(null);
+  const [importResult, setImportResult] = useState<{ outcomes: ImportOutcome[]; mailProblem?: string } | null>(null);
   const [newCredentials, setNewCredentials] = useState<
-    { name: string; email: string; password: string; emailed: boolean; reset?: boolean } | null
+    { name: string; email: string; password: string; emailed: boolean; mailProblem?: string; reset?: boolean } | null
   >(null);
   const { statusOf } = usePresence();
 
@@ -246,13 +255,17 @@ function MembersTab({
       <BulkImportDialog
         open={importing}
         onOpenChange={setImporting}
-        onImported={(outcomes) => {
+        onImported={(outcomes, mailProblem) => {
           refresh();
-          setImportResult(outcomes);
+          setImportResult({ outcomes, mailProblem });
         }}
       />
 
-      <ImportResultDialog outcomes={importResult} onClose={() => setImportResult(null)} />
+      <ImportResultDialog
+        outcomes={importResult?.outcomes ?? null}
+        mailProblem={importResult?.mailProblem}
+        onClose={() => setImportResult(null)}
+      />
 
       <AssignRoleDialog
         member={assignFor}
@@ -266,8 +279,9 @@ function MembersTab({
 
 /**
  * Adding somebody is the one thing the Organization screen could not do, which
- * left every installation a single-user demo. No email is sent: SMTP is
- * optional in v1, so the administrator passes the password on themselves.
+ * left every installation a single-user demo. With a mail server set up under
+ * Email they are sent their details; without one the administrator passes the
+ * password on themselves.
  */
 function AddMemberDialog({
   open,
@@ -278,8 +292,10 @@ function AddMemberDialog({
   open: boolean;
   roles: any[];
   onOpenChange: (open: boolean) => void;
-  onAdded: (credentials: { name: string; email: string; password: string; emailed: boolean }) => void;
+  onAdded: (credentials: { name: string; email: string; password: string; emailed: boolean; mailProblem?: string }) => void;
 }) {
+  const { data: mailData } = useQuery({ queryKey: ['mail-settings'], queryFn: () => orgApi.getMail(), enabled: open });
+  const mailReady = mailData?.data.configured;
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [role, setRole] = useState('');
@@ -298,7 +314,11 @@ function AddMemberDialog({
         onOpenChange(o);
       }}
       title="Add member"
-      description="Creates an account they can sign in with straight away."
+      description={
+        mailReady
+          ? 'Creates an account they can sign in with straight away, and emails them their sign-in details.'
+          : 'Creates an account they can sign in with straight away. No mail server is set up, so you will pass the password on yourself.'
+      }
       submitLabel="Add member"
       disabledReason={!name.trim() || !email.trim() ? 'Enter a name and an email address.' : undefined}
       onSubmit={async () => {
@@ -312,6 +332,7 @@ function AddMemberDialog({
           email: email.trim(),
           password: res.data.temporaryPassword,
           emailed: !!res.data.emailed,
+          mailProblem: res.data.mailProblem,
         };
         reset();
         onAdded(created);
@@ -360,7 +381,7 @@ function TemporaryPasswordDialog({
   credentials,
   onClose,
 }: {
-  credentials: { name: string; email: string; password: string; emailed: boolean; reset?: boolean } | null;
+  credentials: { name: string; email: string; password: string; emailed: boolean; mailProblem?: string; reset?: boolean } | null;
   onClose: () => void;
 }) {
   const toast = useToast();
@@ -414,7 +435,7 @@ function TemporaryPasswordDialog({
                   await navigator.clipboard.writeText(credentials?.password ?? '');
                   toast.success('Password copied.');
                 } catch {
-                  toast.error('Could not copy — select it and copy by hand.');
+                  toast.error('Could not copy. Select it and copy it by hand.');
                 }
               }}
             >
@@ -425,9 +446,8 @@ function TemporaryPasswordDialog({
             This will not be shown again. Copy it or download it before closing.
           </p>
           {!credentials?.emailed && !credentials?.reset && (
-            <p className="text-sm text-muted-foreground">
-              No email was sent — this installation has no mail server configured, so
-              you will need to pass these on yourself.
+            <p role="status" className="text-sm text-muted-foreground">
+              {mailProblemText(credentials?.mailProblem)} Pass these on to them yourself.
             </p>
           )}
         </div>
@@ -450,6 +470,7 @@ type ImportOutcome = {
   status: 'created' | 'duplicate' | 'invalid' | 'failed';
   message?: string;
   temporaryPassword?: string;
+  emailed?: boolean;
 };
 
 /**
@@ -464,7 +485,7 @@ function BulkImportDialog({
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onImported: (outcomes: ImportOutcome[]) => void;
+  onImported: (outcomes: ImportOutcome[], mailProblem?: string) => void;
 }) {
   const [csv, setCsv] = useState('');
   const [fileName, setFileName] = useState('');
@@ -489,7 +510,7 @@ function BulkImportDialog({
         const res = await orgApi.importMembers(csv);
         const outcomes = res.data.outcomes ?? [];
         reset();
-        onImported(outcomes);
+        onImported(outcomes, res.data.mailProblem);
       }}
     >
       <div className="space-y-2">
@@ -538,12 +559,15 @@ function BulkImportDialog({
  */
 function ImportResultDialog({
   outcomes,
+  mailProblem,
   onClose,
 }: {
   outcomes: ImportOutcome[] | null;
+  mailProblem?: string;
   onClose: () => void;
 }) {
   const created = (outcomes ?? []).filter((o) => o.status === 'created');
+  const emailed = created.filter((o) => o.emailed).length;
   const failed = (outcomes ?? []).filter((o) => o.status !== 'created');
 
   const downloadCredentials = () => {
@@ -574,9 +598,14 @@ function ImportResultDialog({
             {created.length} added{failed.length > 0 ? `, ${failed.length} not` : ''}
           </DialogTitle>
           <DialogDescription>
-            Download the passwords before closing — they are stored hashed and cannot be shown
-            again.
+            {emailed > 0 && `${emailed} of ${created.length} were emailed their sign-in details. `}
+            Download the passwords before closing. They are stored hashed and cannot be shown again.
           </DialogDescription>
+          {created.length > emailed && (
+            <p role="status" className="text-sm text-muted-foreground">
+              {mailProblemText(mailProblem)} Pass the rest on yourself.
+            </p>
+          )}
         </DialogHeader>
 
         <ul className="max-h-72 space-y-1 overflow-y-auto text-sm">
@@ -593,6 +622,7 @@ function ImportResultDialog({
                   <p className="truncate text-xs text-destructive">{o.message || o.status}</p>
                 )}
               </div>
+              {o.status === 'created' && o.emailed && <Badge variant="outline">emailed</Badge>}
               <Badge variant={o.status === 'created' ? 'secondary' : 'destructive'}>{o.status}</Badge>
             </li>
           ))}

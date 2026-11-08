@@ -17,6 +17,7 @@ import { ScheduleDialog } from './ScheduleDialog';
 import {
   dayLabelKey,
   defaultSlot,
+  withLiveEnds,
   rangeForDays,
   shiftDays,
   visibleDays,
@@ -133,6 +134,8 @@ export function CalendarPage() {
   const [blockDialog, setBlockDialog] = useState<{ item: CalendarItem | null; slot: Slot } | null>(null);
   const [scheduleDialog, setScheduleDialog] = useState<{ item: CalendarItem | null; slot: Slot } | null>(null);
 
+  // A meeting still going keeps growing between reads of the calendar.
+  const liveItems = useMemo(() => withLiveEnds(items, now), [items, now]);
   const newBlock = (slot: Slot = defaultSlot(now)) => setBlockDialog({ item: null, slot });
   const newMeeting = (slot: Slot = defaultSlot(now)) => setScheduleDialog({ item: null, slot });
 
@@ -236,7 +239,7 @@ export function CalendarPage() {
 
       <CalendarGrid
         days={days}
-        items={items}
+        items={liveItems}
         now={now}
         view={view}
         onSelect={setSelected}

@@ -1,4 +1,5 @@
 import { addDays, addMinutes, format, isSameDay, startOfDay, startOfWeek } from 'date-fns';
+import { formatTime } from '@/shared/utils/cn';
 
 /**
  * The calendar's arithmetic. Dates are local to the browser, because that is the
@@ -27,6 +28,10 @@ export interface CalendarItem {
   status?: string;
   /** Whether whoever is reading may open this call's log. */
   canReadLog?: boolean;
+  /** Set when a meeting ran past this, its planned end, while this person was in it. */
+  scheduledEndsAt?: string;
+  /** Still going, with this person in it, so the end is now and keeps moving. */
+  running?: boolean;
 }
 
 export type CalendarView = 'week' | 'day';
@@ -65,10 +70,19 @@ export interface Segment {
   endMinute: number;
   startsBeforeDay: boolean;
   endsAfterDay: boolean;
+  /** Where, on this day, a meeting that ran over went past its planned end. */
+  overrunFromMinute?: number;
 }
 
 function minuteOfDay(date: Date): number {
   return date.getHours() * 60 + date.getMinutes();
+}
+
+function overrunOnDay(item: CalendarItem, dayStart: number, dayEnd: number, startMinute: number): number | undefined {
+  if (!item.scheduledEndsAt) return undefined;
+  const planned = new Date(item.scheduledEndsAt).getTime();
+  if (planned >= dayEnd) return undefined;
+  return planned <= dayStart ? startMinute : Math.max(startMinute, minuteOfDay(new Date(planned)));
 }
 
 /** The part of each item that falls on this day, so a long one is cut at midnight. */
@@ -96,6 +110,7 @@ export function segmentsForDay(items: CalendarItem[], day: Date): Segment[] {
       endMinute: Math.max(endMinute, startMinute + 1),
       startsBeforeDay,
       endsAfterDay,
+      overrunFromMinute: overrunOnDay(item, dayStart, dayEnd, startMinute),
     });
   });
   return segments;
@@ -337,6 +352,58 @@ export function meetingProblem(title: string, start: Date | null, end: Date | nu
   if (end!.getTime() - start!.getTime() > MAX_MEETING_MS) return 'A meeting can last at most 24 hours.';
   if (invited > MAX_INVITEES) return `A meeting can have at most ${MAX_INVITEES} people invited.`;
   return null;
+}
+
+/** How many minutes a meeting ran past its planned end, or 0. */
+export function overrunMinutes(item: CalendarItem): number {
+  if (!item.scheduledEndsAt) return 0;
+  return Math.max(0, Math.round((new Date(item.endsAt).getTime() - new Date(item.scheduledEndsAt).getTime()) / 60_000));
+}
+
+/** The words for a meeting that ran over, or null when it did not. */
+export function extendedText(item: CalendarItem): string | null {
+  const over = overrunMinutes(item);
+  if (!item.scheduledEndsAt || over === 0) return null;
+  const planned = `Scheduled until ${formatTime(item.scheduledEndsAt)}`;
+  const length = durationLabel(over);
+  return item.running
+    ? `${planned}, still going (${length} over so far)`
+    : `${planned}, extended to ${formatTime(item.endsAt)} (${length} over)`;
+}
+
+/** A meeting still going grows with the clock here, between reads of the calendar. */
+export function withLiveEnds(items: CalendarItem[], now: Date): CalendarItem[] {
+  return items.map((item) =>
+    item.running && now.getTime() > new Date(item.endsAt).getTime() ? { ...item, endsAt: now.toISOString() } : item
+  );
+}
+
+/** What a new meeting can last, in minutes, picked from a list rather than typed. */
+export const MEETING_DURATIONS = [5, 10, 15, 30, 45, 60];
+const DEFAULT_DURATION = 30;
+
+export function durationLabel(minutes: number): string {
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  if (rest > 0) return `${hours} h ${rest} min`;
+  return hours === 1 ? '1 hour' : `${hours} hours`;
+}
+
+/**
+ * The list, plus the current length of a meeting being edited when it is not on
+ * it, so that saving one made at another length does not quietly shorten it.
+ */
+export function durationChoices(current: number): number[] {
+  if (MEETING_DURATIONS.includes(current) || current <= 0) return MEETING_DURATIONS;
+  return [...MEETING_DURATIONS, current].sort((a, b) => a - b);
+}
+
+/** The length a dialog opens with: the real one when editing, else the slot's if it is on the list. */
+export function initialDuration(start: Date, end: Date, editing: boolean): number {
+  const minutes = Math.round((end.getTime() - start.getTime()) / 60_000);
+  if (editing && minutes > 0) return minutes;
+  return MEETING_DURATIONS.includes(minutes) ? minutes : DEFAULT_DURATION;
 }
 
 export function defaultSlot(now: Date): { start: Date; end: Date } {

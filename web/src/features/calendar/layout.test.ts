@@ -5,6 +5,13 @@ import {
   conflictsAt,
   dayLabelKey,
   defaultSlot,
+  durationChoices,
+  durationLabel,
+  extendedText,
+  overrunMinutes,
+  withLiveEnds,
+  initialDuration,
+  MEETING_DURATIONS,
   fromInputValue,
   hasOverlap,
   itemKey,
@@ -387,5 +394,79 @@ describe('timelineSpans', () => {
       { kind: 'focus', left: 25, width: 12.5 },
       { kind: 'open', left: 87.5, width: 12.5 },
     ]);
+  });
+});
+
+describe('meeting durations', () => {
+  it('offers 5, 10, 15, 30 and 45 minutes and an hour', () => {
+    expect(MEETING_DURATIONS).toEqual([5, 10, 15, 30, 45, 60]);
+    expect(MEETING_DURATIONS.map(durationLabel)).toEqual(['5 min', '10 min', '15 min', '30 min', '45 min', '1 hour']);
+  });
+
+  it('labels a length that is not on the list in hours and minutes', () => {
+    expect(durationLabel(90)).toBe('1 h 30 min');
+    expect(durationLabel(120)).toBe('2 hours');
+    expect(durationLabel(20)).toBe('20 min');
+  });
+
+  it('keeps the current length of a meeting being edited on the list, in order', () => {
+    expect(durationChoices(30)).toEqual(MEETING_DURATIONS);
+    expect(durationChoices(20)).toEqual([5, 10, 15, 20, 30, 45, 60]);
+    expect(durationChoices(90)).toEqual([5, 10, 15, 30, 45, 60, 90]);
+  });
+
+  it('starts a new meeting at the length of the slot picked, or 30 minutes', () => {
+    expect(initialDuration(at(10), at(10, 15), false)).toBe(15);
+    expect(initialDuration(at(10), at(11), false)).toBe(60);
+    expect(initialDuration(at(10), at(10, 20), false)).toBe(30);
+    expect(initialDuration(at(10), at(12), false)).toBe(30);
+  });
+
+  it('keeps the real length of a meeting being edited, whatever it is', () => {
+    expect(initialDuration(at(10), at(10, 20), true)).toBe(20);
+    expect(initialDuration(at(10), at(12), true)).toBe(120);
+  });
+
+  it('counts minutes across the clock change', () => {
+    // 2026-11-01 01:30 EDT to 01:15 EST is 45 real minutes.
+    const start = new Date('2026-11-01T05:30:00Z');
+    expect(initialDuration(start, new Date(start.getTime() + 45 * 60_000), false)).toBe(45);
+  });
+});
+
+describe('a meeting that ran past its end', () => {
+  const planned = at(10, 30).toISOString();
+
+  it('marks where the overrun starts on the day it falls on', () => {
+    const [segment] = segmentsForDay([item(at(10), at(10, 42), 'busy', { scheduledEndsAt: planned })], day);
+    expect(segment.overrunFromMinute).toBe(10 * 60 + 30);
+    const [plain] = segmentsForDay([item(at(10), at(10, 30))], day);
+    expect(plain.overrunFromMinute).toBeUndefined();
+  });
+
+  it('counts the minutes over', () => {
+    expect(overrunMinutes(item(at(10), at(10, 42), 'busy', { scheduledEndsAt: planned }))).toBe(12);
+    expect(overrunMinutes(item(at(10), at(10, 30)))).toBe(0);
+  });
+
+  it('says how it ran over, finished or still going', () => {
+    expect(extendedText(item(at(10), at(10, 42), 'busy', { scheduledEndsAt: planned }))).toMatch(
+      /^Scheduled until 10:30 AM, extended to 10:42 AM \(12 min over\)$/
+    );
+    expect(extendedText(item(at(10), at(10, 42), 'busy', { scheduledEndsAt: planned, running: true }))).toMatch(
+      /^Scheduled until 10:30 AM, still going \(12 min over so far\)$/
+    );
+    expect(extendedText(item(at(10), at(11, 45), 'busy', { scheduledEndsAt: planned }))).toContain('(1 h 15 min over)');
+    expect(extendedText(item(at(10), at(10, 30)))).toBeNull();
+  });
+
+  it('keeps a meeting still going growing between reads', () => {
+    const running = item(at(10), at(10, 42), 'busy', { scheduledEndsAt: planned, running: true });
+    const done = item(at(9), at(9, 30));
+    const [grown, same] = withLiveEnds([running, done], at(10, 50));
+    expect(grown.endsAt).toBe(at(10, 50).toISOString());
+    expect(same).toBe(done);
+    // The server's end stands if the clock here is behind it.
+    expect(withLiveEnds([running], at(10, 40))[0].endsAt).toBe(at(10, 42).toISOString());
   });
 });

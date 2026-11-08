@@ -192,6 +192,28 @@ These are readings of an ambiguous request, and they are cheap to change.
     The worker now waits, the page offers **Reload**, and not while that tab is in a call; accepting moves only that tab.
     A tab left open checks once an hour.
     The cost is that somebody who ignores the offer keeps running the old web app against the new server.
+45. **A meeting is a start and a length from a list.**
+    The user asked for 5, 10, 15 and 30 minutes, then added 45 minutes and 1 hour, so the list is those six, default 30.
+    A slot picked on the calendar keeps its length when it is on the list, otherwise 30.
+    Editing a meeting of another length, such as 90 minutes made through the API, offers its current length as well, so saving does not shorten it.
+    The API still accepts any length up to 24 hours; the list is the page's.
+46. **A meeting that runs past its end shows as extended, for whoever was in it during the overrun.**
+    Once its scheduled end has passed, somebody who was there sees their real time: from when they joined to now while they are still in it, growing, or to when they left.
+    The calendar item then carries `scheduledEndsAt`, the planned end, and `running` while it is still going, and the page draws the part past the planned end striped and labelled.
+    Somebody who left by the planned end, or never came, keeps their time as it was, because they were not busy during the overrun.
+    A meeting still going past its end is busy in availability and conflicts for whoever is in it.
+    A call nobody closed cannot grow for long: the 5-minute sweep ends a call whose room has gone (decision 24 and ticket 23).
+47. **An administrator sets up the mail server under Organization, Email, at any time.**
+    It used to be settable only during first-time setup.
+    Only an org admin or owner may read, save or test it.
+    The password is never sent back to the page, and a blank password on save keeps the saved one; clearing the username clears it.
+    Port 465 is TLS from the start, other ports upgrade with STARTTLS, and a password is never sent to a server across the network without encryption.
+    **Send test email** sends to the administrator asking, and a server refusing is reported as the answer (`sent: false` with the server's words), not as a failure of the request.
+48. **New members are emailed their sign-in details when they are added, singly or by CSV.**
+    The send happens before the request answers, so the dialog never claims an email went that did not; that can take as long as the mail server does.
+    If it was not sent, the dialog says why, either no mail server or the server's own words, and the password is still shown to pass on.
+    A CSV import stops trying after the first failure, so a broken server costs one wait and not fifty.
+    Resetting a password still shows the new one on screen only and does not email it: not asked for.
 
 ## Non-goals
 

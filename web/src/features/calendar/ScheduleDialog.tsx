@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { addHours, startOfDay } from 'date-fns';
+import { addHours, addMinutes, startOfDay } from 'date-fns';
 import { AlertTriangle, Loader2, Search, X } from 'lucide-react';
 import { FormDialog } from '@/shared/components/FormDialog';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
 import { calendarApi, meetingsApi } from '@/shared/api/client';
 import { useToast } from '@/shared/hooks/useToast';
 import { cn } from '@/shared/utils/cn';
@@ -12,6 +13,9 @@ import { useAuth } from '@/features/auth/AuthProvider';
 import {
   availabilityAt,
   conflictsAt,
+  durationChoices,
+  durationLabel,
+  initialDuration,
   fromInputValue,
   meetingProblem,
   timelineSpans,
@@ -64,7 +68,7 @@ export function ScheduleDialog({
   const toast = useToast();
   const [title, setTitle] = useState('');
   const [start, setStart] = useState('');
-  const [end, setEnd] = useState('');
+  const [duration, setDuration] = useState(30);
   const [invited, setInvited] = useState<string[]>([]);
   const [search, setSearch] = useState('');
 
@@ -72,7 +76,7 @@ export function ScheduleDialog({
     if (!open || !slot) return;
     setTitle(item?.title ?? '');
     setStart(toInputValue(slot.start));
-    setEnd(toInputValue(slot.end));
+    setDuration(initialDuration(slot.start, slot.end, !!item));
     setInvited((item?.inviteeIds ?? startWith).filter((id) => id !== (item?.organizerId ?? user?.id)));
     setSearch('');
     // startWith is a new array on every render; it matters only on opening.
@@ -80,7 +84,7 @@ export function ScheduleDialog({
   }, [open, item, slot]);
 
   const startDate = fromInputValue(start);
-  const endDate = fromInputValue(end);
+  const endDate = startDate ? addMinutes(startDate, duration) : null;
   const problem = meetingProblem(title, startDate, endDate, invited.length);
   const timesOk = !!startDate && !!endDate && endDate > startDate;
 
@@ -158,8 +162,19 @@ export function ScheduleDialog({
           <Input id="meetingStart" type="datetime-local" value={start} onChange={(e) => setStart(e.target.value)} />
         </div>
         <div className="min-w-0 space-y-2">
-          <Label htmlFor="meetingEnd">Ends</Label>
-          <Input id="meetingEnd" type="datetime-local" value={end} onChange={(e) => setEnd(e.target.value)} />
+          <Label htmlFor="meetingDuration">Duration</Label>
+          <Select value={String(duration)} onValueChange={(value) => setDuration(Number(value))}>
+            <SelectTrigger id="meetingDuration">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {durationChoices(item && slot ? initialDuration(slot.start, slot.end, true) : duration).map((minutes) => (
+                <SelectItem key={minutes} value={String(minutes)}>
+                  {durationLabel(minutes)}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </div>
       </div>
       {problem && title.trim() !== '' && (
@@ -212,7 +227,7 @@ export function ScheduleDialog({
         {error ? (
           <p className="text-sm text-muted-foreground">Could not check right now. You can still schedule it.</p>
         ) : !timesOk ? (
-          <p className="text-sm text-muted-foreground">Pick a start and an end to see.</p>
+          <p className="text-sm text-muted-foreground">Pick a start time to see.</p>
         ) : (
           <ul className="space-y-1.5">
             {everyone.map((id) => (

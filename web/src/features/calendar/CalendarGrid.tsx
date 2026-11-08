@@ -7,7 +7,9 @@ import { meetingStillOn,
   dayLabelKey,
   itemKey,
   itemLabel,
+  durationLabel,
   layoutDay,
+  overrunMinutes,
   nowOffset,
   segmentsForDay,
   slotFromOffset,
@@ -31,7 +33,26 @@ const EVENT_STYLE: Record<'busy' | 'focus', string> = {
 };
 
 function rangeText(item: CalendarItem): string {
-  return `${formatTime(item.startsAt)} to ${formatTime(item.endsAt)}`;
+  const range = `${formatTime(item.startsAt)} to ${formatTime(item.endsAt)}`;
+  const over = overrunMinutes(item);
+  return over > 0 ? `${range}, extended ${durationLabel(over)}` : range;
+}
+
+/** The part of a block past the meeting's planned end, striped so it reads without colour. */
+function Overrun({ segment }: { segment: Segment }) {
+  if (segment.overrunFromMinute === undefined) return null;
+  const top = pixels(segment.overrunFromMinute - segment.startMinute);
+  const tall = pixels(segment.endMinute - segment.overrunFromMinute) >= 16;
+  return (
+    <span
+      aria-hidden="true"
+      data-testid="overrun"
+      style={{ top }}
+      className="pointer-events-none absolute inset-x-0 bottom-0 flex items-end border-t border-dashed border-current bg-[repeating-linear-gradient(135deg,transparent,transparent_4px,hsl(var(--primary)/0.28)_4px,hsl(var(--primary)/0.28)_8px)] px-1 pb-0.5"
+    >
+      {tall && <span className="truncate text-[10px] font-semibold uppercase tracking-wide">Extended</span>}
+    </span>
+  );
 }
 
 /** A week, or a day, of hours in a CSS grid. Times are the browser's. */
@@ -269,8 +290,9 @@ function EventBlock({ segment, onSelect }: { segment: PlacedSegment; onSelect: (
         finished && 'opacity-70'
       )}
     >
-      <span className="block w-full truncate font-medium">{itemLabel(item)}</span>
-      {showTime && <span className="block w-full truncate tabular-nums opacity-80">{rangeText(item)}</span>}
+      <Overrun segment={segment} />
+      <span className="relative block w-full truncate font-medium">{itemLabel(item)}</span>
+      {showTime && <span className="relative block w-full truncate tabular-nums opacity-80">{rangeText(item)}</span>}
     </button>
   );
 }

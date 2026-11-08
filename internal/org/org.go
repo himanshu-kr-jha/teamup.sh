@@ -1268,6 +1268,8 @@ type ImportOutcome struct {
 	Message           string     `json:"message,omitempty"`
 	TemporaryPassword string     `json:"temporaryPassword,omitempty"`
 	UserID            *uuid.UUID `json:"userId,omitempty"`
+	// Emailed says their details were sent to them.
+	Emailed bool `json:"emailed"`
 }
 
 // ImportMembers creates an account for every row of a CSV and reports each one

@@ -484,6 +484,14 @@ async function fillTimes(page: Page, fields: [string, string], from: Date, to: D
   await dialog.getByLabel(fields[1], { exact: true }).fill(localInput(to));
 }
 
+/** A meeting is a start and a length picked from the list. */
+async function fillMeetingTime(page: Page, from: Date, duration: string) {
+  const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('Starts', { exact: true }).fill(localInput(from));
+  await dialog.getByLabel('Duration', { exact: true }).click();
+  await page.getByRole('option', { name: duration, exact: true }).click();
+}
+
 test.describe('6. calendar', () => {
   test('somebody blocks focus time and frees an open slot, and is added to a meeting without doing anything', async ({ as }) => {
     const alice = await as('alice');
@@ -580,7 +588,7 @@ test.describe('6. calendar', () => {
     await mia.page.getByRole('button', { name: 'Schedule', exact: true }).click();
     const dialog = mia.page.getByRole('dialog');
     await dialog.getByLabel('Name', { exact: true }).fill('Check in');
-    await fillTimes(mia.page, ['Starts', 'Ends'], at(4, 10, 30), at(4, 11, 30));
+    await fillMeetingTime(mia.page, at(4, 10, 30), '1 hour');
     await dialog.getByLabel('People', { exact: true }).fill('Pat');
     await dialog.getByRole('button', { name: NAME('pat') }).click();
     await expect(dialog.getByRole('status').filter({ hasText: 'You can still go ahead' })).toHaveCount(0);
@@ -633,7 +641,7 @@ test.describe('6. calendar', () => {
     await eventButton(olivia.page, 'Offsite planning').click();
     await olivia.page.getByRole('button', { name: 'Edit' }).click();
     const dialog = olivia.page.getByRole('dialog');
-    await fillTimes(olivia.page, ['Starts', 'Ends'], at(3, 15), at(3, 16));
+    await fillMeetingTime(olivia.page, at(3, 15), '1 hour');
     await dialog.getByRole('button', { name: 'Save' }).click();
     // Alice's open calendar moves it with no reload.
     await expect(alice.page.getByRole('main').getByRole('button', { name: /Offsite planning, 03:00 PM to 04:00 PM/ })).toBeVisible({ timeout: 15_000 });

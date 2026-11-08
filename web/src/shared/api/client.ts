@@ -97,6 +97,15 @@ export const authApi = {
     api.post('/auth/password', data),
 };
 
+export interface MailSettings {
+  host: string;
+  port: number;
+  user: string;
+  from: string;
+  passwordSet: boolean;
+  configured: boolean;
+}
+
 export const orgApi = {
   get: () => api.get('/org'),
   update: (data: { name?: string; logoUrl?: string }) => api.patch('/org', data),
@@ -107,6 +116,8 @@ export const orgApi = {
       temporaryPassword: string;
       /** Whether the credentials were posted to them, or need passing on by hand. */
       emailed: boolean;
+      /** Why not: "not_configured", or what the mail server said. */
+      mailProblem?: string;
     }>('/users', data),
   /**
    * Create a whole CSV of colleagues at once. Every row is reported back
@@ -125,8 +136,17 @@ export const orgApi = {
         status: 'created' | 'duplicate' | 'invalid' | 'failed';
         message?: string;
         temporaryPassword?: string;
+        emailed?: boolean;
       }>;
+      /** Why the rest were not emailed, once one failed. */
+      mailProblem?: string;
     }>('/users/import', { csv }),
+  /** The mail server new members' details go through. The password never comes back. */
+  getMail: () => api.get<MailSettings>('/org/mail'),
+  saveMail: (data: { host: string; port: number; user: string; password: string; from: string }) =>
+    api.put<MailSettings>('/org/mail', data),
+  /** Sends a test message to whoever asks, with the saved settings. */
+  testMail: () => api.post<{ sent: boolean; sentTo: string; problem?: string }>('/org/mail/test'),
   getUser: (id: string) => api.get(`/users/${id}`),
   updateUser: (id: string, data: { name?: string; avatarUrl?: string }) => api.patch(`/users/${id}`, data),
   deactivateUser: (id: string) => api.delete(`/users/${id}`),

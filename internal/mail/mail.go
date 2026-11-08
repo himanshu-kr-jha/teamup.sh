@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"mime"
 	"net"
+	netmail "net/mail"
 	"net/smtp"
 	"strconv"
 	"strings"
@@ -37,6 +38,42 @@ type Settings struct {
 }
 
 func (s Settings) configured() bool { return s.Host != "" && s.From != "" }
+
+// Validate says what is wrong with settings an administrator typed, in words they
+// can act on. The password is not checked here: only the server can say.
+func (s Settings) Validate() error {
+	if strings.TrimSpace(s.Host) == "" || strings.ContainsAny(s.Host, " /:") {
+		return fmt.Errorf("enter the mail server's host name, such as smtp.gmail.com")
+	}
+	if s.Port < 0 || s.Port > 65535 {
+		return fmt.Errorf("the port must be a number from 1 to 65535, usually 587 or 465")
+	}
+	if _, err := netmail.ParseAddress(s.From); err != nil {
+		return fmt.Errorf("the from address must be an email address, such as teamup@example.com or TeamUp <teamup@example.com>")
+	}
+	return nil
+}
+
+// implicitTLS says whether a server on this port speaks TLS from the first byte,
+// as on 465, rather than upgrading with STARTTLS. A variable so a test's server,
+// which cannot listen on 465, can stand in for one.
+var implicitTLS = func(port int) bool { return port == 465 }
+
+// tlsConfig is how the server's certificate is checked. A variable so a test can
+// trust its own server.
+var tlsConfig = func(host string) *tls.Config { return &tls.Config{ServerName: host, MinVersion: tls.VersionTLS12} }
+
+// dialAddress is where a connection goes. A variable so a test can reach its own
+// server under another name.
+var dialAddress = func(host string, port int) string { return net.JoinHostPort(host, strconv.Itoa(port)) }
+
+func isLocal(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
 
 type Service struct {
 	config ConfigReader
@@ -72,6 +109,21 @@ func (s *Service) Send(ctx context.Context, orgID uuid.UUID, msg Message) error 
 	return send(settings, msg)
 }
 
+// SendTest posts a short message with the organization's saved settings, so an
+// administrator finds out now, and with the server's own words, whether mail works.
+func (s *Service) SendTest(ctx context.Context, orgID uuid.UUID, to string) error {
+	var settings Settings
+	if err := s.config.GetConfigInto(ctx, orgID, "smtp", &settings); err != nil || !settings.configured() {
+		return ErrNotConfigured
+	}
+	return send(settings, Message{
+		To:      to,
+		Subject: "TeamUp can send email",
+		Body: "This is a test from TeamUp.\n\nIt arrived, so new members will get their sign-in details by email.\n" +
+			"Sign in here: " + strings.TrimSuffix(s.baseURL, "/") + "/login\n",
+	})
+}
+
 // Configured reports whether mail can be sent for this organization, so a
 // caller can tell somebody up front rather than after the fact.
 func (s *Service) Configured(ctx context.Context, orgID uuid.UUID) bool {
@@ -83,15 +135,29 @@ func (s *Service) Configured(ctx context.Context, orgID uuid.UUID) bool {
 }
 
 func send(settings Settings, msg Message) error {
+	if !settings.configured() {
+		return ErrNotConfigured
+	}
+	from, err := netmail.ParseAddress(settings.From)
+	if err != nil {
+		return fmt.Errorf("the from address %q is not an email address", settings.From)
+	}
 	port := settings.Port
 	if port == 0 {
 		port = 587
 	}
-	addr := net.JoinHostPort(settings.Host, strconv.Itoa(port))
+	addr := dialAddress(settings.Host, port)
 
-	conn, err := net.DialTimeout("tcp", addr, 15*time.Second)
+	dialer := &net.Dialer{Timeout: 15 * time.Second}
+	var conn net.Conn
+	encrypted := implicitTLS(port)
+	if encrypted {
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsConfig(settings.Host))
+	} else {
+		conn, err = dialer.Dial("tcp", addr)
+	}
 	if err != nil {
-		return fmt.Errorf("dial %s: %w", addr, err)
+		return fmt.Errorf("could not reach %s: %w", addr, err)
 	}
 	defer conn.Close()
 	// A server that stops responding must not hold the request open.
@@ -103,18 +169,25 @@ func send(settings Settings, msg Message) error {
 	}
 	defer client.Close()
 
-	if ok, _ := client.Extension("STARTTLS"); ok {
-		if err := client.StartTLS(&tls.Config{ServerName: settings.Host}); err != nil {
-			return fmt.Errorf("starttls: %w", err)
+	if !encrypted {
+		if ok, _ := client.Extension("STARTTLS"); ok {
+			if err := client.StartTLS(tlsConfig(settings.Host)); err != nil {
+				return fmt.Errorf("starttls: %w", err)
+			}
+			encrypted = true
 		}
 	}
 	if settings.User != "" {
+		// Never send the password in the clear across a network.
+		if !encrypted && !isLocal(settings.Host) {
+			return fmt.Errorf("%s offers no encrypted connection on port %d, so the password was not sent; try port 587 or 465", settings.Host, port)
+		}
 		if err := client.Auth(smtp.PlainAuth("", settings.User, settings.Pass, settings.Host)); err != nil {
 			return fmt.Errorf("smtp auth: %w", err)
 		}
 	}
 
-	if err := client.Mail(settings.From); err != nil {
+	if err := client.Mail(from.Address); err != nil {
 		return fmt.Errorf("sender rejected: %w", err)
 	}
 	if err := client.Rcpt(msg.To); err != nil {
@@ -168,7 +241,7 @@ func (s *Service) WelcomeMessage(orgName, name, email, temporaryPassword string)
 	body := fmt.Sprintf(`Hello %s,
 
 You have been added to %s on TeamUp, a private workspace your organization
-runs itself for chat, calls and work tracking.
+runs itself for chat, calls, meetings and work tracking.
 
 Sign in here:  %s
 
@@ -183,10 +256,11 @@ Once you are in you can:
 
   • Talk in channels, or one to one with anybody in the organization
   • Share files by attaching them to a message
-  • Start or join a video call from any channel
+  • Start or join a video call, and join the team's daily scrum
+  • See your meetings on your own calendar, and block time for focused work
   • See the work assigned to you, and comment on it
 
-If you were not expecting this, tell whoever runs %s — the account exists
+If you were not expecting this, tell whoever runs %s. The account exists
 already and can be removed.
 `, name, orgName, signIn, email, temporaryPassword, orgName)
 

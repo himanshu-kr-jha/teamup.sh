@@ -85,6 +85,12 @@ type Item struct {
 	OrganizerID       *uuid.UUID `json:"organizerId,omitempty"`
 	InviteeIDs        []string   `json:"inviteeIds,omitempty"`
 	Status            string     `json:"status,omitempty"`
+	// ScheduledEndsAt is set only on a meeting that ran past its scheduled end
+	// while this person was in it, so EndsAt is later than planned.
+	ScheduledEndsAt *time.Time `json:"scheduledEndsAt,omitempty"`
+	// Running says the meeting is still going and this person is still in it, so
+	// EndsAt is now and will keep moving.
+	Running bool `json:"running,omitempty"`
 	// CanReadLog says whether the person reading this calendar may read this call's
 	// log, so that nobody is offered a button whose only answer is a refusal.
 	CanReadLog *bool `json:"canReadLog,omitempty"`
@@ -339,8 +345,20 @@ func (s *Service) loadCalls(ctx context.Context, orgID uuid.UUID, people []uuid.
 			// 10:00.
 			item.Source = "meeting"
 			item.StartsAt, item.EndsAt = *scheduledStart, *scheduledEnd
-			if status == "ended" && joined != nil && !now.Before(*scheduledEnd) {
-				item.StartsAt, item.EndsAt = *joined, firstTime(now, leftAt, endedAt)
+			if joined != nil && !now.Before(*scheduledEnd) {
+				// Over, or running on past its end: what really happened to somebody
+				// who was there. Still in it means until now, and it keeps growing.
+				stillIn := status == "active" && leftAt == nil
+				switch {
+				case stillIn:
+					item.StartsAt, item.EndsAt, item.Running = *joined, now, true
+				case status == "ended" || leftAt != nil:
+					item.StartsAt, item.EndsAt = *joined, firstTime(now, leftAt, endedAt)
+				}
+				if item.EndsAt.After(*scheduledEnd) {
+					planned := *scheduledEnd
+					item.ScheduledEndsAt = &planned
+				}
 			}
 		default:
 			item.Source = "call"

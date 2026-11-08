@@ -43,6 +43,13 @@ webhook:
 ' livekit/livekit-server:latest
 ```
 
+Mailpit stands in for a mail server for `meetings.y-mail.spec.ts`: SMTP on 55480, its API on 55481.
+
+```bash
+docker run -d --name teamup-cal-test-mailpit -p 127.0.0.1:55480:1025 -p 127.0.0.1:55481:8025 \
+  axllent/mailpit:v1.21.8 --smtp-auth-accept-any --smtp-auth-allow-insecure
+```
+
 The webhook URL is the one thing that ties LiveKit to the server under test: the container posts to port **55470** on the host, so the server must listen there (`E2E_PORT`, default 55470 in `test-services.env`).
 `run-meetings.sh` refuses to start if the container's config names another port.
 If it is wrong anyway, the attendance specs fail with `WEBHOOKS NEVER ARRIVED`, which is a setup fault and not a product bug.

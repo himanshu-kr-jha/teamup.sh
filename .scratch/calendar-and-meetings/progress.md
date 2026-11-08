@@ -54,3 +54,10 @@ Who: orchestrator = Opus (plans, verifies, reports). Senior developer = Opus sub
   The backup is at migration 16 and 9b339c9 has 14, because live was an uncommitted tree that no longer exists. The old side ran on 9b339c9 with the files for 15 and 16 added, which is a stand-in.
   All rehearsal containers, volumes, images, the worktree and the restored data are deleted.
   Also fixed: the full suite failed once in `meetings.z-shots.spec.ts`, because ticket 35's fix was incomplete. See that ticket. The rehearsal's image predates this one change to `ActiveCallProvider.tsx`.
+
+- 2026-11-08, orchestrator: tickets 36, 37 and 38 for the user's three new asks, done directly after the developer agent stalled twice without writing anything.
+  Mail settings under Organization, Email, with a test send; welcome email on add and on CSV import; port 465 and named senders; no password over an unencrypted remote connection (decisions 47 and 48).
+  Meetings take a start and a length from 5, 10, 15, 30, 45 min or 1 hour (decision 45).
+  A meeting running past its end shows as extended for whoever is in it, growing while it runs (decision 46).
+  The Organization tabs scroll on a phone instead of the page.
+  Mailpit joins the test services (`web/e2e/README-services.md`).

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { CalendarClock, History, Loader2, Lock, Pencil, Trash2, Video } from 'lucide-react';
+import { CalendarClock, History, Loader2, Lock, Pencil, Timer, Trash2, Video } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog';
 import { calendarApi, meetingsApi } from '@/shared/api/client';
@@ -11,7 +11,7 @@ import { formatDate, formatTime } from '@/shared/utils/cn';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { CallLogDialog } from '@/features/calls/CallLogDialog';
 import { useJoinStanding } from '@/features/calls/standing/StandingMeetings';
-import { JOIN_EARLY_MINUTES, itemLabel, joinTarget, kindLabel, meetingStillOn, type CalendarItem } from './layout';
+import { JOIN_EARLY_MINUTES, extendedText, itemLabel, joinTarget, kindLabel, meetingStillOn, type CalendarItem } from './layout';
 
 const SOURCE_LABEL: Record<string, string> = {
   block: 'Your time',
@@ -103,6 +103,12 @@ export function EventDialog({
               {item.status === 'ended' && !stillOn && ', finished'}
               {item.status === 'active' && ', happening now'}
             </p>
+            {extendedText(item) && (
+              <p className="flex items-center gap-2 font-medium text-foreground">
+                <Timer className="h-4 w-4 shrink-0" aria-hidden="true" />
+                {extendedText(item)}
+              </p>
+            )}
             {noDetail && (
               <p className="flex items-center gap-2 text-muted-foreground">
                 <Lock className="h-4 w-4 shrink-0" aria-hidden="true" />

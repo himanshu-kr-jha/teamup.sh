@@ -198,7 +198,7 @@ The wizard needs no sign-in until it has been completed, so the first person to 
 | Authentication | Leave the provider as it is and leave its fields empty. A provider has to be selected, but OIDC is a stub and password sign-in is the real path. |
 | Services: MinIO | Endpoint `minio:9000`, bucket `teamup-files`, and `MINIO_ACCESS_KEY` and `MINIO_SECRET_KEY` from `.env` |
 | Services: LiveKit | URL `http://livekit:7880`, and `LIVEKIT_API_KEY` and `LIVEKIT_API_SECRET` from `.env` |
-| Services: SMTP | Optional. Without it, new members' passwords appear on screen for you to pass on. |
+| Services: SMTP | Optional, and it can be set up later under **Organization**, **Email**. Without it, new members' passwords appear on screen for you to pass on. |
 
 Use `grep -E 'MINIO|LIVEKIT' .env` to read the values.
 Press both Test buttons, then **Next**, then **Create Organization**.
@@ -218,12 +218,29 @@ Sign in with the owner account, and go to **Organization**.
 1.
    On **Members**, use **Add member** for one person or **Import CSV** for everybody at once.
 2.
-   Without SMTP, each person's temporary password is shown once, so pass it on then.
+   With a mail server set up under **Email**, each person is emailed their sign-in details.
+   Without one, or if sending fails, the dialog says why and each person's temporary password is shown once, so pass it on then.
    They must change it the first time they sign in.
 3.
    On **Teams**, create your teams, set each team's manager and add its members.
 
 A team's manager is who sees that team's scrum tab and contribution view under **Tasks**.
+
+### Sending email
+
+New members' sign-in details are emailed through a mail server you set up under **Organization**, **Email**, as an administrator.
+Fill in the server, port, username, password and the address mail comes from, press **Save**, then **Send test email**, which goes to your own address.
+
+| Provider | Server | Port | Username and password |
+| --- | --- | --- | --- |
+| Gmail | `smtp.gmail.com` | 587 | Your Gmail address and an app password (Google Account, Security, App passwords; it needs two-step verification) |
+| Amazon SES | `email-smtp.<region>.amazonaws.com` | 587 | SMTP credentials made in the SES console, with the from address verified there |
+| Brevo | `smtp-relay.brevo.com` | 587 | The SMTP login and key from Brevo's settings |
+
+Use port 587 or 465.
+AWS blocks outbound port 25 on EC2 by default, and TeamUp never sends a password to a server across the network without encryption.
+Gmail is the quickest to try, but it limits how many messages a day it sends and shows your Gmail address as the sender.
+The password is stored in the database with the other organization settings, is never shown again, and is kept when you save with the field left blank.
 
 ### 10. Set up backups
 

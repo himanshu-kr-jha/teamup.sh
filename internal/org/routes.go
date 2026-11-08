@@ -25,6 +25,7 @@ type Mailer interface {
 	Send(ctx context.Context, orgID uuid.UUID, msg mail.Message) error
 	WelcomeMessage(orgName, name, email, temporaryPassword string) mail.Message
 	Configured(ctx context.Context, orgID uuid.UUID) bool
+	SendTest(ctx context.Context, orgID uuid.UUID, to string) error
 }
 
 type Handler struct {
@@ -52,6 +53,10 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service, options ...func(*Hand
 
 	rg.GET("/org", h.GetOrganization)
 	rg.PATCH("/org", h.requireAdmin, h.UpdateOrganization)
+
+	rg.GET("/org/mail", h.requireAdmin, h.GetMailSettings)
+	rg.PUT("/org/mail", h.requireAdmin, h.UpdateMailSettings)
+	rg.POST("/org/mail/test", h.requireAdmin, h.TestMailSettings)
 
 	rg.GET("/users", h.ListUsers)
 	rg.POST("/users", h.requireAdmin, h.AddMember)
@@ -247,14 +252,15 @@ func (h *Handler) AddMember(c *gin.Context) {
 	// Post them their details. Best effort and reported back either way: an
 	// installation with no mail server is a supported setup, and the password
 	// is on screen regardless.
-	emailed := h.sendWelcome(ctx, orgID, member, temporaryPassword)
+	problem := h.sendWelcome(ctx, orgID, member, temporaryPassword)
 
 	// The only time this password is ever visible: it is stored hashed and
 	// cannot be recovered.
 	c.JSON(http.StatusCreated, gin.H{
 		"user":              member,
 		"temporaryPassword": temporaryPassword,
-		"emailed":           emailed,
+		"emailed":           problem == "",
+		"mailProblem":       problem,
 	})
 }
 
@@ -317,37 +323,171 @@ func (h *Handler) ImportMembers(c *gin.Context) {
 		}
 	}
 
+	// Everybody created gets their details by email too. A server that fails once
+	// is not tried for the rest, so a broken one costs one timeout and not fifty.
+	mailProblem := ""
+	for i := range outcomes {
+		o := &outcomes[i]
+		if o.Status != ImportCreated || o.UserID == nil || mailProblem != "" {
+			continue
+		}
+		problem := h.sendWelcome(c.Request.Context(), orgID, &User{ID: *o.UserID, Name: o.Name, Email: o.Email}, o.TemporaryPassword)
+		if problem != "" {
+			mailProblem = problem
+			continue
+		}
+		o.Emailed = true
+	}
+
 	// The passwords are in here and nowhere else: they are stored hashed and
 	// cannot be recovered, so this response is the administrator's only copy.
 	c.JSON(http.StatusOK, gin.H{
-		"outcomes": outcomes,
-		"created":  created,
-		"failed":   len(outcomes) - created,
+		"outcomes":    outcomes,
+		"created":     created,
+		"failed":      len(outcomes) - created,
+		"mailProblem": mailProblem,
 	})
 }
 
-// sendWelcome posts a new member their sign-in details, and says whether it
-// managed to. Never fails the request: the account exists either way, and the
-// administrator can pass the password on by hand.
-func (h *Handler) sendWelcome(ctx context.Context, orgID uuid.UUID, member *User, temporaryPassword string) bool {
+// MailNotConfigured is the reason given when no mail server has been set up.
+const MailNotConfigured = "not_configured"
+
+// sendWelcome posts a new member their sign-in details, and says why not when it
+// did not: MailNotConfigured, or what went wrong, for the administrator to read.
+// Never fails the request: the account exists either way, and the administrator
+// can pass the password on by hand.
+func (h *Handler) sendWelcome(ctx context.Context, orgID uuid.UUID, member *User, temporaryPassword string) string {
 	if h.mailer == nil {
-		return false
+		return MailNotConfigured
 	}
 	organization, err := h.service.GetOrganization(ctx, orgID)
 	if err != nil {
 		h.logger.Warn().Err(err).Msg("could not load the organization to write a welcome email")
-		return false
+		return "the organization could not be read"
 	}
 	msg := h.mailer.WelcomeMessage(organization.Name, member.Name, member.Email, temporaryPassword)
 	if err := h.mailer.Send(ctx, orgID, msg); err != nil {
 		if errors.Is(err, mail.ErrNotConfigured) {
 			h.logger.Info().Msg("no mail server configured; the new member's password was not posted")
-		} else {
-			h.logger.Warn().Err(err).Msg("could not post the new member's password")
+			return MailNotConfigured
 		}
-		return false
+		// The error is the server's, and never holds the password.
+		h.logger.Warn().Err(err).Msg("could not post the new member's password")
+		return err.Error()
 	}
-	return true
+	return ""
+}
+
+// mailSettingsView is the mail server as an administrator sees it. The password
+// is never sent back, only whether one is saved.
+type mailSettingsView struct {
+	Host        string `json:"host"`
+	Port        int    `json:"port"`
+	User        string `json:"user"`
+	From        string `json:"from"`
+	PasswordSet bool   `json:"passwordSet"`
+	Configured  bool   `json:"configured"`
+}
+
+func viewOf(s mail.Settings) mailSettingsView {
+	return mailSettingsView{Host: s.Host, Port: s.Port, User: s.User, From: s.From,
+		PasswordSet: s.Pass != "", Configured: s.Host != "" && s.From != ""}
+}
+
+func (h *Handler) savedMail(c *gin.Context, orgID uuid.UUID) (mail.Settings, bool) {
+	var saved mail.Settings
+	if err := h.service.GetConfigInto(c.Request.Context(), orgID, "smtp", &saved); err != nil && !errors.Is(err, apperrors.ErrNotFound) {
+		httpx.Error(c, err, "failed to read the mail settings")
+		return saved, false
+	}
+	return saved, true
+}
+
+// GetMailSettings is the mail server new members' details are sent through.
+func (h *Handler) GetMailSettings(c *gin.Context) {
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
+	saved, ok := h.savedMail(c, orgID)
+	if !ok {
+		return
+	}
+	c.JSON(http.StatusOK, viewOf(saved))
+}
+
+// UpdateMailSettings saves the mail server. A blank password keeps the saved one,
+// so the form never has to show it; clearing the username clears it too.
+func (h *Handler) UpdateMailSettings(c *gin.Context) {
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Host     string `json:"host"`
+		Port     int    `json:"port"`
+		User     string `json:"user"`
+		Password string `json:"password"`
+		From     string `json:"from"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	saved, ok := h.savedMail(c, orgID)
+	if !ok {
+		return
+	}
+	next := mail.Settings{Host: strings.TrimSpace(req.Host), Port: req.Port, User: strings.TrimSpace(req.User),
+		Pass: req.Password, From: strings.TrimSpace(req.From)}
+	if next.Pass == "" {
+		next.Pass = saved.Pass
+	}
+	if next.User == "" {
+		next.Pass = ""
+	}
+	if err := next.Validate(); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.service.SetConfig(c.Request.Context(), orgID, "smtp", next, true); err != nil {
+		httpx.Error(c, err, "failed to save the mail settings")
+		return
+	}
+	c.JSON(http.StatusOK, viewOf(next))
+}
+
+// TestMailSettings sends a test message to whoever asked, with the saved settings.
+// The mail server refusing is the answer to the question, not a failure of this
+// request, so it comes back as sent false with the server's words.
+func (h *Handler) TestMailSettings(c *gin.Context) {
+	orgID, ok := callerOrg(c)
+	if !ok {
+		return
+	}
+	if h.mailer == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "this server cannot send mail"})
+		return
+	}
+	callerID, err := uuid.Parse(auth.GetUserFromContext(c).UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	caller, err := h.service.GetUser(c.Request.Context(), callerID)
+	if err != nil {
+		httpx.Error(c, err, "failed to read who is asking")
+		return
+	}
+	if err := h.mailer.SendTest(c.Request.Context(), orgID, caller.Email); err != nil {
+		if errors.Is(err, mail.ErrNotConfigured) {
+			c.JSON(http.StatusConflict, gin.H{"error": "Save the mail server's settings first."})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"sent": false, "sentTo": caller.Email, "problem": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"sent": true, "sentTo": caller.Email})
 }
 
 func (h *Handler) GetUser(c *gin.Context) {

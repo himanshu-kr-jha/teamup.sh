@@ -191,7 +191,8 @@ for (const viewport of VIEWPORTS) {
       const dialog = mia.page.getByRole('dialog');
       await dialog.getByLabel('Name', { exact: true }).fill('Check in');
       await dialog.getByLabel('Starts', { exact: true }).fill(`${today}T14:00`);
-      await dialog.getByLabel('Ends', { exact: true }).fill(`${today}T15:00`);
+      await dialog.getByLabel('Duration', { exact: true }).click();
+      await mia.page.getByRole('option', { name: '1 hour', exact: true }).click();
       await dialog.getByLabel('People', { exact: true }).fill('Alice');
       await dialog.getByRole('button', { name: PEOPLE.alice.name }).click();
       await expect(dialog.getByRole('status').filter({ hasText: 'You can still go ahead' })).toBeVisible();
