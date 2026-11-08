@@ -1116,3 +1116,50 @@ func TestMeetingGuestsMigrationIsReversible(t *testing.T) {
 		t.Errorf("calls kept, guest tables gone: %d %v", calls, linksLeft)
 	}
 }
+
+// Direct links, rejoin keys and email invitations arrive beside existing guest
+// links, which keep working; going back keeps the links and the guests.
+func TestGuestInvitesMigrationIsReversible(t *testing.T) {
+	const version = 28
+	f := newMigrateFixture(t)
+	f.mustRun("up")
+	f.downTo(version - 1)
+	conn := f.conn()
+	ctx := context.Background()
+	if _, err := conn.Exec(ctx, `
+		WITH o AS (INSERT INTO organizations (name, subdomain) VALUES ('Inv', 'inv') RETURNING id),
+		u AS (INSERT INTO users (id, org_id, name, email, role, is_active)
+		      SELECT '00000000-0000-0000-0000-0000000000b3', id, 'Ivy', 'ivy@inv.test', 'member', true FROM o RETURNING id, org_id),
+		c AS (INSERT INTO calls (id, org_id, room_name, title, call_type, status, created_by)
+		      SELECT '00000000-0000-0000-0000-0000000000d2', org_id, 'room-i', 'Pitch', 'video', 'scheduled', id FROM u RETURNING id, org_id)
+		INSERT INTO call_guest_links (call_id, org_id, token, passcode) SELECT id, org_id, 'tok-i', '123456' FROM c;
+		INSERT INTO call_guests (id, call_id, name) VALUES ('00000000-0000-0000-0000-0000000000e2', '00000000-0000-0000-0000-0000000000d2', 'Pat');
+	`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	f.mustRun("up")
+	var direct *string
+	if err := conn.QueryRow(ctx, `SELECT direct_token FROM call_guest_links`).Scan(&direct); err != nil || direct != nil {
+		t.Fatalf("an existing link has no direct address yet: %v %v", direct, err)
+	}
+	if _, err := conn.Exec(ctx, `
+		UPDATE call_guest_links SET direct_token = 'dir-i';
+		UPDATE call_guests SET rejoin_hash = 'abc';
+		INSERT INTO call_guest_invites (call_id, email, time_zone) VALUES ('00000000-0000-0000-0000-0000000000d2', 'pat@client.test', 'Asia/Kolkata');
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Exec(ctx, `INSERT INTO call_guest_invites (call_id, email) VALUES ('00000000-0000-0000-0000-0000000000d2', 'pat@client.test')`); err == nil {
+		t.Errorf("one invitation per address per meeting")
+	}
+
+	f.downTo(version - 1)
+	var links, guests int
+	if err := conn.QueryRow(ctx, `SELECT (SELECT COUNT(*) FROM call_guest_links), (SELECT COUNT(*) FROM call_guests)`).Scan(&links, &guests); err != nil {
+		t.Fatal(err)
+	}
+	if links != 1 || guests != 1 {
+		t.Errorf("links and guests kept: %d %d", links, guests)
+	}
+}

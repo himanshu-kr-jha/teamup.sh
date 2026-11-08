@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { addHours, addMinutes, startOfDay } from 'date-fns';
-import { AlertTriangle, Loader2, Search, X } from 'lucide-react';
+import { AlertTriangle, Loader2, Mail, Search, X } from 'lucide-react';
 import { FormDialog } from '@/shared/components/FormDialog';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
-import { calendarApi, meetingsApi } from '@/shared/api/client';
+import { calendarApi, callsApi, meetingsApi } from '@/shared/api/client';
+import { apiErrorMessage } from '@/shared/api/errors';
+import { splitEmails } from '@/features/calls/GuestAccess';
 import { useToast } from '@/shared/hooks/useToast';
 import { cn } from '@/shared/utils/cn';
 import { useAuth } from '@/features/auth/AuthProvider';
@@ -71,6 +73,16 @@ export function ScheduleDialog({
   const [duration, setDuration] = useState(30);
   const [invited, setInvited] = useState<string[]>([]);
   const [search, setSearch] = useState('');
+  // People from outside, by email: emailed an invitation with the guest links.
+  const [guests, setGuests] = useState<string[]>([]);
+  const [guestDraft, setGuestDraft] = useState('');
+  const editingId = open && item?.callId ? item.callId : undefined;
+  const { data: guestLink } = useQuery({
+    queryKey: ['guest-link', editingId],
+    queryFn: async () => (await callsApi.guestLink(editingId!)).data,
+    enabled: !!editingId,
+  });
+  const alreadyInvited = useMemo(() => guestLink?.invites.map((i) => i.email) ?? [], [guestLink]);
 
   useEffect(() => {
     if (!open || !slot) return;
@@ -79,9 +91,23 @@ export function ScheduleDialog({
     setDuration(initialDuration(slot.start, slot.end, !!item));
     setInvited((item?.inviteeIds ?? startWith).filter((id) => id !== (item?.organizerId ?? user?.id)));
     setSearch('');
+    setGuestDraft('');
+    setGuests([]);
     // startWith is a new array on every render; it matters only on opening.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, item, slot]);
+
+  useEffect(() => {
+    if (open && editingId) setGuests(alreadyInvited);
+  }, [open, editingId, alreadyInvited]);
+
+  const addGuests = () => {
+    const list = splitEmails(guestDraft).map((e) => e.toLowerCase());
+    if (list.length === 0) return;
+    setGuests((current) => [...new Set([...current, ...list])]);
+    setGuestDraft('');
+  };
+  const draftLooksWrong = splitEmails(guestDraft).some((e) => !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e));
 
   const startDate = fromInputValue(start);
   const endDate = startDate ? addMinutes(startDate, duration) : null;
@@ -128,7 +154,7 @@ export function ScheduleDialog({
           : "It goes straight onto everybody's calendar, and they are reminded 5 minutes before."
       }
       submitLabel={item ? 'Save' : conflicts.length > 0 ? 'Schedule anyway' : 'Schedule'}
-      disabledReason={problem ?? undefined}
+      disabledReason={problem ?? (draftLooksWrong ? 'One of the guest email addresses is not right.' : undefined)}
       onSubmit={async () => {
         const body = {
           title: title.trim(),
@@ -139,14 +165,33 @@ export function ScheduleDialog({
         const { data: result } = item?.callId
           ? await meetingsApi.update(item.callId, body)
           : await meetingsApi.create(body);
+        // Anything still typed in the guests box counts, as if added.
+        const wanted = [...new Set([...guests, ...splitEmails(guestDraft).map((e) => e.toLowerCase())])];
+        const meetingId = item?.callId ?? result.meeting.id;
+        const added = wanted.filter((e) => !alreadyInvited.includes(e));
+        const dropped = alreadyInvited.filter((e) => !wanted.includes(e));
+        let guestNote = '';
+        try {
+          let after = guestLink;
+          for (const e of dropped) after = (await callsApi.removeGuestInvite(meetingId, e)).data;
+          if (added.length > 0) after = (await callsApi.inviteGuests(meetingId, added)).data;
+          if (added.length > 0) {
+            guestNote = after?.mailConfigured
+              ? ` ${added.length === 1 ? 'The guest has' : `${added.length} guests have`} been emailed an invitation.`
+              : ' Email is not set up, so copy the invitation from the meeting and send it to the guests.';
+          }
+          await queryClient.invalidateQueries({ queryKey: ['guest-link', meetingId] });
+        } catch (err) {
+          toast.error(apiErrorMessage(err, 'The meeting is saved, but the guests could not be invited.'));
+        }
         await queryClient.invalidateQueries({ queryKey: ['calendar'] });
         await queryClient.invalidateQueries({ queryKey: ['calls'] });
         const clashes = (result.conflicts ?? []).map((c) => nameOf(c.userId));
         const unique = [...new Set(clashes)];
         toast.success(
           unique.length > 0
-            ? `Heads up: ${unique.join(', ')} ${unique.length === 1 && unique[0] !== 'You' ? 'has' : 'have'} something else then.`
-            : 'Everybody invited has been told.',
+            ? `Heads up: ${unique.join(', ')} ${unique.length === 1 && unique[0] !== 'You' ? 'has' : 'have'} something else then.${guestNote}`
+            : `Everybody invited has been told.${guestNote}`,
           item ? 'Meeting saved' : 'Meeting scheduled'
         );
       }}
@@ -216,6 +261,54 @@ export function ScheduleDialog({
               ))
             )}
           </ul>
+        )}
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="meetingGuests">Guests from outside</Label>
+        <div className="flex gap-2">
+          <div className="relative min-w-0 flex-1">
+            <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+            <Input
+              id="meetingGuests"
+              className="pl-9"
+              inputMode="email"
+              autoComplete="off"
+              placeholder="Their email address"
+              value={guestDraft}
+              onChange={(e) => setGuestDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ',') {
+                  e.preventDefault();
+                  addGuests();
+                }
+              }}
+              onBlur={() => !draftLooksWrong && addGuests()}
+              aria-invalid={draftLooksWrong || undefined}
+            />
+          </div>
+        </div>
+        {draftLooksWrong && <p className="text-xs text-destructive">That does not look like an email address.</p>}
+        {guests.length > 0 ? (
+          <ul className="flex flex-wrap gap-1.5" aria-label="Guests invited by email">
+            {guests.map((e) => (
+              <li key={e} className="flex min-w-0 max-w-full items-center gap-1 rounded-full bg-muted py-0.5 pl-2.5 pr-1 text-xs">
+                <span className="truncate">{e}</span>
+                <button
+                  type="button"
+                  className="shrink-0 rounded-full p-0.5 text-muted-foreground hover:bg-background hover:text-foreground"
+                  aria-label={`Take ${e} off`}
+                  onClick={() => setGuests((current) => current.filter((x) => x !== e))}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            They are emailed a link to join from their browser, no account needed. You can also share the invitation from the meeting at any time.
+          </p>
         )}
       </div>
 

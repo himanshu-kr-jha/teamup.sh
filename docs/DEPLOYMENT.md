@@ -775,7 +775,10 @@ It carries no error text, host names or ports; for those, read `/readyz` from in
 ## Guests in meetings
 
 A meeting's organizer, or an administrator, can let people from outside the organization join it: **Make a guest link** in the meeting's details in the calendar, or **Guests** at the top of the call.
-The link is `/join/<token>` on this server, with a six-digit passcode by default.
+There are two links: a direct one that needs no passcode, and one that asks for the six-digit passcode, for when the direct one cannot be used.
+The organizer can also type outside people's email addresses when scheduling, or under **Invite by email**; they are emailed both links, and emailed again when the meeting moves or is cancelled.
+Without mail set up, they are listed and the organizer copies the invitation to send it.
+A guest who has joined can come back from the same browser without the passcode until the meeting ends or they are removed: the browser keeps a key, and the server only its hash.
 A guest gives their name and the passcode, and comes in once somebody from the organization has started the meeting; they are shown as a guest to everybody.
 The organizer can remove a guest, change the passcode, make a new link, or turn the link off, which takes every guest out.
 
@@ -784,7 +787,7 @@ Wrong passcodes are limited to 5 in 10 minutes from one address and 50 for the l
 The address is the `X-Real-IP` the bundled nginx sets; behind another proxy, set the same header, or every guest counts as one address.
 A guest's call token lasts 10 minutes and LiveKit renews it while they stay; one who was removed, or whose link was turned off, is put out again if they come back.
 The note-taker hears guests and names them in the minutes, which only members receive.
-`0027_meeting_guests` adds the tables, and its down migration removes every guest link.
+`0027_meeting_guests` adds the tables, and its down migration removes every guest link; `0028_guest_invites` adds direct links, rejoin keys and email invitations.
 
 ## Meeting notes
 

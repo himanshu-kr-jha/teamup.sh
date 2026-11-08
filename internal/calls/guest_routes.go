@@ -15,6 +15,51 @@ func registerGuestRoutes(rg *gin.RouterGroup, h *Handler) {
 	rg.GET("/calls/:id/guest-link", h.getGuestLink)
 	rg.PUT("/calls/:id/guest-link", h.putGuestLink)
 	rg.POST("/calls/:id/guests/:guestId/remove", h.removeGuest)
+	rg.POST("/calls/:id/guest-invites", h.inviteGuests)
+	rg.DELETE("/calls/:id/guest-invites", h.removeGuestInvite)
+}
+
+func (h *Handler) inviteGuests(c *gin.Context) {
+	orgID, userID, ok := caller(c)
+	if !ok {
+		return
+	}
+	id, ok := pathID(c, "id")
+	if !ok {
+		return
+	}
+	var req struct {
+		Emails   []string `json:"emails"`
+		TimeZone string   `json:"timeZone"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	link, err := h.service.InviteGuests(c.Request.Context(), orgID, id, userID, isAdmin(c), req.Emails, req.TimeZone)
+	if err != nil {
+		httpx.Error(c, err, "failed to invite the guests")
+		return
+	}
+	c.JSON(http.StatusOK, link)
+}
+
+// removeGuestInvite takes ?email= off the invitations.
+func (h *Handler) removeGuestInvite(c *gin.Context) {
+	orgID, userID, ok := caller(c)
+	if !ok {
+		return
+	}
+	id, ok := pathID(c, "id")
+	if !ok {
+		return
+	}
+	link, err := h.service.RemoveGuestInvite(c.Request.Context(), orgID, id, userID, isAdmin(c), c.Query("email"))
+	if err != nil {
+		httpx.Error(c, err, "failed to remove the invitation")
+		return
+	}
+	c.JSON(http.StatusOK, link)
 }
 
 // RegisterGuestRoutes is what a guest uses, with no account: outside the
@@ -96,14 +141,15 @@ func (h *Handler) guestMeeting(c *gin.Context) {
 
 func (h *Handler) joinAsGuest(c *gin.Context) {
 	var req struct {
-		Name     string `json:"name"`
-		Passcode string `json:"passcode"`
+		Name      string `json:"name"`
+		Passcode  string `json:"passcode"`
+		RejoinKey string `json:"rejoinKey"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
-	join, err := h.service.JoinAsGuest(c.Request.Context(), c.Param("token"), req.Name, req.Passcode, clientAddress(c.Request))
+	join, err := h.service.JoinAsGuest(c.Request.Context(), c.Param("token"), req.Name, req.Passcode, req.RejoinKey, clientAddress(c.Request))
 	if err != nil {
 		httpx.Error(c, err, "failed to join the meeting")
 		return

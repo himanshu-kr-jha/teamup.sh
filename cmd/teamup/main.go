@@ -582,6 +582,10 @@ func runServer(cmd *cobra.Command, args []string) error {
 	callsService.SetJoinHook(notetakerService.PersonJoined)
 	tasksService.SetNotifier(notificationsService)
 	calendarService.SetNotifier(notificationsService)
+	// People from outside invited by email are emailed, and told when the
+	// meeting moves or is cancelled.
+	callsService.SetGuestMailer(mailService, cfg.BaseURL)
+	calendarService.SetGuestNotifier(callsService)
 	// A comment should appear for everybody following the task, not on their
 	// next reload.
 	tasksService.SetBroadcaster(wsHub)

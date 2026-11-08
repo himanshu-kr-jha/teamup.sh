@@ -14,11 +14,14 @@ package calls
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"strings"
 	"time"
 	"unicode"
@@ -61,9 +64,16 @@ var (
 
 // GuestLink is a meeting's guest link as a member of the meeting sees it.
 type GuestLink struct {
-	Enabled  bool   `json:"enabled"`
-	Path     string `json:"path,omitempty"`
-	Passcode string `json:"passcode,omitempty"`
+	Enabled bool `json:"enabled"`
+	// DirectPath lets a guest in without the passcode; Path asks for it, for
+	// when the direct one cannot be used.
+	DirectPath string `json:"directPath,omitempty"`
+	Path       string `json:"path,omitempty"`
+	Passcode   string `json:"passcode,omitempty"`
+	// Invites is who from outside was invited by email.
+	Invites []GuestInvite `json:"invites"`
+	// MailConfigured says whether invitations can be emailed at all.
+	MailConfigured bool `json:"mailConfigured"`
 	// CanManage is whether the person asking may turn it on or off: the
 	// meeting's organizer, or an administrator.
 	CanManage bool `json:"canManage"`
@@ -95,6 +105,15 @@ type GuestJoin struct {
 	RoomName string `json:"roomName"`
 	Identity string `json:"identity"`
 	Name     string `json:"name"`
+	// RejoinKey lets this browser back in, as the same guest, without the
+	// passcode, until the meeting ends or the guest is removed.
+	RejoinKey string `json:"rejoinKey"`
+}
+
+// GuestInvite is somebody from outside invited to a meeting by email.
+type GuestInvite struct {
+	Email     string     `json:"email"`
+	EmailedAt *time.Time `json:"emailedAt,omitempty"`
 }
 
 func guestPath(token string) string { return "/join/" + token }
@@ -120,11 +139,15 @@ func (s *Service) GuestLinkFor(ctx context.Context, orgID, callID, userID uuid.U
 			return nil, apperrors.ErrNotFound
 		}
 	}
-	link := &GuestLink{CanManage: mayManageGuests(call, userID, admin)}
+	link := &GuestLink{CanManage: mayManageGuests(call, userID, admin), Invites: []GuestInvite{},
+		MailConfigured: s.guestMail != nil && s.guestMail.Configured(ctx, orgID)}
+	if link.Invites, err = s.guestInvites(ctx, callID); err != nil {
+		return nil, err
+	}
 	var token string
-	var passcode *string
-	err = s.db.QueryRow(ctx, `SELECT token, passcode, enabled FROM call_guest_links WHERE call_id = $1`, callID).
-		Scan(&token, &passcode, &link.Enabled)
+	var direct, passcode *string
+	err = s.db.QueryRow(ctx, `SELECT token, direct_token, passcode, enabled FROM call_guest_links WHERE call_id = $1`, callID).
+		Scan(&token, &direct, &passcode, &link.Enabled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return link, nil
 	}
@@ -132,7 +155,18 @@ func (s *Service) GuestLinkFor(ctx context.Context, orgID, callID, userID uuid.U
 		return nil, fmt.Errorf("read guest link: %w", err)
 	}
 	if link.Enabled {
-		link.Path = guestPath(token)
+		// A link made before direct links existed gets one now.
+		if direct == nil {
+			fresh, err := newGuestToken()
+			if err != nil {
+				return nil, err
+			}
+			if err := s.db.QueryRow(ctx, `UPDATE call_guest_links SET direct_token = COALESCE(direct_token, $2) WHERE call_id = $1 RETURNING direct_token`,
+				callID, fresh).Scan(&direct); err != nil {
+				return nil, fmt.Errorf("make direct link: %w", err)
+			}
+		}
+		link.Path, link.DirectPath = guestPath(token), guestPath(*direct)
 		if passcode != nil {
 			link.Passcode = *passcode
 		}
@@ -171,17 +205,22 @@ func (s *Service) SetGuestLink(ctx context.Context, orgID, callID, userID uuid.U
 	if err != nil {
 		return nil, err
 	}
-	// The token is kept unless a new link is asked for; the passcode unless a
-	// new one is given.
+	direct, err := newGuestToken()
+	if err != nil {
+		return nil, err
+	}
+	// The addresses are kept unless new ones are asked for; the passcode unless
+	// a new one is given.
 	if _, err := s.db.Exec(ctx, `
-		INSERT INTO call_guest_links (call_id, org_id, token, passcode, enabled, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO call_guest_links (call_id, org_id, token, direct_token, passcode, enabled, created_by)
+		VALUES ($1, $2, $3, $9, $4, $5, $6)
 		ON CONFLICT (call_id) DO UPDATE SET
 		    enabled = EXCLUDED.enabled,
 		    token = CASE WHEN $7 THEN EXCLUDED.token ELSE call_guest_links.token END,
+		    direct_token = CASE WHEN $7 OR call_guest_links.direct_token IS NULL THEN EXCLUDED.direct_token ELSE call_guest_links.direct_token END,
 		    passcode = CASE WHEN $8 THEN EXCLUDED.passcode ELSE call_guest_links.passcode END,
 		    updated_at = NOW()`,
-		callID, orgID, token, passcode, change.Enabled, userID, change.NewLink, change.Passcode != nil); err != nil {
+		callID, orgID, token, passcode, change.Enabled, userID, change.NewLink, change.Passcode != nil, direct); err != nil {
 		return nil, fmt.Errorf("save guest link: %w", err)
 	}
 	if !change.Enabled {
@@ -233,6 +272,8 @@ type guestLinkRow struct {
 	callID   uuid.UUID
 	orgID    uuid.UUID
 	passcode *string
+	// direct is the address that needs no passcode.
+	direct bool
 }
 
 func (s *Service) guestLink(ctx context.Context, token string) (*guestLinkRow, error) {
@@ -240,8 +281,10 @@ func (s *Service) guestLink(ctx context.Context, token string) (*guestLinkRow, e
 		return nil, ErrNoGuestLink
 	}
 	var r guestLinkRow
-	err := s.db.QueryRow(ctx, `SELECT call_id, org_id, passcode FROM call_guest_links WHERE token = $1 AND enabled`, token).
-		Scan(&r.callID, &r.orgID, &r.passcode)
+	err := s.db.QueryRow(ctx, `
+		SELECT call_id, org_id, passcode, direct_token IS NOT DISTINCT FROM $1
+		FROM call_guest_links WHERE (token = $1 OR direct_token = $1) AND enabled`, token).
+		Scan(&r.callID, &r.orgID, &r.passcode, &r.direct)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNoGuestLink
 	}
@@ -273,7 +316,7 @@ func (s *Service) GuestMeeting(ctx context.Context, token string) (*GuestMeeting
 		return nil, ErrNoGuestLink
 	}
 	m := &GuestMeeting{Title: "Meeting", StartsAt: call.ScheduledStart, EndsAt: call.ScheduledEnd,
-		State: s.guestState(call), PasscodeRequired: link.passcode != nil}
+		State: s.guestState(call), PasscodeRequired: link.passcode != nil && !link.direct}
 	if call.Title != nil && *call.Title != "" {
 		m.Title = *call.Title
 	}
@@ -282,33 +325,38 @@ func (s *Service) GuestMeeting(ctx context.Context, token string) (*GuestMeeting
 }
 
 // JoinAsGuest lets somebody into the meeting behind a guest link under the name
-// they give, if the passcode is right and the meeting is on.
-func (s *Service) JoinAsGuest(ctx context.Context, token, name, passcode, ip string) (*GuestJoin, error) {
-	name, err := cleanGuestName(name)
-	if err != nil {
-		return nil, err
-	}
+// they give, if the passcode is right or the link is the direct one, and the
+// meeting is on. A rejoin key from an earlier join in the same browser lets the
+// same guest back in without the passcode.
+func (s *Service) JoinAsGuest(ctx context.Context, token, name, passcode, rejoinKey, ip string) (*GuestJoin, error) {
 	link, err := s.guestLink(ctx, token)
 	if err != nil {
 		return nil, err
 	}
 
-	if link.passcode != nil {
-		var mine, all int
-		if err := s.db.QueryRow(ctx, `
-			SELECT COUNT(*) FILTER (WHERE ip = $2), COUNT(*)
-			FROM call_guest_attempts WHERE call_id = $1 AND at > $3`,
-			link.callID, ip, s.clock().Add(-attemptWindow)).Scan(&mine, &all); err != nil {
-			return nil, fmt.Errorf("count attempts: %w", err)
+	var id uuid.UUID
+	if rejoinKey != "" {
+		var known string
+		err := s.db.QueryRow(ctx, `
+			SELECT id, name FROM call_guests
+			WHERE call_id = $1 AND rejoin_hash = $2 AND removed_at IS NULL
+			ORDER BY created_at DESC LIMIT 1`, link.callID, hashKey(rejoinKey)).Scan(&id, &known)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("find guest: %w", err)
 		}
-		if mine >= attemptsPerAddress || all >= attemptsPerLink {
-			return nil, ErrTooManyTries
+		if err == nil {
+			name = known
 		}
-		if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(passcode)), []byte(*link.passcode)) != 1 {
-			if _, err := s.db.Exec(ctx, `INSERT INTO call_guest_attempts (call_id, ip, at) VALUES ($1, $2, $3)`, link.callID, ip, s.clock()); err != nil {
-				return nil, fmt.Errorf("record attempt: %w", err)
+	}
+	rejoining := id != uuid.Nil
+	if !rejoining {
+		if name, err = cleanGuestName(name); err != nil {
+			return nil, err
+		}
+		if link.passcode != nil && !link.direct {
+			if err := s.checkPasscode(ctx, link, passcode, ip); err != nil {
+				return nil, err
 			}
-			return nil, ErrWrongPasscode
 		}
 	}
 
@@ -323,16 +371,49 @@ func (s *Service) JoinAsGuest(ctx context.Context, token, name, passcode, ip str
 		return nil, ErrNotStarted
 	}
 
-	id := uuid.New()
-	if _, err := s.db.Exec(ctx, `INSERT INTO call_guests (id, call_id, name, created_at) VALUES ($1, $2, $3, $4)`, id, call.ID, name, s.clock()); err != nil {
-		return nil, fmt.Errorf("record guest: %w", err)
+	if !rejoining {
+		id = uuid.New()
+		if rejoinKey, err = newGuestToken(); err != nil {
+			return nil, err
+		}
+		if _, err := s.db.Exec(ctx, `INSERT INTO call_guests (id, call_id, name, created_at, rejoin_hash) VALUES ($1, $2, $3, $4, $5)`,
+			id, call.ID, name, s.clock(), hashKey(rejoinKey)); err != nil {
+			return nil, fmt.Errorf("record guest: %w", err)
+		}
 	}
 	identity := GuestIdentityPrefix + id.String()
 	lkToken, err := s.guestToken(call.RoomName, identity, name)
 	if err != nil {
 		return nil, err
 	}
-	return &GuestJoin{Token: lkToken, RoomName: call.RoomName, Identity: identity, Name: name}, nil
+	return &GuestJoin{Token: lkToken, RoomName: call.RoomName, Identity: identity, Name: name, RejoinKey: rejoinKey}, nil
+}
+
+// checkPasscode compares the passcode, counting wrong ones by address and for
+// the link, and refusing once there have been too many.
+func (s *Service) checkPasscode(ctx context.Context, link *guestLinkRow, passcode, ip string) error {
+	var mine, all int
+	if err := s.db.QueryRow(ctx, `
+		SELECT COUNT(*) FILTER (WHERE ip = $2), COUNT(*)
+		FROM call_guest_attempts WHERE call_id = $1 AND at > $3`,
+		link.callID, ip, s.clock().Add(-attemptWindow)).Scan(&mine, &all); err != nil {
+		return fmt.Errorf("count attempts: %w", err)
+	}
+	if mine >= attemptsPerAddress || all >= attemptsPerLink {
+		return ErrTooManyTries
+	}
+	if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(passcode)), []byte(*link.passcode)) != 1 {
+		if _, err := s.db.Exec(ctx, `INSERT INTO call_guest_attempts (call_id, ip, at) VALUES ($1, $2, $3)`, link.callID, ip, s.clock()); err != nil {
+			return fmt.Errorf("record attempt: %w", err)
+		}
+		return ErrWrongPasscode
+	}
+	return nil
+}
+
+func hashKey(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])
 }
 
 func (s *Service) guestToken(room, identity, name string) (string, error) {
@@ -390,4 +471,14 @@ func newGuestToken() (string, error) {
 		return "", fmt.Errorf("make guest link: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// newPasscode is six digits: easy to read out on the phone, and the limits on
+// wrong ones make guessing hopeless.
+func newPasscode() (string, error) {
+	n, err := rand.Int(rand.Reader, big.NewInt(1_000_000))
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%06d", n.Int64()), nil
 }

@@ -56,6 +56,8 @@ type Service struct {
 	// who outranks whom.
 	chart *tasks.Service
 	clock func() time.Time
+	// guests is told when a meeting with guests from outside moves or ends.
+	guests GuestNotifier
 }
 
 func NewService(db *pgxpool.Pool) *Service {
@@ -63,6 +65,14 @@ func NewService(db *pgxpool.Pool) *Service {
 }
 
 func (s *Service) SetNotifier(n Notifier) { s.notifier = n }
+
+// GuestNotifier tells people from outside, invited by email, that a meeting
+// moved or was cancelled.
+type GuestNotifier interface {
+	GuestsMeetingChanged(ctx context.Context, orgID, callID uuid.UUID, cancelled bool)
+}
+
+func (s *Service) SetGuestNotifier(g GuestNotifier) { s.guests = g }
 
 func (s *Service) SetLogger(l zerolog.Logger) {
 	s.logger = l.With().Str("component", "calendar").Logger()
@@ -838,6 +848,9 @@ func (s *Service) UpdateMeeting(ctx context.Context, orgID, id, actor uuid.UUID,
 	if moved {
 		// The organizer hears about it too when an admin moved their meeting.
 		s.notify(ctx, orgID, append(stayed, m.OrganizerID), actor, "meeting.moved", title+" moved", m)
+		if s.guests != nil {
+			s.guests.GuestsMeetingChanged(ctx, orgID, id, false)
+		}
 	}
 	return m, conflicts, nil
 }
@@ -915,6 +928,9 @@ func (s *Service) CancelMeeting(ctx context.Context, orgID, id, actor uuid.UUID,
 		s.logger.Warn().Err(err).Msg("could not end requests on a cancelled meeting")
 	}
 	s.notify(ctx, orgID, append(m.InviteeIDs, m.OrganizerID), actor, "meeting.cancelled", m.Title+" was cancelled", m)
+	if s.guests != nil {
+		s.guests.GuestsMeetingChanged(ctx, orgID, id, true)
+	}
 	return nil
 }
 

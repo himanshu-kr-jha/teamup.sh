@@ -426,10 +426,16 @@ export const scrumsApi = {
 
 export interface GuestLink {
   enabled: boolean;
-  /** /join/<token>, when it is on. */
+  /** /join/<token> that needs no passcode, when it is on. */
+  directPath?: string;
+  /** /join/<token> that asks for the passcode, for when the direct one cannot be used. */
   path?: string;
   passcode?: string;
   canManage: boolean;
+  /** People from outside invited by email. */
+  invites: Array<{ email: string; emailedAt?: string }>;
+  /** Whether invitations can be emailed; without mail they are sent by hand. */
+  mailConfigured: boolean;
 }
 
 export interface GuestMeeting {
@@ -444,8 +450,11 @@ export interface GuestMeeting {
 /** What somebody from outside the organization uses, with a meeting's guest link and no account. */
 export const guestApi = {
   meeting: (token: string) => api.get<GuestMeeting>(`/guest/${encodeURIComponent(token)}`),
-  join: (token: string, data: { name: string; passcode: string }) =>
-    api.post<{ token: string; roomName: string; identity: string; name: string }>(`/guest/${encodeURIComponent(token)}/join`, data),
+  join: (token: string, data: { name: string; passcode?: string; rejoinKey?: string }) =>
+    api.post<{ token: string; roomName: string; identity: string; name: string; rejoinKey: string }>(
+      `/guest/${encodeURIComponent(token)}/join`,
+      data
+    ),
 };
 
 export const callsApi = {
@@ -454,6 +463,10 @@ export const callsApi = {
   setGuestLink: (id: string, data: { enabled: boolean; passcode?: string; newLink?: boolean }) =>
     api.put<GuestLink>(`/calls/${id}/guest-link`, data),
   removeGuest: (id: string, guestId: string) => api.post(`/calls/${id}/guests/${guestId}/remove`),
+  /** Invites people from outside by email, turning the guest link on if it is off. */
+  inviteGuests: (id: string, emails: string[]) =>
+    api.post<GuestLink>(`/calls/${id}/guest-invites`, { emails, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
+  removeGuestInvite: (id: string, email: string) => api.delete<GuestLink>(`/calls/${id}/guest-invites`, { params: { email } }),
   list: (params?: { status?: string; channelId?: string }) => getList('/calls', 'calls', params),
   create: (data: { title?: string; channelId?: string; callType: 'video' | 'audio'; invitees?: string[] }) =>
     api.post<{ id: string; roomName: string }>('/calls', data),

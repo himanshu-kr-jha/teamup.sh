@@ -67,6 +67,10 @@ type Service struct {
 	// note-taker uses it to join.
 	joined func(ctx context.Context, orgID, callID uuid.UUID, roomName string)
 	clock  func() time.Time
+	// guestMail emails invitations to people from outside; baseURL starts
+	// the links in them.
+	guestMail GuestMailer
+	baseURL   string
 	// What this service asks of LiveKit, replaceable so that a test can stand in for
 	// the server, and for the moment it answers. Nil means the real one.
 	media mediaServer

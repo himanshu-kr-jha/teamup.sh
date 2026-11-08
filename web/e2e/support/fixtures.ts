@@ -47,6 +47,10 @@ const EXPECTED_NOISE = [
   // the guest page says so.
   /status of 401 .*\/api\/guest\/[^/]+\/join/,
   /status of 404 .*\/api\/guest\/[^/]+$/,
+  // LiveKit's client logs this at error level when a track arrives before the participant it
+  // belongs to, as when somebody rejoins under the same identity at once. The track is set up
+  // again once the participant is known: meetings.y-guests.spec.ts checks the sound arrives.
+  /Tried to add a track for a participant, that's not present/,
 ];
 // Asking "who am I?" before signing in is answered 401 by design, and the browser logs every 401.
 const SIGNED_OUT_PROBES = /status of 401 .*\/api\/auth\/(me|refresh)\b/;
