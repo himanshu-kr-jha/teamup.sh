@@ -1,10 +1,12 @@
-import { useMemo } from 'react';
+import { Fragment, useMemo } from 'react';
+import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { orgApi } from '@/shared/api/client';
 import { UserAvatar } from '@/shared/components/UserAvatar';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { cn } from '@/shared/utils/cn';
 import { splitMentions, usernameOf, type Mentionable } from './mentions';
+import { inAppPath, splitLinks } from './links';
 
 /** Everybody in the organization, as mentions need them. The same query the rest of the app reads. */
 export function useMentionables(): Array<Mentionable & { avatarUrl?: string }> {
@@ -19,16 +21,39 @@ export function useMentionables(): Array<Mentionable & { avatarUrl?: string }> {
 }
 
 /**
- * A message's text, with the people it names shown as @Name. Naming you stands
- * out more than naming anybody else.
+ * A message's text, with web addresses as links and the people it names shown
+ * as @Name. Naming you stands out more than naming anybody else. Addresses are
+ * found first, so an @ inside one, as in medium.com/@name, stays in the link.
  */
 export function MessageText({ content, isOwn }: { content: string; isOwn: boolean }) {
   const people = useMentionables();
   const { user } = useAuth();
-  const parts = useMemo(() => splitMentions(content, people), [content, people]);
+  const pieces = useMemo(
+    () => splitLinks(content).map((piece) => (piece.href ? piece : { ...piece, parts: splitMentions(piece.text, people) })),
+    [content, people]
+  );
+  const linkClass = cn(
+    'underline underline-offset-2',
+    isOwn ? 'decoration-primary-foreground/60 hover:decoration-primary-foreground' : 'text-primary decoration-primary/40 hover:decoration-primary'
+  );
   return (
     <p className="whitespace-pre-wrap break-anywhere">
-      {parts.map((part, i) =>
+      {pieces.map((piece, j) => {
+        if (piece.href) {
+          const path = inAppPath(piece.href);
+          // A message's own menu and long-press must not fire for a click on its link.
+          const stop = (e: React.MouseEvent) => e.stopPropagation();
+          return path ? (
+            <Link key={j} to={path} className={linkClass} onClick={stop}>
+              {piece.text}
+            </Link>
+          ) : (
+            <a key={j} href={piece.href} target="_blank" rel="noopener noreferrer nofollow" className={linkClass} onClick={stop}>
+              {piece.text}
+            </a>
+          );
+        }
+        return <Fragment key={j}>{'parts' in piece && piece.parts.map((part, i) =>
         'person' in part ? (
           <span
             key={i}
@@ -48,7 +73,8 @@ export function MessageText({ content, isOwn }: { content: string; isOwn: boolea
         ) : (
           <span key={i}>{part.text}</span>
         )
-      )}
+      )}</Fragment>;
+      })}
     </p>
   );
 }

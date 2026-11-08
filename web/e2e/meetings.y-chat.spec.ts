@@ -50,6 +50,41 @@ test.describe('mentions', () => {
   });
 });
 
+test.describe('links', () => {
+  test('web addresses in a message are links: outside ones open in a new tab, TeamUp ones in place', async ({ as, baseURL }) => {
+    const olivia = await as('owner');
+    const alice = await as('alice');
+    const { channelId } = readState();
+    const tag = Date.now();
+    const text = `notes ${tag}: https://example.com/plan?x=1. Also www.example.org, javascript:alert(1), the call ${baseURL}/calendar and https://medium.com/@alice/post`;
+
+    await olivia.page.goto(`/chat/${channelId}`);
+    await composer(olivia.page).fill(text);
+    await composer(olivia.page).press('Enter');
+
+    // Alice reads it.
+    await alice.page.goto(`/chat/${channelId}`);
+    const bubble = alice.page.locator('div.group', { hasText: `notes ${tag}` }).last();
+    const plan = bubble.getByRole('link', { name: 'https://example.com/plan?x=1' });
+    await expect(plan).toHaveAttribute('href', 'https://example.com/plan?x=1');
+    await expect(plan).toHaveAttribute('target', '_blank');
+    await expect(plan).toHaveAttribute('rel', /noopener/);
+    await expect(bubble.getByRole('link', { name: 'www.example.org' })).toHaveAttribute('href', 'https://www.example.org');
+    // An @ in an address is part of it, not a mention.
+    await expect(bubble.getByRole('link', { name: 'https://medium.com/@alice/post' })).toBeVisible();
+    await expect(bubble.getByTestId('mention')).toHaveCount(0);
+    // Never a script, whatever is typed.
+    await expect(bubble.getByRole('link')).toHaveCount(4);
+    await expect(bubble).toContainText('javascript:alert(1)');
+
+    // A link to TeamUp opens right here.
+    const tabs = alice.page.context().pages().length;
+    await bubble.getByRole('link', { name: `${baseURL}/calendar` }).click();
+    await expect(alice.page).toHaveURL(/\/calendar$/);
+    expect(alice.page.context().pages().length).toBe(tabs);
+  });
+});
+
 test.describe('history', () => {
   test('a conversation opens on its newest day and loads the day before on the way up', async ({ as }) => {
     const owner = await apiAs('owner');

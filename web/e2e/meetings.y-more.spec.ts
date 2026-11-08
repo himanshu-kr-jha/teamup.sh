@@ -125,9 +125,9 @@ test.describe('calendar views', () => {
     await cell.getByTestId('month-item').filter({ hasText: title }).click();
     await expect(olivia.page.getByRole('dialog')).toContainText(title);
     await olivia.page.keyboard.press('Escape');
-    // The space under what the day lists is the day's.
-    const box = (await cell.boundingBox())!;
-    await olivia.page.mouse.click(box.x + box.width / 2, box.y + box.height - 8);
+    // The day's number is always the day's, however full the day is.
+    const number = (await cell.getByText(String(Number(day.slice(8))), { exact: true }).first().boundingBox())!;
+    await olivia.page.mouse.click(number.x + number.width / 2, number.y + number.height / 2);
     await expect(olivia.page).toHaveURL(new RegExp(`view=day.*date=${day}|date=${day}.*view=day`));
     await expect(views.getByRole('button', { name: 'Day' })).toHaveAttribute('aria-pressed', 'true');
 
@@ -195,8 +195,25 @@ test.describe('calling from chat', () => {
       await expect(page.getByRole('button', { name: 'Turn your camera on' })).toBeVisible();
     }
 
+    // Each hears the other: a live audio track from the other side is playing.
+    const hearing = (page: import('@playwright/test').Page) =>
+      page.evaluate(() =>
+        Array.from(document.querySelectorAll('audio')).some((el) => {
+          const stream = el.srcObject as MediaStream | null;
+          return !el.paused && !!stream && stream.getAudioTracks().some((t) => t.readyState === 'live');
+        })
+      );
+    await expect.poll(() => hearing(alice.page), { timeout: 20_000 }).toBe(true);
+    await expect.poll(() => hearing(olivia.page), { timeout: 20_000 }).toBe(true);
+
     await olivia.page.getByRole('button', { name: 'Turn your camera on' }).click();
     await expect(olivia.page.getByRole('button', { name: 'Turn your camera off' })).toBeVisible({ timeout: 20_000 });
+    // And Alice, whose camera is off, sees Olivia's.
+    await expect
+      .poll(() => alice.page.evaluate(() => Array.from(document.querySelectorAll('video')).some((v) => v.videoWidth > 0)), {
+        timeout: 20_000,
+      })
+      .toBe(true);
     await olivia.page.getByRole('button', { name: 'Leave the call' }).click();
     await alice.page.getByRole('button', { name: 'Leave the call' }).click();
   });
