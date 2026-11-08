@@ -95,3 +95,4 @@ Who: orchestrator = Opus (plans, verifies, reports). Senior developer = Opus sub
 - 2026-11-08, orchestrator: ticket 54, guests in meetings by link, name and passcode. Links in task descriptions and comments.
 
 - 2026-11-08, orchestrator: ticket 55, role permissions made real and chosen from a checklist. Guests: direct link, rejoin, email invitations (ticket 54).
+- 2026-11-08, orchestrator: ticket 56, themed voice and video messages, loading screen and top bar.

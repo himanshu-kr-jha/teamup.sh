@@ -12,6 +12,7 @@ import { ChatNotifications } from "@/features/chat/ChatNotifications";
 import { usePushSubscription } from "@/features/notifications/usePushSubscription";
 import { cn } from "@/shared/utils/cn";
 import { OutageBanner } from "@/features/status/OutageBanner";
+import { TopProgress } from "@/shared/components/TopProgress";
 
 export function Layout() {
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
@@ -28,6 +29,7 @@ export function Layout() {
 
   return (
     <ActiveCallProvider>
+      <TopProgress />
       <div className="flex h-viewport overflow-hidden bg-background">
         <Sidebar />
         {/* The sidebar is position:fixed, so it is out of the flex flow and the

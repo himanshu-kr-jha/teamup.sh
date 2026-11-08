@@ -6,6 +6,8 @@ import { useToast } from '@/shared/hooks/useToast';
 import { ImageLightbox, type LightboxImage } from './ImageLightbox';
 import { PdfViewer, type ViewedPdf } from './PdfViewer';
 import { downloadAttachment, isPdf as isPdfFile } from './download';
+import { VoicePlayer } from './VoicePlayer';
+import { VideoNotePlayer } from './VideoNotePlayer';
 
 interface Attachment {
   id: string;
@@ -106,37 +108,22 @@ export function AttachmentChip({ attachment }: { attachment: Attachment }) {
   };
 
   if (playable && thumbnail) {
-    const downloadButton = (
-      <button
-        type="button"
-        onClick={download}
-        aria-label={`Download ${attachment.filename}`}
-        title="Download"
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-      >
-        <Download className="h-4 w-4" aria-hidden="true" />
-      </button>
-    );
     return isAudio ? (
-      <span className="flex max-w-full items-center gap-1 rounded-lg border border-border bg-background p-1 text-foreground" data-testid="voice-message">
-        <audio src={thumbnail} controls preload="metadata" className="h-9 max-w-[16rem]" aria-label={attachment.filename} />
-        {downloadButton}
+      <VoicePlayer src={thumbnail} id={attachment.objectKey} filename={attachment.filename} onDownload={download} />
+    ) : (
+      <VideoNotePlayer src={thumbnail} filename={attachment.filename} onDownload={download} />
+    );
+  }
+
+  // Waiting for its address, a voice or video message keeps its shape.
+  if (playable && !thumbnail) {
+    return isAudio ? (
+      <span className="flex h-[3.25rem] w-[17rem] max-w-full items-center gap-2.5 rounded-2xl border border-border/70 bg-background px-2 shadow-sm" aria-hidden="true">
+        <span className="h-9 w-9 shrink-0 animate-pulse rounded-full bg-muted" />
+        <span className="h-3 flex-1 animate-pulse rounded-full bg-muted" />
       </span>
     ) : (
-      <span className="relative inline-flex max-w-full flex-col gap-1 rounded-lg border border-border bg-background p-1 text-foreground" data-testid="video-message">
-        <video
-          src={thumbnail}
-          controls
-          playsInline
-          preload="metadata"
-          className="max-h-72 w-64 max-w-full rounded-md bg-black"
-          aria-label={attachment.filename}
-        />
-        <span className="flex items-center gap-1 pl-1 text-xs text-muted-foreground">
-          <span className="min-w-0 flex-1 truncate">{attachment.filename}</span>
-          {downloadButton}
-        </span>
-      </span>
+      <span className="block aspect-square w-60 max-w-full animate-pulse rounded-2xl border border-border/70 bg-muted" aria-hidden="true" />
     );
   }
 

@@ -8,6 +8,7 @@ import { AuthProvider } from '@/features/auth/AuthProvider';
 import { WSProvider } from '@/features/websocket/WSProvider';
 import { Toaster } from '@/shared/components/ui/toaster';
 import { OfflineBanner } from '@/shared/components/OfflineBanner';
+import { LoadingScreen } from '@/shared/components/LoadingScreen';
 import { BrandingSync } from '@/features/branding/useBranding';
 import { registerServiceWorker } from './sw/register';
 import './styles/globals.css';
@@ -34,8 +35,8 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
           <BrandingSync />
           <OfflineBanner />
           {/* The first loaders ask the server things, and until they answer the router
-              draws this. With nothing here that is a blank white page, whatever the theme. */}
-          <RouterProvider router={router} fallbackElement={<div className="h-viewport bg-background" />} />
+              draws this: the same screen index.html shows while the code downloads. */}
+          <RouterProvider router={router} fallbackElement={<LoadingScreen />} />
           <Toaster />
         </WSProvider>
       </AuthProvider>

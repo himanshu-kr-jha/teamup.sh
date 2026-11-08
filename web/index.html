@@ -29,9 +29,78 @@
         } catch (e) {}
       })();
     </script>
+    <style>
+      /* What shows while the app's code downloads, drawn the way LoadingScreen
+         draws it once React is running, so the first screen does not jump. The
+         colours are the theme's, with its values as fallbacks for before the
+         stylesheet has loaded; the organization's colour comes from the script
+         above. */
+      .boot {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 24px;
+        background: hsl(var(--background, 0 0% 100%));
+        color: hsl(var(--foreground, 222.2 84% 4.9%));
+        font-family: ui-sans-serif, system-ui, sans-serif, 'Apple Color Emoji', 'Segoe UI Emoji';
+      }
+      html.dark .boot {
+        background: hsl(var(--background, 222.2 84% 4.9%));
+        color: hsl(var(--foreground, 210 40% 98%));
+      }
+      .boot-mark {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 24px;
+        line-height: 32px;
+        font-weight: 700;
+      }
+      .boot-mark svg {
+        width: 40px;
+        height: 40px;
+        color: hsl(var(--primary, 239 84% 67%));
+      }
+      .boot-bar {
+        position: relative;
+        width: 160px;
+        height: 4px;
+        overflow: hidden;
+        border-radius: 9999px;
+        background: hsl(var(--primary, 239 84% 67%) / 0.15);
+      }
+      .boot-bar span {
+        position: absolute;
+        inset: 0 auto 0 0;
+        width: 40%;
+        border-radius: 9999px;
+        background: hsl(var(--primary, 239 84% 67%));
+        animation: boot-bar 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+      }
+      @keyframes boot-bar {
+        from { transform: translateX(-100%); }
+        to { transform: translateX(300%); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .boot-bar span { animation: none; width: 100%; opacity: 0.6; }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="boot" role="status" aria-label="Loading TeamUp">
+        <div class="boot-mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="4" x2="20" y1="9" y2="9" /><line x1="4" x2="20" y1="15" y2="15" /><line x1="10" x2="8" y1="3" y2="21" /><line x1="16" x2="14" y1="3" y2="21" />
+          </svg>
+          <span>TeamUp</span>
+        </div>
+        <div class="boot-bar"><span></span></div>
+      </div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

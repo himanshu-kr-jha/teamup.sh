@@ -62,12 +62,18 @@ export default {
           from: { transform: 'translateY(100%)' },
           to: { transform: 'translateY(0)' },
         },
+        // A stripe running along a bar, for a wait of unknown length.
+        'loading-bar': {
+          from: { transform: 'translateX(-100%)' },
+          to: { transform: 'translateX(300%)' },
+        },
       },
       animation: {
         'accordion-down': 'accordion-down 0.2s ease-out',
         'accordion-up': 'accordion-up 0.2s ease-out',
         'slide-in-from-top': 'slide-in-from-top 0.3s ease-out',
         'slide-in-from-bottom': 'slide-in-from-bottom 0.3s ease-out',
+        'loading-bar': 'loading-bar 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite',
       },
     },
   },

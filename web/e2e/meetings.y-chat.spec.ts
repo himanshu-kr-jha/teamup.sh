@@ -157,6 +157,8 @@ test.describe('attachments', () => {
     await olivia.page.getByRole('button', { name: 'Record a voice message' }).click();
     const bar = olivia.page.getByRole('group', { name: 'Recording a voice message' });
     await expect(bar.getByTestId('recording-time')).toHaveText('0:02', { timeout: 10_000 });
+    // It shows it is hearing something.
+    await expect(bar.getByTestId('recording-level')).toBeVisible();
     await bar.getByRole('button', { name: 'Done' }).click();
     await expect(olivia.page.getByText('Attached. Press Send to share.')).toBeVisible({ timeout: 30_000 });
     await olivia.page.getByRole('button', { name: 'Send', exact: true }).click();
@@ -165,6 +167,13 @@ test.describe('attachments', () => {
     await expect
       .poll(() => voice.locator('audio').evaluate((a: HTMLAudioElement) => a.readyState), { timeout: 15_000 })
       .toBeGreaterThan(0);
+    // TeamUp's own player: its length, then playing.
+    await expect(voice.getByTestId('voice-time')).toHaveText(/^0:0[1-3]$/, { timeout: 10_000 });
+    await voice.getByRole('button', { name: 'Play the voice message' }).click();
+    await expect(voice.getByRole('button', { name: 'Pause the voice message' })).toBeVisible();
+    await expect(voice.getByRole('slider', { name: 'Position in the voice message' })).not.toHaveAttribute('aria-valuenow', '0', { timeout: 5_000 });
+    await voice.getByRole('button', { name: /^Playback speed 1 times/ }).click();
+    await expect(voice.getByRole('button', { name: /^Playback speed 1.5 times/ })).toBeVisible();
 
     await olivia.page.getByRole('button', { name: 'Record a video message' }).click();
     const dialog = olivia.page.getByRole('dialog', { name: 'Video message' });
@@ -180,5 +189,7 @@ test.describe('attachments', () => {
     await expect
       .poll(() => video.locator('video').evaluate((v: HTMLVideoElement) => v.readyState), { timeout: 15_000 })
       .toBeGreaterThan(0);
+    await video.getByRole('button', { name: 'Play the video message' }).click();
+    await expect(video.getByRole('button', { name: 'Pause the video message' })).toBeAttached();
   });
 });
