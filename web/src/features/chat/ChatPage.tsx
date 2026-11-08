@@ -3,7 +3,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   Hash, Send, Paperclip, Smile, Bell, Settings, ChevronLeft, MessageSquare, Video, User,
   Megaphone, MoreVertical, Pencil, Trash2, Eye, Ban, Check, CheckCheck, PhoneMissed,
-  MessagesSquare, X,
+  MessagesSquare, X, Download,
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
@@ -27,9 +27,10 @@ import { useWebSocket } from '@/features/websocket/WSProvider';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { callsApi, channelsApi, filesApi } from '@/shared/api/client';
 import { useUpload, type UploadedFile } from '@/features/files/useUpload';
-import { useToast } from '@/shared/hooks/useToast';
+import { useToast, useToastStore } from '@/shared/hooks/useToast';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { AttachmentChip } from '@/features/files/AttachmentChip';
+import { downloadAttachment } from '@/features/files/download';
 import { ChannelSettingsDialog } from './ChannelSettingsDialog';
 import { NewDirectMessageDialog } from './NewDirectMessageDialog';
 import { useAuth } from '@/features/auth/AuthProvider';
@@ -149,6 +150,8 @@ export function ChatPage() {
   });
 
   const channels = channelsResponse?.data || [];
+  const openConversationShowsUnread =
+    (channels.find((c: any) => c.id === (params.channelId || activeChannelId))?.unreadCount ?? 0) > 0;
 
   // The newest page. Everything live — an optimistic send, a message off the
   // socket, the catch-up refetch after a reconnect — lands here.
@@ -670,9 +673,12 @@ export function ChatPage() {
     const latest = messages[messages.length - 1];
     if (!latest?.id || latest.pending) return;
     return whenVisible(document, () => markChannelRead(channelId, latest.id));
-    // Keyed on the last message so re-reading the same history is one call.
+    // Keyed on the last message so re-reading the same history is one call,
+    // and on the open conversation showing as unread: a list read back from
+    // the server before it stored the marker brings the old count with it,
+    // and the conversation in front of you must not keep a badge for that.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channelId, messages[messages.length - 1]?.id]);
+  }, [channelId, messages[messages.length - 1]?.id, openConversationShowsUnread]);
 
   /**
    * Records how far somebody has read.
@@ -686,18 +692,18 @@ export function ChatPage() {
    * it is traffic competing with the messages themselves.
    */
   const markChannelRead = (id: string, messageId: string) => {
-    if (lastReadRef.current[id] === messageId) return;
-    lastReadRef.current[id] = messageId;
-
     // The badge is zero the moment you are looking at it, whatever the server
     // has got round to storing.
     queryClient.setQueryData(['channels'], (old: any) => {
       if (!old?.data) return old;
       return {
         ...old,
-        data: old.data.map((c: any) => (c.id === id ? { ...c, unreadCount: 0 } : c)),
+        data: old.data.map((c: any) => (c.id === id && c.unreadCount ? { ...c, unreadCount: 0 } : c)),
       };
     });
+
+    if (lastReadRef.current[id] === messageId) return;
+    lastReadRef.current[id] = messageId;
 
     // Only the furthest point matters, so a burst becomes one call rather than
     // one per message.
@@ -1066,7 +1072,7 @@ export function ChatPage() {
           {staged.length > 0 && (
             <div className="border-t border-border bg-muted/30 px-4 py-2">
               <p className="mb-1.5 text-xs font-medium text-muted-foreground">
-                {staged.length === 1 ? 'Attached' : `${staged.length} attached`} — press Send
+                {staged.length === 1 ? 'Attached' : `${staged.length} attached`}. Press Send to share.
               </p>
               <div className="flex flex-wrap gap-2">
                 {staged.map((file) => (
@@ -1182,6 +1188,7 @@ export function ChatPage() {
                 size="icon"
                 disabled={!message.trim() && staged.length === 0}
                 className="shrink-0"
+                aria-label="Send"
               >
                 <Send className="h-5 w-5" />
               </Button>
@@ -1408,6 +1415,7 @@ function MessageBubble({
                 onDelete={remove}
                 onReply={onOpenThread}
                 onShowReads={() => setShowingReads(true)}
+                attachments={message.attachments}
               />
             )}
 
@@ -1481,6 +1489,7 @@ function MessageBubble({
                 canDelete={false}
                 onReply={onOpenThread}
                 onShowReads={() => setShowingReads(true)}
+                attachments={message.attachments}
               />
             )}
 
@@ -1617,6 +1626,19 @@ function ReactionPicker({ onPick }: { onPick: (emoji: string) => void }) {
   );
 }
 
+/** Saves one of a message's files, saying so if it cannot. */
+async function saveAttachment(a: { objectKey: string; filename: string }) {
+  try {
+    await downloadAttachment(a.objectKey, a.filename);
+  } catch (err) {
+    useToastStore.getState().push({
+      title: 'Something went wrong',
+      description: apiErrorMessage(err, 'Could not download that file.'),
+      variant: 'destructive',
+    });
+  }
+}
+
 /** The actions available on a single message. */
 function MessageMenu({
   canEdit,
@@ -1625,7 +1647,10 @@ function MessageMenu({
   onDelete,
   onReply,
   onShowReads,
+  attachments,
 }: {
+  /** Files on the message, each of which can be saved from here. */
+  attachments?: Array<{ id: string; objectKey: string; filename: string }>;
   canEdit: boolean;
   canDelete: boolean;
   onEdit?: () => void;
@@ -1657,6 +1682,14 @@ function MessageMenu({
           <Eye className="mr-2 h-4 w-4" />
           Who has read this
         </DropdownMenuItem>
+        {attachments?.map((a) => (
+          <DropdownMenuItem key={a.id} onSelect={() => void saveAttachment(a)}>
+            <Download className="mr-2 h-4 w-4 shrink-0" />
+            <span className="max-w-[14rem] truncate">
+              {attachments.length === 1 ? 'Download' : `Download ${a.filename}`}
+            </span>
+          </DropdownMenuItem>
+        ))}
         {onEdit && (
           <DropdownMenuItem
             onSelect={onEdit}
@@ -1826,7 +1859,7 @@ function ThreadPanel({
               }
             }}
           />
-          <Button type="submit" size="icon" disabled={!draft.trim()} className="shrink-0">
+          <Button type="submit" size="icon" disabled={!draft.trim()} className="shrink-0" aria-label="Send reply">
             <Send className="h-5 w-5" />
           </Button>
         </div>

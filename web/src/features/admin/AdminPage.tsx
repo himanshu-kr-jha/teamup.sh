@@ -12,8 +12,10 @@ import {
   Upload,
   CornerDownRight,
   Mail,
+  Palette,
 } from 'lucide-react';
 import { MailSettingsTab, mailProblemText } from './MailSettingsTab';
+import { AppearanceTab } from './AppearanceTab';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Textarea } from '@/shared/components/ui/textarea';
@@ -75,6 +77,7 @@ export function AdminPage() {
           <TabsTrigger value="roles"><Shield className="mr-2 h-4 w-4" />Roles</TabsTrigger>
           <TabsTrigger value="teams"><UsersRound className="mr-2 h-4 w-4" />Teams</TabsTrigger>
           {isAdmin && <TabsTrigger value="email"><Mail className="mr-2 h-4 w-4" />Email</TabsTrigger>}
+          {isAdmin && <TabsTrigger value="appearance"><Palette className="mr-2 h-4 w-4" />Appearance</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="members" className="p-4 md:p-6">
@@ -89,6 +92,11 @@ export function AdminPage() {
         {isAdmin && (
           <TabsContent value="email" className="p-4 md:p-6">
             <MailSettingsTab />
+          </TabsContent>
+        )}
+        {isAdmin && (
+          <TabsContent value="appearance" className="p-4 md:p-6">
+            <AppearanceTab />
           </TabsContent>
         )}
       </Tabs>

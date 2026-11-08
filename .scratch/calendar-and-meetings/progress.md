@@ -61,3 +61,10 @@ Who: orchestrator = Opus (plans, verifies, reports). Senior developer = Opus sub
   A meeting running past its end shows as extended for whoever is in it, growing while it runs (decision 46).
   The Organization tabs scroll on a phone instead of the page.
   Mailpit joins the test services (`web/e2e/README-services.md`).
+
+- 2026-11-08, orchestrator: tickets 39 to 42 for the user's four new asks.
+  A public status page at `/status` with 24 hours of history and an in-app banner while something is down (decision 49).
+  The organization's own colour and logo under Organization, Appearance, on every page including sign-in, TeamUp's look by default (decision 50).
+  PDFs drawn in the chat with pdf.js, and Download on PDF chips, pictures, the viewers and the message menu (decision 51).
+  The number of chats with something unread on the Chat tab (decision 52), which found the badge coming back after a refetch, now fixed.
+  pdf.js is added with pnpm 9's lockfile format, so the Docker build's `--frozen-lockfile` accepts it.

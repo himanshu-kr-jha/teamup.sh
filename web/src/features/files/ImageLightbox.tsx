@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { Download, X } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
-import { filesApi } from '@/shared/api/client';
+import { downloadAttachment } from './download';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
 
@@ -48,16 +48,7 @@ export function ImageLightbox({
 
   const download = async () => {
     try {
-      // Asked for again without the inline flag, so the browser saves it under
-      // its own name rather than displaying it.
-      const { data } = await filesApi.getDownloadUrl(image.objectKey, image.filename, false);
-      const link = document.createElement('a');
-      link.href = data.downloadUrl;
-      link.download = image.filename;
-      link.rel = 'noopener';
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
+      await downloadAttachment(image.objectKey, image.filename);
     } catch (err) {
       toast.error(apiErrorMessage(err, 'Could not download that file.'));
     }

@@ -214,6 +214,25 @@ These are readings of an ambiguous request, and they are cheap to change.
     If it was not sent, the dialog says why, either no mail server or the server's own words, and the password is still shown to pass on.
     A CSV import stops trying after the first failure, so a broken server costs one wait and not fifty.
     Resetting a password still shows the new one on screen only and does not email it: not asked for.
+49. **A public status page at `/status` says whether anything is down now and what was down in the last 24 hours.**
+    It needs no sign-in, because the time you most want it is when signing in does not work, and it is linked from the sign-in page and the user menu.
+    It reports the services TeamUp depends on under names a member uses: TeamUp, Messages and data, Live updates, File sharing, Calls.
+    Every replica records the readiness checks twice a minute into one Redis bucket per minute, kept 26 hours, and a failure any replica saw wins.
+    A minute nobody recorded is shown as no record, not as working.
+    No error text, host or port is in the report, because it is public.
+    The database down is an outage of everything; anything else down is "some things are not working", and a banner says what inside the app.
+    Without Redis the page still shows the current state and says the history cannot be read.
+50. **An organization has its own colour and logo, and none means TeamUp's own look.**
+    An admin sets them under Organization, Appearance: eleven presets or any hex colour, and a PNG, JPEG, WebP or GIF up to 512 KB; SVG is refused because it can carry script.
+    They are readable without a session, so the sign-in page wears them, and the logo is served with a versioned address, cached for good, sandboxed.
+    The colour replaces `--primary`, `--ring` and `--primary-foreground` in light and dark, with whichever text colour reads better on it, and the browser remembers it so the next load paints in it before anything is fetched.
+    The organization's name replaces "TeamUp" beside the mark only once there is a logo.
+51. **A PDF in chat opens to be read in the chat, and every file can be saved from where it is.**
+    PDFs are drawn with pdf.js, loaded only when one is opened, page by page as they scroll into view, with zoom; a phone's browser cannot show a PDF in a frame.
+    A PDF chip and a picture each have their own Download button, the viewers have one, and the message menu has Download for each file on the message.
+52. **The Chat tab shows how many conversations have something unread, not how many messages.**
+    It is the same list as the chat page's, kept current from wherever you are, in the sidebar and along the bottom on a phone.
+    A message in a conversation the list has never seen, such as a new direct message, reads the list again so it is counted.
 
 ## Non-goals
 

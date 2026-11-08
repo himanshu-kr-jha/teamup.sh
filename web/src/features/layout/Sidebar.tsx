@@ -1,9 +1,11 @@
 import { Link, NavLink } from 'react-router-dom';
-import { CalendarDays, MessageSquare, Video, CheckSquare, Settings, Users, ChevronLeft, ChevronRight, Hash, User } from 'lucide-react';
+import { CalendarDays, MessageSquare, Video, CheckSquare, Settings, Users, ChevronLeft, ChevronRight, User } from 'lucide-react';
 import { useUIStore } from '@/shared/store';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { cn } from '@/shared/utils/cn';
 import { useOrganizationAccess } from './useOrganizationAccess';
+import { BrandMark } from '@/features/branding/BrandMark';
+import { badgeText, useUnreadChatCount } from '@/features/chat/useUnreadChats';
 
 export function Sidebar() {
   const { sidebarOpen, toggleSidebar } = useUIStore();
@@ -12,6 +14,7 @@ export function Sidebar() {
   // A member cannot change anything on the Organization screen, so it is not
   // offered to them; administrators and whoever runs a team still have it.
   const { allowed: mayAdminister } = useOrganizationAccess();
+  const unreadChats = useUnreadChatCount();
 
   const navItems = [
     { path: '/chat', label: 'Chat', icon: MessageSquare },
@@ -37,9 +40,8 @@ export function Sidebar() {
       <div className="flex h-full flex-col">
         {/* Logo */}
         <div className={cn('flex h-16 items-center justify-between px-4 border-b border-border', !sidebarOpen && 'justify-center')}>
-          <Link to="/chat" className="flex items-center gap-2" aria-label="TeamUp Home">
-            <Hash className="h-8 w-8 text-primary" />
-            {sidebarOpen && <span className="font-bold text-xl">TeamUp</span>}
+          <Link to="/chat" className="flex min-w-0 items-center gap-2" aria-label="Home">
+            <BrandMark showName={sidebarOpen} />
           </Link>
           <button
             onClick={toggleSidebar}
@@ -70,8 +72,41 @@ export function Sidebar() {
                 )
               }
             >
-              <item.icon className="h-5 w-5 flex-shrink-0" aria-hidden="true" />
-              {sidebarOpen && <span>{item.label}</span>}
+              {({ isActive }) => {
+                const badge = item.path === '/chat' && unreadChats > 0 ? unreadChats : 0;
+                return (
+                  <>
+                    <span className="relative flex-shrink-0">
+                      <item.icon className="h-5 w-5" aria-hidden="true" />
+                      {badge > 0 && !sidebarOpen && (
+                        <span
+                          className="absolute -right-2 -top-2 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold leading-none text-destructive-foreground"
+                          data-testid="chat-unread-badge"
+                        >
+                          {badgeText(badge)}
+                        </span>
+                      )}
+                    </span>
+                    {sidebarOpen && <span className="flex-1">{item.label}</span>}
+                    {badge > 0 && sidebarOpen && (
+                      <span
+                        className={cn(
+                          'flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1.5 text-xs font-semibold',
+                          isActive ? 'bg-primary-foreground/20 text-primary-foreground' : 'bg-destructive text-destructive-foreground'
+                        )}
+                        data-testid="chat-unread-badge"
+                      >
+                        {badgeText(badge)}
+                      </span>
+                    )}
+                    {badge > 0 && (
+                      <span className="sr-only">
+                        , {badge === 1 ? '1 chat with unread messages' : `${badge} chats with unread messages`}
+                      </span>
+                    )}
+                  </>
+                );
+              }}
             </NavLink>
           ))}
 

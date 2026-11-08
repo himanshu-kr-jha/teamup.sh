@@ -58,6 +58,8 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service, options ...func(*Hand
 	rg.PUT("/org/mail", h.requireAdmin, h.UpdateMailSettings)
 	rg.POST("/org/mail/test", h.requireAdmin, h.TestMailSettings)
 
+	rg.PUT("/org/branding", h.requireAdmin, h.UpdateBranding)
+
 	rg.GET("/users", h.ListUsers)
 	rg.POST("/users", h.requireAdmin, h.AddMember)
 	rg.POST("/users/import", h.requireAdmin, h.ImportMembers)

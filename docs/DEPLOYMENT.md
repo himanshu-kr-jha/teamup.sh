@@ -754,6 +754,13 @@ The test machine has no public address, so these could not be run, and the walkt
 - Survival of a full VM reboot.
   `restart: unless-stopped` is set on every service, and the app was seen restarting by itself and recovering when Postgres came back.
 
+## Status page
+
+`https://<your address>/status` shows, to anybody and without signing in, whether each service is working now and what was down in the last 24 hours.
+It is linked from the sign-in page and from the user menu, and while something is down a banner inside the app says what.
+The history lives in Redis, so it survives restarts of the app but not of Redis, and a time nothing was running to record shows as "no record".
+It carries no error text, host names or ports; for those, read `/readyz` from inside the network as below.
+
 ## Troubleshooting
 
 These are all things that were hit while testing this guide, except the last three, which come from earlier work.

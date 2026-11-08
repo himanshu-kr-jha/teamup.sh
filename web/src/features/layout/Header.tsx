@@ -1,4 +1,5 @@
-import { Hash, Sun, Moon } from 'lucide-react';
+import { Sun, Moon } from 'lucide-react';
+import { BrandMark } from '@/features/branding/BrandMark';
 import { Link, useNavigate } from 'react-router-dom';
 import { usePresence } from '@/features/presence/usePresence';
 import { AvailabilityButton } from '@/features/presence/AvailabilityPicker';
@@ -27,9 +28,8 @@ export function Header() {
       <div className="flex flex-1 items-center gap-4">
         {/* Below a large screen there is no sidebar to carry the name, and with
             the menu button gone this corner was simply empty. */}
-        <Link to="/chat" className="flex items-center gap-2 lg:hidden" aria-label="TeamUp Home">
-          <Hash className="h-6 w-6 text-primary" aria-hidden="true" />
-          <span className="text-lg font-bold">TeamUp</span>
+        <Link to="/chat" className="flex min-w-0 max-w-[40%] items-center lg:hidden" aria-label="Home">
+          <BrandMark size="sm" />
         </Link>
         <SearchBox />
       </div>
@@ -72,6 +72,7 @@ export function Header() {
             {mayAdminister && (
               <DropdownMenuItem onSelect={() => navigate('/organization')}>Organization</DropdownMenuItem>
             )}
+            <DropdownMenuItem onSelect={() => navigate('/status')}>Service status</DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={logout} className="text-destructive focus:text-destructive">
               Log out

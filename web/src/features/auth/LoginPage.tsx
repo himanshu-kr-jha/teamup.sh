@@ -1,6 +1,7 @@
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useState } from 'react';
-import { Hash, AlertCircle, Loader2 } from 'lucide-react';
+import { AlertCircle, Loader2 } from 'lucide-react';
+import { BrandMark } from '@/features/branding/BrandMark';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
@@ -38,9 +39,8 @@ export function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-background p-4">
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
-          <Link to="/" className="inline-flex items-center gap-2 justify-center mb-4">
-            <Hash className="h-10 w-10 text-primary" />
-            <span className="font-bold text-2xl">TeamUp</span>
+          <Link to="/" className="mb-4 inline-flex justify-center">
+            <BrandMark size="lg" />
           </Link>
           <CardTitle>Welcome back</CardTitle>
           <CardDescription>Sign in to your account</CardDescription>
@@ -87,10 +87,13 @@ export function LoginPage() {
             </Button>
           </form>
         </CardContent>
-        <CardFooter className="flex justify-center">
-          <p className="text-sm text-muted-foreground">
+        <CardFooter className="flex flex-col items-center gap-2">
+          <p className="text-center text-sm text-muted-foreground">
             Need an account? Ask an administrator of your organization to add you.
           </p>
+          <Link to="/status" className="text-xs text-muted-foreground underline underline-offset-2 hover:text-foreground">
+            Service status
+          </Link>
         </CardFooter>
       </Card>
     </div>

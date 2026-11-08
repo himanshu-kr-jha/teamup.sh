@@ -1,6 +1,7 @@
 import { NavLink } from 'react-router-dom';
 import { CalendarDays, MessageSquare, Video, CheckSquare, Settings } from 'lucide-react';
 import { cn } from '@/shared/utils/cn';
+import { badgeText, useUnreadChatCount } from '@/features/chat/useUnreadChats';
 
 /**
  * The places worth going, along the bottom of a phone.
@@ -23,6 +24,7 @@ const tabs = [
 ];
 
 export function BottomNav() {
+  const unreadChats = useUnreadChatCount();
   return (
     <nav
       // Part of the page's column rather than floating over it, so nothing ends
@@ -46,11 +48,26 @@ export function BottomNav() {
           >
             {({ isActive }) => (
               <>
-                <tab.icon
-                  className={cn('h-5 w-5', isActive && 'fill-primary/10')}
-                  aria-hidden="true"
-                />
+                <span className="relative">
+                  <tab.icon
+                    className={cn('h-5 w-5', isActive && 'fill-primary/10')}
+                    aria-hidden="true"
+                  />
+                  {tab.path === '/chat' && unreadChats > 0 && (
+                    <span
+                      className="absolute -right-2.5 -top-1.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold leading-none text-destructive-foreground"
+                      data-testid="chat-unread-badge"
+                    >
+                      {badgeText(unreadChats)}
+                    </span>
+                  )}
+                </span>
                 <span>{tab.label}</span>
+                {tab.path === '/chat' && unreadChats > 0 && (
+                  <span className="sr-only">
+                    , {unreadChats === 1 ? '1 chat with unread messages' : `${unreadChats} chats with unread messages`}
+                  </span>
+                )}
               </>
             )}
           </NavLink>

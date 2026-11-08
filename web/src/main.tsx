@@ -8,6 +8,7 @@ import { AuthProvider } from '@/features/auth/AuthProvider';
 import { WSProvider } from '@/features/websocket/WSProvider';
 import { Toaster } from '@/shared/components/ui/toaster';
 import { OfflineBanner } from '@/shared/components/OfflineBanner';
+import { BrandingSync } from '@/features/branding/useBranding';
 import { registerServiceWorker } from './sw/register';
 import './styles/globals.css';
 
@@ -30,6 +31,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
         <WSProvider>
+          <BrandingSync />
           <OfflineBanner />
           {/* The first loaders ask the server things, and until they answer the router
               draws this. With nothing here that is a blank white page, whatever the theme. */}

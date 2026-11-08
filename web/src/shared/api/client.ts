@@ -70,7 +70,7 @@ api.interceptors.response.use(
       } catch (err) {
         processQueue(err, null);
         // Redirect to login, but not if already on login or wizard pages
-        const publicPaths = ['/login', '/wizard'];
+        const publicPaths = ['/login', '/wizard', '/status'];
         const isPublicPath = publicPaths.some(p => window.location.pathname === p || window.location.pathname.startsWith(p + '/'));
         if (!isPublicPath) {
           window.location.href = loginPathFor(window.location.pathname, window.location.search);
@@ -105,6 +105,39 @@ export interface MailSettings {
   passwordSet: boolean;
   configured: boolean;
 }
+
+/** The organization's look, readable signed in or not. Empty means TeamUp's own. */
+export interface Branding {
+  name: string;
+  color: string;
+  logoUrl: string;
+}
+
+export const brandingApi = {
+  get: () => api.get<Branding>('/branding'),
+};
+
+export type ServiceState = 'operational' | 'outage';
+
+export interface StatusReport {
+  /** Everything working, something not, or nothing that matters. */
+  overall: 'operational' | 'degraded' | 'outage';
+  checkedAt: string;
+  historyAvailable: boolean;
+  components: Array<{
+    key: string;
+    name: string;
+    description: string;
+    status: ServiceState;
+    uptime?: number;
+    hours: Array<{ start: string; status: 'up' | 'partial' | 'down' | 'none'; downMinutes: number }>;
+    incidents: Array<{ start: string; end?: string; minutes: number }>;
+  }>;
+}
+
+export const statusApi = {
+  get: () => api.get<StatusReport>('/status'),
+};
 
 export const orgApi = {
   get: () => api.get('/org'),
@@ -147,6 +180,8 @@ export const orgApi = {
     api.put<MailSettings>('/org/mail', data),
   /** Sends a test message to whoever asks, with the saved settings. */
   testMail: () => api.post<{ sent: boolean; sentTo: string; problem?: string }>('/org/mail/test'),
+  /** The colour and logo. A logo left out is kept; an empty one removes it. */
+  saveBranding: (data: { color: string; logo?: string }) => api.put<Branding>('/org/branding', data),
   getUser: (id: string) => api.get(`/users/${id}`),
   updateUser: (id: string, data: { name?: string; avatarUrl?: string }) => api.patch(`/users/${id}`, data),
   deactivateUser: (id: string) => api.delete(`/users/${id}`),

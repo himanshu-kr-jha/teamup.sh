@@ -36,6 +36,7 @@
     "idb": "^8.0.0",
     "livekit-client": "^2.5.0",
     "lucide-react": "^0.323.0",
+    "pdfjs-dist": "4.10.38",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-hook-form": "^7.50.0",

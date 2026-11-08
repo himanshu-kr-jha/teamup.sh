@@ -70,7 +70,15 @@ export function ChatNotifications() {
       // sound and the notification below still happen — you should hear that
       // somebody answered — and the way to see it is the reply count on the
       // parent, which the chat page moves as the frame arrives.
-      if (!watchingThisConversation && !incoming.replyTo) {
+      const known = ((queryClient.getQueryData(['channels']) as any)?.data ?? []).some(
+        (c: any) => c.id === incoming.channelId
+      );
+      if (!known) {
+        // A conversation this list has never seen, such as somebody opening
+        // a direct message with you: there is nothing to add one to, so the
+        // list is read again and arrives with it, unread count and all.
+        void queryClient.invalidateQueries({ queryKey: ['channels'] });
+      } else if (!watchingThisConversation && !incoming.replyTo) {
         queryClient.setQueryData(['channels'], (old: any) => {
           if (!old?.data) return old;
           return {

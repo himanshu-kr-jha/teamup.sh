@@ -11,6 +11,7 @@ import { KnockCenter } from "@/features/calls/KnockCenter";
 import { ChatNotifications } from "@/features/chat/ChatNotifications";
 import { usePushSubscription } from "@/features/notifications/usePushSubscription";
 import { cn } from "@/shared/utils/cn";
+import { OutageBanner } from "@/features/status/OutageBanner";
 
 export function Layout() {
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
@@ -40,6 +41,8 @@ export function Layout() {
           )}
         >
           <Header />
+          {/* While something is down, said before anybody has to ask. */}
+          <OutageBanner />
           {/* Pages render their own header and padding, so main stays bare;
             padding here produced a second layer of chrome. */}
           <main className="min-h-0 flex-1 overflow-hidden">

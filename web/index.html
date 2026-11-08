@@ -17,6 +17,16 @@
         } catch (e) {}
         var systemDark = matchMedia('(prefers-color-scheme: dark)').matches;
         document.documentElement.classList.toggle('dark', saved === 'dark' || (saved !== 'light' && systemDark));
+        // The organization's colour, as setTokens in src/shared/branding.ts puts it.
+        try {
+          var brand = JSON.parse(localStorage.getItem('branding-tokens') || 'null');
+          if (brand && brand.primary) {
+            var style = document.documentElement.style;
+            style.setProperty('--primary', brand.primary);
+            style.setProperty('--ring', brand.primary);
+            style.setProperty('--primary-foreground', brand.primaryForeground);
+          }
+        } catch (e) {}
       })();
     </script>
   </head>

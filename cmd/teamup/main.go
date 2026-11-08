@@ -34,6 +34,7 @@ import (
 	"github.com/teamup/teamup/internal/observability"
 	"github.com/teamup/teamup/internal/org"
 	"github.com/teamup/teamup/internal/presence"
+	"github.com/teamup/teamup/internal/status"
 	"github.com/teamup/teamup/internal/tasks"
 	"github.com/teamup/teamup/internal/websocket"
 	"github.com/teamup/teamup/internal/wizard"
@@ -619,7 +620,18 @@ func runServer(cmd *cobra.Command, args []string) error {
 	if target := liveKitProxyTarget(cfg.LiveKitURL); target != nil {
 		readyDeps = append(readyDeps, observability.HTTPCheck("livekit", target.String()))
 	}
-	readyHandler := observability.ReadyHandler(readyDeps...)
+	readiness := observability.NewReadiness(readyDeps...)
+	readyHandler := readiness.Handler
+
+	// The public status page reads the same checks, and keeps a day of them.
+	statusService := status.NewService(func(ctx context.Context) map[string]bool {
+		resp, _ := readiness.Evaluate(ctx)
+		out := make(map[string]bool, len(resp.Checks))
+		for name, check := range resp.Checks {
+			out[name] = check.Status == "pass"
+		}
+		return out
+	}, status.NewRedisStore(redisClient), logger)
 	router.GET("/healthz", observability.LiveHandler)
 	router.GET("/readyz", readyHandler)
 	router.GET("/healthz/live", observability.LiveHandler)
@@ -670,6 +682,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 		// whether to show the wizard.
 		wizardGroup := api.Group("/wizard")
 		wizard.RegisterRoutes(wizardGroup, wizardService)
+
+		// The status page and the organization's look are for anybody,
+		// signed in or not.
+		status.RegisterRoutes(api, statusService)
+		org.RegisterPublicRoutes(api, orgService)
 
 		// Protected routes
 		protected := api.Group("/")
@@ -786,6 +803,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// A call whose room finished while nothing was listening. Every replica sweeps,
 	// and ending a call is atomic.
 	go callsService.RunVanishedRoomSweep(sweepCtx, 5*time.Minute)
+	// What the status page shows for the last day. Every replica records, and
+	// a failure any of them saw wins.
+	go statusService.Run(sweepCtx, 30*time.Second)
 
 	// Graceful shutdown.
 	//

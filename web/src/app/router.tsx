@@ -11,6 +11,7 @@ import { AdminPage } from '@/features/admin/AdminPage';
 import { CallViewPage } from '@/features/calls/CallViewPage';
 import { AttendancePage } from '@/features/calls/standing/AttendancePage';
 import { CalendarPage } from '@/features/calendar/CalendarPage';
+import { StatusPage } from '@/features/status/StatusPage';
 import { TaskDetailPage } from '@/features/tasks/TaskDetailPage';
 import { useAuthStore } from '@/shared/store/authStore';
 import { loginPathFor } from '@/features/auth/nextPath';
@@ -55,6 +56,13 @@ export const router = createBrowserRouter([
   {
     path: '/login',
     element: <LoginPage />,
+    errorElement: <ErrorPage />,
+  },
+  // Open to anybody: whether something is down matters most when signing in is
+  // the thing that does not work.
+  {
+    path: '/status',
+    element: <StatusPage />,
     errorElement: <ErrorPage />,
   },
   {
