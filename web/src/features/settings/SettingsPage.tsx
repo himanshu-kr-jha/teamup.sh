@@ -16,6 +16,7 @@ import { useToast } from '@/shared/hooks/useToast';
 import { FormDialog } from '@/shared/components/FormDialog';
 import { applyTheme } from '@/shared/theme';
 import { formatRelativeTime } from '@/shared/utils/cn';
+import { ProfilePicture } from './ProfilePicture';
 
 export function SettingsPage() {
   const { user, refreshUser } = useAuth();
@@ -72,6 +73,7 @@ export function SettingsPage() {
           <Card>
             <CardHeader><CardTitle>Profile</CardTitle></CardHeader>
             <CardContent className="space-y-4">
+              <ProfilePicture />
               <div className="space-y-2">
                 <Label htmlFor="profileName">Display name</Label>
                 <Input id="profileName" value={name} onChange={(e) => setName(e.target.value)} />

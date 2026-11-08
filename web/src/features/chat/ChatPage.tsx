@@ -1,13 +1,13 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
-  Hash, Send, Paperclip, Smile, Bell, Settings, ChevronLeft, MessageSquare, Video, User,
+  Hash, Send, Paperclip, Smile, Bell, Settings, ChevronLeft, MessageSquare, User,
   Megaphone, MoreVertical, Pencil, Trash2, Eye, Ban, Check, CheckCheck, PhoneMissed,
-  MessagesSquare, X, Download,
+  MessagesSquare, X, Download, Phone, Forward,
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
-import { Avatar, AvatarFallback } from '@/shared/components/ui/avatar';
+import { UserAvatar } from '@/shared/components/UserAvatar';
 import { cn, formatRelativeTime } from '@/shared/utils/cn';
 import {
   DropdownMenu,
@@ -31,6 +31,7 @@ import { useToast, useToastStore } from '@/shared/hooks/useToast';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { AttachmentChip } from '@/features/files/AttachmentChip';
 import { downloadAttachment } from '@/features/files/download';
+import { ForwardContext, ForwardDialog, useForward, type ForwardableMessage } from './ForwardDialog';
 import { ChannelSettingsDialog } from './ChannelSettingsDialog';
 import { NewDirectMessageDialog } from './NewDirectMessageDialog';
 import { useAuth } from '@/features/auth/AuthProvider';
@@ -68,6 +69,8 @@ interface Message {
   attachments: any[];
   /** The thread root this is a reply to. Absent on a top-level message. */
   replyTo?: string;
+  /** Passed on from another conversation. */
+  forwarded?: boolean;
   /** How many replies hang off this message. Only ever set on a root. */
   replyCount?: number;
   /** When this message's thread last moved. */
@@ -150,6 +153,8 @@ export function ChatPage() {
   });
 
   const channels = channelsResponse?.data || [];
+  // The message somebody chose to pass on, if any.
+  const [forwarding, setForwarding] = useState<ForwardableMessage | null>(null);
   const openConversationShowsUnread =
     (channels.find((c: any) => c.id === (params.channelId || activeChannelId))?.unreadCount ?? 0) > 0;
 
@@ -761,7 +766,8 @@ export function ChatPage() {
     try {
       const { data: call } = await callsApi.create({
         channelId,
-        callType: 'video',
+        // A call: microphone on, camera off until somebody chooses video.
+        callType: 'audio',
         title: activeChannel?.name ?? undefined,
       });
       navigate(`/calls/${call.id}`);
@@ -798,6 +804,7 @@ export function ChatPage() {
   }
 
   return (
+    <ForwardContext.Provider value={setForwarding}>
     <div className="flex h-full flex-col bg-background">
 
       {/* Positioned, so the thread panel's full-screen form on a narrow
@@ -950,11 +957,12 @@ export function ChatPage() {
               <Button
                 variant="ghost"
                 size="icon"
-                aria-label="Start a call"
+                aria-label="Call"
+                title="Call. Your microphone is on; turn your camera on in the call if you want video."
                 disabled={!activeChannel || startingCall}
                 onClick={startCall}
               >
-                <Video className="h-5 w-5" />
+                <Phone className="h-5 w-5" />
               </Button>
               <Button variant="ghost" size="icon" aria-label="Notifications"><Bell className="h-5 w-5" /></Button>
               <Button
@@ -1239,6 +1247,8 @@ export function ChatPage() {
         onOpenChange={(open) => !open && setShowSettings(false)}
       />
     </div>
+      <ForwardDialog message={forwarding} onClose={() => setForwarding(null)} />
+    </ForwardContext.Provider>
   );
 }
 
@@ -1327,6 +1337,7 @@ function MessageBubble({
   onPatch: (messageId: string, update: (message: Message) => Message) => void;
 }) {
   const toast = useToast();
+  const forward = useForward();
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(message.content);
   const [showingReads, setShowingReads] = useState(false);
@@ -1384,11 +1395,7 @@ function MessageBubble({
             <div className="w-8 shrink-0" aria-hidden="true" />
           ) : (
             <div className="relative shrink-0">
-              <Avatar className="h-8 w-8">
-                <AvatarFallback className="text-xs">
-                  {(message.userName || '?').charAt(0).toUpperCase()}
-                </AvatarFallback>
-              </Avatar>
+              <UserAvatar name={message.userName} src={message.userAvatar} />
               <PresenceDot status={status} note={note} className="absolute -bottom-0.5 -right-0.5" />
             </div>
           ))}
@@ -1416,6 +1423,7 @@ function MessageBubble({
                 onReply={onOpenThread}
                 onShowReads={() => setShowingReads(true)}
                 attachments={message.attachments}
+                onForward={forward && !message.pending ? () => forward(message) : undefined}
               />
             )}
 
@@ -1463,6 +1471,18 @@ function MessageBubble({
                 </div>
               ) : (
                 <>
+                  {message.forwarded && (
+                    <p
+                      className={cn(
+                        'mb-1 flex items-center gap-1 text-xs italic',
+                        isOwn ? 'text-primary-foreground/75' : 'text-muted-foreground'
+                      )}
+                      data-testid="forwarded-label"
+                    >
+                      <Forward className="h-3 w-3" aria-hidden="true" />
+                      Forwarded
+                    </p>
+                  )}
                   {message.content && (
                     <p className="whitespace-pre-wrap break-anywhere">{message.content}</p>
                   )}
@@ -1490,6 +1510,7 @@ function MessageBubble({
                 onReply={onOpenThread}
                 onShowReads={() => setShowingReads(true)}
                 attachments={message.attachments}
+                onForward={forward && !message.pending ? () => forward(message) : undefined}
               />
             )}
 
@@ -1648,7 +1669,10 @@ function MessageMenu({
   onReply,
   onShowReads,
   attachments,
+  onForward,
 }: {
+  /** Passes it on to other conversations. */
+  onForward?: () => void;
   /** Files on the message, each of which can be saved from here. */
   attachments?: Array<{ id: string; objectKey: string; filename: string }>;
   canEdit: boolean;
@@ -1676,6 +1700,12 @@ function MessageMenu({
           <DropdownMenuItem onSelect={onReply}>
             <MessagesSquare className="mr-2 h-4 w-4" />
             Reply in thread
+          </DropdownMenuItem>
+        )}
+        {onForward && (
+          <DropdownMenuItem onSelect={onForward}>
+            <Forward className="mr-2 h-4 w-4" />
+            Forward
           </DropdownMenuItem>
         )}
         <DropdownMenuItem onSelect={onShowReads}>

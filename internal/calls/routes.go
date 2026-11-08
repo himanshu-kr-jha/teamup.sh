@@ -527,7 +527,8 @@ func (h *Handler) GetCallToken(c *gin.Context) {
 	// LiveKit reports afterwards.
 	h.service.notePickedUp(ctx, call, userID)
 
-	c.JSON(http.StatusOK, gin.H{"token": token, "roomName": call.RoomName})
+	// The type says how to come in: an audio call starts with the microphone on.
+	c.JSON(http.StatusOK, gin.H{"token": token, "roomName": call.RoomName, "callType": call.CallType})
 }
 
 func (h *Handler) StartRecording(c *gin.Context) {

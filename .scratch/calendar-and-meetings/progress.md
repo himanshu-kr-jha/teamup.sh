@@ -68,3 +68,9 @@ Who: orchestrator = Opus (plans, verifies, reports). Senior developer = Opus sub
   PDFs drawn in the chat with pdf.js, and Download on PDF chips, pictures, the viewers and the message menu (decision 51).
   The number of chats with something unread on the Chat tab (decision 52), which found the badge coming back after a refetch, now fixed.
   pdf.js is added with pnpm 9's lockfile format, so the Docker build's `--frozen-lockfile` accepts it.
+
+- 2026-11-08, orchestrator: tickets 43 to 47 for the user's next five asks.
+  Forwarding with files (decision 53), month, week and day views (decision 54), profile pictures (decision 55), and Call as a voice call with microphones on (decision 56).
+  End-to-end encryption is written up in ticket 47 with its costs, waiting on a choice (decision 57).
+  Migration 0025 adds `messages.forwarded` and `user_avatars`; its down migration clears uploaded avatars.
+  Also fixed: the phone header cut the name to "T…".

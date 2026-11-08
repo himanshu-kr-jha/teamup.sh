@@ -6,7 +6,7 @@ import { AvailabilityButton } from '@/features/presence/AvailabilityPicker';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { Button } from '@/shared/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/shared/components/ui/dropdown-menu';
-import { Avatar, AvatarFallback, AvatarImage } from '@/shared/components/ui/avatar';
+import { UserAvatar } from '@/shared/components/UserAvatar';
 import { NotificationBell } from '@/features/notifications/NotificationBell';
 import { SearchBox } from '@/features/search/SearchBox';
 import { applyTheme, useIsDark } from '@/shared/theme';
@@ -28,7 +28,7 @@ export function Header() {
       <div className="flex flex-1 items-center gap-4">
         {/* Below a large screen there is no sidebar to carry the name, and with
             the menu button gone this corner was simply empty. */}
-        <Link to="/chat" className="flex min-w-0 max-w-[40%] items-center lg:hidden" aria-label="Home">
+        <Link to="/chat" className="flex shrink-0 items-center lg:hidden" aria-label="Home">
           <BrandMark size="sm" />
         </Link>
         <SearchBox />
@@ -53,10 +53,7 @@ export function Header() {
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" className="relative h-9 w-9 rounded-full" aria-label="User menu">
-              <Avatar className="h-9 w-9">
-                <AvatarImage src={user?.avatarUrl} alt={user?.name} />
-                <AvatarFallback>{user?.name?.charAt(0).toUpperCase()}</AvatarFallback>
-              </Avatar>
+              <UserAvatar name={user?.name} src={user?.avatarUrl} className="h-9 w-9" fallbackClassName="text-sm" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-56">

@@ -981,7 +981,7 @@ func TestClosingStaleCallsLeavesLiveOnesMeetingsAndADownAlone(t *testing.T) {
 // Who added whom, and what schedule ran when, are extra knowledge. Rolling them back
 // keeps the watchers and the meetings.
 func TestRollingBackAddedByAndSchedulesKeepsTheRows(t *testing.T) {
-	const schedulesVersion, addedByVersion = 24, 23
+	const addedByVersion = 23
 	f := newMigrateFixture(t)
 	f.mustRun("up")
 	f.downTo(addedByVersion - 1)
@@ -1001,7 +1001,8 @@ func TestRollingBackAddedByAndSchedulesKeepsTheRows(t *testing.T) {
 	}
 
 	f.mustRun("up")
-	f.assertAt(schedulesVersion)
+	// Up goes to the newest migration, whichever that is by now.
+	f.assertAt(headVersion(t))
 	var addedBy *string
 	if err := conn.QueryRow(ctx, `SELECT added_by::text FROM task_watchers`).Scan(&addedBy); err != nil {
 		t.Fatal(err)
@@ -1024,5 +1025,51 @@ func TestRollingBackAddedByAndSchedulesKeepsTheRows(t *testing.T) {
 	}
 	if watchers != 1 || meetings != 1 {
 		t.Errorf("both are kept, got %d watchers and %d meetings", watchers, meetings)
+	}
+}
+
+// Forwarded messages and profile pictures arrive in one migration. Going up
+// leaves every message unforwarded; going back keeps the messages and puts
+// anybody with an uploaded picture back to initials, because what pointed at
+// the picture is gone.
+func TestForwardedAndAvatarsMigrationIsReversible(t *testing.T) {
+	const version = 25
+	f := newMigrateFixture(t)
+	f.mustRun("up")
+	f.downTo(version - 1)
+	conn := f.conn()
+	ctx := context.Background()
+	if _, err := conn.Exec(ctx, `
+		WITH o AS (INSERT INTO organizations (name, subdomain) VALUES ('Fwd', 'fwd') RETURNING id),
+		u AS (INSERT INTO users (id, org_id, name, email, role, is_active)
+		      SELECT '00000000-0000-0000-0000-0000000000b1', id, 'Bea', 'bea@fwd.test', 'member', true FROM o RETURNING id, org_id),
+		c AS (INSERT INTO channels (id, org_id, name, type, created_by)
+		      SELECT '00000000-0000-0000-0000-0000000000c1', org_id, 'general', 'public', id FROM u RETURNING id)
+		INSERT INTO messages (org_id, channel_id, user_id, content)
+		SELECT u.org_id, c.id, u.id, 'before' FROM u, c
+	`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	f.mustRun("up")
+	var forwarded bool
+	if err := conn.QueryRow(ctx, `SELECT forwarded FROM messages`).Scan(&forwarded); err != nil || forwarded {
+		t.Fatalf("an existing message is not forwarded: %v %v", forwarded, err)
+	}
+	if _, err := conn.Exec(ctx, `
+		INSERT INTO user_avatars (user_id, content_type, data) VALUES ('00000000-0000-0000-0000-0000000000b1', 'image/png', '\x89');
+		UPDATE users SET avatar_url = '/api/users/00000000-0000-0000-0000-0000000000b1/avatar?v=1';
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	f.downTo(version - 1)
+	var messages int
+	var avatar *string
+	if err := conn.QueryRow(ctx, `SELECT (SELECT COUNT(*) FROM messages), (SELECT avatar_url FROM users)`).Scan(&messages, &avatar); err != nil {
+		t.Fatal(err)
+	}
+	if messages != 1 || avatar != nil {
+		t.Errorf("messages kept, picture back to initials: %d %v", messages, avatar)
 	}
 }

@@ -137,15 +137,17 @@ type ChatMessagePayload struct {
 }
 
 type MessageData struct {
-	ID          string              `json:"id"`
-	ChannelID   string              `json:"channelId"`
-	UserID      string              `json:"userId"`
-	UserName    string              `json:"userName"`
-	UserAvatar  string              `json:"userAvatar,omitempty"`
-	Content     string              `json:"content"`
-	Attachments []Attachment        `json:"attachments,omitempty"`
-	ReplyTo     *string             `json:"replyTo,omitempty"`
-	Reactions   map[string][]string `json:"reactions,omitempty"` // emoji -> userIDs
+	ID          string       `json:"id"`
+	ChannelID   string       `json:"channelId"`
+	UserID      string       `json:"userId"`
+	UserName    string       `json:"userName"`
+	UserAvatar  string       `json:"userAvatar,omitempty"`
+	Content     string       `json:"content"`
+	Attachments []Attachment `json:"attachments,omitempty"`
+	ReplyTo     *string      `json:"replyTo,omitempty"`
+	// Forwarded says it was passed on from another conversation.
+	Forwarded bool                `json:"forwarded,omitempty"`
+	Reactions map[string][]string `json:"reactions,omitempty"` // emoji -> userIDs
 	// Kind is "user" for something somebody wrote and "event" for something
 	// that happened, like a missed call.
 	Kind      string     `json:"kind,omitempty"`

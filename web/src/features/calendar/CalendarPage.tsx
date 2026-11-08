@@ -12,6 +12,7 @@ import { useAuth } from '@/features/auth/AuthProvider';
 import { useWebSocket } from '@/features/websocket/WSProvider';
 import { BlockDialog } from './BlockDialog';
 import { CalendarGrid } from './CalendarGrid';
+import { MonthGrid } from './MonthGrid';
 import { EventDialog } from './EventDialog';
 import { ScheduleDialog } from './ScheduleDialog';
 import {
@@ -21,6 +22,8 @@ import {
   rangeForDays,
   shiftDays,
   visibleDays,
+  viewFrom,
+  CALENDAR_VIEWS,
   type CalendarItem,
   type CalendarView,
 } from './layout';
@@ -44,7 +47,8 @@ function readDate(value: string | null): Date {
   return new Date();
 }
 
-function rangeTitle(days: Date[]): string {
+function rangeTitle(days: Date[], view: CalendarView, anchor: Date): string {
+  if (view === 'month') return format(anchor, 'MMMM yyyy');
   const first = days[0];
   const last = days[days.length - 1];
   if (days.length === 1) return format(first, 'EEE, MMM d, yyyy');
@@ -61,7 +65,7 @@ export function CalendarPage() {
   const queryClient = useQueryClient();
   const [params, setParams] = useSearchParams();
   const wide = useIsWide();
-  const view: CalendarView = wide ? 'week' : 'day';
+  const view: CalendarView = viewFrom(params.get('view'), wide);
 
   // What is on screen lives in the address, so a notification can link to a day
   // and a reload stays where it was.
@@ -153,7 +157,7 @@ export function CalendarPage() {
               variant="outline"
               size="icon"
               className="h-9 w-9"
-              aria-label={view === 'week' ? 'Previous week' : 'Previous day'}
+              aria-label={`Previous ${view}`}
               onClick={() => setParam({ date: dayLabelKey(shiftDays(anchor, view, -1)) })}
             >
               <ChevronLeft className="h-4 w-4" />
@@ -165,14 +169,15 @@ export function CalendarPage() {
               variant="outline"
               size="icon"
               className="h-9 w-9"
-              aria-label={view === 'week' ? 'Next week' : 'Next day'}
+              aria-label={`Next ${view}`}
               onClick={() => setParam({ date: dayLabelKey(shiftDays(anchor, view, 1)) })}
             >
               <ChevronRight className="h-4 w-4" />
             </Button>
           </div>
+          <ViewSwitch view={view} onChange={(next) => setParam({ view: next })} />
           <h2 className="text-sm font-medium tabular-nums md:text-base" aria-live="polite">
-            {rangeTitle(days)}
+            {rangeTitle(days, view, anchor)}
           </h2>
           {isFetching && !isPending && (
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-label="Refreshing" />
@@ -232,20 +237,33 @@ export function CalendarPage() {
       ) : items.length === 0 ? (
         <p className="shrink-0 border-b border-border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground md:px-6">
           {own
-            ? `Nothing on ${view === 'week' ? 'this week' : 'this day'}. Click a time to block it or open it for meetings.`
-            : `Nothing on ${viewedName} calendar ${view === 'week' ? 'this week' : 'this day'}.`}
+            ? view === 'month'
+              ? 'Nothing this month. Open a day to block time or open it for meetings.'
+              : `Nothing on this ${view}. Click a time to block it or open it for meetings.`
+            : `Nothing on ${viewedName} calendar ${view === 'month' ? 'this month' : `this ${view}`}.`}
         </p>
       ) : null}
 
-      <CalendarGrid
-        days={days}
-        items={liveItems}
-        now={now}
-        view={view}
-        onSelect={setSelected}
-        onEmptyClick={(slot) => (own ? newBlock(slot) : newMeeting(slot))}
-        emptyClickLabel={own ? 'Block this time' : 'Schedule a meeting at this time'}
-      />
+      {view === 'month' ? (
+        <MonthGrid
+          days={days}
+          anchor={anchor}
+          items={liveItems}
+          now={now}
+          onSelect={setSelected}
+          onOpenDay={(day) => setParam({ view: 'day', date: dayLabelKey(day) })}
+        />
+      ) : (
+        <CalendarGrid
+          days={days}
+          items={liveItems}
+          now={now}
+          view={view}
+          onSelect={setSelected}
+          onEmptyClick={(slot) => (own ? newBlock(slot) : newMeeting(slot))}
+          emptyClickLabel={own ? 'Block this time' : 'Schedule a meeting at this time'}
+        />
+      )}
 
       {selected && (
         <EventDialog
@@ -279,6 +297,30 @@ export function CalendarPage() {
         startWith={own ? [] : [viewedId]}
         onOpenChange={(open) => !open && setScheduleDialog(null)}
       />
+    </div>
+  );
+}
+
+const VIEW_LABELS: Record<CalendarView, string> = { month: 'Month', week: 'Week', day: 'Day' };
+
+/** Month, week or day; kept in the address with the date. */
+function ViewSwitch({ view, onChange }: { view: CalendarView; onChange: (view: CalendarView) => void }) {
+  return (
+    <div className="flex rounded-md border border-input p-0.5" role="group" aria-label="View">
+      {CALENDAR_VIEWS.map((v) => (
+        <button
+          key={v}
+          type="button"
+          aria-pressed={view === v}
+          onClick={() => onChange(v)}
+          className={cn(
+            'h-8 rounded px-2.5 text-sm font-medium transition-colors',
+            view === v ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:bg-accent hover:text-foreground'
+          )}
+        >
+          {VIEW_LABELS[v]}
+        </button>
+      ))}
     </div>
   );
 }

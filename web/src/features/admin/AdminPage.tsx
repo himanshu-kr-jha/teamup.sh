@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { MailSettingsTab, mailProblemText } from './MailSettingsTab';
 import { AppearanceTab } from './AppearanceTab';
+import { UserAvatar } from '@/shared/components/UserAvatar';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Textarea } from '@/shared/components/ui/textarea';
@@ -176,7 +177,10 @@ function MembersTab({
           {users.length === 0 && <p className="text-sm text-muted-foreground">No members yet.</p>}
           {users.map((u: any) => (
             <div key={u.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border p-3">
-              <PresenceDot status={statusOf(u.id)} />
+              <div className="relative shrink-0">
+                <UserAvatar name={u.name} src={u.avatarUrl} className="h-9 w-9" />
+                <PresenceDot status={statusOf(u.id)} className="absolute -bottom-0.5 -right-0.5" />
+              </div>
               <div className="min-w-[10rem] flex-1 basis-full sm:basis-auto">
                 <p className="truncate font-medium">{u.name}</p>
                 <p className="truncate text-sm text-muted-foreground">{u.email}</p>
@@ -1227,11 +1231,7 @@ function TeamMembersDialog({
           {members.map((m: any) => (
             <li key={m.id} className="flex items-center gap-3 rounded-md p-2 hover:bg-accent">
               <div className="relative shrink-0">
-                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10">
-                  <span className="text-sm font-medium text-primary">
-                    {(m.name || '?').charAt(0).toUpperCase()}
-                  </span>
-                </div>
+                <UserAvatar name={m.name} src={m.avatarUrl} fallbackClassName="bg-primary/10 font-medium text-primary" />
                 <PresenceDot
                   status={statusOf(m.id)}
                   note={personOf(m.id)?.note}

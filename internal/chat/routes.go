@@ -39,6 +39,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.POST("/channels/:id/messages", h.SendMessage)
 	rg.PATCH("/messages/:id", h.EditMessage)
 	rg.DELETE("/messages/:id", h.DeleteMessage)
+	rg.POST("/messages/:id/forward", h.ForwardMessage)
 	rg.GET("/messages/:id/reads", h.MessageReads)
 	rg.GET("/messages/:id/thread", h.GetThread)
 	rg.POST("/messages/:id/reactions", h.AddReaction)
@@ -727,4 +728,39 @@ func (h *Handler) MarkRead(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "read"})
+}
+
+// ForwardMessage passes a message on to other conversations.
+func (h *Handler) ForwardMessage(c *gin.Context) {
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	messageID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	var req struct {
+		ChannelIDs []string `json:"channelIds" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "choose where to forward it"})
+		return
+	}
+	targets := make([]uuid.UUID, 0, len(req.ChannelIDs))
+	for _, raw := range req.ChannelIDs {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid channelIds"})
+			return
+		}
+		targets = append(targets, id)
+	}
+	isOrgAdmin := auth.GetUserFromContext(c).HasAnyRole("owner", "admin")
+	sent, err := h.service.ForwardMessage(c.Request.Context(), cl.OrgID, messageID, cl.UserID, targets, isOrgAdmin)
+	if err != nil {
+		httpx.Error(c, err, "failed to forward the message")
+		return
+	}
+	c.JSON(http.StatusCreated, gin.H{"messages": sent})
 }

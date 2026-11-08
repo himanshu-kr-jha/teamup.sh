@@ -31,6 +31,8 @@ import {
   toInputValue,
   visibleDays,
   type CalendarItem,
+  itemsOnDay,
+  viewFrom,
 } from './layout';
 
 // Runs forked (see vitest.config.ts) so that this takes effect: this zone changes
@@ -468,5 +470,40 @@ describe('a meeting that ran past its end', () => {
     expect(same).toBe(done);
     // The server's end stands if the clock here is behind it.
     expect(withLiveEnds([running], at(10, 40))[0].endsAt).toBe(at(10, 42).toISOString());
+  });
+});
+
+describe('the month view', () => {
+  it('shows whole weeks, Monday first, covering the month', () => {
+    // November 2026 starts on a Sunday and ends on a Monday.
+    const days = visibleDays(new Date(2026, 10, 18), 'month');
+    expect(days[0]).toEqual(new Date(2026, 9, 26));
+    expect(days[days.length - 1]).toEqual(new Date(2026, 11, 6));
+    expect(days.length % 7).toBe(0);
+    expect(days.length).toBe(42);
+  });
+
+  it('moves by a month', () => {
+    expect(shiftDays(new Date(2026, 0, 31), 'month', 1)).toEqual(new Date(2026, 1, 28));
+    expect(shiftDays(new Date(2026, 2, 15), 'month', -1)).toEqual(new Date(2026, 1, 15));
+  });
+
+  it('lists what is on a day in order, including what spans it, without open time', () => {
+    const day = new Date(2026, 10, 18);
+    const at = (d: number, h: number) => new Date(2026, 10, d, h).toISOString();
+    const items = [
+      { kind: 'busy' as const, startsAt: at(18, 15), endsAt: at(18, 16), title: 'late' },
+      { kind: 'focus' as const, startsAt: at(17, 9), endsAt: at(19, 9), title: 'spanning' },
+      { kind: 'open' as const, startsAt: at(18, 9), endsAt: at(18, 12), title: 'open' },
+      { kind: 'busy' as const, startsAt: at(18, 9), endsAt: at(18, 10), title: 'early' },
+      { kind: 'busy' as const, startsAt: at(19, 0), endsAt: at(19, 1), title: 'tomorrow' },
+    ];
+    expect(itemsOnDay(items, day).map((i) => i.title)).toEqual(['spanning', 'early', 'late']);
+  });
+
+  it('takes the view from the address, or fits the screen', () => {
+    expect(viewFrom('month', false)).toBe('month');
+    expect(viewFrom(null, true)).toBe('week');
+    expect(viewFrom('year', false)).toBe('day');
   });
 });

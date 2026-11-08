@@ -1,10 +1,11 @@
 import { Link, NavLink } from 'react-router-dom';
-import { CalendarDays, MessageSquare, Video, CheckSquare, Settings, Users, ChevronLeft, ChevronRight, User } from 'lucide-react';
+import { CalendarDays, MessageSquare, Video, CheckSquare, Settings, Users, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useUIStore } from '@/shared/store';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { cn } from '@/shared/utils/cn';
 import { useOrganizationAccess } from './useOrganizationAccess';
 import { BrandMark } from '@/features/branding/BrandMark';
+import { UserAvatar } from '@/shared/components/UserAvatar';
 import { badgeText, useUnreadChatCount } from '@/features/chat/useUnreadChats';
 
 export function Sidebar() {
@@ -118,9 +119,7 @@ export function Sidebar() {
           <div className="p-4 border-t border-border">
             <div className="flex items-center gap-3">
               <div className="relative">
-                <div className="h-10 w-10 rounded-full bg-primary/20 flex items-center justify-center">
-                  <User className="h-5 w-5 text-primary" aria-hidden="true" />
-                </div>
+                <UserAvatar name={user.name} src={user.avatarUrl} className="h-10 w-10" fallbackClassName="bg-primary/20 text-primary" />
                 <span className="absolute bottom-0 right-0 h-3 w-3 rounded-full bg-green-500 border-2 border-card" aria-label="Online" />
               </div>
               <div className="flex-1 min-w-0">

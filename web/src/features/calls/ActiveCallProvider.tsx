@@ -57,6 +57,11 @@ interface ActiveCall {
   token: string;
   /** A standing meeting's room has no members, so nobody there answers knocks. */
   standing?: boolean;
+  /**
+   * A call, as opposed to a video call or a meeting: the microphone is on from
+   * the start, as on a phone, and the camera stays off until somebody turns it on.
+   */
+  voice?: boolean;
 }
 
 interface ActiveCallContextValue {
@@ -239,7 +244,7 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
       setJoining(true);
       try {
         const res = await callsApi.getToken(callId);
-        setActiveCall({ callId, token: res.data.token });
+        setActiveCall({ callId, token: res.data.token, voice: res.data.callType === 'audio' });
       } catch (err) {
         setFailure(classifyJoinError(err));
       } finally {
@@ -355,10 +360,12 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
           token={activeCall.token}
           serverUrl={liveKitURL()}
           connect
-          // Joining with the camera and microphone off: you turn them on when
-          // you are ready, rather than finding out you were already on.
+          // Joining a meeting or a video call with the camera and microphone
+          // off: you turn them on when you are ready, rather than finding out
+          // you were already on. A call is a conversation, so its microphone is
+          // on from the start; the camera is still yours to turn on.
           video={false}
-          audio={false}
+          audio={!!activeCall.voice}
           data-lk-theme="default"
           onDisconnected={leave}
           onError={onRoomError}

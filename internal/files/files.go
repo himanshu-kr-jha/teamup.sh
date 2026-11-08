@@ -358,6 +358,21 @@ func (s *Service) GenerateDownloadURL(ctx context.Context, orgID, userID, object
 	return presigned.String(), nil
 }
 
+// CopyObject copies a stored file to a new key inside the bucket, without it
+// passing through this process. Forwarding a file in chat uses it.
+func (s *Service) CopyObject(ctx context.Context, srcKey, dstKey string) error {
+	if s.internal == nil {
+		return apperrors.New(apperrors.CodeUnavailable, "object storage is not configured")
+	}
+	_, err := s.internal.CopyObject(ctx,
+		minio.CopyDestOptions{Bucket: s.bucketName, Object: dstKey},
+		minio.CopySrcOptions{Bucket: s.bucketName, Object: srcKey})
+	if err != nil {
+		return fmt.Errorf("copy object: %w", err)
+	}
+	return nil
+}
+
 // Presigned URLs bypass this application once issued, so these two checks are
 // the only thing standing between an authenticated user and every file in
 // every organization. They previously accepted everything unconditionally.

@@ -184,6 +184,9 @@ export const orgApi = {
   saveBranding: (data: { color: string; logo?: string }) => api.put<Branding>('/org/branding', data),
   getUser: (id: string) => api.get(`/users/${id}`),
   updateUser: (id: string, data: { name?: string; avatarUrl?: string }) => api.patch(`/users/${id}`, data),
+  /** A picture already cut to a small square, as a data URL. */
+  setAvatar: (id: string, image: string) => api.put<{ avatarUrl: string }>(`/users/${id}/avatar`, { image }),
+  removeAvatar: (id: string) => api.delete(`/users/${id}/avatar`),
   deactivateUser: (id: string) => api.delete(`/users/${id}`),
   /** Ends their sessions; the password in the response is never visible again. */
   resetPassword: (id: string) => api.post<{ temporaryPassword: string }>(`/users/${id}/reset-password`),
@@ -251,6 +254,9 @@ export const channelsApi = {
 };
 
 export const messagesApi = {
+  /** Passes a message on to other conversations, marked forwarded, files and all. */
+  forward: (messageId: string, channelIds: string[]) =>
+    api.post<{ messages: unknown[] }>(`/messages/${messageId}/forward`, { channelIds }),
   search: (params: { q: string; channelId?: string; userId?: string; dateFrom?: string; dateTo?: string; limit?: number; offset?: number }) =>
     getList('/search/messages', 'results', params),
   /** Files shared in channels the caller can read, matched on name. */
@@ -341,7 +347,8 @@ export const callsApi = {
   create: (data: { title?: string; channelId?: string; callType: 'video' | 'audio'; invitees?: string[] }) =>
     api.post<{ id: string; roomName: string }>('/calls', data),
   get: (id: string) => api.get(`/calls/${id}`),
-  getToken: (id: string) => api.post(`/calls/${id}/token`),
+  getToken: (id: string) =>
+    api.post<{ token: string; roomName: string; callType?: 'audio' | 'video' }>(`/calls/${id}/token`),
   startRecording: (id: string) => api.post(`/calls/${id}/record`),
   end: (id: string) => api.post(`/calls/${id}/end`),
   /** Quietens somebody's microphone. Only the media server can do this, and

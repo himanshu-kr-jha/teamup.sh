@@ -44,9 +44,14 @@ type Service struct {
 	logger      zerolog.Logger
 	broadcaster Broadcaster
 	notifier    Notifier
+	copier      ObjectCopier
 }
 
 func (s *Service) SetNotifier(n Notifier) { s.notifier = n }
+
+// SetObjectCopier lets forwarded files be copied into the conversation they go
+// to. Without it, a message with files cannot be forwarded.
+func (s *Service) SetObjectCopier(c ObjectCopier) { s.copier = c }
 
 // mentionPattern matches @-mentions of a channel member by name.
 var mentionPattern = regexp.MustCompile(`@([A-Za-z0-9._-]+)`)
@@ -105,13 +110,15 @@ func lowerAll(in []string) []string {
 // JSON tags matter here: these structs are serialised straight onto the wire
 // and the frontend reads camelCase.
 type Message struct {
-	ID          uuid.UUID           `json:"id"`
-	ChannelID   uuid.UUID           `json:"channelId"`
-	UserID      uuid.UUID           `json:"userId"`
-	UserName    string              `json:"userName"`
-	UserAvatar  string              `json:"userAvatar,omitempty"`
-	Content     string              `json:"content"`
-	ReplyTo     *uuid.UUID          `json:"replyTo,omitempty"`
+	ID         uuid.UUID  `json:"id"`
+	ChannelID  uuid.UUID  `json:"channelId"`
+	UserID     uuid.UUID  `json:"userId"`
+	UserName   string     `json:"userName"`
+	UserAvatar string     `json:"userAvatar,omitempty"`
+	Content    string     `json:"content"`
+	ReplyTo    *uuid.UUID `json:"replyTo,omitempty"`
+	// Forwarded says it was passed on from another conversation.
+	Forwarded   bool                `json:"forwarded"`
 	Attachments []Attachment        `json:"attachments"`
 	Reactions   map[string][]string `json:"reactions"`
 	// Kind separates what somebody wrote from what happened: "user" or
@@ -452,14 +459,14 @@ func (s *Service) createMessage(ctx context.Context, msg *Message) error {
 			SELECT c.org_id, c.type, COALESCE(c.name, 'Announcements') AS name
 			FROM channels c WHERE c.id = $2 AND c.deleted_at IS NULL
 		), inserted AS (
-			INSERT INTO messages (id, org_id, channel_id, user_id, content, reply_to, kind, created_at)
-			SELECT $1, t.org_id, $2, $3, $4, $5, $7, $6 FROM target t
+			INSERT INTO messages (id, org_id, channel_id, user_id, content, reply_to, kind, created_at, forwarded)
+			SELECT $1, t.org_id, $2, $3, $4, $5, $7, $6, $8 FROM target t
 			RETURNING created_at
 		)
 		SELECT inserted.created_at, target.org_id, target.type, target.name
 		FROM inserted, target
 	`, msg.ID, msg.ChannelID, msg.UserID, msg.Content, msg.ReplyTo, msg.CreatedAt,
-		defaultKind(msg.Kind)).Scan(&msg.CreatedAt, &orgID, &channelKind, &channelName)
+		defaultKind(msg.Kind), msg.Forwarded).Scan(&msg.CreatedAt, &orgID, &channelKind, &channelName)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return apperrors.New(apperrors.CodeNotFound, "channel not found")
@@ -696,6 +703,7 @@ func (s *Service) messageToData(msg *Message) protocol.MessageData {
 		Reactions:   msg.Reactions,
 		Kind:        defaultKind(msg.Kind),
 		ReplyTo:     replyToString(msg.ReplyTo),
+		Forwarded:   msg.Forwarded,
 		CreatedAt:   msg.CreatedAt,
 		EditedAt:    msg.EditedAt,
 		DeletedAt:   msg.DeletedAt,
@@ -1432,7 +1440,7 @@ func (s *Service) GetMessages(ctx context.Context, channelID uuid.UUID, limit in
 // the thread view cannot drift into returning different things.
 const messageColumns = `m.id, m.channel_id, m.user_id, m.content, m.reply_to,
 	       m.created_at, m.edited_at, m.deleted_at,
-	       u.name, COALESCE(u.avatar_url, ''), COALESCE(m.kind, 'user')`
+	       u.name, COALESCE(u.avatar_url, ''), COALESCE(m.kind, 'user'), m.forwarded`
 
 func scanMessages(rows pgx.Rows) ([]Message, error) {
 	defer rows.Close()
@@ -1441,7 +1449,7 @@ func scanMessages(rows pgx.Rows) ([]Message, error) {
 	for rows.Next() {
 		var m Message
 		if err := rows.Scan(&m.ID, &m.ChannelID, &m.UserID, &m.Content, &m.ReplyTo,
-			&m.CreatedAt, &m.EditedAt, &m.DeletedAt, &m.UserName, &m.UserAvatar, &m.Kind); err != nil {
+			&m.CreatedAt, &m.EditedAt, &m.DeletedAt, &m.UserName, &m.UserAvatar, &m.Kind, &m.Forwarded); err != nil {
 			return nil, fmt.Errorf("scan message: %w", err)
 		}
 		m.Reactions = map[string][]string{}
@@ -1918,10 +1926,17 @@ func (s *Service) SendMessage(ctx context.Context, orgID, channelID, userID uuid
 	if err := s.bindAttachments(ctx, msg, attachmentIDs); err != nil {
 		return nil, err
 	}
+	s.deliver(ctx, msg)
+	return msg, nil
+}
+
+// deliver puts a stored message in front of everybody else in its channel: live
+// to whoever is connected, and as a notification to whoever is not.
+func (s *Service) deliver(ctx context.Context, msg *Message) {
 	if s.broadcaster != nil {
-		s.broadcaster.BroadcastToChannel(channelID.String(), protocol.NewMessage(
+		s.broadcaster.BroadcastToChannel(msg.ChannelID.String(), protocol.NewMessage(
 			protocol.TypeChatMessage, protocol.ChatMessagePayload{Message: s.messageToData(msg)},
-		), userID.String())
+		), msg.UserID.String())
 	}
 	// Off the request path: this reads the roster and everybody's name, none of
 	// which the sender is waiting for. Detached from the request context so
@@ -1929,9 +1944,8 @@ func (s *Service) SendMessage(ctx context.Context, orgID, channelID, userID uuid
 	go func() {
 		pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
-		s.pushToChannel(pushCtx, channelID, userID, msg)
+		s.pushToChannel(pushCtx, msg.ChannelID, msg.UserID, msg)
 	}()
-	return msg, nil
 }
 
 // pushSummary is as much of a message as belongs on a lock screen: enough to

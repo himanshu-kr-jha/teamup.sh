@@ -564,6 +564,8 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// So a chat push is not sent to somebody the socket has already reached.
 	notificationsService.SetSocketRegistry(wsHub)
 	chatService.SetNotifier(notificationsService)
+	// Forwarding a file copies it into the conversation it goes to.
+	chatService.SetObjectCopier(filesService)
 	orgService.SetChannelEnroller(chatService)
 	// Outgoing mail reads its settings from the organization, which is where
 	// the setup wizard puts them.

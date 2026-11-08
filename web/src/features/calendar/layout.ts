@@ -1,4 +1,4 @@
-import { addDays, addMinutes, format, isSameDay, startOfDay, startOfWeek } from 'date-fns';
+import { addDays, addMinutes, addMonths, endOfMonth, endOfWeek, format, isSameDay, startOfDay, startOfMonth, startOfWeek } from 'date-fns';
 import { formatTime } from '@/shared/utils/cn';
 
 /**
@@ -34,7 +34,15 @@ export interface CalendarItem {
   running?: boolean;
 }
 
-export type CalendarView = 'week' | 'day';
+export type CalendarView = 'month' | 'week' | 'day';
+
+export const CALENDAR_VIEWS: CalendarView[] = ['month', 'week', 'day'];
+
+/** What the address says, or what fits the screen when it says nothing usable. */
+export function viewFrom(param: string | null, wide: boolean): CalendarView {
+  if (param && (CALENDAR_VIEWS as string[]).includes(param)) return param as CalendarView;
+  return wide ? 'week' : 'day';
+}
 
 export const MINUTES_IN_DAY = 24 * 60;
 /** An event is drawn at least this tall, in minutes, so its name can be read. */
@@ -44,6 +52,14 @@ export const JOIN_EARLY_MINUTES = 30;
 
 export function visibleDays(anchor: Date, view: CalendarView): Date[] {
   if (view === 'day') return [startOfDay(anchor)];
+  if (view === 'month') {
+    // Whole weeks, Monday first, from the one the month starts in to the one it ends in.
+    const first = startOfWeek(startOfMonth(anchor), { weekStartsOn: 1 });
+    const last = endOfWeek(endOfMonth(anchor), { weekStartsOn: 1 });
+    const days: Date[] = [];
+    for (let d = first; d <= last; d = addDays(d, 1)) days.push(d);
+    return days;
+  }
   const monday = startOfWeek(anchor, { weekStartsOn: 1 });
   return Array.from({ length: 7 }, (_, i) => addDays(monday, i));
 }
@@ -56,7 +72,22 @@ export function rangeForDays(days: Date[]): { from: string; to: string } {
 }
 
 export function shiftDays(anchor: Date, view: CalendarView, direction: number): Date {
+  if (view === 'month') return addMonths(anchor, direction);
   return addDays(anchor, direction * (view === 'week' ? 7 : 1));
+}
+
+/**
+ * What is on one day, in the order it happens: anything overlapping it, so a
+ * block over several days shows on each of them. Open time is left out, as it
+ * is a background in the other views and not something that happens.
+ */
+export function itemsOnDay<T extends Pick<CalendarItem, 'kind' | 'startsAt' | 'endsAt'>>(items: T[], day: Date): T[] {
+  const from = startOfDay(day).getTime();
+  const to = addDays(startOfDay(day), 1).getTime();
+  return items
+    .filter((item) => item.kind !== 'open')
+    .filter((item) => new Date(item.startsAt).getTime() < to && new Date(item.endsAt).getTime() > from)
+    .sort((a, b) => new Date(a.startsAt).getTime() - new Date(b.startsAt).getTime());
 }
 
 export function dayLabelKey(date: Date): string {

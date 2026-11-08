@@ -233,6 +233,24 @@ These are readings of an ambiguous request, and they are cheap to change.
 52. **The Chat tab shows how many conversations have something unread, not how many messages.**
     It is the same list as the chat page's, kept current from wherever you are, in the sidebar and along the bottom on a phone.
     A message in a conversation the list has never seen, such as a new direct message, reads the list again so it is counted.
+53. **Any message somebody wrote can be forwarded, with its files, to up to ten conversations, and arrives marked Forwarded.**
+    The person forwarding must be able to read the original and post in every target; every target is checked before anything is sent, and not being able to read it is a 404.
+    It arrives as a new message from whoever forwarded it, with `forwarded: true`; the original author is not named, as in WhatsApp.
+    A file is copied inside the object store into each target conversation, because a file's path decides who may open it; the original stays readable only where it was.
+    Deleted messages and events, such as a missed call, cannot be forwarded.
+54. **The calendar has month, week and day views, chosen with a switch and kept in the address.**
+    Without a choice it is week on a computer and day on a phone, as before.
+    The month shows whole weeks, Monday first, up to three things a day and "+N more", without open time; a phone shows a dot for each thing.
+    Clicking a day, or "+N more", opens it in the day view.
+55. **Everybody can set their own profile picture under Settings, Profile.**
+    The browser cuts it to the middle square at 256 pixels as JPEG, which also drops the photo's location and camera details.
+    It is stored in the database (`user_avatars`) and served at `/api/users/:id/avatar?v=<hash>` to anybody in the organization, cached for good under that address; a new picture is a new address.
+    Only the person or an administrator changes it; PNG, JPEG or WebP up to 512 KB, never SVG.
+    It shows in chat, the header, the sidebar and the organization's member lists, with initials otherwise.
+56. **The chat's call button is Call: a voice call with everybody's microphone on and cameras off.**
+    It creates an `audio` call; the join token says so, and the page joins with the microphone on, for the caller and for whoever answers.
+    Anybody can turn their camera on in the call. Meetings and calls started from Calls still join with both off.
+57. **End-to-end encryption is not built yet; see ticket 47 for what it would take.**
 
 ## Non-goals
 

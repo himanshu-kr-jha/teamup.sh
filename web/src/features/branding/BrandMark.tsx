@@ -4,7 +4,8 @@ import { useBranding } from './useBranding';
 
 const LOGO = { sm: 'h-6 max-w-[6rem]', md: 'h-8 max-w-[8rem]', lg: 'h-10 max-w-[10rem]' };
 const ICON = { sm: 'h-6 w-6', md: 'h-8 w-8', lg: 'h-10 w-10' };
-const TEXT = { sm: 'text-lg', md: 'text-xl', lg: 'text-2xl' };
+// A long organization name is cut short on a phone rather than pushing the controls off.
+const TEXT = { sm: 'max-w-[7.5rem] text-lg', md: 'text-xl', lg: 'text-2xl' };
 
 /**
  * The organization's logo and name, or TeamUp's own mark when no logo has been
