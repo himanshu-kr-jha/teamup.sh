@@ -137,12 +137,16 @@ test.describe('unread chats', () => {
 
     const alice = await as('alice');
     const aliceApi = await apiAs('alice');
+    // Counted once the page has settled: signing in lands on Chat, which opens the
+    // conversation Alice last had open and reads it, a moment after the sign-in.
+    await alice.page.goto('/tasks');
+    await alice.page.waitForLoadState('networkidle');
     const already = ((await aliceApi.get('/channels')).channels as Array<{ unreadCount: number }>).filter(
       (c) => c.unreadCount > 0
     ).length;
-    await alice.page.goto('/tasks');
     const badge = alice.page.getByRole('navigation', { name: 'Main' }).getByTestId('chat-unread-badge');
     if (already === 0) await expect(badge).toBeHidden();
+    else await expect(badge).toHaveText(String(already));
 
     // Three messages in one room and one in the other: two chats, not four messages.
     for (const text of ['one', 'two', 'three']) await owner.post(`/channels/${rooms[0]}/messages`, { content: text });

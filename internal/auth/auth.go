@@ -735,7 +735,7 @@ func GetAndClearPKCECookie(w http.ResponseWriter, r *http.Request) (string, erro
 const userColumns = `
 	SELECT u.id, u.org_id, u.email, u.name, COALESCE(u.avatar_url, ''),
 	       COALESCE(u.password_hash, ''), COALESCE(u.is_active, true),
-	       COALESCE(u.must_change_password, false),
+	       COALESCE(u.must_change_password, false), u.tour_completed_at,
 	       COALESCE(ARRAY_REMOVE(ARRAY_AGG(r.name), NULL), '{}') AS roles
 	FROM users u
 	LEFT JOIN user_roles ur ON ur.user_id = u.id
@@ -746,7 +746,7 @@ const userColumns = `
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
 	err := row.Scan(&u.ID, &u.OrgID, &u.Email, &u.Name, &u.AvatarURL,
-		&u.PasswordHash, &u.IsActive, &u.MustChangePassword, &u.Roles)
+		&u.PasswordHash, &u.IsActive, &u.MustChangePassword, &u.TourCompletedAt, &u.Roles)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, apperrors.ErrNotFound
@@ -754,6 +754,23 @@ func scanUser(row pgx.Row) (*User, error) {
 		return nil, err
 	}
 	return &u, nil
+}
+
+// SetTourCompleted marks the welcome tour done for this person now, or clears it
+// so it is shown again; it answers with what was stored.
+func (s *Service) SetTourCompleted(ctx context.Context, userID uuid.UUID, done bool) (*time.Time, error) {
+	var at *time.Time
+	err := s.db.QueryRow(ctx, `
+		UPDATE users SET tour_completed_at = CASE WHEN $2 THEN NOW() ELSE NULL END
+		WHERE id = $1 AND deleted_at IS NULL
+		RETURNING tour_completed_at`, userID, done).Scan(&at)
+	if err == pgx.ErrNoRows {
+		return nil, apperrors.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("set tour: %w", err)
+	}
+	return at, nil
 }
 
 func (s *Service) getUser(ctx context.Context, userID uuid.UUID) (*User, error) {

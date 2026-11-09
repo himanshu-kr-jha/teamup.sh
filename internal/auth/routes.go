@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -50,6 +51,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 		protected.DELETE("/link/:provider", h.UnlinkAccount)
 		protected.GET("/sessions", h.ListSessions)
 		protected.POST("/password", h.ChangePassword)
+		protected.POST("/tour", h.SetTour)
 		protected.DELETE("/sessions/:sessionId", h.RevokeSession)
 	}
 }
@@ -312,6 +314,29 @@ func (h *Handler) GetCurrentUser(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"user": user, "permissions": perms})
 }
 
+// SetTour records that the caller finished or skipped the welcome tour, or, with
+// done false, asks for it again on their next visit to any page.
+func (h *Handler) SetTour(c *gin.Context) {
+	userID, err := uuid.Parse(GetUserFromContext(c).UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+	var req struct {
+		Done bool `json:"done"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	at, err := h.service.SetTourCompleted(c.Request.Context(), userID, req.Done)
+	if err != nil {
+		httpx.Error(c, err, "failed to save the tour")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"tourCompletedAt": at})
+}
+
 func (h *Handler) LinkAccount(c *gin.Context) {
 	providerName := c.Param("provider")
 	provider, ok := h.service.GetProvider(providerName)
@@ -495,4 +520,7 @@ type User struct {
 	PasswordHash string `json:"-"`
 	// True while the user is still on a password an administrator generated.
 	MustChangePassword bool `json:"mustChangePassword"`
+	// TourCompletedAt is when they finished or skipped the tour shown at their
+	// first sign-in; nil while it is still to be shown.
+	TourCompletedAt *time.Time `json:"tourCompletedAt"`
 }

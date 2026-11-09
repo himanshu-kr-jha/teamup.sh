@@ -35,7 +35,9 @@ export function Header() {
       </div>
 
       <div className="flex items-center gap-2">
-        <AvailabilityButton current={personOf(user?.id)} />
+        <span data-tour="availability" className="flex">
+          <AvailabilityButton current={personOf(user?.id)} />
+        </span>
         {/* Theme toggle */}
         <Button
           variant="ghost"

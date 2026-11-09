@@ -135,6 +135,7 @@ line-by-line detail.
 - **Status page** — `/status`, public, with 24 hours of history and a banner in
   the app while something is down
 - **PWA** — installable, works on a phone
+- **Welcome tour** - a look around at first sign-in, a spotlight on each place, then turning on notifications and a welcome; once per person, kept by the server, and shown again from Settings
 - **Ops** — structured logs, Prometheus metrics, an honest `/readyz`, graceful
   shutdown that drains in-flight requests
 

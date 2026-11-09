@@ -67,6 +67,22 @@ export default {
           from: { transform: 'translateX(-100%)' },
           to: { transform: 'translateX(300%)' },
         },
+        // The welcome tour: the light on a place breathes, the bell rings, and
+        // the welcome ends with a little confetti.
+        'tour-pulse': {
+          '0%, 100%': { opacity: '1', transform: 'scale(1)' },
+          '50%': { opacity: '0.35', transform: 'scale(1.06)' },
+        },
+        'tour-ring': {
+          '0%, 60%, 100%': { transform: 'rotate(0)' },
+          '10%, 30%, 50%': { transform: 'rotate(-14deg)' },
+          '20%, 40%': { transform: 'rotate(14deg)' },
+        },
+        'tour-confetti': {
+          '0%': { opacity: '0', transform: 'translate(0, -10px) rotate(0)' },
+          '10%': { opacity: '1' },
+          '100%': { opacity: '0', transform: 'translate(var(--drift), 150px) rotate(var(--turn))' },
+        },
       },
       animation: {
         'accordion-down': 'accordion-down 0.2s ease-out',
@@ -74,6 +90,9 @@ export default {
         'slide-in-from-top': 'slide-in-from-top 0.3s ease-out',
         'slide-in-from-bottom': 'slide-in-from-bottom 0.3s ease-out',
         'loading-bar': 'loading-bar 1.2s cubic-bezier(0.4, 0, 0.2, 1) infinite',
+        'tour-pulse': 'tour-pulse 1.8s ease-in-out infinite',
+        'tour-ring': 'tour-ring 2.4s ease-in-out infinite',
+        'tour-confetti': 'tour-confetti 1.8s ease-out forwards',
       },
     },
   },

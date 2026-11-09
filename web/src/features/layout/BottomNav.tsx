@@ -38,6 +38,7 @@ export function BottomNav() {
           <NavLink
             key={tab.path}
             to={tab.path}
+            data-tour={tab.path.slice(1)}
             className={({ isActive }) =>
               cn(
                 // A 56px target: comfortably tappable without eating the screen.

@@ -13,6 +13,7 @@ import { usePushSubscription } from "@/features/notifications/usePushSubscriptio
 import { cn } from "@/shared/utils/cn";
 import { OutageBanner } from "@/features/status/OutageBanner";
 import { TopProgress } from "@/shared/components/TopProgress";
+import { WelcomeTour } from "@/features/tour/WelcomeTour";
 
 export function Layout() {
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
@@ -63,6 +64,8 @@ export function Layout() {
           page that happens to be about chat. */}
       <ChatNotifications />
         <UpdateOffer />
+        {/* A look around for somebody signing in for the first time. */}
+        <WelcomeTour />
       </div>
     </ActiveCallProvider>
   );

@@ -16,6 +16,11 @@ export interface SessionOptions {
   theme?: 'light' | 'dark';
   /** Skip the login form (for the login tests themselves). */
   signedOut?: boolean;
+  /**
+   * Show the welcome tour as a new person would see it. Every other session is
+   * told it has seen the tour already, so it does not cover what a test is about.
+   */
+  tour?: boolean;
 }
 
 // Network failures the browser reports as console errors even though the test
@@ -85,10 +90,34 @@ export async function openSession(browser: Browser, who: PersonKey | Person, opt
     page.on('pageerror', (e) => problems.push(`[pageerror] ${e.message}`));
   };
   context.on('page', watch);
+  if (!options.tour) await hideWelcomeTour(context);
   const page = await context.newPage();
 
   if (!options.signedOut) await signIn(page, who);
   return { who: typeof who === 'string' ? who : who.name, context, page, problems };
+}
+
+/**
+ * Tells a browser that its person has seen the welcome tour already, so it does
+ * not cover what a test is about. Said in the answers that carry the person
+ * rather than stored, so a test that wants the tour for the same person can
+ * still have it.
+ */
+export async function hideWelcomeTour(context: BrowserContext) {
+  await context.route(/\/api\/auth\/(me|login)$/, async (route) => {
+    const response = await route.fetch();
+    let body = await response.text();
+    try {
+      const json = JSON.parse(body);
+      if (json?.user && json.user.tourCompletedAt == null) {
+        json.user.tourCompletedAt = '2000-01-01T00:00:00Z';
+        body = JSON.stringify(json);
+      }
+    } catch {
+      // Not JSON; passed on as it is.
+    }
+    await route.fulfill({ response, body });
+  });
 }
 
 /** The real login form: type an email and a password, press the button. */

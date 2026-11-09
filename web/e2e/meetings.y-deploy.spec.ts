@@ -2,7 +2,8 @@ import { test, expect } from '@playwright/test';
 import type { Browser, BrowserContext, Page } from '@playwright/test';
 import { BASE_URL } from './support/api';
 import { signIn } from './support/fixtures';
-import { apiAs, createCall, idOf, joinCall, leaveCall, waitForLog } from './support/meetings';
+import { apiAs, createCall, idOf, joinCall, leaveCall, sql, waitForLog } from './support/meetings';
+import { PEOPLE } from './support/people';
 import { startSwapServer, type SwapServer } from './support/swap-server';
 
 /** A person's browser on the swappable origin, with the service worker installed and in charge of the page. */
@@ -10,6 +11,9 @@ async function openBrowser(browser: Browser, swap: SwapServer, who: 'alice', opt
   const context = await browser.newContext({ baseURL: swap.url, viewport: { width: 1280, height: 800 } });
   const page = await context.newPage();
   if (options.fakeClock) await page.clock.install();
+  // Its pages go through the service worker, which the test cannot answer for, so
+  // the welcome tour is marked seen where it is kept rather than in what is said.
+  sql(`UPDATE users SET tour_completed_at = COALESCE(tour_completed_at, NOW()) WHERE email = '${PEOPLE[who].email}'`);
   await signIn(page, who);
   await page.evaluate(() => navigator.serviceWorker.ready);
   // A page is controlled from its next load.

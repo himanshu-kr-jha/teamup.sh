@@ -12,6 +12,8 @@ interface User {
   roles: string[];
   orgId: string;
   mustChangePassword?: boolean;
+  /** When they finished or skipped the welcome tour; null until then, undefined until known. */
+  tourCompletedAt?: string | null;
   /** What the person's roles let them do; see shared/permissions.ts. */
   permissions?: string[];
 }

@@ -666,6 +666,11 @@ export const filesApi = {
   getDownloadUrl: (objectKey: string, filename?: string, inline?: boolean) => api.get('/files/download-url', { params: { objectKey, filename, inline } }),
 };
 
+/** The welcome tour shown at somebody's first sign-in: finished or skipped, or wanted again. */
+export const tourApi = {
+  set: (done: boolean) => api.post<{ tourCompletedAt: string | null }>('/auth/tour', { done }),
+};
+
 export const notificationsApi = {
   unreadCount: () => api.get('/notifications/unread-count'),
   vapidKey: () => api.get('/notifications/vapid-key'),

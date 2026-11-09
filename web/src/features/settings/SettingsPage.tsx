@@ -17,6 +17,7 @@ import { FormDialog } from '@/shared/components/FormDialog';
 import { applyTheme } from '@/shared/theme';
 import { formatRelativeTime } from '@/shared/utils/cn';
 import { ProfilePicture } from './ProfilePicture';
+import { TourAgain } from '@/features/tour/TourAgain';
 
 export function SettingsPage() {
   const { user, refreshUser } = useAuth();
@@ -87,6 +88,8 @@ export function SettingsPage() {
               </div>
             </CardContent>
           </Card>
+
+          <TourAgain />
         </TabsContent>
 
         <TabsContent value="notifications" className="p-4 md:p-6 space-y-6 max-w-2xl">

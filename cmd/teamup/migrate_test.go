@@ -1205,3 +1205,36 @@ func TestRolePermissionsMigrationTranslatesOldNames(t *testing.T) {
 		t.Errorf("back to the old name: %s", got)
 	}
 }
+
+// The tour column starts empty for everybody, so each person sees the tour once,
+// and going back drops it without touching anybody.
+func TestWelcomeTourMigrationIsReversible(t *testing.T) {
+	const version = 30
+	f := newMigrateFixture(t)
+	f.mustRun("up")
+	f.downTo(version - 1)
+	conn := f.conn()
+	ctx := context.Background()
+	if _, err := conn.Exec(ctx, `
+		WITH o AS (INSERT INTO organizations (name, subdomain) VALUES ('Tour', 'tour') RETURNING id)
+		INSERT INTO users (org_id, email, name) SELECT id, 'already@tour.test', 'Already Here' FROM o
+	`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	f.mustRun("up")
+	var unseen int
+	if err := conn.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE email = 'already@tour.test' AND tour_completed_at IS NULL`).Scan(&unseen); err != nil {
+		t.Fatal(err)
+	}
+	if unseen != 1 {
+		t.Errorf("somebody already here still sees the tour once: %d", unseen)
+	}
+	f.downTo(version - 1)
+	var users int
+	if err := conn.QueryRow(ctx, `SELECT COUNT(*) FROM users WHERE email = 'already@tour.test'`).Scan(&users); err != nil {
+		t.Fatal(err)
+	}
+	if users != 1 {
+		t.Errorf("going back keeps the people: %d", users)
+	}
+}
