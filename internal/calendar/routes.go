@@ -23,6 +23,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 
 	rg.GET("/calendar", h.Calendar)
 	rg.GET("/calendar/availability", h.Availability)
+	rg.GET("/calendar/people", h.People)
 	rg.POST("/calendar/blocks", h.CreateBlock)
 	rg.PATCH("/calendar/blocks/:id", h.UpdateBlock)
 	rg.DELETE("/calendar/blocks/:id", h.DeleteBlock)
@@ -125,6 +126,21 @@ func (h *Handler) Calendar(c *gin.Context) {
 		items = []Item{}
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
+// People answers with whose calendars, besides their own, the caller may open,
+// by team, for the picker on the calendar page.
+func (h *Handler) People(c *gin.Context) {
+	orgID, viewer, ok := caller(c)
+	if !ok {
+		return
+	}
+	groups, err := h.service.Viewable(c.Request.Context(), orgID, viewer, isOrgAdmin(c))
+	if err != nil {
+		httpx.Error(c, err, "failed to list calendars")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"groups": groups})
 }
 
 func (h *Handler) Availability(c *gin.Context) {

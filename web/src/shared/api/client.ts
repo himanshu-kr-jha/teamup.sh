@@ -8,6 +8,7 @@ import type {
 } from '@/shared/types/dashboard';
 import { loginPathFor } from '@/features/auth/nextPath';
 import type { AvailabilityPerson, CalendarItem, CalendarKind } from '@/features/calendar/layout';
+import type { CalendarGroup } from '@/features/calendar/people';
 import type { CallLog } from '@/features/calls/callLog';
 import type { AttendanceDay, StandingForm, StandingMeeting } from '@/features/calls/standing/standing';
 
@@ -538,9 +539,11 @@ export interface MeetingConflict {
 }
 
 export const calendarApi = {
-  /** One person's calendar, at the level the caller may see. */
+  /** One person's calendar: your own, or somebody you manage. Anybody else is a 403. */
   get: (params: { userId?: string; from: string; to: string }) =>
     getList<CalendarItem>('/calendar', 'items', params),
+  /** Whose calendars besides your own you may open, by team. Empty for somebody who manages nobody. */
+  people: () => getList<CalendarGroup>('/calendar/people', 'groups'),
   /** Whether people are free. Never carries a title. */
   availability: (params: { userIds: string; from: string; to: string }) =>
     getList<AvailabilityPerson>('/calendar/availability', 'people', params),

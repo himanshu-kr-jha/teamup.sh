@@ -457,6 +457,44 @@ func (s *Service) ManagedTeams(ctx context.Context, orgID, userID uuid.UUID) ([]
 	return teams, rows.Err()
 }
 
+// Reports is the people this person answers for, by team: everybody on a team
+// they run or on one nested beneath it, kept to whom HasAuthorityOver allows, so
+// a list built from it never offers somebody the rules then refuse (an
+// administrator sitting on the team, or the manager themself). Each person comes
+// once, under the first team that has them, and a team left empty is dropped.
+func (s *Service) Reports(ctx context.Context, orgID, managerID uuid.UUID) ([]ManagedTeam, error) {
+	teams, err := s.ManagedTeams(ctx, orgID, managerID)
+	if err != nil {
+		return nil, err
+	}
+	var ids []uuid.UUID
+	for _, team := range teams {
+		for _, m := range team.Members {
+			ids = append(ids, m.UserID)
+		}
+	}
+	facts, err := s.authorityFacts(ctx, orgID, managerID, ids)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[uuid.UUID]bool{managerID: true}
+	out := []ManagedTeam{}
+	for _, team := range teams {
+		kept := []TeamMemberT{}
+		for _, m := range team.Members {
+			if seen[m.UserID] || !facts[m.UserID].allows() {
+				continue
+			}
+			seen[m.UserID] = true
+			kept = append(kept, m)
+		}
+		if len(kept) > 0 {
+			out = append(out, ManagedTeam{ID: team.ID, Name: team.Name, Members: kept})
+		}
+	}
+	return out, nil
+}
+
 func derefOr(p *string, fallback string) string {
 	if p == nil {
 		return fallback

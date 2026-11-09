@@ -121,8 +121,9 @@ line-by-line detail.
   has it on, Sarvam speech to text, minutes written by Claude, OpenAI, NVIDIA or
   your own model, sent to everybody who was there and kept under Meeting notes
 - **Calendar** — month, week and day views, focus time, open slots,
-  meetings with a length from a list, availability across people, and
-  meetings that run over shown as extended
+  meetings with a length from a list, availability across people,
+  meetings that run over shown as extended, and managers reading the
+  calendars of the people on their teams
 - **Email** — mail server set up by an administrator, welcome email with
   sign-in details for every new member
 - **Presence** — online / away / in-call, availability and leave, with keys
@@ -403,7 +404,7 @@ subscribe / unsubscribe, `GET /api/notifications/vapid-key`
 
 **Search** — `GET /api/search/messages`, `GET /api/search/files`
 
-**Calendar and meetings** — `GET /api/calendar`, `GET /api/calendar/availability`,
+**Calendar and meetings** - `GET /api/calendar`, `GET /api/calendar/people`, `GET /api/calendar/availability`,
 blocks, `POST|PATCH|DELETE /api/meetings/:id`, standing meetings and attendance
 
 **Organization** — users, roles, teams, `GET|PUT /api/org/mail`,

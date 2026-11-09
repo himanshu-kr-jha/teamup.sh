@@ -2,9 +2,19 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { addDays, format, isSameDay, isToday, parse, isValid } from 'date-fns';
-import { AlertTriangle, CalendarPlus, ChevronLeft, ChevronRight, Loader2, Lock, TimerOff } from 'lucide-react';
+import { AlertTriangle, CalendarPlus, ChevronLeft, ChevronRight, Eye, Loader2, TimerOff } from 'lucide-react';
+import type { AxiosError } from 'axios';
 import { Button } from '@/shared/components/ui/button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectSeparator,
+  SelectTrigger,
+  SelectValue,
+} from '@/shared/components/ui/select';
 import { calendarApi, orgApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { cn } from '@/shared/utils/cn';
@@ -15,6 +25,7 @@ import { CalendarGrid } from './CalendarGrid';
 import { MonthGrid } from './MonthGrid';
 import { EventDialog } from './EventDialog';
 import { ScheduleDialog } from './ScheduleDialog';
+import { possessive, whoseCalendar, type CalendarGroup } from './people';
 import {
   dayLabelKey,
   defaultSlot,
@@ -70,8 +81,6 @@ export function CalendarPage() {
   // What is on screen lives in the address, so a notification can link to a day
   // and a reload stays where it was.
   const anchor = useMemo(() => readDate(params.get('date')), [params]);
-  const viewedId = params.get('person') || user?.id || '';
-  const own = viewedId === user?.id;
 
   const days = useMemo(() => visibleDays(anchor, view), [anchor, view]);
   const range = useMemo(() => rangeForDays(days), [days]);
@@ -102,7 +111,17 @@ export function CalendarPage() {
       }[],
     [usersResponse]
   );
-  const viewedName = own ? 'your' : `${people.find((p) => p.id === viewedId)?.name ?? 'their'}'s`;
+  // Whose calendars besides your own you may open: the people you manage, by team
+  // (decision 64). Nobody to offer means no picker at all.
+  const { data: groupsResponse } = useQuery({
+    queryKey: ['calendar-people'],
+    queryFn: () => calendarApi.people().then((res) => res.data),
+  });
+  const groups: CalendarGroup[] = useMemo(() => groupsResponse ?? [], [groupsResponse]);
+  const whose = whoseCalendar(params.get('person'), user?.id, groups, people);
+  const viewedId = whose.id;
+  const own = whose.own;
+  const viewedName = own ? 'your' : whose.name ? possessive(whose.name) : 'their';
 
   const { data, error, isPending, isFetching, refetch } = useQuery({
     queryKey: ['calendar', viewedId, range.from, range.to],
@@ -111,8 +130,12 @@ export function CalendarPage() {
     placeholderData: keepPreviousData,
     staleTime: 15_000,
     refetchInterval: 60_000,
+    // Not being allowed to see somebody's calendar does not change on asking again.
+    retry: (count, err) => (err as AxiosError)?.response?.status !== 403 && count < 1,
   });
-  const items: CalendarItem[] = useMemo(() => data ?? [], [data]);
+  const refused = (error as AxiosError | null)?.response?.status === 403;
+  const openMine = () => setParam({ person: null });
+  const items: CalendarItem[] = useMemo(() => (refused ? [] : data ?? []), [data, refused]);
 
   // Being invited or a meeting moving comes in as a notification. Nobody should
   // have to reload to see it on their calendar.
@@ -142,10 +165,6 @@ export function CalendarPage() {
   const liveItems = useMemo(() => withLiveEnds(items, now), [items, now]);
   const newBlock = (slot: Slot = defaultSlot(now)) => setBlockDialog({ item: null, slot });
   const newMeeting = (slot: Slot = defaultSlot(now)) => setScheduleDialog({ item: null, slot });
-
-  // The server sends only kind and times when you have no authority over somebody,
-  // and that is the only thing this notice goes by.
-  const limitedDetail = !own && items.length > 0 && items.every((item) => !item.source);
 
   return (
     <div className="flex h-full flex-col bg-background">
@@ -183,29 +202,60 @@ export function CalendarPage() {
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-label="Refreshing" />
           )}
           <div className="flex w-full flex-wrap items-center gap-2 md:ml-auto md:w-auto">
-            <Select value={viewedId} onValueChange={(id) => setParam({ person: id === user?.id ? null : id })}>
-              <SelectTrigger className="h-9 min-w-0 flex-1 md:w-52 md:flex-none" aria-label="Whose calendar">
-                <SelectValue placeholder="Pick a person" />
-              </SelectTrigger>
-              <SelectContent>
-                {people.map((person) => (
-                  <SelectItem key={person.id} value={person.id}>
-                    {person.name}
-                    {person.id === user?.id ? ' (you)' : ''}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            <Button variant="outline" size="sm" className="h-9" onClick={() => newBlock()}>
-              <TimerOff className="mr-1 h-4 w-4" aria-hidden="true" />
-              Block time
-            </Button>
-            <Button size="sm" className="h-9" onClick={() => newMeeting()}>
-              <CalendarPlus className="mr-1 h-4 w-4" aria-hidden="true" />
-              Schedule
-            </Button>
+            {groups.length > 0 && (
+              <Select value={viewedId} onValueChange={(id) => setParam({ person: id === user?.id ? null : id })}>
+                <SelectTrigger className="h-9 w-full min-w-0 md:w-56" aria-label="Whose calendar">
+                  {/* Somebody opened by a link may not be in the list, and is still named. */}
+                  <SelectValue>{own ? 'My calendar' : whose.name ?? 'Somebody else'}</SelectValue>
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={user?.id ?? ''}>My calendar</SelectItem>
+                  {groups.map((group) => (
+                    <SelectGroup key={group.teamId ?? group.name}>
+                      <SelectSeparator />
+                      <SelectLabel>{group.name}</SelectLabel>
+                      {group.people.map((person) => (
+                        <SelectItem key={person.id} value={person.id}>
+                          {person.name}
+                        </SelectItem>
+                      ))}
+                    </SelectGroup>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            {own && (
+              <Button variant="outline" size="sm" className="h-9" onClick={() => newBlock()}>
+                <TimerOff className="mr-1 h-4 w-4" aria-hidden="true" />
+                Block time
+              </Button>
+            )}
+            {!refused && (
+              <Button size="sm" className="h-9" onClick={() => newMeeting()}>
+                <CalendarPlus className="mr-1 h-4 w-4" aria-hidden="true" />
+                Schedule
+              </Button>
+            )}
           </div>
         </div>
+
+        {/* Whose calendar this is can never be in doubt, nor that it is only to be read. */}
+        {!own && !refused && (
+          <div
+            className="flex min-w-0 items-center gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-1.5 text-sm"
+            data-testid="viewing-banner"
+          >
+            <Eye className="h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
+            {/* A long name wraps rather than cutting off "read-only" on a phone. */}
+            <p className="break-anywhere min-w-0 flex-1">
+              <span className="font-medium">{possessive(whose.name)} calendar</span>
+              <span className="whitespace-nowrap text-muted-foreground">, read-only</span>
+            </p>
+            <Button variant="ghost" size="sm" className="h-7 shrink-0 px-2" onClick={openMine}>
+              Back to mine
+            </Button>
+          </div>
+        )}
 
         {/* On a phone only one day shows, so the rest of the week is a tap away here. */}
         {view === 'day' && <DayStrip anchor={anchor} now={now} onPick={(day) => setParam({ date: dayLabelKey(day) })} />}
@@ -216,7 +266,15 @@ export function CalendarPage() {
         </div>
       </div>
 
-      {error && !data ? (
+      {refused ? (
+        <div role="alert" className="flex shrink-0 flex-wrap items-center justify-center gap-3 border-b border-border bg-muted/50 px-3 py-3 text-sm">
+          <AlertTriangle className="h-4 w-4 text-destructive" aria-hidden="true" />
+          You can only see your own calendar and those of the people you manage.
+          <Button variant="outline" size="sm" onClick={openMine}>
+            Open my calendar
+          </Button>
+        </div>
+      ) : error && !data ? (
         <div role="alert" className="flex shrink-0 flex-wrap items-center justify-center gap-3 border-b border-border bg-muted/50 px-3 py-3 text-sm">
           <AlertTriangle className="h-4 w-4 text-destructive" aria-hidden="true" />
           {apiErrorMessage(error, 'Could not load this calendar.')}
@@ -229,11 +287,6 @@ export function CalendarPage() {
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
           Loading the calendar
         </div>
-      ) : limitedDetail ? (
-        <p className="flex shrink-0 items-center gap-2 border-b border-border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground md:px-6">
-          <Lock className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-          You can see when {people.find((p) => p.id === viewedId)?.name ?? 'they'} is taken, but not what for.
-        </p>
       ) : items.length === 0 ? (
         <p className="shrink-0 border-b border-border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground md:px-6">
           {own
@@ -244,7 +297,8 @@ export function CalendarPage() {
         </p>
       ) : null}
 
-      {view === 'month' ? (
+      {/* An empty grid would read as somebody with nothing on. */}
+      {refused ? null : view === 'month' ? (
         <MonthGrid
           days={days}
           anchor={anchor}
@@ -260,8 +314,9 @@ export function CalendarPage() {
           now={now}
           view={view}
           onSelect={setSelected}
-          onEmptyClick={(slot) => (own ? newBlock(slot) : newMeeting(slot))}
-          emptyClickLabel={own ? 'Block this time' : 'Schedule a meeting at this time'}
+          // Somebody else's calendar is only to be read.
+          onEmptyClick={own ? newBlock : undefined}
+          emptyClickLabel={own ? 'Block this time' : undefined}
         />
       )}
 
