@@ -1,8 +1,10 @@
 import { useCallback, useRef } from 'react';
+import { playSound } from '@/shared/sounds';
 
 /**
- * Short tones, synthesised rather than loaded from a file so there is no audio
- * asset to ship or fail to load.
+ * Short tones for what happens in a call (somebody came in, somebody knocked),
+ * synthesised rather than loaded from a file; and the recorded message sound
+ * from shared/sounds, which also has the rings and the end of a call.
  *
  * Best effort by design: a browser refuses to play sound until the page has
  * been interacted with, so anything that relies on this must still work
@@ -86,45 +88,10 @@ export function useChime() {
     });
   }, [play]);
 
-  /** One soft note. Used when a message arrives. */
+  /** A new message: the recorded notification sound. */
   const ping = useCallback(() => {
-    play((ctx) => {
-      const now = ctx.currentTime;
-      const gain = ctx.createGain();
-      gain.connect(ctx.destination);
-      const osc = ctx.createOscillator();
-      osc.type = 'sine';
-      // A small rise reads as a notification rather than an alarm.
-      osc.frequency.setValueAtTime(660, now);
-      osc.frequency.exponentialRampToValueAtTime(880, now + 0.12);
-      osc.connect(gain);
-      gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.exponentialRampToValueAtTime(0.08, now + 0.02);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.35);
-      osc.start(now);
-      osc.stop(now + 0.35);
-    });
-  }, [play]);
-
-  /** Two bursts, the shape of a telephone ring. Used for an incoming call. */
-  const ring = useCallback(() => {
-    play((ctx) => {
-      const now = ctx.currentTime;
-      const gain = ctx.createGain();
-      gain.connect(ctx.destination);
-      [0, 0.4].forEach((offset) => {
-        const osc = ctx.createOscillator();
-        osc.type = 'sine';
-        osc.frequency.value = 480;
-        osc.connect(gain);
-        osc.start(now + offset);
-        osc.stop(now + offset + 0.3);
-      });
-      gain.gain.setValueAtTime(0.0001, now);
-      gain.gain.exponentialRampToValueAtTime(0.15, now + 0.05);
-      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.75);
-    });
-  }, [play]);
+    playSound('notification');
+  }, []);
 
   const stop = useCallback(() => {
     ctxRef.current?.close().catch(() => {
@@ -133,5 +100,5 @@ export function useChime() {
     ctxRef.current = null;
   }, []);
 
-  return { ping, ring, joined, knock, stop };
+  return { ping, joined, knock, stop };
 }

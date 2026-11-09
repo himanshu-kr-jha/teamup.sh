@@ -741,6 +741,17 @@ Everybody signs in again, enables push again, and installs the app again if they
 These commands have not been run on a real VM.
 The renewal hooks are the ones from step 6.
 
+### Call backgrounds and sounds
+
+Blurring or replacing the background behind a camera happens in the browser, before the video is sent, with LiveKit's track processor and Google's MediaPipe selfie segmenter.
+TeamUp serves both itself, so no call depends on a CDN and a network that blocks CDNs still works: the runtime at `/mediapipe/tasks-vision-<version>/wasm/`, copied out of `node_modules` by the build, and the model at `/mediapipe/selfie_segmenter.tflite`, kept in `web/public/mediapipe/`.
+The runtime is about 9 MB a variant, 3 MB once nginx compresses it, and is fetched only by somebody who turns an effect on; its folder is named by version, so browsers keep it.
+The background pictures are drawn by `web/scripts/make-backgrounds.py` and live in `web/public/backgrounds/`; anybody can also add their own, which stays in their browser.
+A browser without WebGL or the media APIs the processor needs shows the button greyed out.
+
+The ring of an incoming call, the ringback the caller hears, the end of a call and a new message are recorded sounds in `web/public/sounds/`, levelled to the same loudness.
+The joined and knock chimes are still synthesised.
+
 ### Recording
 
 Recording is not available in this stack, because `docker-compose.prod.yml` has no LiveKit Egress service.

@@ -1029,7 +1029,7 @@ test.describe('8. tasks you were added to', () => {
     await mia.page.getByRole('button', { name: 'Complete scrum' }).first().click();
     const dialog = mia.page.getByRole('dialog');
     await dialog.getByRole('button', { name: 'Complete scrum' }).click();
-    await expect(mia.page.getByText('Scrum saved')).toBeVisible();
+    await expect(mia.page.getByText('Scrum saved', { exact: true })).toBeVisible();
     const scrums = (await miaApi.get('/scrums')).scrums as any[];
     const saved = await miaApi.get(`/scrums/${scrums[0].id}`);
     const annInScrum = saved.participants.find((p: any) => p.userId === idOf('ann'));

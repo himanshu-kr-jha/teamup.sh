@@ -656,24 +656,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	// Static files (embedded frontend)
 	subFS, _ := fs.Sub(webFS, "web/dist")
-	assetsFS, _ := fs.Sub(subFS, "assets")
-	iconsFS, _ := fs.Sub(subFS, "icons")
-	router.StaticFS("/assets", http.FS(assetsFS))
-	router.StaticFS("/icons", http.FS(iconsFS))
-	// Every file the build puts at the root, served by whatever it is called.
-	//
-	// These used to be listed by hand, one route per filename — including
-	// Workbox's, whose name carries a content hash. Anything the build added or
-	// renamed was served as the SPA's index.html instead of itself, which for a
-	// service worker means a script that silently is not there.
-	if entries, err := fs.ReadDir(subFS, "."); err == nil {
-		for _, entry := range entries {
-			if entry.IsDir() {
-				continue
-			}
-			router.StaticFileFS("/"+entry.Name(), entry.Name(), http.FS(subFS))
-		}
-	}
+	registerStatic(router, subFS)
 
 	// SPA fallback: serve index.html for root and non-API routes. Read once at
 	// startup — if the embedded frontend is missing, fail loudly here instead

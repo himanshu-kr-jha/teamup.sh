@@ -2,10 +2,56 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import path from 'path';
+import fs from 'fs';
+import type { Plugin } from 'vite';
+
+/**
+ * MediaPipe's runtime for blurring or replacing a call's background, served by
+ * TeamUp itself under /mediapipe/ rather than fetched from a CDN at call time:
+ * it works on a network that blocks CDNs, and nobody's camera depends on a third
+ * party. It is about 9 MB a variant, so it is copied out of node_modules at build
+ * time instead of being committed. The model next to it is in public/mediapipe/.
+ */
+const mediapipeVersion: string = JSON.parse(
+  fs.readFileSync(path.resolve(__dirname, 'node_modules/@mediapipe/tasks-vision/package.json'), 'utf8')
+).version;
+/** Named by version, so the server can let browsers keep it for good. */
+const MEDIAPIPE_WASM = `/mediapipe/tasks-vision-${mediapipeVersion}/wasm`;
+
+function mediapipeRuntime(): Plugin {
+  const from = path.resolve(__dirname, 'node_modules/@mediapipe/tasks-vision/wasm');
+  let outDir = '';
+  let building = false;
+  return {
+    name: 'teamup-mediapipe-runtime',
+    configResolved(config) {
+      outDir = path.resolve(config.root, config.build.outDir);
+      // Only a real build; Vitest runs the plugins too, with a made-up outDir.
+      building = config.command === 'build' && !process.env.VITEST;
+    },
+    configureServer(server) {
+      server.middlewares.use(MEDIAPIPE_WASM, (req, res, next) => {
+        const name = path.basename((req.url ?? '').split('?')[0]);
+        const file = path.join(from, name);
+        if (!name || !fs.existsSync(file)) return next();
+        res.setHeader('Content-Type', name.endsWith('.wasm') ? 'application/wasm' : 'text/javascript');
+        fs.createReadStream(file).pipe(res);
+      });
+    },
+    closeBundle() {
+      if (!building) return;
+      const to = path.join(outDir, MEDIAPIPE_WASM.slice(1));
+      fs.mkdirSync(to, { recursive: true });
+      for (const name of fs.readdirSync(from)) fs.copyFileSync(path.join(from, name), path.join(to, name));
+    },
+  };
+}
 
 export default defineConfig({
+  define: { __MEDIAPIPE_WASM__: JSON.stringify(MEDIAPIPE_WASM) },
   plugins: [
     react(),
+    mediapipeRuntime(),
     VitePWA({
       // Not autoUpdate: that reloads every open tab when a new version activates, and a
       // reload drops whoever is in a call there. src/sw/register.ts registers the worker

@@ -49,11 +49,13 @@ import {
 } from '@/shared/components/ui/dialog';
 import { callsApi, presenceApi } from '@/shared/api/client';
 import { useChime } from '@/shared/hooks/useChime';
+import { playSound, preloadSounds } from '@/shared/sounds';
 import { useDesktopNotifications } from '@/shared/hooks/useDesktopNotifications';
 import { useToast } from '@/shared/hooks/useToast';
 import { useUIStore } from '@/shared/store';
 import { useWebSocket } from '@/features/websocket/WSProvider';
 import { cn } from '@/shared/utils/cn';
+import { CameraBackground } from './BackgroundPicker';
 
 interface ActiveCall {
   callId: string;
@@ -107,6 +109,9 @@ function waitingLabel(reachable: boolean | null): string {
 const ALONE_BEFORE_ASKING_MS = 90_000;
 /** How long they have to answer before the call is dropped. */
 const ANSWER_WINDOW_MS = 30_000;
+
+/** How long the caller hears it ring: as long as the other end rings (IncomingCallDialog). */
+const RINGBACK_FOR_MS = 45_000;
 
 const COMPACT_WIDTH = 320;
 const COMPACT_HEIGHT = 200;
@@ -325,6 +330,18 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
     });
   }, [on]);
 
+  // The sound of a call ending, however it ended: you left, the last other
+  // person did, or the connection went. Decoded ahead, so it is not late.
+  useEffect(() => preloadSounds(['ringback', 'call-ended']), []);
+  const wasInCallRef = useRef(false);
+  useEffect(() => {
+    if (activeCall) wasInCallRef.current = true;
+    else if (wasInCallRef.current) {
+      wasInCallRef.current = false;
+      playSound('call-ended');
+    }
+  }, [activeCall]);
+
   // Being in a call is observed rather than chosen, so it sets itself and
   // clears when the call ends however it ends.
   useEffect(() => {
@@ -383,6 +400,7 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
             reachable={activeCall.callId in reach ? reach[activeCall.callId] : null}
           />
           <RoomAudioRenderer />
+          <CameraBackground />
         </LiveKitRoom>
       )}
     </ActiveCallContext.Provider>
@@ -446,6 +464,19 @@ function CallFrame({
       onLeave();
     }
   }, [room, onLeave, remote.length, callId]);
+
+  // While their phone rings, the caller hears it ring, as on a phone: only when
+  // it really is ringing ("Ringing\u2026"), and only until somebody comes in.
+  const ringing = alone && reachable === true;
+  useEffect(() => {
+    if (!ringing) return;
+    const stop = playSound('ringback', { loop: true });
+    const giveUp = setTimeout(stop, RINGBACK_FOR_MS);
+    return () => {
+      clearTimeout(giveUp);
+      stop();
+    };
+  }, [ringing]);
 
   // Sitting alone is usually a call that is already over. Ask, and if there is
   // no answer, drop it rather than leaving a room open indefinitely.

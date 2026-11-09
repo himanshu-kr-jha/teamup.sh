@@ -29,6 +29,7 @@ import { BlockedAudioPrompt, liveKitURL } from "./ActiveCallProvider";
 import { CallStage } from "./CallStage";
 import { CallControls, ShareUnavailableNote } from "./CallControls";
 import { NotesBanner, isNotetaker } from "./notetaker";
+import { CameraBackground } from './BackgroundPicker';
 
 const NAME_KEY = "teamup.guestName";
 
@@ -464,6 +465,7 @@ function GuestRoom({
         <ShareUnavailableNote />
       </div>
       <RoomAudioRenderer />
+      <CameraBackground />
     </LiveKitRoom>
   );
 }

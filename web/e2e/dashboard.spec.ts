@@ -240,7 +240,7 @@ test.describe('5a and 4. finishing work, completing a scrum, and what is frozen'
     const dialog = mia.page.getByRole('dialog');
     await dialog.getByLabel('Notes (optional)').fill(notes);
     await dialog.getByRole('button', { name: 'Complete scrum' }).click();
-    await expect(mia.page.getByText('Scrum saved')).toBeVisible();
+    await expect(mia.page.getByText('Scrum saved', { exact: true })).toBeVisible();
     await expect(dialog).toBeHidden();
 
     // Done since last scrum resets, and the New badges clear.

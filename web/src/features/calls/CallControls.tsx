@@ -3,6 +3,7 @@ import { MediaDeviceMenu, useTrackToggle } from '@livekit/components-react';
 import { Track } from 'livekit-client';
 import { Mic, MicOff, MonitorOff, MonitorUp, Video, VideoOff } from 'lucide-react';
 import { useToast } from '@/shared/hooks/useToast';
+import { BackgroundPicker } from './BackgroundPicker';
 import { cn } from '@/shared/utils/cn';
 
 /** Whether this browser can capture a screen at all. Most phone browsers cannot. */
@@ -80,6 +81,7 @@ export function CallControls() {
     <div className="flex flex-wrap items-center justify-center gap-2" role="group" aria-label="Call controls">
       <WithDeviceMenu source={Track.Source.Microphone} kind="audioinput" label="Choose a microphone" />
       <WithDeviceMenu source={Track.Source.Camera} kind="videoinput" label="Choose a camera" />
+      <BackgroundPicker />
       {shareable && <Toggle source={Track.Source.ScreenShare} />}
     </div>
   );

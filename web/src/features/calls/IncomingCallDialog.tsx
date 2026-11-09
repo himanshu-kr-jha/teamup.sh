@@ -11,7 +11,7 @@ import {
 } from '@/shared/components/ui/dialog';
 import { Button } from '@/shared/components/ui/button';
 import { useWebSocket } from '@/features/websocket/WSProvider';
-import { useChime } from '@/shared/hooks/useChime';
+import { playSound, preloadSounds, type StopSound } from '@/shared/sounds';
 import { callsApi } from '@/shared/api/client';
 import { useActiveCall } from './ActiveCallProvider';
 
@@ -24,16 +24,14 @@ interface IncomingCall {
 
 /** How long to keep ringing before treating it as missed. */
 const RING_FOR_MS = 45_000;
-/** Gap between rings - a repeated ring, not one continuous tone. */
-const RING_EVERY_MS = 3_000;
 
 /**
  * Rings when somebody calls. Mounted once, above the whole app, so a call
  * reaches you wherever you are rather than only on the calls page.
  *
- * The tone is synthesised rather than loaded from a file so there is no asset
- * to ship, and it is best effort: a browser will refuse to play audio until the
- * page has been interacted with, so the dialog is the part that always works.
+ * The ringtone loops until the call is answered, declined or given up on. It is
+ * best effort: a browser will refuse to play audio until the page has been
+ * interacted with, so the dialog is the part that always works.
  */
 export function IncomingCallDialog() {
   const navigate = useNavigate();
@@ -60,15 +58,17 @@ export function IncomingCallDialog() {
     if (onItsPage) dismiss(onItsPage);
   }, [activeCall, onItsPage, dismiss, queue]);
 
-  const { ring: ringOnce, stop: stopTone } = useChime();
-  const ringTimerRef = useRef<ReturnType<typeof setInterval>>();
+  const stopToneRef = useRef<StopSound>();
   const giveUpTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
+  // Decoded ahead, so a call that comes in rings straight away.
+  useEffect(() => preloadSounds(['ringtone']), []);
+
   const stopRinging = useCallback(() => {
-    clearInterval(ringTimerRef.current);
     clearTimeout(giveUpTimerRef.current);
-    stopTone();
-  }, [stopTone]);
+    stopToneRef.current?.();
+    stopToneRef.current = undefined;
+  }, []);
 
   useEffect(() => {
     return on('call.invited', (msg) => {
@@ -106,8 +106,7 @@ export function IncomingCallDialog() {
       stopRinging();
       return;
     }
-    ringOnce();
-    ringTimerRef.current = setInterval(ringOnce, RING_EVERY_MS);
+    stopToneRef.current = playSound('ringtone', { loop: true });
     // It rings for a while and then gives up rather than for ever.
     const missed = call.callId;
     giveUpTimerRef.current = setTimeout(() => {
@@ -119,7 +118,7 @@ export function IncomingCallDialog() {
       });
     }, RING_FOR_MS);
     return stopRinging;
-  }, [call, ringOnce, stopRinging, dismiss]);
+  }, [call, stopRinging, dismiss]);
 
   const answer = () => {
     const id = call!.callId;
