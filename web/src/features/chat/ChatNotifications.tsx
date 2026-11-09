@@ -6,6 +6,8 @@ import { useAuth } from '@/features/auth/AuthProvider';
 import { useChime } from '@/shared/hooks/useChime';
 import { useDesktopNotifications } from '@/shared/hooks/useDesktopNotifications';
 import { isEditFrame, watchChatChanges } from './liveChanges';
+import type { NotifyLevel } from '@/shared/api/client';
+import { mentionsPerson } from './mentions';
 
 /**
  * Watches for messages wherever you are in the app.
@@ -49,7 +51,17 @@ export function ChatNotifications() {
       // Your own message coming back is not news.
       if (incoming.userId === user?.id) return;
 
-      ping();
+      // What this person chose to hear about from this conversation (the bell in
+      // its header). The unread count below is kept whatever they chose.
+      const channel = ((queryClient.getQueryData(['channels']) as any)?.data ?? []).find(
+        (c: any) => c.id === incoming.channelId
+      );
+      const level: NotifyLevel = channel?.notifyLevel ?? 'all';
+      const interrupt =
+        level === 'all' ||
+        (level === 'mentions' && !!user && mentionsPerson(incoming.content ?? '', { id: user.id, name: user.name ?? '', email: user.email }));
+
+      if (interrupt) ping();
 
       const watchingThisConversation =
         document.visibilityState === 'visible' &&
@@ -90,7 +102,7 @@ export function ChatNotifications() {
         });
       }
 
-      if (watchingThisConversation) return;
+      if (watchingThisConversation || !interrupt) return;
 
       const body = incoming.content?.trim()
         ? incoming.content
@@ -107,7 +119,7 @@ export function ChatNotifications() {
         onClick: () => navigate(`/chat/${incoming.channelId}`),
       });
     });
-  }, [on, user?.id, queryClient, navigate, ping, notify]);
+  }, [on, user, queryClient, navigate, ping, notify]);
 
   return null;
 }

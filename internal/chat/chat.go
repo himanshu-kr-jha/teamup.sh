@@ -83,6 +83,9 @@ func (s *Service) notifyMentions(ctx context.Context, msg *Message) {
 		JOIN users u ON u.id = cm.user_id
 		JOIN channels c ON c.id = cm.channel_id
 		WHERE cm.channel_id = $1 AND u.id <> $2
+		  -- Somebody who turned this conversation's notifications off hears
+		  -- nothing from it, mentions included.
+		  AND COALESCE(cm.notify_level, 'all') <> 'none'
 		  AND (REPLACE(LOWER(u.name), ' ', '') = ANY($3)
 		       OR LOWER(split_part(u.email, '@', 1)) = ANY($3))
 	`, msg.ChannelID, msg.UserID, lowerAll(handles))
@@ -190,6 +193,10 @@ type Channel struct {
 	MaxMembers  int        `json:"maxMembers"`
 	MemberCount int        `json:"memberCount"`
 	UnreadCount int        `json:"unreadCount"`
+	// NotifyLevel is what the asker hears about from this conversation (see
+	// NotifyLevels); nil where they are not a member, as in a public channel
+	// they can read but have not joined.
+	NotifyLevel *string `json:"notifyLevel"`
 	// CounterpartID is the other person in a direct message, so their
 	// availability can be shown beside the conversation.
 	CounterpartID *uuid.UUID `json:"counterpartId,omitempty"`
@@ -776,7 +783,8 @@ func (s *Service) ListChannels(ctx context.Context, orgID, userID uuid.UUID) ([]
 		          LIMIT 1),
 		       (SELECT other.user_id FROM channel_members other
 		          WHERE other.channel_id = c.id AND other.user_id <> $2
-		          LIMIT 1)
+		          LIMIT 1),
+		       CASE WHEN cm.user_id IS NULL THEN NULL ELSE COALESCE(cm.notify_level, 'all') END
 		FROM channels c
 		LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.user_id = $2
 		WHERE c.org_id = $1 AND c.deleted_at IS NULL AND COALESCE(c.is_archived, false) = false
@@ -799,7 +807,7 @@ func (s *Service) ListChannels(ctx context.Context, orgID, userID uuid.UUID) ([]
 		if err := rows.Scan(&c.ID, &c.OrgID, &c.TeamID, &c.Name, &c.Type, &c.Description,
 			&c.CreatedBy, &c.IsArchived, &c.IsPrivate, &c.MaxMembers,
 			&c.CreatedAt, &c.UpdatedAt, &c.MemberCount, &c.UnreadCount,
-			&counterpart, &counterpartID); err != nil {
+			&counterpart, &counterpartID, &c.NotifyLevel); err != nil {
 			return nil, fmt.Errorf("scan channel: %w", err)
 		}
 		if c.Type == "dm" {
@@ -2339,4 +2347,28 @@ func (s *Service) SearchMessages(ctx context.Context, orgID, userID uuid.UUID, q
 		results = append(results, r)
 	}
 	return results, rows.Err()
+}
+
+// NotifyLevels are what a member may choose to hear about from a conversation:
+// every message, only messages that mention them, or nothing at all. Unread counts
+// are kept whatever the choice; this is only about being interrupted.
+var NotifyLevels = map[string]bool{"all": true, "mentions": true, "none": true}
+
+// SetNotifyLevel records what a member hears about from a conversation. Only a
+// member has a choice to make; somebody reading a public channel they have not
+// joined is told so.
+func (s *Service) SetNotifyLevel(ctx context.Context, channelID, userID uuid.UUID, level string) error {
+	if !NotifyLevels[level] {
+		return apperrors.New(apperrors.CodeBadRequest, "choose all, mentions or none")
+	}
+	tag, err := s.db.Exec(ctx,
+		`UPDATE channel_members SET notify_level = $3 WHERE channel_id = $1 AND user_id = $2`,
+		channelID, userID, level)
+	if err != nil {
+		return fmt.Errorf("set notify level: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return apperrors.New(apperrors.CodeNotFound, "join this conversation to choose its notifications")
+	}
+	return nil
 }

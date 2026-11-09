@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { Page } from '@playwright/test';
 import { PEOPLE } from './support/people';
 import { expect, test, type Session } from './support/fixtures';
-import { apiAs, at, createCall, dayParam, iso, idOf, joinCall, leaveCall, waitForLog } from './support/meetings';
+import { apiAs, at, createCall, dayParam, iso, idOf, joinCall, leaveCall, openOnCalendar, waitForLog } from './support/meetings';
 
 /**
  * Every screen this feature added, in each role, at a computer and a phone width,
@@ -169,9 +169,11 @@ for (const viewport of VIEWPORTS) {
       await expect(mia.page.getByRole('main').getByRole('button', { name: /Design review|Deep work/ }).first()).toBeVisible();
       await shoot(mia, 'manager', 'calendar-others-titles');
       await owner.page.goto(`/calendar?date=${today}`);
-      await expect(owner.page.getByRole('main').getByRole('button', { name: /Design review|Budget sync|Retro/ }).first()).toBeVisible();
+      await expect(owner.page.getByRole('heading', { name: 'Calendar', level: 1 })).toBeVisible();
+      await idle(owner.page);
       await shoot(owner, 'admin', 'calendar-own');
-      await owner.page.getByRole('main').getByRole('button', { name: /Design review|Budget sync|Retro/ }).first().click();
+      // The owner's day is the fullest, so one of these may be folded among others.
+      await openOnCalendar(owner.page, '(?:Design review|Budget sync|Retro)', at(0, 0));
       await expect(owner.page.getByRole('dialog')).toBeVisible();
       await shoot(owner, 'admin', 'calendar-event-dialog');
       await owner.page.keyboard.press('Escape');

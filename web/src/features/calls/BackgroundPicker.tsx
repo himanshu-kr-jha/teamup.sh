@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useLocalParticipant } from '@livekit/components-react';
 import type { LocalVideoTrack } from 'livekit-client';
 import { Ban, Check, ImagePlus, Loader2, Sparkles } from 'lucide-react';
@@ -12,9 +12,15 @@ import {
 import { useToast } from '@/shared/hooks/useToast';
 import { cn } from '@/shared/utils/cn';
 import {
+  LOOKS,
   PICTURES,
-  applyBackground,
+  applyCameraEffects,
   customPicture,
+  lookFilter,
+  lookWash,
+  setLook,
+  supportsLooks,
+  useLook,
   sameChoice,
   saveCustomPicture,
   setBackgroundChoice,
@@ -24,15 +30,44 @@ import {
   type BackgroundChoice,
 } from './background';
 
+// Whether an effect is being put on the camera right now. The first one fetches
+// MediaPipe (about 3 MB), which can take a few seconds; the button says so.
+let applying = 0;
+const applyingListeners = new Set<() => void>();
+const setApplying = (delta: number) => {
+  applying = Math.max(0, applying + delta);
+  applyingListeners.forEach((l) => l());
+};
+function useApplying(): boolean {
+  return useSyncExternalStore(
+    (l) => {
+      applyingListeners.add(l);
+      return () => applyingListeners.delete(l);
+    },
+    () => applying > 0,
+    () => false
+  );
+}
+
+/** How long one change may take before the next is let through anyway. */
+const APPLY_TIMEOUT_MS = 20_000;
+
 /**
- * Applies your chosen background to your camera for as long as you are in the
- * call. Renders nothing; it sits inside the room wherever the call is, full size
- * or in the corner, so the effect does not depend on the controls being shown.
+ * Keeps your chosen background and colour on your camera for as long as you are
+ * in the call. Renders nothing; it sits inside the room wherever the call is,
+ * full size or in the corner, so the effect does not depend on the controls.
+ *
+ * It applies a change straight away while the camera is on, and when the camera
+ * comes back on after being off. Not while it is off: a processor set on a camera
+ * with no picture waits for one, and every change after it waited behind it, which
+ * is why a background used to appear only after the camera was turned off and on.
  */
 export function CameraBackground() {
   const { cameraTrack } = useLocalParticipant();
   const track = cameraTrack?.track as LocalVideoTrack | undefined;
+  const live = useCameraLive(track);
   const choice = useBackgroundChoice();
+  const look = useLook();
   const toast = useToast();
   const toastRef = useRef(toast.error);
   toastRef.current = toast.error;
@@ -41,29 +76,65 @@ export function CameraBackground() {
   const queue = useRef(Promise.resolve());
 
   useEffect(() => {
-    if (!track) return;
-    queue.current = queue.current.then(() =>
-      applyBackground(track, choice).catch(() => {
-        toastRef.current('Your background could not be changed on this device.');
+    if (!track || !live) return;
+    setApplying(1);
+    queue.current = queue.current.then(async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          applyCameraEffects(track, choice, look),
+          new Promise<void>((resolve) => (timer = setTimeout(resolve, APPLY_TIMEOUT_MS))),
+        ]);
+      } catch {
+        toastRef.current('Your camera effects could not be applied on this device.');
         setBackgroundChoice({ kind: 'none' });
-      })
-    );
-  }, [track, choice]);
+        setLook('natural');
+      } finally {
+        clearTimeout(timer);
+        setApplying(-1);
+      }
+    });
+  }, [track, live, choice, look]);
 
   return null;
+}
+
+/** Whether the camera is on and sending a picture, following it as it turns off and on. */
+function useCameraLive(track: LocalVideoTrack | undefined): boolean {
+  const [live, setLive] = useState(() => !!track && !track.isMuted);
+  useEffect(() => {
+    if (!track) {
+      setLive(false);
+      return;
+    }
+    const update = () => setLive(!track.isMuted && track.mediaStreamTrack?.readyState === 'live');
+    update();
+    track.on('muted', update);
+    track.on('unmuted', update);
+    track.on('restarted', update);
+    return () => {
+      track.off('muted', update);
+      track.off('unmuted', update);
+      track.off('restarted', update);
+    };
+  }, [track]);
+  return live;
 }
 
 /** The button beside the camera's, and its menu of backgrounds. */
 export function BackgroundPicker() {
   const supported = useBackgroundsSupported();
   const choice = useBackgroundChoice();
+  const look = useLook();
+  const busy = useApplying();
+  const [looks] = useState(supportsLooks);
   const toast = useToast();
   const [custom, setCustom] = useState(customPicture);
   const [saving, setSaving] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
 
   if (supported === null) return null;
-  const on = choice.kind !== 'none';
+  const on = choice.kind !== 'none' || look !== 'natural';
   const label = supported ? 'Background effects' : 'Background effects are not available in this browser';
 
   const choose = (next: BackgroundChoice) => setBackgroundChoice(next);
@@ -98,10 +169,16 @@ export function BackgroundPicker() {
             data-lk-enabled={on}
             data-testid="background-effects"
           >
-            {saving ? <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" /> : <Sparkles className="h-5 w-5" aria-hidden="true" />}
+            {saving || busy ? <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" /> : <Sparkles className="h-5 w-5" aria-hidden="true" />}
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent side="top" align="center" sideOffset={8} className="w-[18.5rem] p-2" aria-label="Background effects">
+        <DropdownMenuContent
+          side="top"
+          align="center"
+          sideOffset={8}
+          className="max-h-[min(40rem,calc(100dvh-6rem))] w-[18.5rem] overflow-y-auto p-2"
+          aria-label="Background effects"
+        >
           <DropdownMenuLabel className="px-1 pb-2 pt-0.5 text-xs font-medium text-muted-foreground">Background</DropdownMenuLabel>
           <div className="grid grid-cols-3 gap-2">
             <Tile label="None" selected={choice.kind === 'none'} onSelect={() => choose({ kind: 'none' })}>
@@ -114,14 +191,14 @@ export function BackgroundPicker() {
               selected={sameChoice(choice, { kind: 'blur', strength: 'light' })}
               onSelect={() => choose({ kind: 'blur', strength: 'light' })}
             >
-              <BlurSample amount={2} />
+              <RoomSample blur={2} />
             </Tile>
             <Tile
               label="Blur"
               selected={sameChoice(choice, { kind: 'blur', strength: 'strong' })}
               onSelect={() => choose({ kind: 'blur', strength: 'strong' })}
             >
-              <BlurSample amount={5} />
+              <RoomSample blur={5} />
             </Tile>
             {PICTURES.map((p) => (
               <Tile
@@ -144,6 +221,23 @@ export function BackgroundPicker() {
               </span>
             </Tile>
           </div>
+          {looks && (
+            <>
+              <DropdownMenuLabel className="px-1 pb-2 pt-3 text-xs font-medium text-muted-foreground">Colour</DropdownMenuLabel>
+              <div className="grid grid-cols-3 gap-2" role="group" aria-label="Colour">
+                {LOOKS.map((l) => (
+                  <Tile key={l.id} label={l.label} selected={look === l.id} onSelect={() => setLook(l.id)}>
+                    <span className="relative block h-full w-full" style={{ filter: lookFilter(l.id) || undefined }}>
+                      <RoomSample blur={0} />
+                      {lookWash(l.id) && (
+                        <span className="absolute inset-0 mix-blend-soft-light" style={{ backgroundColor: lookWash(l.id) }} />
+                      )}
+                    </span>
+                  </Tile>
+                ))}
+              </div>
+            </>
+          )}
           <p className="px-1 pt-2 text-[11px] leading-snug text-muted-foreground">
             Done on this device, before your video is sent. Others see the result.
           </p>
@@ -195,13 +289,14 @@ function Tile({ label, selected, onSelect, children }: { label: string; selected
 }
 
 /**
- * A little room behind a person, blurred by the given amount, so the two blurs
- * show their difference at a glance. Drawn, rather than a photograph.
+ * A little room behind a person, its background blurred by the given amount: the
+ * two blurs show their difference at a glance, and the colours show each look.
+ * Drawn, rather than a photograph.
  */
-function BlurSample({ amount }: { amount: number }) {
+function RoomSample({ blur: amount }: { blur: number }) {
   return (
     <span className="relative block h-full w-full overflow-hidden bg-[#d8cec2]">
-      <span className="absolute inset-[-10%]" style={{ filter: `blur(${amount}px)` }}>
+      <span className="absolute inset-[-10%]" style={{ filter: amount ? `blur(${amount}px)` : undefined }}>
         <span className="absolute left-[14%] top-[16%] h-[42%] w-[26%] border-2 border-white bg-[#bcd6ea]" />
         <span className="absolute right-[12%] top-[14%] h-[58%] w-[24%] bg-[#8a6a4f]">
           <span className="absolute inset-x-0 top-1/3 h-[2px] bg-[#5d4634]" />

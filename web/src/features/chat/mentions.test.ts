@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { insertMention, mentionQuery, resolveHandle, splitMentions, suggestPeople } from './mentions';
+import { insertMention, mentionQuery, mentionsPerson, resolveHandle, splitMentions, suggestPeople } from './mentions';
 
 const people = [
   { id: 'a', name: 'Alice Archer', email: 'alice@e2e.test' },
@@ -38,5 +38,18 @@ describe('mentions', () => {
 
   it('puts the username in place of what was typed', () => {
     expect(insertMention('hey @al ok', 4, 7, people[0])).toEqual({ text: 'hey @alice  ok', caret: 11 });
+  });
+});
+
+describe('mentionsPerson', () => {
+  const alice = { id: 'a', name: 'Alice Archer', email: 'alice@e2e.test' };
+  it('is true for her username or her name, in any case, and a full stop after it', () => {
+    expect(mentionsPerson('thanks @alice.', alice)).toBe(true);
+    expect(mentionsPerson('@AliceArcher can you look', alice)).toBe(true);
+  });
+  it('is false for somebody else, an address, or no mention at all', () => {
+    expect(mentionsPerson('@bob have a look', alice)).toBe(false);
+    expect(mentionsPerson('write to alice@e2e.test', alice)).toBe(false);
+    expect(mentionsPerson('alice, have a look', alice)).toBe(false);
   });
 });

@@ -59,6 +59,9 @@ test.describe('call and message sounds', () => {
 
     await olivia.page.getByRole('button', { name: 'Call', exact: true }).click();
     await expect(alice.page.getByText('Incoming call')).toBeVisible({ timeout: 20_000 });
+    // By name, not by email address.
+    await expect(alice.page.getByText('Olivia Owner is calling.')).toBeVisible();
+    await expect(alice.page.getByRole('dialog')).not.toContainText('@');
     await expect.poll(() => sounds(alice.page), { timeout: 15_000 }).toContain('ringtone');
     await expect(olivia.page.getByText('Ringing…')).toBeVisible({ timeout: 20_000 });
     await expect.poll(() => sounds(olivia.page), { timeout: 15_000 }).toContain('ringback');
@@ -76,6 +79,49 @@ test.describe('call and message sounds', () => {
     await leaveCall(olivia.page);
     await expect.poll(() => sounds(olivia.page), { timeout: 10_000 }).toContain('call-ended');
     expect(await sounds(alice.page)).not.toContain('call-ended');
+  });
+});
+
+test.describe('the bell in a conversation', () => {
+  test('chooses what a conversation interrupts you with: every message, only mentions of you, or nothing', async ({ as }) => {
+    const owner = await apiAs('owner');
+    const room = await owner.post('/channels', { type: 'group', name: `bell-${Date.now()}` });
+    await owner.post(`/channels/${room.id}/members`, { userId: idOf('alice') });
+    const alice = await as('alice');
+    await listenForSounds(alice);
+    await alice.page.goto('/tasks');
+    await alice.page.goto(`/chat/${room.id}`);
+    const bell = alice.page.getByTestId('notify-menu');
+    await expect(bell).toHaveAttribute('aria-label', 'Notifications: All messages');
+
+    // Somewhere else in the app, so a message here is news.
+    const heard = async (text: string) => {
+      const before = (await sounds(alice.page)).filter((s) => s === 'notification').length;
+      await owner.post(`/channels/${room.id}/messages`, { content: text });
+      await alice.page.waitForTimeout(2500);
+      return (await sounds(alice.page)).filter((s) => s === 'notification').length > before;
+    };
+
+    await bell.click();
+    await alice.page.getByRole('menuitemradio', { name: /Only @mentions/ }).click();
+    await expect(alice.page.getByText('You will only be notified when somebody mentions you here.').first()).toBeVisible();
+    await expect(bell).toHaveAttribute('aria-label', 'Notifications: Only @mentions');
+    await alice.page.goto('/tasks');
+    expect(await heard(`just news ${Date.now()}`)).toBe(false);
+    expect(await heard(`@alice a look? ${Date.now()}`)).toBe(true);
+
+    await alice.page.goto(`/chat/${room.id}`);
+    await bell.click();
+    await alice.page.getByRole('menuitemradio', { name: /Nothing/ }).click();
+    await expect(bell).toHaveAttribute('aria-label', 'Notifications: Nothing');
+    await alice.page.goto('/tasks');
+    expect(await heard(`@alice again ${Date.now()}`)).toBe(false);
+    // The unread count is kept whatever you choose.
+    await expect(alice.page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: /Chat/ })).toContainText(/\d/);
+
+    // Kept by the server: it is still Nothing after a reload.
+    await alice.page.goto(`/chat/${room.id}`);
+    await expect(bell).toHaveAttribute('aria-label', 'Notifications: Nothing');
   });
 });
 
@@ -160,6 +206,74 @@ test.describe('backgrounds', () => {
         return !!c && Math.abs(c.r - plain.r) + Math.abs(c.g - plain.g) + Math.abs(c.b - plain.b) < 60;
       }, { timeout: 30_000 })
       .toBe(true);
+  });
+
+  test('a background chosen while the camera is off is on as soon as it comes back on, without turning it off and on again', async ({ as }) => {
+    const owner = await apiAs('owner');
+    const olivia = await as('owner');
+    const call = await createCall(owner, `Camera off ${Date.now()}`);
+    await joinCall(olivia.page, call.id);
+    await olivia.page.getByRole('button', { name: 'Turn your camera on' }).click();
+    await expect.poll(() => ownCameraColour(olivia.page), { timeout: 20_000 }).not.toBeNull();
+    await olivia.page.getByRole('button', { name: 'Turn your camera off' }).click();
+    await expect(olivia.page.getByRole('button', { name: 'Turn your camera on' })).toBeVisible();
+
+    await olivia.page.getByTestId('background-effects').click();
+    await olivia.page.getByRole('menuitemradio', { name: 'Night', exact: true }).click();
+    await olivia.page.getByRole('button', { name: 'Turn your camera on' }).click();
+    await expect
+      .poll(async () => {
+        const c = await ownCameraColour(olivia.page);
+        return !!c && c.r < 45 && c.g < 50 && c.b < 70 && c.b > c.r + 8;
+      }, { timeout: 30_000 })
+      .toBe(true);
+    // Then changed while it is on: straight away, in place.
+    await olivia.page.getByTestId('background-effects').click();
+    await olivia.page.getByRole('menuitemradio', { name: 'Dawn', exact: true }).click();
+    await expect
+      .poll(async () => {
+        const c = await ownCameraColour(olivia.page);
+        return !!c && c.r > 200 && c.g > 160;
+      }, { timeout: 15_000 })
+      .toBe(true);
+  });
+
+  test('a colour filter changes the picture, alone or with a background', async ({ as }) => {
+    const owner = await apiAs('owner');
+    const olivia = await as('owner');
+    const call = await createCall(owner, `Colour ${Date.now()}`);
+    await joinCall(olivia.page, call.id);
+    await olivia.page.getByRole('button', { name: 'Turn your camera on' }).click();
+    await expect.poll(() => ownCameraColour(olivia.page), { timeout: 20_000 }).not.toBeNull();
+
+    // The fake camera is green; black and white leaves no colour in it.
+    const button = olivia.page.getByTestId('background-effects');
+    await button.click();
+    const menu = olivia.page.getByRole('menu', { name: 'Background effects' });
+    for (const name of ['Natural', 'Warm', 'Cool', 'Black & white', 'Vintage', 'Bright', 'Vivid']) {
+      await expect(menu.getByRole('menuitemradio', { name, exact: true })).toBeVisible();
+    }
+    await expect(menu.getByRole('menuitemradio', { name: 'Natural', exact: true })).toHaveAttribute('aria-checked', 'true');
+    await menu.getByRole('menuitemradio', { name: 'Black & white', exact: true }).click();
+    await expect(button).toHaveAttribute('aria-pressed', 'true');
+    const grey = async () => {
+      const c = await ownCameraColour(olivia.page);
+      return !!c && Math.abs(c.r - c.g) < 6 && Math.abs(c.g - c.b) < 6;
+    };
+    await expect.poll(grey, { timeout: 30_000 }).toBe(true);
+
+    // With a background too: Dawn, in black and white, is a light grey.
+    await button.click();
+    await menu.getByRole('menuitemradio', { name: 'Dawn', exact: true }).click();
+    await expect
+      .poll(async () => {
+        const c = await ownCameraColour(olivia.page);
+        return !!c && c.r > 150 && Math.abs(c.r - c.b) < 8;
+      }, { timeout: 30_000 })
+      .toBe(true);
+
+    // Remembered for the next call, like the background.
+    expect(await olivia.page.evaluate(() => localStorage.getItem('teamup.call.look'))).toBe('mono');
   });
 
   test('blur keeps the room but softens it', async ({ as }) => {

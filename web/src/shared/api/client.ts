@@ -335,6 +335,9 @@ export const channelsApi = {
     getList<{ userId: string; name: string; readAt: string }>(`/messages/${messageId}/reads`, 'reads'),
   removeMember: (id: string, userId: string) => api.delete(`/channels/${id}/members/${userId}`),
   markRead: (id: string, messageId: string) => api.post(`/channels/${id}/read`, { messageId }),
+  /** What you hear about from a conversation: every message, only mentions of you, or nothing. */
+  setNotifyLevel: (id: string, level: NotifyLevel) =>
+    api.put<{ notifyLevel: NotifyLevel }>(`/channels/${id}/notifications`, { level }),
   getMessages: (id: string, params?: { limit?: number; before?: string; after?: string }) => getList(`/channels/${id}/messages`, 'messages', params),
   /**
    * The newest day with anything in it before the cursor, as days fall where the
@@ -683,3 +686,6 @@ export const wizardApi = {
   step5: () => api.post('/wizard/step5'),
   testService: (service: 'minio' | 'livekit' | 'smtp', config: any) => api.post('/wizard/test-service', { service, ...config }),
 };
+
+/** What a member hears about from a conversation (the bell in its header). */
+export type NotifyLevel = 'all' | 'mentions' | 'none';

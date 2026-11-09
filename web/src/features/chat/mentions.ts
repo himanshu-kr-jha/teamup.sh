@@ -96,3 +96,8 @@ export function insertMention(text: string, start: number, caret: number, person
   const next = text.slice(0, start) + handle + text.slice(caret);
   return { text: next, caret: start + handle.length };
 }
+
+/** Whether a message names this person, by the same handles the server reads. */
+export function mentionsPerson(content: string, person: Mentionable): boolean {
+  return splitMentions(content, [person]).some((part) => 'person' in part);
+}

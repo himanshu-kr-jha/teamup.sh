@@ -45,6 +45,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.POST("/messages/:id/reactions", h.AddReaction)
 	rg.DELETE("/messages/:id/reactions/:emoji", h.RemoveReaction)
 	rg.POST("/channels/:id/read", h.MarkRead)
+	rg.PUT("/channels/:id/notifications", h.SetNotifyLevel)
 	rg.GET("/search/messages", h.SearchMessages)
 	rg.GET("/search/files", h.SearchFiles)
 }
@@ -743,6 +744,31 @@ func (h *Handler) MarkRead(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "read"})
+}
+
+// SetNotifyLevel is the bell in a conversation's header: what the caller hears
+// about from it.
+func (h *Handler) SetNotifyLevel(c *gin.Context) {
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	channelID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	var req struct {
+		Level string `json:"level" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := h.service.SetNotifyLevel(c.Request.Context(), channelID, cl.UserID, req.Level); err != nil {
+		httpx.Error(c, err, "failed to change notifications")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"notifyLevel": req.Level})
 }
 
 // ForwardMessage passes a message on to other conversations.

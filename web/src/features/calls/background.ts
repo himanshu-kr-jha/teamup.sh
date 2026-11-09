@@ -167,34 +167,112 @@ export function useBackgroundsSupported(): boolean | null {
   return supported;
 }
 
-const PROCESSOR_NAME = 'teamup-background';
+// ── Colour filters ────────────────────────────────────────────────────────
 
 /**
- * Keeps your camera's background as chosen: on whenever the camera is, through a
- * change of camera or a reconnect, switched in place when the choice changes, and
- * taken off entirely for none, so a plain camera costs nothing.
+ * The looks on offer: a canvas filter, as CSS writes it, and for the two that
+ * shift the colour a wash laid over the picture in soft light, which tints it the
+ * way a warm or a cool light would without turning skin a strange colour as
+ * rotating the hue does. Natural leaves the picture as it is.
  */
-export async function applyBackground(track: LocalVideoTrack, choice: BackgroundChoice): Promise<void> {
+export const LOOKS = [
+  { id: 'natural', label: 'Natural', filter: '', wash: '' },
+  { id: 'warm', label: 'Warm', filter: 'saturate(1.1) brightness(1.03)', wash: 'rgba(255, 150, 60, 0.32)' },
+  { id: 'cool', label: 'Cool', filter: 'saturate(0.95) brightness(1.04)', wash: 'rgba(70, 140, 255, 0.32)' },
+  { id: 'mono', label: 'Black & white', filter: 'grayscale(1) contrast(1.08)', wash: '' },
+  { id: 'vintage', label: 'Vintage', filter: 'sepia(0.55) contrast(0.95) brightness(1.04) saturate(0.85)', wash: '' },
+  { id: 'bright', label: 'Bright', filter: 'brightness(1.15) contrast(1.04) saturate(1.05)', wash: '' },
+  { id: 'vivid', label: 'Vivid', filter: 'saturate(1.45) contrast(1.06)', wash: '' },
+] as const;
+
+export type LookId = (typeof LOOKS)[number]['id'];
+
+const LOOK_KEY = 'teamup.call.look';
+
+function readLook(): LookId {
+  try {
+    const raw = localStorage.getItem(LOOK_KEY);
+    return LOOKS.some((l) => l.id === raw) ? (raw as LookId) : 'natural';
+  } catch {
+    return 'natural';
+  }
+}
+
+let currentLook: LookId | null = null;
+const lookNow = () => (currentLook ??= readLook());
+/** The look now, outside React. */
+export const currentLookChoice = lookNow;
+
+export function setLook(look: LookId) {
+  currentLook = look;
+  try {
+    localStorage.setItem(LOOK_KEY, look);
+  } catch {
+    // Not remembered, but still applied to this call.
+  }
+  listeners.forEach((l) => l());
+}
+
+export function useLook(): LookId {
+  return useSyncExternalStore(
+    (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    lookNow,
+    () => 'natural' as LookId
+  );
+}
+
+export const lookFilter = (id: LookId) => LOOKS.find((l) => l.id === id)?.filter ?? '';
+export const lookWash = (id: LookId) => LOOKS.find((l) => l.id === id)?.wash ?? '';
+
+/** Whether this browser can draw a frame through a filter; Safari before 18 cannot. */
+export function supportsLooks(): boolean {
+  try {
+    const ctx = new OffscreenCanvas(1, 1).getContext('2d');
+    return !!ctx && 'filter' in ctx;
+  } catch {
+    return false;
+  }
+}
+
+// ── Putting them on the camera ────────────────────────────────────────────
+
+/**
+ * Keeps your camera as chosen, background and look together: switched in place
+ * when either changes, so there is no flicker and no need to turn the camera off
+ * and on; and taken off entirely when both are plain, so a plain camera costs
+ * nothing. Call it only while the camera is live: a processor set on a camera
+ * that is off waits for a picture that is not coming.
+ */
+export async function applyCameraEffects(track: LocalVideoTrack, choice: BackgroundChoice, look: LookId): Promise<void> {
   const options = processorOptions(choice);
+  const filter = { filter: lookFilter(look), wash: lookWash(look) };
+  const plainLook = !filter.filter && !filter.wash;
   const running = track.getProcessor();
-  if (!options) {
+  if (!options && plainLook) {
     if (running) await track.stopProcessor();
     return;
   }
-  const m = await import('@livekit/track-processors');
-  if (running && running.name === PROCESSOR_NAME && running instanceof m.BackgroundProcessorWrapper) {
-    await running.switchTo(options);
+  const m = await import('./cameraProcessor');
+  const background: import('./cameraProcessor').BackgroundSetting = !options
+    ? null
+    : options.mode === 'background-blur'
+      ? { blurRadius: options.blurRadius ?? 10 }
+      : options.mode === 'virtual-background'
+        ? { imagePath: options.imagePath }
+        : null;
+  if (running && m.isCameraProcessor(running)) {
+    await m.updateCameraProcessor(running, background, filter);
     return;
   }
-  const processor = m.BackgroundProcessor(
-    {
-      ...options,
-      assetPaths: {
-        tasksVisionFileSet: __MEDIAPIPE_WASM__,
-        modelAssetPath: '/mediapipe/selfie_segmenter.tflite',
-      },
-    },
-    PROCESSOR_NAME
-  );
+  if (running) await track.stopProcessor();
+  const processor = m.createCameraProcessor(background, filter, {
+    tasksVisionFileSet: __MEDIAPIPE_WASM__,
+    modelAssetPath: '/mediapipe/selfie_segmenter.tflite',
+  });
+  const visible = m.shown(processor);
   await track.setProcessor(processor);
+  await visible;
 }

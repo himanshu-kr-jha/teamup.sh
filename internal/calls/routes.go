@@ -192,6 +192,11 @@ func (h *Handler) CreateCall(c *gin.Context) {
 	}
 	ringCtx := context.WithoutCancel(ctx)
 	name := callerName(user)
+	if id, err := uuid.Parse(user.UserID); err == nil {
+		if display := h.service.DisplayName(ctx, id); display != "" {
+			name = display
+		}
+	}
 	go h.service.Ring(ringCtx, call, user.UserID, name, inviteeIDs)
 
 	// Say so rather than quietly reaching a subset.
@@ -366,7 +371,9 @@ func (s *Service) endRecordThenRoom(ctx context.Context, orgID uuid.UUID, call *
 	return ended, nil
 }
 
-// callerName prefers something a callee will recognise over a bare id.
+// callerName is the fallback when the caller's name cannot be read: their
+// address, which a callee still recognises, rather than a bare id. The ring itself
+// says the name (DisplayName), as the call's own tiles do.
 func callerName(user *auth.UserContext) string {
 	if user.Email != "" {
 		return user.Email

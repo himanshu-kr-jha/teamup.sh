@@ -1,11 +1,12 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
-  Hash, Send, Paperclip, Smile, Bell, Settings, ChevronLeft, MessageSquare, User,
+  Hash, Send, Paperclip, Smile, Settings, ChevronLeft, MessageSquare, User,
   Megaphone, MoreVertical, Pencil, Trash2, Eye, Ban, Check, CheckCheck, PhoneMissed,
   MessagesSquare, X, Download, Phone, Forward, Mic, Video,
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
+import { NotifyMenu } from './NotifyMenu';
 import { Input } from '@/shared/components/ui/input';
 import { UserAvatar } from '@/shared/components/UserAvatar';
 import { cn, formatRelativeTime } from '@/shared/utils/cn';
@@ -1053,7 +1054,7 @@ export function ChatPage() {
               >
                 <Phone className="h-5 w-5" />
               </Button>
-              <Button variant="ghost" size="icon" aria-label="Notifications"><Bell className="h-5 w-5" /></Button>
+              <NotifyMenu channelId={activeChannel?.id} level={activeChannel?.notifyLevel} />
               <Button
                 variant="ghost"
                 size="icon"

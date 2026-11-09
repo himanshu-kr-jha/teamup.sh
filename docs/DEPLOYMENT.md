@@ -748,9 +748,14 @@ TeamUp serves both itself, so no call depends on a CDN and a network that blocks
 The runtime is about 9 MB a variant, 3 MB once nginx compresses it, and is fetched only by somebody who turns an effect on; its folder is named by version, so browsers keep it.
 The background pictures are drawn by `web/scripts/make-backgrounds.py` and live in `web/public/backgrounds/`; anybody can also add their own, which stays in their browser.
 A browser without WebGL or the media APIs the processor needs shows the button greyed out.
+The same menu has colour filters (warm, cool, black and white and others), applied in the same processor, so they work with or without a background; Safari before 18 cannot draw a filtered frame and does not offer them.
+MediaPipe's first run is slow, a fraction of a second with a graphics card and a few seconds without, so it is run once on a blank picture before the camera switches over: the camera keeps its plain picture meanwhile and the button shows a spinner until the effect is on screen.
+A change made while the camera is off is applied when it comes back on.
 
 The ring of an incoming call, the ringback the caller hears, the end of a call and a new message are recorded sounds in `web/public/sounds/`, levelled to the same loudness.
 The joined and knock chimes are still synthesised.
+The bell in a conversation's header sets what that conversation interrupts each member with: every message, only messages that mention them, or nothing, mentions included (`channel_members.notify_level`).
+Unread counts are kept whatever is chosen.
 
 ### Recording
 
