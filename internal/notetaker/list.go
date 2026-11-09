@@ -129,7 +129,7 @@ func (s *Service) Retry(ctx context.Context, orgID, callID, userID uuid.UUID, is
 		return err
 	}
 	// Claimed, so two clicks write them once.
-	tag, err := s.db.Exec(ctx, `UPDATE meeting_notes SET status = 'writing', error = NULL WHERE call_id = $1 AND status = 'failed'`, callID)
+	tag, err := s.db.Exec(ctx, `UPDATE meeting_notes SET status = 'writing', error = NULL, heartbeat_at = NOW() WHERE call_id = $1 AND status = 'failed'`, callID)
 	if err != nil {
 		return err
 	}
@@ -139,6 +139,8 @@ func (s *Service) Retry(ctx context.Context, orgID, callID, userID uuid.UUID, is
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
+		stop := s.keepAlive(callID)
+		defer stop()
 		s.compose(ctx, orgID, callID, set, "")
 	}()
 	return nil

@@ -75,13 +75,25 @@ type Service struct {
 	// GracePeriod is how long it waits in an empty room for somebody to come
 	// back before it writes the minutes.
 	GracePeriod time.Duration
+	// Heartbeat is how often a server says it is still at work on a call's
+	// notes, and StaleAfter how long without that before another takes them on.
+	Heartbeat  time.Duration
+	StaleAfter time.Duration
+
+	// The calls this server is taking notes in, so it never takes one twice, and
+	// so it can hand them over when it stops.
+	mu       sync.Mutex
+	sessions map[uuid.UUID]*session
+	stopping bool
+	running  sync.WaitGroup
 }
 
 // NewService builds the note-taker. baseURL is TeamUp's own address, for the
 // link in the email.
 func NewService(db *pgxpool.Pool, config ConfigStore, lk LiveKit, baseURL string, logger zerolog.Logger) *Service {
 	s := &Service{db: db, config: config, livekit: lk, baseURL: strings.TrimRight(baseURL, "/"), logger: logger,
-		now: time.Now, GracePeriod: 30 * time.Second}
+		now: time.Now, GracePeriod: 30 * time.Second, Heartbeat: 15 * time.Second, StaleAfter: 45 * time.Second,
+		sessions: map[uuid.UUID]*session{}}
 	s.join = s.joinRoom
 	return s
 }
@@ -118,9 +130,34 @@ func (s *Service) PersonJoined(ctx context.Context, orgID, callID uuid.UUID, roo
 	if tag.RowsAffected() == 0 {
 		return // already being taken, here or on another server
 	}
+	s.start(orgID, callID, roomName, set)
+}
+
+// start takes notes in a call, newly or carrying on from where another server
+// left off: what was said before is already saved, and this adds to it.
+func (s *Service) start(orgID, callID uuid.UUID, roomName string, set Settings) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sessions[callID] != nil {
+		return
+	}
+	if s.stopping {
+		go s.release(callID)
+		return
+	}
 	sess := &session{svc: s, orgID: orgID, callID: callID, roomName: roomName, settings: set,
 		recorders: map[string]*recorder{}, clips: make(chan Clip, 512), done: make(chan struct{})}
-	go sess.run()
+	s.sessions[callID] = sess
+	s.running.Add(1)
+	go func() {
+		defer s.running.Done()
+		defer func() {
+			s.mu.Lock()
+			delete(s.sessions, callID)
+			s.mu.Unlock()
+		}()
+		sess.run()
+	}()
 }
 
 // session is the note-taker in one call.
@@ -142,6 +179,9 @@ type session struct {
 
 	finishOnce sync.Once
 	done       chan struct{}
+	// Set when the server is stopping rather than the call ending: what was
+	// heard is saved and the notes are left for the next server to carry on.
+	handingOver bool
 }
 
 func (sess *session) run() {
@@ -167,8 +207,10 @@ func (sess *session) run() {
 	}
 
 	tick := time.NewTicker(300 * time.Millisecond)
+	beat := time.NewTicker(sess.svc.Heartbeat)
 	limit := time.NewTimer(10 * time.Hour)
 	defer tick.Stop()
+	defer beat.Stop()
 	defer limit.Stop()
 	sess.checkEmpty()
 loop:
@@ -180,6 +222,8 @@ loop:
 				r.Tick()
 			}
 			sess.mu.Unlock()
+		case <-beat.C:
+			sess.svc.beat(sess.callID)
 		case <-limit.C:
 			sess.finish()
 		case <-sess.done:
@@ -195,8 +239,19 @@ loop:
 	close(sess.clips)
 	workers.Wait()
 
+	sess.mu.Lock()
+	handingOver := sess.handingOver
+	sess.mu.Unlock()
+	if handingOver {
+		sess.svc.release(sess.callID)
+		log.Info().Msg("notetaker: handed over, for the next server to carry on")
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
+	stop := sess.svc.keepAlive(sess.callID)
+	defer stop()
 	sess.svc.writeMinutes(ctx, sess)
 }
 
@@ -302,6 +357,15 @@ func (sess *session) checkEmpty() {
 	if sess.grace == nil {
 		sess.grace = time.AfterFunc(sess.svc.GracePeriod, sess.finish)
 	}
+}
+
+// handOver stops listening because the server is stopping, not because the
+// call has ended.
+func (sess *session) handOver() {
+	sess.mu.Lock()
+	sess.handingOver = true
+	sess.mu.Unlock()
+	sess.finish()
 }
 
 func (sess *session) finish() {

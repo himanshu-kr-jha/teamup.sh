@@ -808,6 +808,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// What the status page shows for the last day. Every replica records four
 	// times a minute, and a failure any of them saw wins.
 	go statusService.Run(sweepCtx, 15*time.Second)
+	// Meeting notes another server left off, on its way out or because it died:
+	// carried on in the call, or written up if the call has ended.
+	go notetakerService.RunResume(sweepCtx, 20*time.Second)
 
 	// Graceful shutdown.
 	//
@@ -859,6 +862,10 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 
 	shutdownErr := srv.Shutdown(drainCtx)
+
+	// The note-taker saves what it has heard in each call and hands the call
+	// to whichever server comes next, while the database is still open.
+	notetakerService.Stop(drainCtx)
 	if shutdownErr != nil {
 		logger.Error().Err(shutdownErr).Msg("Drain did not finish within the grace period")
 	}
