@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 import { expect, test } from './support/fixtures';
-import { apiAs, dayParam, iso, idOf, localInput, sql } from './support/meetings';
+import { apiAs, dayParam, iso, idOf, localInput, openOnCalendar, sql } from './support/meetings';
 
 // Guests from outside the organization: the organizer makes a guest link for a
 // scheduled meeting, somebody with no account opens it, gives their name and
@@ -19,23 +19,6 @@ const hearing = (page: Page) =>
     })
   );
 
-/** Opens a meeting from today's calendar, also when it is folded among others at the same time. */
-async function openInToday(page: Page, title: string) {
-  await page.goto(`/calendar?view=day&date=${dayParam(new Date())}`);
-  const main = page.getByRole('main');
-  const direct = main.getByRole('button', { name: new RegExp(`^${title}`) });
-  const chips = main.getByRole('button', { name: /more at this time/ });
-  await expect.poll(async () => (await direct.count()) + (await chips.count()), { message: `${title} or a fold` }).toBeGreaterThan(0);
-  if (await direct.count()) return direct.first().click();
-  for (let i = 0; i < (await chips.count()); i++) {
-    await chips.nth(i).click();
-    const listed = page.getByRole('dialog').getByRole('button', { name: new RegExp(`^${title}`) });
-    if (await listed.count()) return listed.first().click();
-    await page.keyboard.press('Escape');
-  }
-  throw new Error(`${title} is not on today's calendar`);
-}
-
 test.describe('guests', () => {
   test('a guest joins a scheduled meeting by its link, name and passcode, and the organizer can remove them', async ({ as }) => {
     test.setTimeout(150_000);
@@ -51,7 +34,7 @@ test.describe('guests', () => {
 
     // The organizer makes the link from the meeting in the calendar.
     const olivia = await as('owner');
-    await openInToday(olivia.page, title);
+    await openOnCalendar(olivia.page, title);
     const dialog = olivia.page.getByRole('dialog');
     await dialog.getByRole('button', { name: 'Make guest links' }).click();
     const url = await dialog.getByLabel('Link with passcode', { exact: true }).inputValue();

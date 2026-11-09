@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 import { expect, test } from './support/fixtures';
-import { apiAs, at, dayParam, iso, idOf, leaveCall, localInput, sql, waitForLog } from './support/meetings';
+import { apiAs, at, dayParam, iso, idOf, leaveCall, localInput, openOnCalendar, sql, waitForLog } from './support/meetings';
 
 // Scheduling a meeting by its length, and a meeting that runs past its end showing
 // as extended on the calendar of whoever is still in it.
@@ -66,15 +66,17 @@ test.describe('scheduling by length', () => {
     // One made another way, an hour and a half long, keeps its length when edited.
     const long = `Workshop ${Date.now()}`;
     const created = await owner.post('/meetings', { title: long, startsAt: iso(at(5, 13)), endsAt: iso(at(5, 14, 30)), inviteeIds: [idOf('alice')] });
-    await olivia.page.reload();
-    await event(olivia.page, new RegExp(long)).click();
+    await openOnCalendar(olivia.page, long, day);
     await olivia.page.getByRole('button', { name: 'Edit' }).click();
     await expect(dialog.getByLabel('Duration', { exact: true })).toHaveText('1 h 30 min');
     await dialog.getByLabel('Name', { exact: true }).fill(`${long} moved`);
     await dialog.getByRole('button', { name: 'Save' }).click();
-    await expect(event(olivia.page, new RegExp(`${long} moved, 01:00 PM to 02:30 PM`))).toBeVisible();
+    await expect(dialog).toBeHidden();
+    // Read back rather than looked for: at a busy hour it may be folded among others.
     const after = (await owner.get(`/calendar?from=${iso(at(5, 0))}&to=${iso(at(6, 0))}`)).items as any[];
     const kept = after.find((i) => i.callId === created.meeting.id);
+    expect(kept.title).toBe(`${long} moved`);
+    expect(new Date(kept.startsAt).getTime()).toBe(at(5, 13).getTime());
     expect(new Date(kept.endsAt).getTime() - new Date(kept.startsAt).getTime()).toBe(90 * 60_000);
     await owner.dispose();
   });

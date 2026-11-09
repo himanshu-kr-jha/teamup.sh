@@ -147,3 +147,24 @@ export async function createCall(api: Api, title: string, invitees: string[] = [
 export async function requestStatus(ctx: APIRequestContext, path: string) {
   return (await ctx.get(`/api${path}`)).status();
 }
+
+/**
+ * Opens a meeting from a day's calendar (today's unless told), also when it is
+ * folded among others at the same time, as it is once the test database holds
+ * many meetings at that hour.
+ */
+export async function openOnCalendar(page: Page, title: string, day: Date = new Date()) {
+  await page.goto(`/calendar?view=day&date=${dayParam(day)}`);
+  const main = page.getByRole('main');
+  const direct = main.getByRole('button', { name: new RegExp(`^${title}`) });
+  const chips = main.getByRole('button', { name: /more at this time/ });
+  await expect.poll(async () => (await direct.count()) + (await chips.count()), { message: `${title} or a fold` }).toBeGreaterThan(0);
+  if (await direct.count()) return direct.first().click();
+  for (let i = 0; i < (await chips.count()); i++) {
+    await chips.nth(i).click();
+    const listed = page.getByRole('dialog').getByRole('button', { name: new RegExp(`^${title}`) });
+    if (await listed.count()) return listed.first().click();
+    await page.keyboard.press('Escape');
+  }
+  throw new Error(`${title} is not on the calendar for ${dayParam(day)}`);
+}
