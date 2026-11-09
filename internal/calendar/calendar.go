@@ -82,7 +82,8 @@ func (s *Service) SetLogger(l zerolog.Logger) {
 func (s *Service) SetClock(now func() time.Time) { s.clock = now }
 
 // Item is one stretch of somebody's time. Kind and the times are for everybody in
-// the organization; the rest is detail, for whoever has authority over them.
+// the organization, through availability and conflicts; the rest is detail, for
+// them and whoever has authority over them.
 type Item struct {
 	ID                string     `json:"id,omitempty"`
 	Kind              string     `json:"kind"` // busy, focus or open
@@ -127,9 +128,14 @@ func validateRange(from, to time.Time) error {
 	return nil
 }
 
-// Calendar is one person's items in a range, at the level the viewer may see.
-// Everybody in the organization sees the shape of somebody's day; a title is for
-// them and whoever outranks them.
+// Calendar is one person's items in a range, read in full: their own, or somebody
+// they answer for (decision 64). Anybody else is refused, and finds a colleague's
+// free time where it is needed, in Availability while scheduling.
+//
+// The detail is what the person themself sees, because a manager reads a report's
+// calendar to know what their time goes to. It is still somebody else's calendar:
+// nothing on it becomes the viewer's to change, which the write paths enforce by
+// owner and organizer, not by this read.
 func (s *Service) Calendar(ctx context.Context, orgID, viewerID, userID uuid.UUID, isOrgAdmin bool, from, to time.Time) ([]Item, error) {
 	if err := validateRange(from, to); err != nil {
 		return nil, err
@@ -143,9 +149,14 @@ func (s *Service) Calendar(ctx context.Context, orgID, viewerID, userID uuid.UUI
 	if !inOrg {
 		return nil, apperrors.ErrNotFound
 	}
-	detail, err := s.chart.HasAuthorityOver(ctx, orgID, viewerID, userID, isOrgAdmin)
+	allowed, err := s.chart.HasAuthorityOver(ctx, orgID, viewerID, userID, isOrgAdmin)
 	if err != nil {
 		return nil, err
+	}
+	if !allowed {
+		// Everybody in the organization can see this person is in it, so a 404
+		// would hide nothing and only mislead.
+		return nil, apperrors.New(apperrors.CodeForbidden, "you can only see your own calendar and those of the people you manage")
 	}
 	byPerson, err := s.loadItems(ctx, orgID, []uuid.UUID{userID}, from, to)
 	if err != nil {
@@ -153,10 +164,6 @@ func (s *Service) Calendar(ctx context.Context, orgID, viewerID, userID uuid.UUI
 	}
 	items := byPerson[userID]
 	for i := range items {
-		if !detail {
-			items[i] = items[i].shape()
-			continue
-		}
 		if items[i].CallID != nil {
 			readable, err := s.mayReadLog(ctx, orgID, viewerID, isOrgAdmin, items[i])
 			if err != nil {
@@ -166,6 +173,89 @@ func (s *Service) Calendar(ctx context.Context, orgID, viewerID, userID uuid.UUI
 		}
 	}
 	return items, nil
+}
+
+// CalendarPerson is somebody whose calendar the viewer may open.
+type CalendarPerson struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+}
+
+// CalendarGroup is one team of them, or, for an administrator, everybody else.
+type CalendarGroup struct {
+	TeamID *uuid.UUID       `json:"teamId,omitempty"`
+	Name   string           `json:"name"`
+	People []CalendarPerson `json:"people"`
+}
+
+// OthersGroup names the people an administrator may open who are on no team of
+// theirs.
+const OthersGroup = "Everybody else"
+
+// Viewable is whose calendars, besides their own, this person may open: the
+// people they answer for, by team and by the same rule as Calendar, and for
+// somebody with meetings.all everybody else in the organization too. Only active
+// people are offered; a deactivated person's calendar still opens by its link.
+func (s *Service) Viewable(ctx context.Context, orgID, viewerID uuid.UUID, isOrgAdmin bool) ([]CalendarGroup, error) {
+	teams, err := s.chart.Reports(ctx, orgID, viewerID)
+	if err != nil {
+		return nil, err
+	}
+	var ids []uuid.UUID
+	for _, team := range teams {
+		for _, m := range team.Members {
+			ids = append(ids, m.UserID)
+		}
+	}
+	active, err := s.activePeople(ctx, orgID, ids)
+	if err != nil {
+		return nil, err
+	}
+	isActive := make(map[uuid.UUID]bool, len(active))
+	for _, id := range active {
+		isActive[id] = true
+	}
+
+	groups := []CalendarGroup{}
+	listed := map[uuid.UUID]bool{viewerID: true}
+	for _, team := range teams {
+		group := CalendarGroup{TeamID: &team.ID, Name: team.Name, People: []CalendarPerson{}}
+		for _, m := range team.Members {
+			if isActive[m.UserID] {
+				listed[m.UserID] = true
+				group.People = append(group.People, CalendarPerson{ID: m.UserID, Name: m.Name})
+			}
+		}
+		if len(group.People) > 0 {
+			groups = append(groups, group)
+		}
+	}
+	if !isOrgAdmin {
+		return groups, nil
+	}
+
+	rows, err := s.db.Query(ctx, `
+		SELECT id, name FROM users
+		WHERE org_id = $1 AND deleted_at IS NULL AND COALESCE(is_active, true)
+		ORDER BY name, id
+	`, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("list people: %w", err)
+	}
+	everybody, err := pgx.CollectRows(rows, pgx.RowToStructByPos[CalendarPerson])
+	if err != nil {
+		return nil, fmt.Errorf("list people: %w", err)
+	}
+	rest := CalendarGroup{Name: OthersGroup, People: []CalendarPerson{}}
+	for _, p := range everybody {
+		if !listed[p.ID] {
+			rest.People = append(rest.People, p)
+		}
+	}
+	if len(rest.People) > 0 {
+		groups = append(groups, rest)
+	}
+	return groups, nil
 }
 
 // mayReadLog is the call log's rule (decisions 11 and 27) for something already on

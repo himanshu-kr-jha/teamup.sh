@@ -163,8 +163,8 @@ for (const viewport of VIEWPORTS) {
       await expect(alice.page.getByRole('main').getByRole('button', { name: /Design review|Deep work/ }).first()).toBeVisible();
       await shoot(alice, 'employee', 'calendar-own');
       await sam.page.goto(`/calendar?date=${today}&person=${idOf('alice')}`);
-      await expect(sam.page.getByText(/can see when .* is taken, but not what for/i)).toBeVisible();
-      await shoot(sam, 'employee-sam', 'calendar-others-no-titles');
+      await expect(sam.page.getByRole('alert')).toContainText('only see your own calendar');
+      await shoot(sam, 'employee-sam', 'calendar-others-refused');
       await mia.page.goto(`/calendar?date=${today}&person=${idOf('alice')}`);
       await expect(mia.page.getByRole('main').getByRole('button', { name: /Design review|Deep work/ }).first()).toBeVisible();
       await shoot(mia, 'manager', 'calendar-others-titles');

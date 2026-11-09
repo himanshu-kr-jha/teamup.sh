@@ -376,9 +376,11 @@ func TestAStandingMeetingIsOnEverybodysCalendarAndCountsAsAConflict(t *testing.T
 		t.Fatalf("the scrum is on my calendar at its time, got %+v", it)
 	}
 
-	w2, _ := w.calendar(t, w.as(t, colleague, "member"), alice)
-	if strings.Contains(w2.Body.String(), "Morning scrum") {
-		t.Errorf("no titles without authority, even for this: %s", w2.Body.String())
+	// A colleague finds the slot taken while scheduling, and not what for.
+	w2 := call(t, w.as(t, colleague, "member"), http.MethodGet, "/api/calendar/availability?userIds="+alice.String()+"&"+window(), nil)
+	want(t, w2, http.StatusOK)
+	if strings.Contains(w2.Body.String(), "Morning scrum") || !strings.Contains(w2.Body.String(), `"busy"`) {
+		t.Errorf("busy, with no title without authority, even for this: %s", w2.Body.String())
 	}
 
 	res := w.mustSchedule(t, organizer, "member", "Clash", at(9, 40), at(10, 0), alice)

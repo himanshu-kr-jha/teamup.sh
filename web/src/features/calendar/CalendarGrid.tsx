@@ -70,8 +70,9 @@ export function CalendarGrid({
   now: Date;
   view: CalendarView;
   onSelect: (item: CalendarItem) => void;
-  onEmptyClick: (slot: { start: Date; end: Date }) => void;
-  emptyClickLabel: string;
+  /** Left out for a calendar that is only to be read, such as a report's. */
+  onEmptyClick?: (slot: { start: Date; end: Date }) => void;
+  emptyClickLabel?: string;
 }) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pile, setPile] = useState<Segment[] | null>(null);
@@ -190,8 +191,8 @@ function DayColumn({
   view: CalendarView;
   onSelect: (item: CalendarItem) => void;
   onPile: (segments: Segment[]) => void;
-  onEmptyClick: (slot: { start: Date; end: Date }) => void;
-  emptyClickLabel: string;
+  onEmptyClick?: (slot: { start: Date; end: Date }) => void;
+  emptyClickLabel?: string;
 }) {
   // A wide day has room for more side by side than a seventh of a screen. Beyond
   // this a name is down to its first letters, so the rest go in a chip.
@@ -202,13 +203,17 @@ function DayColumn({
   const clicked = (event: MouseEvent<HTMLDivElement>) => {
     const box = event.currentTarget.getBoundingClientRect();
     const minute = ((event.clientY - box.top) / HOUR_HEIGHT) * 60;
-    onEmptyClick(slotFromOffset(day, minute));
+    onEmptyClick?.(slotFromOffset(day, minute));
   };
 
   return (
     <div className="relative border-l border-border" role="group" aria-label={format(day, 'EEEE, MMMM d')}>
       {/* The hour lines are the thing you click. Events sit on top of them. */}
-      <div className="absolute inset-0 cursor-pointer" title={emptyClickLabel} onClick={clicked}>
+      <div
+        className={cn('absolute inset-0', onEmptyClick && 'cursor-pointer')}
+        title={onEmptyClick ? emptyClickLabel : undefined}
+        onClick={onEmptyClick ? clicked : undefined}
+      >
         {HOURS.map((hour) => (
           <div
             key={hour}

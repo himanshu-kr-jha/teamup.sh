@@ -41,8 +41,9 @@ These are readings of an ambiguous request, and they are cheap to change.
 3. **Conflicts warn and do not refuse.**
    Scheduling over somebody's focus block or meeting shows who conflicts, and the organizer can go ahead.
 4. **Calendar visibility.**
-   Anybody in the organization sees another person's times and whether each is busy, focus or open, with no titles.
+   Anybody in the organization sees another person's times and whether each is busy, focus or open, with no titles, while scheduling (availability and conflicts).
    Whoever has authority over that person, by the existing `hasAuthorityOver`, sees titles and call details as well.
+   Reading somebody's whole calendar is decision 64.
 5. **Past calls show what really happened.**
    An unscheduled call appears on the calendar of everybody invited, with the time they were really in it where there is one.
 6. **Attendance comes from LiveKit webhooks, not from issuing a token.**
@@ -274,6 +275,16 @@ These are readings of an ambiguous request, and they are cheap to change.
     Everybody who was in the call gets a notification and, when mail is set up, an email; the minutes and transcript are at `/calls/:id/minutes` for them and for administrators.
     Keys are secrets, never sent back to a page; a blank key on save keeps the saved one.
     A note-taker on a server that stops mid-meeting is not taken over by another server: the transcript so far is kept, and that call gets no minutes.
+64. **A manager opens the calendars of the people they answer for, read-only; nobody else opens anybody's.**
+    Who counts is `HasAuthorityOver`, the rule tasks use: everybody on a team you run or on a team nested beneath it, never an administrator sitting on one, and with `meetings.all` everybody.
+    `GET /calendar?userId=` for anybody else is 403, because they are known to be in the organization; colleagues' free and busy time stays in scheduling, as decision 4 says.
+    A manager sees what the person sees: titles of meetings and blocks, organizer and invited people, and the log where the log's own rule allows it.
+    Detail is the point, since a manager reads a report's calendar to know what their time goes to, and it is what decision 4 already gave them through the old picker.
+    It is still the report's calendar: nothing on it can be blocked, edited, removed, joined or given a guest link from there, and the server refuses changes to somebody else's blocks whoever asks.
+    A meeting the manager organized is changed from their own calendar.
+    `GET /calendar/people` lists whose calendars may be opened, by team, each person once and only active people; an administrator also gets everybody else.
+    The page shows the picker only when that list is not empty, keeps the choice in `?person=`, and says whose calendar it is and that it is read-only.
+    Schedule stays on a report's calendar, with that person already invited, because the meeting is the manager's own.
 
 ## Non-goals
 
@@ -286,7 +297,8 @@ These are readings of an ambiguous request, and they are cheap to change.
 - `POST /api/livekit/webhook` - verified with the LiveKit signature, not a session.
 - `POST /calls/:id/knock`, `GET /calls/:id/requests`, `POST /calls/:id/requests/:rid/admit`, `POST /calls/:id/requests/:rid/deny`.
 - `GET /calls/:id/log` - the audit trail and per-person sessions.
-- `GET /calendar?userId=&from=&to=` - one person's calendar, at the level the caller may see.
+- `GET /calendar?userId=&from=&to=` - one person's calendar: your own, or somebody you have authority over (decision 64), else 403.
+- `GET /calendar/people` - whose calendars besides your own you may open, by team.
 - `GET /calendar/availability?userIds=&from=&to=` - free, busy, focus and open for scheduling.
 - `POST /calendar/blocks`, `PATCH /calendar/blocks/:id`, `DELETE /calendar/blocks/:id` - own focus blocks and open slots.
 - `POST /meetings`, `PATCH /meetings/:id`, `DELETE /meetings/:id` - scheduling, returning any conflicts.
@@ -295,7 +307,7 @@ These are readings of an ambiguous request, and they are cheap to change.
 
 ## Frontend
 
-- `/calendar`, in the sidebar and bottom navigation: a week view on a computer and a day view on a phone, with a person picker for anybody, and titles only where allowed.
+- `/calendar`, in the sidebar and bottom navigation: a week view on a computer and a day view on a phone, with a picker of the people you manage, by team, shown only to somebody who manages anybody, opening their calendars read-only.
 - Calls: copy link, knock screen, admit and deny prompt, join sound and toast, new grid, several shares, a call log panel.
 - Standing meetings: pinned at the top of Calls with a Join button, managed by admins, with an **Attendance** view by day.
 - Tasks: **Added to** on Overview, By person, Scrum and Contribution.

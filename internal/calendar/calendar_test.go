@@ -115,9 +115,9 @@ func TestOnlyTheOwnerOfABlockCanChangeOrRemoveIt(t *testing.T) {
 	}
 }
 
-// ── who sees what (decision 4) ────────────────────────────────────────────
+// ── who sees what (decisions 4 and 64) ────────────────────────────────────
 
-func TestVisibilityNoTitlesWithoutAuthority(t *testing.T) {
+func TestVisibilityOnlyWithAuthority(t *testing.T) {
 	e := newEnv(t)
 	alice := e.person(t, "Alice Archer", "member")
 	organizer := e.person(t, "Organizer Orla", "member")
@@ -134,28 +134,19 @@ func TestVisibilityNoTitlesWithoutAuthority(t *testing.T) {
 	seedPastCall(t, e, organizer, "Secret acquisition call", at(16, 0), at(17, 0), alice)
 	titles := []string{"Deep work on payroll", "Office hours secret", "Layoff planning", "Secret acquisition call"}
 
-	// Everybody in the organization sees the shape of the day.
+	// Somebody without authority is refused the calendar outright, and the
+	// refusal carries nothing of it.
 	for _, c := range []struct {
 		name string
 		id   uuid.UUID
 		role string
 	}{{"a colleague", colleague, "member"}, {"another team's manager", otherBoss, "manager"}} {
-		w, items := e.calendar(t, e.as(t, c.id, c.role), alice)
-		want(t, w, http.StatusOK)
+		w, _ := e.calendar(t, e.as(t, c.id, c.role), alice)
+		want(t, w, http.StatusForbidden)
 		for _, title := range titles {
 			if strings.Contains(w.Body.String(), title) {
 				t.Errorf("%s must not see %q: %s", c.name, title, w.Body.String())
 			}
-		}
-		kinds := map[string]int{}
-		for _, it := range items {
-			kinds[it.Kind]++
-			if it.Title != "" {
-				t.Errorf("%s: no title without authority, got %+v", c.name, it)
-			}
-		}
-		if kinds["focus"] != 1 || kinds["open"] != 1 || kinds["busy"] != 2 {
-			t.Errorf("%s: should see 1 focus, 1 open and 2 busy (a meeting and a call), got %v", c.name, kinds)
 		}
 	}
 
@@ -311,7 +302,7 @@ func TestAMeetingIsValidated(t *testing.T) {
 			t.Errorf("%s: want a refusal, got %d: %s", name, res.code, res.raw)
 		}
 	}
-	if items := e.mustCalendar(t, r, bob); len(items) != 0 {
+	if items := e.mustCalendar(t, e.as(t, bob, "member"), bob); len(items) != 0 {
 		t.Errorf("refused meetings are not stored, got %+v", items)
 	}
 }

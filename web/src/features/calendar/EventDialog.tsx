@@ -3,7 +3,7 @@ import { PERMS, can } from '@/shared/permissions';
 import { GuestAccess } from '@/features/calls/GuestAccess';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { CalendarClock, History, Loader2, Lock, Pencil, Timer, Trash2, Video } from 'lucide-react';
+import { CalendarClock, History, Loader2, Pencil, Timer, Trash2, Video } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog';
 import { calendarApi, meetingsApi } from '@/shared/api/client';
@@ -52,12 +52,18 @@ export function EventDialog({
   // The organizer is named on their own line.
   const invited = (item.inviteeIds ?? []).filter((id) => id !== item.organizerId);
   const nameOf = (id: string) => (id === user?.id ? 'You' : people.find((p) => p.id === id)?.name ?? 'Somebody');
-  const target = joinTarget(item, now);
+  // Somebody else's calendar is only to be read (decision 64): what is on it is
+  // changed, joined or shared from the calendar of whoever it belongs to.
+  const target = own ? joinTarget(item, now) : null;
   const ownBlock = own && item.source === 'block' && !!item.id;
   const isAdmin = can(user, PERMS.meetingsAll);
   // Both are checked again by the server, which is what really decides.
   const canChangeMeeting =
-    item.source === 'meeting' && item.status === 'scheduled' && !!item.callId && (item.organizerId === user?.id || isAdmin);
+    own &&
+    item.source === 'meeting' &&
+    item.status === 'scheduled' &&
+    !!item.callId &&
+    (item.organizerId === user?.id || isAdmin);
   // Nobody is offered a log that can only refuse them, as a standing meeting's does.
   const hasLog =
     !!item.callId && item.canReadLog !== false && (item.source === 'call' || item.status === 'active' || item.status === 'ended');
@@ -66,7 +72,6 @@ export function EventDialog({
     item.source === 'meeting' &&
     (item.status === 'scheduled' || stillOn) &&
     new Date(item.startsAt).getTime() - JOIN_EARLY_MINUTES * 60_000 > now.getTime();
-  const noDetail = !item.source;
 
   const sameDay = new Date(item.startsAt).toDateString() === new Date(item.endsAt).toDateString();
 
@@ -101,7 +106,7 @@ export function EventDialog({
           <div className="min-w-0 space-y-2 text-sm">
             <p className="flex items-center gap-2 text-muted-foreground">
               <CalendarClock className="h-4 w-4 shrink-0" aria-hidden="true" />
-              {item.source ? SOURCE_LABEL[item.source] ?? kindLabel(item.kind) : kindLabel(item.kind)}
+              {item.source === 'block' && !own ? kindLabel(item.kind) : SOURCE_LABEL[item.source ?? ''] ?? kindLabel(item.kind)}
               {item.status === 'ended' && !stillOn && ', finished'}
               {item.status === 'active' && ', happening now'}
             </p>
@@ -109,12 +114,6 @@ export function EventDialog({
               <p className="flex items-center gap-2 font-medium text-foreground">
                 <Timer className="h-4 w-4 shrink-0" aria-hidden="true" />
                 {extendedText(item)}
-              </p>
-            )}
-            {noDetail && (
-              <p className="flex items-center gap-2 text-muted-foreground">
-                <Lock className="h-4 w-4 shrink-0" aria-hidden="true" />
-                Only the times are shared with you.
               </p>
             )}
             {item.organizerId && (
@@ -129,13 +128,13 @@ export function EventDialog({
                 {invited.map(nameOf).join(', ')}
               </p>
             )}
-            {startsLater && (
+            {startsLater && own && (
               <p className="text-muted-foreground">You can join from {JOIN_EARLY_MINUTES} minutes before it starts.</p>
             )}
           </div>
 
           {/* Guests from outside, for a meeting that is still to come or on. */}
-          {item.source === 'meeting' && item.callId && (item.status === 'scheduled' || item.status === 'active' || stillOn) && (
+          {own && item.source === 'meeting' && item.callId && (item.status === 'scheduled' || item.status === 'active' || stillOn) && (
             <GuestAccess callId={item.callId} title={item.title} />
           )}
 

@@ -532,7 +532,7 @@ test.describe('6. calendar', () => {
     await api.dispose();
   });
 
-  test('others see busy time with no titles anywhere, and somebody with authority sees them', async ({ as }) => {
+  test('only somebody with authority opens a calendar, and scheduling sees busy time with no titles', async ({ as }) => {
     const aliceApi = await apiAs('alice');
     const olivia = await apiAs('owner');
     const day = at(2, 0);
@@ -547,7 +547,9 @@ test.describe('6. calendar', () => {
         if (res.url().includes('/api/calendar')) bodies.push(await res.text().catch(() => ''));
       });
       await s.page.goto(calendarUrl(day, idOf('alice')));
-      await expect(s.page.getByRole('main').getByRole('button', { name: /Busy|Secret project|Focus time/ }).first()).toBeVisible();
+      if (mayRead) await expect(s.page.getByRole('main').getByRole('button', { name: /Secret project/ }).first()).toBeVisible();
+      // Without authority there is no calendar to read at all (decision 64).
+      else await expect(s.page.getByRole('alert')).toContainText('only see your own calendar');
       await s.page.waitForTimeout(500);
       const dom = await s.page.getByRole('main').innerText();
       const aria = (await s.page.getByRole('main').getByRole('button').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') ?? ''))).join('\n');
@@ -564,12 +566,11 @@ test.describe('6. calendar', () => {
         }
       }
       if (!mayRead) {
-        await expect(s.page.getByText(/can see when .* is taken, but not what for/i)).toBeVisible();
         const api = await apiAs(who);
-        const raw = await api.get(`/calendar?userId=${idOf('alice')}&from=${iso(at(2, 0))}&to=${iso(at(3, 0))}`);
-        expect(raw.items.length).toBeGreaterThanOrEqual(2);
-        for (const item of raw.items) expect(Object.keys(item).sort(), 'only kind and times').toEqual(['endsAt', 'kind', 'startsAt']);
+        expect(await api.status('get', `/calendar?userId=${idOf('alice')}&from=${iso(at(2, 0))}&to=${iso(at(3, 0))}`)).toBe(403);
+        // Scheduling still finds her busy, and not what for.
         const avail = await api.get(`/calendar/availability?userIds=${idOf('alice')}&from=${iso(at(2, 0))}&to=${iso(at(3, 0))}`);
+        expect(JSON.stringify(avail)).toContain('"busy"');
         expect(JSON.stringify(avail)).not.toMatch(/Secret|Confidential|title/);
         await api.dispose();
       }
