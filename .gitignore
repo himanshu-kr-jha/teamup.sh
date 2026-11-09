@@ -113,3 +113,4 @@ backups/
 
 # Where scripts/deploy.sh deploys to. Server addresses stay out of the repository.
 .deploy.env
+.deploy.*.env

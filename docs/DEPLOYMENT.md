@@ -21,6 +21,25 @@ Disk depends on how many files people upload, because attachments dominate stora
 
 The other options are compared under [Alternatives](#alternatives).
 
+## The quick path: one script
+
+`scripts/new-server.sh` does the walkthrough below, steps 3 to 10, from your own machine in one go.
+Do steps 1 and 2 (DNS and the firewall) first, then run:
+
+```bash
+scripts/new-server.sh --host ubuntu@203.0.113.10 --key ~/keys/acme.pem --domain teamup.example.com
+```
+
+It asks for the organization's name and the owner's name, email and password, the password hidden.
+It installs `main` as it is on GitHub, writes `.env` with new random secrets, gets the certificate, and creates the organization from inside the server before the website is switched on, so nobody can reach the setup page first.
+It refuses a server that already has TeamUp.
+At the end it keeps a copy of the server's `.env` in `~/.teamup-servers/` and writes `.deploy.<name>.env`, so `make deploy ARGS="--env .deploy.<name>.env"` updates that server.
+A complete run on a fresh VM has not been verified yet; the organization step is the same one `scripts/create-org.sh` runs, which has.
+
+`scripts/create-org.sh` is that organization step on its own, for a server that is installed but not set up: for example after its data volumes were deleted for a fresh start.
+It reads the server from `.deploy.env` (or `--env FILE`), refuses a server that is already set up, and keeps the website off until the organization exists.
+Before it, `make deploy` on a server with an empty database needs Postgres running for its backup step: `docker compose up -d --wait postgres redis minio` on the server.
+
 ## Walkthrough: from a fresh Ubuntu VM to a working team
 
 This assumes Ubuntu 24.04 and a domain you control.
@@ -186,7 +205,7 @@ docker compose logs migrate
 
 ### 8. Run the setup wizard, straight away
 
-Open `https://teamup.example.com`.
+Open `https://teamup.example.com`, or run `scripts/create-org.sh` from your machine instead, which fills in the keys below from the server's `.env` itself.
 
 **Do this immediately.**
 The wizard needs no sign-in until it has been completed, so the first person to reach it owns the instance.

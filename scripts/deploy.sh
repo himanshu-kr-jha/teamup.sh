@@ -6,6 +6,8 @@
 #   scripts/deploy.sh --ref 56c6ac1        deploy an earlier commit of main, to roll back
 #   scripts/deploy.sh --domain new.host    also move to a new address (new IP, new DNS name)
 #   scripts/deploy.sh --check              only check the server and the commit, change nothing
+#   scripts/deploy.sh --env .deploy.acme.env   deploy to another server, such as one
+#                                          scripts/new-server.sh set up
 #
 # Options, each of which can also be set in .deploy.env (never committed):
 #   --host user@host     TEAMUP_DEPLOY_HOST   who to ssh in as, and where
@@ -32,7 +34,21 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-[ -f .deploy.env ] && . ./.deploy.env
+# Which server: .deploy.env, or the file --env names. Read before the other
+# options, so any of them still overrides it.
+DEPLOY_ENV=.deploy.env
+prev=""
+for arg in "$@"; do
+  [ "$prev" = --env ] && DEPLOY_ENV="$arg"
+  prev="$arg"
+done
+if [ "$DEPLOY_ENV" != .deploy.env ] && [ ! -f "$DEPLOY_ENV" ]; then
+  echo "deploy: no such file: $DEPLOY_ENV" >&2
+  exit 1
+fi
+case "$DEPLOY_ENV" in /*) ;; *) DEPLOY_ENV="./${DEPLOY_ENV#./}" ;; esac
+# shellcheck source=/dev/null
+[ -f "$DEPLOY_ENV" ] && . "$DEPLOY_ENV"
 
 HOST="${TEAMUP_DEPLOY_HOST:-}"
 KEY="${TEAMUP_DEPLOY_KEY:-}"
@@ -55,6 +71,7 @@ while [ $# -gt 0 ]; do
     --domain) DOMAIN="$2"; shift 2 ;;
     --email) EMAIL="$2"; shift 2 ;;
     --check) CHECK=1; shift ;;
+    --env) shift 2 ;;
     -h|--help) awk 'NR==1{next} /^#/{sub(/^#[[:space:]]?/,""); print; next} {exit}' "$0"; exit 0 ;;
     *) echo "Unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
@@ -86,7 +103,7 @@ step "Checking the server"
 "${SSH[@]}" "$HOST" "test -f '$DIR/.env' && test -f '$DIR/docker-compose.yml' && { docker compose version >/dev/null 2>&1 || sudo docker compose version >/dev/null; }" \
   || die "$HOST:$DIR does not look like a TeamUp install (no .env or compose file, or no Docker). Set it up with docs/DEPLOYMENT.md first."
 CURRENT="$("${SSH[@]}" "$HOST" "grep -E '^TEAMUP_(IMAGE|DOMAIN)=' '$DIR/.env'" || true)"
-echo "$CURRENT" | sed 's/^/  now: /'
+while IFS= read -r line; do echo "  now: $line"; done <<<"$CURRENT"
 if [ "$CHECK" = 1 ]; then
   echo "Check only: nothing changed."
   exit 0

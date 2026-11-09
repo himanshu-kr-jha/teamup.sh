@@ -89,7 +89,10 @@ Then `make deploy-check` should print the server's current image and address.
 # after the change is merged to main and pushed
 make deploy-check
 make deploy
+make deploy ARGS="--env .deploy.acme.env"   # another server, such as one scripts/new-server.sh set up
 ```
+
+Every finished change ships this way once it is on `main`: the live setup is the organization's real workspace, so it runs what `main` has.
 
 What `scripts/deploy.sh` does:
 
