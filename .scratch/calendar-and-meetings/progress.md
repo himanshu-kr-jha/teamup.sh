@@ -96,3 +96,4 @@ Who: orchestrator = Opus (plans, verifies, reports). Senior developer = Opus sub
 
 - 2026-11-08, orchestrator: ticket 55, role permissions made real and chosen from a checklist. Guests: direct link, rejoin, email invitations (ticket 54).
 - 2026-11-08, orchestrator: ticket 56, themed voice and video messages, loading screen and top bar.
+- 2026-11-09, agent: ticket 57, managers read the calendars of the people on their teams, read-only (decision 64); anybody else's calendar is now 403, and colleagues' free time stays in scheduling.

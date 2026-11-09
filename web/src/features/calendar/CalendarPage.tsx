@@ -204,7 +204,7 @@ export function CalendarPage() {
           <div className="flex w-full flex-wrap items-center gap-2 md:ml-auto md:w-auto">
             {groups.length > 0 && (
               <Select value={viewedId} onValueChange={(id) => setParam({ person: id === user?.id ? null : id })}>
-                <SelectTrigger className="h-9 min-w-0 flex-1 md:w-56 md:flex-none" aria-label="Whose calendar">
+                <SelectTrigger className="h-9 w-full min-w-0 md:w-56" aria-label="Whose calendar">
                   {/* Somebody opened by a link may not be in the list, and is still named. */}
                   <SelectValue>{own ? 'My calendar' : whose.name ?? 'Somebody else'}</SelectValue>
                 </SelectTrigger>
@@ -230,23 +230,26 @@ export function CalendarPage() {
                 Block time
               </Button>
             )}
-            <Button size="sm" className="h-9" onClick={() => newMeeting()}>
-              <CalendarPlus className="mr-1 h-4 w-4" aria-hidden="true" />
-              Schedule
-            </Button>
+            {!refused && (
+              <Button size="sm" className="h-9" onClick={() => newMeeting()}>
+                <CalendarPlus className="mr-1 h-4 w-4" aria-hidden="true" />
+                Schedule
+              </Button>
+            )}
           </div>
         </div>
 
         {/* Whose calendar this is can never be in doubt, nor that it is only to be read. */}
-        {!own && (
+        {!own && !refused && (
           <div
             className="flex min-w-0 items-center gap-2 rounded-md border border-primary/30 bg-primary/5 px-3 py-1.5 text-sm"
             data-testid="viewing-banner"
           >
             <Eye className="h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
-            <p className="min-w-0 flex-1 truncate">
+            {/* A long name wraps rather than cutting off "read-only" on a phone. */}
+            <p className="break-anywhere min-w-0 flex-1">
               <span className="font-medium">{possessive(whose.name)} calendar</span>
-              <span className="text-muted-foreground">, read-only</span>
+              <span className="whitespace-nowrap text-muted-foreground">, read-only</span>
             </p>
             <Button variant="ghost" size="sm" className="h-7 shrink-0 px-2" onClick={openMine}>
               Back to mine
@@ -266,7 +269,7 @@ export function CalendarPage() {
       {refused ? (
         <div role="alert" className="flex shrink-0 flex-wrap items-center justify-center gap-3 border-b border-border bg-muted/50 px-3 py-3 text-sm">
           <AlertTriangle className="h-4 w-4 text-destructive" aria-hidden="true" />
-          {apiErrorMessage(error, 'You cannot see this calendar.')}
+          You can only see your own calendar and those of the people you manage.
           <Button variant="outline" size="sm" onClick={openMine}>
             Open my calendar
           </Button>
@@ -294,7 +297,8 @@ export function CalendarPage() {
         </p>
       ) : null}
 
-      {view === 'month' ? (
+      {/* An empty grid would read as somebody with nothing on. */}
+      {refused ? null : view === 'month' ? (
         <MonthGrid
           days={days}
           anchor={anchor}

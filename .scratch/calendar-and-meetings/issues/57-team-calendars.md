@@ -38,3 +38,11 @@ In short:
 - `web/src/shared/components/ui/select.tsx`: `SelectLabel` for the team names.
 
 ## Comments
+
+2026-11-09, agent: built as above, on branch `feat/team-calendars`.
+Verified: Go, `internal/calendar/team_calendars_test.go` (yourself, a direct report, a report's meeting somebody else organized, a nested team, `meetings.all`, the owner, another team's person, a colleague, your own manager and an administrator on your team refused with 403, nobody's block changed by a manager, an administrator or the owner, the picker offering exactly the calendars that open), and every Go package.
+Web: `people.test.ts`, lint, types, all unit tests.
+Browser: `web/e2e/meetings.y-team-calendars.spec.ts` (picker by team, banner, read-only, day, week and month, reload, a nested team, back to mine, a refused link, an administrator, a phone in light and dark) and the whole suite, 130 passed.
+Looked at on a computer and a phone, light and dark: a long name in the banner now wraps instead of cutting off "read-only", the picker has its own row on a phone, and a refused link shows no empty grid.
+Also fixed: Vitest picked the time-zone test files by a glob that misses a checkout under a dot folder, so they ran in one zone and one failed; every file now runs in its own process.
+Not verified: a person on two of your teams is listed once (tested in Go only), and a very long team list in the picker (it scrolls, as every select does).

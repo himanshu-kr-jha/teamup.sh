@@ -133,7 +133,8 @@ test.describe('team calendars', () => {
       await expect(everybody.getByRole('option', { name: PEOPLE[who].name, exact: true })).toBeVisible();
     }
     await everybody.getByRole('option', { name: PEOPLE.sam.name, exact: true }).click();
-    await expect(banner(olivia.page)).toContainText(`${PEOPLE.sam.name}'s calendar, read-only`);
+    // A name ending in s takes only the apostrophe.
+    await expect(banner(olivia.page)).toContainText(`${PEOPLE.sam.name}' calendar, read-only`);
     await expect(event(olivia.page, SAM_BLOCK)).toBeVisible();
   });
 
