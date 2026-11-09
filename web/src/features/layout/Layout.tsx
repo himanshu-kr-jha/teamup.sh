@@ -14,6 +14,7 @@ import { cn } from "@/shared/utils/cn";
 import { OutageBanner } from "@/features/status/OutageBanner";
 import { TopProgress } from "@/shared/components/TopProgress";
 import { WelcomeTour } from "@/features/tour/WelcomeTour";
+import { InstallBanner } from "@/features/install/InstallApp";
 
 export function Layout() {
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
@@ -31,7 +32,10 @@ export function Layout() {
   return (
     <ActiveCallProvider>
       <TopProgress />
-      <div className="flex h-viewport overflow-hidden bg-background">
+      {/* Installed on a phone the app reaches the screen's edges (viewport-fit in
+          index.html), so it keeps clear of the status bar and, sideways, the notch.
+          The bottom is the bottom navigation's to keep clear of. */}
+      <div className="flex h-viewport overflow-hidden bg-background pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)] pt-[env(safe-area-inset-top)]">
         <Sidebar />
         {/* The sidebar is position:fixed, so it is out of the flex flow and the
           content column has to be offset by hand - otherwise every page renders
@@ -66,6 +70,8 @@ export function Layout() {
         <UpdateOffer />
         {/* A look around for somebody signing in for the first time. */}
         <WelcomeTour />
+        {/* On a phone, a suggestion to put TeamUp on the home screen. */}
+        <InstallBanner />
       </div>
     </ActiveCallProvider>
   );

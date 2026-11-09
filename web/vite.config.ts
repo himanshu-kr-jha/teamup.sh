@@ -58,15 +58,17 @@ export default defineConfig({
       // and offers the reload itself, so the plugin must not inject its own registration.
       registerType: 'prompt',
       injectRegister: false,
-      includeAssets: ['favicon.ico', 'robots.txt'],
+      includeAssets: ['favicon.svg', 'favicon-32.png', 'apple-touch-icon.png'],
       manifest: {
+        id: '/',
         name: 'TeamUp',
         short_name: 'TeamUp',
-        description: 'Self-hosted collaboration platform',
+        description: 'Chat, calls, meetings and tasks for your team',
+        categories: ['business', 'productivity'],
         theme_color: '#4f46e5',
         background_color: '#ffffff',
         display: 'standalone',
-        orientation: 'portrait-primary',
+        // No orientation: a call turned sideways should fill the screen.
         scope: '/',
         start_url: '/',
         icons: [

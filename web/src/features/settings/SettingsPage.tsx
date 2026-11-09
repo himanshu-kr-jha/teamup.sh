@@ -18,6 +18,7 @@ import { applyTheme } from '@/shared/theme';
 import { formatRelativeTime } from '@/shared/utils/cn';
 import { ProfilePicture } from './ProfilePicture';
 import { TourAgain } from '@/features/tour/TourAgain';
+import { InstallCard } from '@/features/install/InstallApp';
 
 export function SettingsPage() {
   const { user, refreshUser } = useAuth();
@@ -89,6 +90,7 @@ export function SettingsPage() {
             </CardContent>
           </Card>
 
+          <InstallCard />
           <TourAgain />
         </TabsContent>
 

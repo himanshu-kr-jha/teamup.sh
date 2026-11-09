@@ -21,7 +21,14 @@ export interface SessionOptions {
    * told it has seen the tour already, so it does not cover what a test is about.
    */
   tour?: boolean;
+  /** A phone's browser, touch and all, rather than a narrow desktop window. */
+  phone?: 'android' | 'iphone';
 }
+
+const PHONE_AGENTS = {
+  android: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36',
+  iphone: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Mobile/15E148 Safari/604.1',
+};
 
 // Network failures the browser reports as console errors even though the test
 // caused them on purpose (aborted or faked requests).
@@ -69,8 +76,9 @@ const SIGNED_OUT_PROBES = /status of 401 .*\/api\/auth\/(me|refresh)\b/;
 export async function openSession(browser: Browser, who: PersonKey | Person, options: SessionOptions = {}): Promise<Session> {
   const context = await browser.newContext({
     baseURL: BASE_URL,
-    viewport: { width: options.width ?? 1280, height: options.height ?? 800 },
+    viewport: { width: options.width ?? (options.phone ? 390 : 1280), height: options.height ?? (options.phone ? 844 : 800) },
     colorScheme: options.theme ?? 'light',
+    ...(options.phone ? { isMobile: true, hasTouch: true, userAgent: PHONE_AGENTS[options.phone] } : {}),
   });
   const theme = options.theme ?? 'light';
   await context.addInitScript((t) => {

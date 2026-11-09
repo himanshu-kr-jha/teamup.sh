@@ -2,10 +2,19 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/icons/icon-192.png" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="description" content="TeamUp - Self-hosted collaboration platform" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- viewport-fit=cover lets the app reach the phone's edges, and the layout
+         keeps clear of the notch and the home bar with the safe-area insets. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="description" content="TeamUp - chat, calls, meetings and tasks for your team" />
     <meta name="theme-color" content="#4f46e5" />
+    <!-- Added to an iPhone's home screen, it opens as an app of its own. -->
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="TeamUp" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
     <title>TeamUp</title>
     <script>
       // Here and not in the bundle, so a dark page never paints white first. The

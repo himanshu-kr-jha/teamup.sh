@@ -11,6 +11,7 @@ import { OfflineBanner } from '@/shared/components/OfflineBanner';
 import { LoadingScreen } from '@/shared/components/LoadingScreen';
 import { BrandingSync } from '@/features/branding/useBranding';
 import { registerServiceWorker } from './sw/register';
+import { watchInstall } from '@/features/install/install';
 import './styles/globals.css';
 
 const queryClient = new QueryClient({
@@ -26,6 +27,7 @@ const queryClient = new QueryClient({
 });
 
 registerServiceWorker();
+watchInstall();
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

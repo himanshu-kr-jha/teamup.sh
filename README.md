@@ -134,7 +134,7 @@ line-by-line detail.
   the organization's own colour and logo; profile pictures for everyone
 - **Status page** — `/status`, public, with 24 hours of history and a banner in
   the app while something is down
-- **PWA** — installable, works on a phone
+- **App on your phone** - installs to an Android or iPhone home screen and opens full screen; Android installs from a suggestion or Settings at a tap, an iPhone is shown the Share, Add to Home Screen steps (where notifications on an iPhone have to come from); icons drawn by `web/scripts/make-icons.mjs`
 - **Welcome tour** - a look around at first sign-in, a spotlight on each place, then turning on notifications and a welcome; once per person, kept by the server, and shown again from Settings
 - **Ops** — structured logs, Prometheus metrics, an honest `/readyz`, graceful
   shutdown that drains in-flight requests
