@@ -1,0 +1,232 @@
+import { useEffect, useState } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { AlertTriangle, CheckCircle2, ExternalLink, Github, Loader2, RefreshCw, Unplug } from 'lucide-react';
+import { Button } from '@/shared/components/ui/button';
+import { Input } from '@/shared/components/ui/input';
+import { Label } from '@/shared/components/ui/label';
+import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/card';
+import { integrationsApi, type CodeConnection } from '@/shared/api/client';
+import { apiErrorMessage } from '@/shared/api/errors';
+import { useToast } from '@/shared/hooks/useToast';
+
+/**
+ * Sends the browser to GitHub with the app's manifest. GitHub only takes it as
+ * a form posted to its own page, where the admin confirms making the app.
+ */
+function postManifest(action: string, manifest: string) {
+  const form = document.createElement('form');
+  form.method = 'post';
+  form.action = action;
+  const field = document.createElement('input');
+  field.type = 'hidden';
+  field.name = 'manifest';
+  field.value = manifest;
+  form.appendChild(field);
+  document.body.appendChild(form);
+  form.submit();
+}
+
+const OUTCOMES: Record<string, { ok: boolean; text: string }> = {
+  connected: { ok: true, text: 'GitHub is connected. Its repositories are listed under Projects.' },
+  failed: { ok: false, text: 'GitHub could not be connected. Please try again.' },
+};
+
+/** GitHub and Bitbucket, connected once for the whole organization. */
+export function IntegrationsTab({ outcome, onOutcomeSeen }: { outcome: string | null; onOutcomeSeen: () => void }) {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const { data, isLoading } = useQuery({ queryKey: ['integrations'], queryFn: () => integrationsApi.connections() });
+  const github = data?.data.find((c) => c.provider === 'github');
+
+  useEffect(() => {
+    if (!outcome) return;
+    const said = OUTCOMES[outcome];
+    if (said) (said.ok ? toast.success : toast.error)(said.text);
+    void queryClient.invalidateQueries({ queryKey: ['integrations'] });
+    onOutcomeSeen();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [outcome]);
+
+  if (isLoading) return <p className="text-sm text-muted-foreground">Loading integrations…</p>;
+
+  return (
+    <div className="max-w-3xl space-y-6">
+      <p className="text-sm text-muted-foreground">
+        Connect your organization&apos;s code once. Pull requests and commits that name a task, such as{' '}
+        <code className="rounded bg-muted px-1">PHO-12</code>, show on it and move it along, and reviewers are told here when
+        their review is wanted. Each person then links their own account under Settings.
+      </p>
+      {github && <GitHubCard connection={github} />}
+      <Card>
+        <CardHeader className="flex flex-row items-center gap-3 space-y-0">
+          <BitbucketMark />
+          <CardTitle className="text-base">Bitbucket</CardTitle>
+          <span className="ml-auto rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">Next</span>
+        </CardHeader>
+        <CardContent className="text-sm text-muted-foreground">
+          Bitbucket workspaces connect the same way, and are being built next.
+        </CardContent>
+      </Card>
+    </div>
+  );
+}
+
+function BitbucketMark() {
+  return (
+    <span className="flex h-5 w-5 items-center justify-center rounded bg-[#2684FF] text-[11px] font-bold text-white" aria-hidden="true">
+      B
+    </span>
+  );
+}
+
+function GitHubCard({ connection }: { connection: CodeConnection }) {
+  const toast = useToast();
+  const queryClient = useQueryClient();
+  const [organization, setOrganization] = useState('');
+  const [busy, setBusy] = useState<'connect' | 'sync' | 'disconnect' | null>(null);
+  const [confirming, setConfirming] = useState(false);
+
+  const connect = async () => {
+    setBusy('connect');
+    try {
+      const { data } = await integrationsApi.githubManifest(organization);
+      postManifest(data.action, data.manifest);
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not start connecting GitHub.'));
+      setBusy(null);
+    }
+  };
+
+  const sync = async () => {
+    setBusy('sync');
+    try {
+      const { data } = await integrationsApi.syncGitHub();
+      queryClient.setQueryData(['integrations'], (old: any) => (old ? { ...old, data: data.connections } : old));
+      await queryClient.invalidateQueries({ queryKey: ['repositories'] });
+      toast.success('Repositories brought up to date.');
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not read the repositories from GitHub.'));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const disconnect = async () => {
+    setBusy('disconnect');
+    try {
+      await integrationsApi.disconnect('github');
+      await queryClient.invalidateQueries({ queryKey: ['integrations'] });
+      await queryClient.invalidateQueries({ queryKey: ['repositories'] });
+      await queryClient.invalidateQueries({ queryKey: ['projects'] });
+      toast.success('GitHub disconnected. Remove the app on GitHub too, from its settings page.');
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not disconnect GitHub.'));
+    } finally {
+      setBusy(null);
+      setConfirming(false);
+    }
+  };
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center gap-3 space-y-0">
+        <Github className="h-5 w-5" aria-hidden="true" />
+        <CardTitle className="text-base">GitHub</CardTitle>
+        {connection.status === 'active' && (
+          <span className="ml-auto flex items-center gap-1 text-xs font-medium text-emerald-600">
+            <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+            Connected
+          </span>
+        )}
+      </CardHeader>
+      <CardContent className="space-y-4 text-sm">
+        {!connection.available ? (
+          <p role="alert" className="text-muted-foreground">
+            The server has no TEAMUP_AUTH_SECRET, so GitHub&apos;s keys could not be kept safe. Set it, then come back.
+          </p>
+        ) : connection.status === 'none' ? (
+          <>
+            <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
+              <li>Name your GitHub organization below and press Connect.</li>
+              <li>GitHub shows the app TeamUp needs. Press Create, as an owner of the organization.</li>
+              <li>Choose the repositories TeamUp may see, and Install.</li>
+            </ol>
+            <form
+              className="flex flex-col gap-2 sm:flex-row sm:items-end"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void connect();
+              }}
+            >
+              <div className="min-w-0 flex-1 space-y-2">
+                <Label htmlFor="githubOrg">GitHub organization</Label>
+                <Input
+                  id="githubOrg"
+                  value={organization}
+                  onChange={(e) => setOrganization(e.target.value)}
+                  placeholder="cognecto, as in github.com/cognecto"
+                />
+              </div>
+              <Button type="submit" disabled={!organization.trim() || busy !== null}>
+                {busy === 'connect' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" /> : <Github className="mr-2 h-4 w-4" aria-hidden="true" />}
+                Connect GitHub
+              </Button>
+            </form>
+          </>
+        ) : (
+          <>
+            <p>
+              {connection.status === 'pending' ? (
+                <>The app is made on GitHub but not installed yet.</>
+              ) : (
+                <>
+                  Connected to <span className="font-medium">{connection.account}</span>, seeing{' '}
+                  {connection.repositories === 1 ? '1 repository' : `${connection.repositories} repositories`}.
+                </>
+              )}
+            </p>
+            {connection.lastError && (
+              <p role="alert" className="flex gap-2 rounded-md border border-amber-500/40 bg-amber-50 p-2 text-amber-950 dark:bg-amber-950/40 dark:text-amber-100">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                {connection.lastError}
+              </p>
+            )}
+            {confirming ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="mr-auto">Disconnect GitHub? Links on tasks and linked accounts are removed.</span>
+                <Button variant="outline" size="sm" disabled={busy !== null} onClick={() => setConfirming(false)}>
+                  Keep it
+                </Button>
+                <Button variant="destructive" size="sm" disabled={busy !== null} onClick={disconnect}>
+                  {busy === 'disconnect' && <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" />}
+                  Disconnect
+                </Button>
+              </div>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {connection.installUrl && (
+                  <Button asChild size="sm" variant={connection.status === 'active' ? 'outline' : 'default'}>
+                    <a href={connection.installUrl}>
+                      <ExternalLink className="mr-2 h-4 w-4" aria-hidden="true" />
+                      {connection.status === 'active' ? 'Choose repositories on GitHub' : 'Install on GitHub'}
+                    </a>
+                  </Button>
+                )}
+                {connection.status === 'active' && (
+                  <Button size="sm" variant="outline" disabled={busy !== null} onClick={sync}>
+                    {busy === 'sync' ? <Loader2 className="mr-2 h-4 w-4 animate-spin" aria-hidden="true" /> : <RefreshCw className="mr-2 h-4 w-4" aria-hidden="true" />}
+                    Refresh repositories
+                  </Button>
+                )}
+                <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => setConfirming(true)}>
+                  <Unplug className="mr-2 h-4 w-4" aria-hidden="true" />
+                  Disconnect
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+      </CardContent>
+    </Card>
+  );
+}

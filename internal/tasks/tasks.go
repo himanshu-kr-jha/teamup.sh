@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"regexp"
@@ -58,9 +59,13 @@ func (s *Service) notifyAssignee(ctx context.Context, orgID, actorID uuid.UUID, 
 }
 
 type Task struct {
-	ID           uuid.UUID  `json:"id"`
-	OrgID        uuid.UUID  `json:"orgId"`
-	ProjectID    *uuid.UUID `json:"projectId,omitempty"`
+	ID          uuid.UUID  `json:"id"`
+	OrgID       uuid.UUID  `json:"orgId"`
+	ProjectID   *uuid.UUID `json:"projectId,omitempty"`
+	ProjectName string     `json:"projectName,omitempty"`
+	// Key names the task where it is talked about: PHO-12. A branch, commit or
+	// pull request that says it is linked to the task.
+	Key          string     `json:"key"`
 	ReporterID   uuid.UUID  `json:"reporterId"`
 	ReporterName string     `json:"reporterName,omitempty"`
 	AssigneeID   *uuid.UUID `json:"assigneeId,omitempty"`
@@ -121,10 +126,14 @@ type Attachment struct {
 }
 
 type TaskActivity struct {
-	ID        uuid.UUID `json:"id"`
-	TaskID    uuid.UUID `json:"taskId"`
-	UserID    uuid.UUID `json:"userId"`
-	UserName  string    `json:"userName,omitempty"`
+	ID     uuid.UUID `json:"id"`
+	TaskID uuid.UUID `json:"taskId"`
+	// Nil when nobody in TeamUp is known to have done it, as when GitHub moved
+	// the task for somebody who has not linked their account.
+	UserID   *uuid.UUID `json:"userId,omitempty"`
+	UserName string     `json:"userName,omitempty"`
+	// github or bitbucket when the change came from there; empty for a person's own.
+	Source    string    `json:"source,omitempty"`
 	Field     string    `json:"field"`
 	OldValue  string    `json:"oldValue"`
 	NewValue  string    `json:"newValue"`
@@ -180,18 +189,19 @@ func (s *Service) SetLogger(l zerolog.Logger) {
 // taskColumns keeps the reporter and assignee names alongside the row so a
 // board can render without a lookup per card.
 const taskColumns = `
-	SELECT t.id, t.org_id, t.project_id, t.reporter_id, rep.name,
+	SELECT t.id, t.org_id, t.project_id, COALESCE(prj.name, ''), COALESCE(t.task_key, ''), t.reporter_id, rep.name,
 	       t.assignee_id, COALESCE(asg.name, ''), t.title, COALESCE(t.description, ''),
 	       t.status, t.priority, t.task_type, t.story_points,
 	       t.due_date, t.start_date, t.completed_at, t.parent_task_id,
 	       COALESCE(t.position, 0), t.created_at, t.updated_at
 	FROM tasks t
 	JOIN users rep ON rep.id = t.reporter_id
-	LEFT JOIN users asg ON asg.id = t.assignee_id`
+	LEFT JOIN users asg ON asg.id = t.assignee_id
+	LEFT JOIN projects prj ON prj.id = t.project_id`
 
 func scanTask(row pgx.Row) (*Task, error) {
 	var t Task
-	err := row.Scan(&t.ID, &t.OrgID, &t.ProjectID, &t.ReporterID, &t.ReporterName,
+	err := row.Scan(&t.ID, &t.OrgID, &t.ProjectID, &t.ProjectName, &t.Key, &t.ReporterID, &t.ReporterName,
 		&t.AssigneeID, &t.AssigneeName, &t.Title, &t.Description,
 		&t.Status, &t.Priority, &t.TaskType, &t.StoryPoints,
 		&t.DueDate, &t.StartDate, &t.CompletedAt, &t.ParentTaskID,
@@ -323,7 +333,7 @@ func (s *Service) ListTasks(ctx context.Context, orgID uuid.UUID, f Filters) ([]
 	tasks := []Task{}
 	for rows.Next() {
 		var t Task
-		if err := rows.Scan(&t.ID, &t.OrgID, &t.ProjectID, &t.ReporterID, &t.ReporterName,
+		if err := rows.Scan(&t.ID, &t.OrgID, &t.ProjectID, &t.ProjectName, &t.Key, &t.ReporterID, &t.ReporterName,
 			&t.AssigneeID, &t.AssigneeName, &t.Title, &t.Description,
 			&t.Status, &t.Priority, &t.TaskType, &t.StoryPoints,
 			&t.DueDate, &t.StartDate, &t.CompletedAt, &t.ParentTaskID,
@@ -599,14 +609,19 @@ func (s *Service) CreateTask(ctx context.Context, orgID, reporterID uuid.UUID, t
 	}
 	defer tx.Rollback(ctx)
 
+	key, err := nextTaskKey(ctx, tx, orgID, projectID)
+	if err != nil {
+		return nil, err
+	}
+
 	id := uuid.New()
 	_, err = tx.Exec(ctx, `
 		INSERT INTO tasks (id, org_id, project_id, reporter_id, assignee_id, title, description,
-		                   status, priority, task_type, due_date, start_date, completed_at, created_at, updated_at)
+		                   status, priority, task_type, due_date, start_date, completed_at, created_at, updated_at, task_key)
 		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), $8, $9, $10, $11, $12,
-		        CASE WHEN $13::boolean THEN NOW() END, NOW(), NOW())
+		        CASE WHEN $13::boolean THEN NOW() END, NOW(), NOW(), $14)
 	`, id, orgID, projectID, reporterID, assigneeID, title, description,
-		status, priority, taskType, dueDate, startDate, status == "done")
+		status, priority, taskType, dueDate, startDate, status == "done", key)
 	if err != nil {
 		return nil, fmt.Errorf("create task: %w", err)
 	}
@@ -637,6 +652,35 @@ func (s *Service) CreateTask(ctx context.Context, orgID, reporterID uuid.UUID, t
 	}
 	s.notifyAssignee(ctx, orgID, reporterID, created)
 	return created, nil
+}
+
+// DefaultKeyPrefix starts the key of a task in no project.
+const DefaultKeyPrefix = "TASK"
+
+// nextTaskKey hands out the next key for a task in this project, or in none.
+// The counter row is locked by the update, so two tasks made at once in the
+// same project never share a number.
+func nextTaskKey(ctx context.Context, tx pgx.Tx, orgID uuid.UUID, projectID *uuid.UUID) (string, error) {
+	prefix := DefaultKeyPrefix
+	if projectID != nil {
+		err := tx.QueryRow(ctx, `SELECT key FROM projects WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
+			*projectID, orgID).Scan(&prefix)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", apperrors.New(apperrors.CodeNotFound, "project not found")
+		}
+		if err != nil {
+			return "", fmt.Errorf("find project: %w", err)
+		}
+	}
+	var n int
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO task_key_counters (org_id, prefix, last_number) VALUES ($1, $2, 1)
+		ON CONFLICT (org_id, prefix) DO UPDATE SET last_number = task_key_counters.last_number + 1
+		RETURNING last_number
+	`, orgID, prefix).Scan(&n); err != nil {
+		return "", fmt.Errorf("number task: %w", err)
+	}
+	return fmt.Sprintf("%s-%d", prefix, n), nil
 }
 
 // GetTask is organization-scoped: an id from another tenant reads as
@@ -1598,11 +1642,11 @@ func (s *Service) RemoveLabel(ctx context.Context, orgID, taskID, labelID uuid.U
 // GetActivities returns the task's history, most recent first.
 func (s *Service) GetActivities(ctx context.Context, orgID, taskID uuid.UUID) ([]TaskActivity, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT a.id, a.task_id, a.user_id, u.name, a.field,
+		SELECT a.id, a.task_id, a.user_id, COALESCE(u.name, ''), COALESCE(a.source, ''), a.field,
 		       COALESCE(a.old_value, ''), COALESCE(a.new_value, ''), a.created_at
 		FROM task_activities a
 		JOIN tasks t ON t.id = a.task_id
-		JOIN users u ON u.id = a.user_id
+		LEFT JOIN users u ON u.id = a.user_id
 		WHERE a.task_id = $1 AND t.org_id = $2
 		ORDER BY a.created_at DESC
 	`, taskID, orgID)
@@ -1614,7 +1658,7 @@ func (s *Service) GetActivities(ctx context.Context, orgID, taskID uuid.UUID) ([
 	activities := []TaskActivity{}
 	for rows.Next() {
 		var a TaskActivity
-		if err := rows.Scan(&a.ID, &a.TaskID, &a.UserID, &a.UserName, &a.Field,
+		if err := rows.Scan(&a.ID, &a.TaskID, &a.UserID, &a.UserName, &a.Source, &a.Field,
 			&a.OldValue, &a.NewValue, &a.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan activity: %w", err)
 		}

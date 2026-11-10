@@ -5,7 +5,7 @@ import { Label } from '@/shared/components/ui/label';
 import { Textarea } from '@/shared/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
 import { FormDialog } from '@/shared/components/FormDialog';
-import { tasksApi } from '@/shared/api/client';
+import { projectsApi, tasksApi } from '@/shared/api/client';
 import { endOfDueDay } from './dueDate';
 
 interface Props {
@@ -15,6 +15,7 @@ interface Props {
 }
 
 const UNASSIGNED = 'unassigned';
+const NO_PROJECT = 'none';
 
 export function CreateTaskDialog({ open, onOpenChange, onCreated }: Props) {
   const queryClient = useQueryClient();
@@ -24,6 +25,9 @@ export function CreateTaskDialog({ open, onOpenChange, onCreated }: Props) {
   const [taskType, setTaskType] = useState('task');
   const [assigneeId, setAssigneeId] = useState(UNASSIGNED);
   const [dueDate, setDueDate] = useState('');
+  const [projectId, setProjectId] = useState(NO_PROJECT);
+  const { data: projectsData } = useQuery({ queryKey: ['projects'], queryFn: () => projectsApi.list(), enabled: open });
+  const projects = projectsData?.data ?? [];
 
   // Only the people the org chart will actually accept: offering everybody
   // meant filling in the whole form and being refused on submit.
@@ -41,6 +45,7 @@ export function CreateTaskDialog({ open, onOpenChange, onCreated }: Props) {
     setTaskType('task');
     setAssigneeId(UNASSIGNED);
     setDueDate('');
+    setProjectId(NO_PROJECT);
   };
 
   return (
@@ -61,6 +66,7 @@ export function CreateTaskDialog({ open, onOpenChange, onCreated }: Props) {
           priority,
           taskType,
           assigneeId: assigneeId === UNASSIGNED ? undefined : assigneeId,
+          projectId: projectId === NO_PROJECT ? undefined : projectId,
           // The API takes RFC3339; a date input gives us a plain day.
           dueDate: dueDate ? endOfDueDay(dueDate) : undefined,
         });
@@ -104,6 +110,23 @@ export function CreateTaskDialog({ open, onOpenChange, onCreated }: Props) {
             </SelectContent>
           </Select>
         </div>
+
+        {projects.length > 0 && (
+          <div className="space-y-2">
+            <Label htmlFor="taskProject">Project</Label>
+            <Select value={projectId} onValueChange={setProjectId}>
+              <SelectTrigger id="taskProject"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NO_PROJECT}>No project</SelectItem>
+                {projects.map((p) => (
+                  <SelectItem key={p.id} value={p.id}>
+                    {p.name} <span className="font-mono text-xs text-muted-foreground">{p.key}</span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
 
         <div className="space-y-2">
           <Label htmlFor="taskAssignee">Assignee</Label>

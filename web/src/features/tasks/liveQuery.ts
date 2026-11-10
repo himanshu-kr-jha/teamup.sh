@@ -13,5 +13,7 @@ export function refreshTasksFor(client: QueryClient, notification: { data?: { ta
   if (!taskId) return;
   client.invalidateQueries({ queryKey: ['tasks'] });
   client.invalidateQueries({ queryKey: ['task', taskId] });
+  client.invalidateQueries({ queryKey: ['task-code', taskId] });
+  client.invalidateQueries({ queryKey: ['task-activities', taskId] });
   client.invalidateQueries({ queryKey: ['dashboard'] });
 }

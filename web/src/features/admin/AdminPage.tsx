@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Users,
@@ -14,10 +15,14 @@ import {
   Mail,
   Palette,
   NotebookPen,
+  FolderGit2,
+  Plug,
 } from 'lucide-react';
 import { MailSettingsTab, mailProblemText } from './MailSettingsTab';
 import { AppearanceTab } from './AppearanceTab';
 import { NotetakerTab } from './NotetakerTab';
+import { ProjectsTab } from './ProjectsTab';
+import { IntegrationsTab } from './IntegrationsTab';
 import { RolesTab, roleSummary, usePermissionCatalog, withinReach } from './RolesTab';
 import { PERMS, can } from '@/shared/permissions';
 import { UserAvatar } from '@/shared/components/UserAvatar';
@@ -52,7 +57,10 @@ import { PresenceDot } from '@/features/presence/PresenceDot';
  */
 export function AdminPage() {
   const { user } = useAuth();
-  const [tab, setTab] = useState('members');
+  // Back from GitHub, the Integrations tab says how it went.
+  const [params, setParams] = useSearchParams();
+  const githubOutcome = params.get('github');
+  const [tab, setTab] = useState(() => params.get('tab') ?? (githubOutcome ? 'integrations' : 'members'));
   const may = {
     settings: can(user, PERMS.orgSettings),
     members: can(user, PERMS.members),
@@ -92,6 +100,8 @@ export function AdminPage() {
           {may.settings && <TabsTrigger value="email"><Mail className="mr-2 h-4 w-4" />Email</TabsTrigger>}
           {may.settings && <TabsTrigger value="appearance"><Palette className="mr-2 h-4 w-4" />Appearance</TabsTrigger>}
           {may.notes && <TabsTrigger value="notes"><NotebookPen className="mr-2 h-4 w-4" />Meeting notes</TabsTrigger>}
+          <TabsTrigger value="projects"><FolderGit2 className="mr-2 h-4 w-4" />Projects</TabsTrigger>
+          {may.settings && <TabsTrigger value="integrations"><Plug className="mr-2 h-4 w-4" />Integrations</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="members" className="p-4 md:p-6">
@@ -122,6 +132,26 @@ export function AdminPage() {
         {may.notes && (
           <TabsContent value="notes" className="p-4 md:p-6">
             <NotetakerTab />
+          </TabsContent>
+        )}
+        <TabsContent value="projects" className="p-4 md:p-6">
+          <ProjectsTab canManage={may.settings} />
+        </TabsContent>
+        {may.settings && (
+          <TabsContent value="integrations" className="p-4 md:p-6">
+            <IntegrationsTab
+              outcome={githubOutcome}
+              onOutcomeSeen={() =>
+                setParams(
+                  (current) => {
+                    const next = new URLSearchParams(current);
+                    next.delete('github');
+                    return next;
+                  },
+                  { replace: true }
+                )
+              }
+            />
           </TabsContent>
         )}
       </Tabs>

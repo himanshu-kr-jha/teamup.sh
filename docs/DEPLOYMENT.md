@@ -867,6 +867,18 @@ The wizard writes three values to the server's `.env` and restarts TeamUp:
 The client's authorized redirect URI is `https://<your domain>/api/calendar/google/callback`.
 It is a separate client from Google sign-in on purpose: setting it up does not offer "Sign in with Google".
 
+## GitHub
+
+An administrator connects the organization's GitHub from Organization → Integrations.
+TeamUp makes its own GitHub App inside the GitHub organization, from a manifest, so there is nothing to copy by hand: the administrator names the organization, confirms on GitHub as one of its owners, and picks the repositories to install it on.
+The app's keys are sealed in the database under `AUTH_SECRET`, which must therefore be set, and kept.
+
+Each person then links the GitHub account they work with under Settings → Connected accounts.
+Pull requests, reviews and commits that name a task's key (`PHO-12`, in a branch, a title or a commit message) are linked to it and move it forward: opened to In progress, waiting for review to In review, and merged to Done once every pull request on the task is merged.
+Reviewers, authors and people mentioned on GitHub are notified in TeamUp.
+
+GitHub sends its events to `https://<your domain>/api/integrations/github/hook/<key>`, so the server must be reachable from the internet.
+
 ## Troubleshooting
 
 These are all things that were hit while testing this guide, except the last three, which come from earlier work.

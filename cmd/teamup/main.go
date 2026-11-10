@@ -30,6 +30,7 @@ import (
 	"github.com/teamup/teamup/internal/chat"
 	"github.com/teamup/teamup/internal/files"
 	"github.com/teamup/teamup/internal/gcal"
+	"github.com/teamup/teamup/internal/integrations"
 	"github.com/teamup/teamup/internal/mail"
 	"github.com/teamup/teamup/internal/notetaker"
 	"github.com/teamup/teamup/internal/notifications"
@@ -225,6 +226,10 @@ type Config struct {
 	GCalTokenKey     string `env:"TEAMUP_GCAL_TOKEN_KEY"`
 	// Replaces Google's addresses. For tests only.
 	GCalEndpoint string `env:"TEAMUP_GCAL_ENDPOINT"`
+
+	// Replace GitHub's addresses. For tests only.
+	GitHubWebURL string `env:"TEAMUP_GITHUB_WEB_URL"`
+	GitHubAPIURL string `env:"TEAMUP_GITHUB_API_URL"`
 
 	// SMTP (optional)
 	SMTPHost     string `env:"TEAMUP_SMTP_HOST"`
@@ -521,6 +526,14 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("google calendar: %w", err)
 	}
 	gcalService.SetLogger(logger)
+	integrationsService := integrations.NewService(dbPool, integrations.Config{
+		BaseURL:         cfg.BaseURL,
+		Secret:          cfg.AuthSecret,
+		InsecureCookies: cfg.InsecureCookies,
+		GitHubWeb:       cfg.GitHubWebURL,
+		GitHubAPI:       cfg.GitHubAPIURL,
+	}, tasksService)
+	integrationsService.SetLogger(logger)
 	// A meeting scheduled, moved or cancelled in TeamUp follows into Google.
 	calendarService.OnMeetingsChanged(func(people []uuid.UUID) { gcalService.Nudge(people...) })
 
@@ -604,6 +617,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	notetakerService.SetMailer(mailService)
 	callsService.SetJoinHook(notetakerService.PersonJoined)
 	tasksService.SetNotifier(notificationsService)
+	integrationsService.SetNotifier(notificationsService)
 	calendarService.SetNotifier(notificationsService)
 	// People from outside invited by email are emailed, and told when the
 	// meeting moves or is cancelled.
@@ -728,6 +742,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 			tasks.RegisterRoutes(protected, tasksService)
 			calendar.RegisterRoutes(protected, calendarService)
 			gcal.RegisterRoutes(protected, api, gcalService)
+			integrations.RegisterRoutes(protected, api, integrationsService)
 			notetaker.RegisterRoutes(protected, notetakerService)
 		}
 

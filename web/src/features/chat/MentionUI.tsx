@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { orgApi } from '@/shared/api/client';
+import { orgApi, projectsApi } from '@/shared/api/client';
+import { Link } from 'react-router-dom';
 import { UserAvatar } from '@/shared/components/UserAvatar';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { cn } from '@/shared/utils/cn';
@@ -27,8 +28,20 @@ export function useMentionables(): Array<Mentionable & { avatarUrl?: string }> {
 export function MessageText({ content, isOwn }: { content: string; isOwn: boolean }) {
   const people = useMentionables();
   const { user } = useAuth();
+  const keys = useTaskKeyPrefixes();
   const withMentions = (text: string) =>
-    splitMentions(text, people).map((part, i) =>
+    splitMentions(text, people)
+      .flatMap((part): Piece[] => ('person' in part ? [part] : splitTaskKeys(part.text, keys)))
+      .map((part, i) =>
+      'key' in part ? (
+        <Link
+          key={i}
+          to={`/tasks/${part.key}`}
+          className={cn('rounded px-0.5 font-mono text-[0.92em] font-medium underline-offset-2 hover:underline', isOwn ? 'bg-primary-foreground/20' : 'bg-muted')}
+        >
+          {part.text}
+        </Link>
+      ) :
       'person' in part ? (
         <span
           key={i}
@@ -54,6 +67,30 @@ export function MessageText({ content, isOwn }: { content: string; isOwn: boolea
       <LinkedText text={content} onPrimary={isOwn} renderText={withMentions} />
     </p>
   );
+}
+
+type Piece = { text: string } | { text: string; key: string } | { text: string; person: Mentionable };
+
+/** The keys tasks are named with here: each project's, and TASK for work in none. */
+function useTaskKeyPrefixes(): Set<string> {
+  const { data } = useQuery({ queryKey: ['projects'], queryFn: () => projectsApi.list(), staleTime: 5 * 60_000 });
+  return useMemo(() => new Set(['TASK', ...(data?.data ?? []).map((p) => p.key)]), [data]);
+}
+
+const TASK_KEY = /\b([A-Za-z][A-Za-z0-9]{1,9})-(\d{1,7})\b/g;
+
+/** Text cut into plain runs and the task keys in it, such as PHO-12. */
+export function splitTaskKeys(text: string, prefixes: Set<string>): Array<{ text: string } | { text: string; key: string }> {
+  const out: Array<{ text: string } | { text: string; key: string }> = [];
+  let last = 0;
+  for (const m of text.matchAll(TASK_KEY)) {
+    if (!prefixes.has(m[1].toUpperCase())) continue;
+    if (m.index! > last) out.push({ text: text.slice(last, m.index) });
+    out.push({ text: m[0], key: `${m[1].toUpperCase()}-${m[2]}` });
+    last = m.index! + m[0].length;
+  }
+  if (last < text.length) out.push({ text: text.slice(last) });
+  return out;
 }
 
 /** The people offered while an @-word is being typed, above the message box. */

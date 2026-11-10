@@ -21,6 +21,7 @@ import { AttachmentChip } from '@/features/files/AttachmentChip';
 import { MentionTextarea } from '@/features/chat/MentionTextarea';
 import { MessageText } from '@/features/chat/MentionUI';
 import { PersonAvatar } from '@/shared/components/UserAvatar';
+import { DevelopmentCard } from './DevelopmentCard';
 import { PeoplePicker, addEach, addLabel } from '@/shared/components/PeoplePicker';
 import { useUpload } from '@/features/files/useUpload';
 import { StagedFiles, type StagedFile } from '@/features/files/StagedFiles';
@@ -32,6 +33,7 @@ import { liveTaskQuery } from './liveQuery';
 interface Task {
   id: string;
   title: string;
+  key?: string;
   description: string;
   status: 'todo' | 'in_progress' | 'in_review' | 'done' | 'blocked';
   priority: 'low' | 'medium' | 'high' | 'urgent';
@@ -69,7 +71,36 @@ const priorityColors = {
 const statuses = ['todo', 'in_progress', 'in_review', 'done', 'blocked'] as const;
 const priorities = ['low', 'medium', 'high', 'urgent'] as const;
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * A task, by its id or by its key: a link written PHO-12 in a comment or a
+ * pull request opens it too, and lands on its usual address.
+ */
 export function TaskDetailPage() {
+  const { taskId } = useParams<{ taskId: string }>();
+  if (taskId && !UUID.test(taskId)) return <TaskByKey taskKey={taskId} />;
+  return <TaskDetailView />;
+}
+
+function TaskByKey({ taskKey }: { taskKey: string }) {
+  const navigate = useNavigate();
+  const { data, error } = useQuery({ queryKey: ['task-by-key', taskKey], queryFn: () => tasksApi.get(taskKey), retry: false });
+  useEffect(() => {
+    if (data?.data?.id) navigate(`/tasks/${data.data.id}`, { replace: true });
+  }, [data, navigate]);
+  if (error) {
+    return (
+      <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
+        <p className="font-medium">There is no task {taskKey.toUpperCase()}.</p>
+        <Button variant="outline" onClick={() => navigate('/tasks')}>Back to tasks</Button>
+      </div>
+    );
+  }
+  return <p className="p-6 text-sm text-muted-foreground">Opening {taskKey.toUpperCase()}…</p>;
+}
+
+function TaskDetailView() {
   const { taskId } = useParams<{ taskId: string }>();
   // Only the people the org chart will actually accept. Offering everybody in
   // the organisation meant the picker could hand back a name the PATCH refuses.
@@ -238,6 +269,12 @@ export function TaskDetailPage() {
                     ) : (
                       <h1 className="break-anywhere text-2xl font-bold">{task.title}</h1>
                     )}
+                    {task.key && (
+                      <p className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+                        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs font-medium" data-testid="task-key">{task.key}</span>
+                        {task.projectName && <span>{task.projectName}</span>}
+                      </p>
+                    )}
                     {restriction && (
                       <p className="mt-2 rounded-md border border-dashed border-border bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
                         {restriction}
@@ -305,6 +342,9 @@ export function TaskDetailPage() {
                     </Badge>
                   ))}
                 </div>
+
+                {/* What was done for it in GitHub, under what it is. */}
+                {task.key && <DevelopmentCard taskId={taskId!} taskKey={task.key} title={task.title} />}
               </div>
 
               {/* Sidebar */}
@@ -651,7 +691,10 @@ function ActivityList({ taskId }: { taskId: string }) {
           <History className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
           <div className="min-w-0 flex-1">
             <p className="break-anywhere">
-              <span className="font-medium">{a.userName || 'Someone'}</span> changed{' '}
+              <span className="font-medium">
+                {a.source === 'github' ? (a.userName ? `${a.userName}, through GitHub,` : 'GitHub') : a.userName || 'Someone'}
+              </span>{' '}
+              {a.source ? 'moved' : 'changed'}{' '}
               <span className="font-medium">{a.field}</span>
               {a.oldValue ? <> from <span className="text-muted-foreground">{shorten(a.oldValue)}</span></> : null}
               {a.newValue ? <> to <span className="text-muted-foreground">{shorten(a.newValue)}</span></> : null}

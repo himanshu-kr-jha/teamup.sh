@@ -716,3 +716,99 @@ export const wizardApi = {
 
 /** What a member hears about from a conversation (the bell in its header). */
 export type NotifyLevel = 'all' | 'mentions' | 'none';
+
+// ── projects and code ─────────────────────────────────────────────────────
+
+export interface ProjectRepo {
+  id: string;
+  provider: 'github' | 'bitbucket';
+  fullName: string;
+  url: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  /** What its tasks are keyed with: PHO-12. */
+  key: string;
+  description: string;
+  repositories: ProjectRepo[];
+  openTasks: number;
+}
+
+export const projectsApi = {
+  list: () => getList<Project>('/projects', 'projects'),
+  create: (data: { name: string; key: string; description?: string }) => api.post<Project>('/projects', data),
+  update: (id: string, data: { name?: string; description?: string }) => api.patch(`/projects/${id}`, data),
+  archive: (id: string) => api.delete(`/projects/${id}`),
+  setRepositories: (id: string, repositoryIds: string[]) => api.put(`/projects/${id}/repositories`, { repositoryIds }),
+};
+
+export interface CodeConnection {
+  provider: 'github' | 'bitbucket';
+  /** False when the server has no secret to keep app keys with. */
+  available: boolean;
+  status: 'none' | 'pending' | 'active' | 'broken';
+  account?: string;
+  appUrl?: string;
+  installUrl?: string;
+  repositories: number;
+  lastError?: string;
+}
+
+export interface Repository extends ProjectRepo {
+  private: boolean;
+  projectId?: string;
+}
+
+export interface LinkedAccount {
+  provider: 'github' | 'bitbucket';
+  /** Empty until they link theirs. */
+  login: string;
+  linkedAt: string;
+}
+
+export interface CodePerson {
+  login: string;
+  userId?: string;
+  name?: string;
+}
+
+export interface CodePullRequest {
+  id: string;
+  repository: string;
+  number: number;
+  title: string;
+  state: 'open' | 'draft' | 'merged' | 'closed';
+  url: string;
+  branch: string;
+  checks?: 'passing' | 'failing' | 'pending' | '';
+  author: CodePerson;
+  reviewers: Array<CodePerson & { state: 'requested' | 'approved' | 'changes_requested' | 'commented' }>;
+  openedAt: string;
+  mergedAt?: string;
+}
+
+export interface CodeCommit {
+  repository: string;
+  sha: string;
+  message: string;
+  url: string;
+  branch: string;
+  author: CodePerson;
+  committedAt: string;
+}
+
+export const integrationsApi = {
+  connections: () => getList<CodeConnection>('/integrations', 'connections'),
+  /** Where to post the GitHub App's manifest, and the manifest. */
+  githubManifest: (organization: string) => api.post<{ action: string; manifest: string }>('/integrations/github/manifest', { organization }),
+  syncGitHub: () => api.post<{ connections: CodeConnection[] }>('/integrations/github/sync'),
+  disconnect: (provider: string) => api.delete(`/integrations/${provider}`),
+  repositories: () => getList<Repository>('/integrations/repositories', 'repositories'),
+  myAccounts: () => getList<LinkedAccount>('/integrations/me', 'accounts'),
+  linkGitHub: () => api.post<{ url: string }>('/integrations/github/identity'),
+  unlink: (provider: string) => api.delete(`/integrations/me/${provider}`),
+  taskCode: (taskId: string) =>
+    api.get<{ pullRequests: CodePullRequest[]; commits: CodeCommit[]; connected: boolean }>(`/tasks/${taskId}/code`),
+};

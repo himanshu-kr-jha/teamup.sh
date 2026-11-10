@@ -1,0 +1,300 @@
+package integrations
+
+import (
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/url"
+
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+
+	"github.com/teamup/teamup/internal/auth"
+	"github.com/teamup/teamup/internal/httpx"
+	apperrors "github.com/teamup/teamup/pkg/errors"
+)
+
+func decodeJSON(res *http.Response, out any) error {
+	return json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(out)
+}
+
+const (
+	manifestCookie = "gh_manifest"
+	identityCookie = "gh_identity"
+	cookiePath     = "/api/integrations/github"
+)
+
+type handler struct{ s *Service }
+
+// RegisterRoutes adds the routes. GitHub's own calls, and the browser coming
+// back from github.com without the SameSite=Strict session, are public; each
+// proves itself with a signature or a signed state and a nonce cookie.
+func RegisterRoutes(protected, public *gin.RouterGroup, s *Service) {
+	h := &handler{s: s}
+	protected.GET("/integrations", h.admin(h.connections))
+	protected.POST("/integrations/github/manifest", h.admin(h.manifest))
+	protected.POST("/integrations/github/sync", h.admin(h.sync))
+	protected.DELETE("/integrations/:provider", h.admin(h.disconnect))
+	protected.GET("/integrations/repositories", h.repositories)
+	protected.PUT("/projects/:id/repositories", h.admin(h.setProjectRepositories))
+	protected.GET("/integrations/me", h.identities)
+	protected.POST("/integrations/github/identity", h.identityStart)
+	protected.DELETE("/integrations/me/:provider", h.unlink)
+	protected.GET("/tasks/:id/code", h.taskCode)
+
+	public.GET("/integrations/github/created", h.created)
+	public.GET("/integrations/github/installed/:hookKey", h.installed)
+	public.GET("/integrations/github/identity/callback", h.identityDone)
+	public.POST("/integrations/github/hook/:hookKey", h.hook)
+}
+
+func caller(c *gin.Context) (orgID, userID uuid.UUID, ok bool) {
+	u := auth.GetUserFromContext(c)
+	orgID, e1 := uuid.Parse(u.OrgID)
+	userID, e2 := uuid.Parse(u.UserID)
+	if e1 != nil || e2 != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return uuid.Nil, uuid.Nil, false
+	}
+	return orgID, userID, true
+}
+
+// admin lets through only somebody who manages the organization's settings.
+func (h *handler) admin(next gin.HandlerFunc) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if !auth.GetUserFromContext(c).Can(auth.PermOrgSettings) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "only an administrator can manage integrations and projects"})
+			return
+		}
+		next(c)
+	}
+}
+
+func (h *handler) setCookie(c *gin.Context, name, value string, life int) {
+	http.SetCookie(c.Writer, &http.Cookie{Name: name, Value: value, Path: cookiePath, MaxAge: life,
+		HttpOnly: true, Secure: !h.s.cfg.InsecureCookies, SameSite: http.SameSiteLaxMode})
+}
+
+func (h *handler) back(c *gin.Context, page, param, outcome string) {
+	c.Redirect(http.StatusFound, h.s.base()+page+"?"+param+"="+url.QueryEscape(outcome))
+}
+
+func (h *handler) connections(c *gin.Context) {
+	orgID, _, ok := caller(c)
+	if !ok {
+		return
+	}
+	list, err := h.s.Connections(c.Request.Context(), orgID)
+	if err != nil {
+		httpx.Error(c, err, "failed to read integrations")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"connections": list})
+}
+
+func (h *handler) manifest(c *gin.Context) {
+	orgID, userID, ok := caller(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Organization string `json:"organization"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	action, manifest, nonce, err := h.s.GitHubManifest(c.Request.Context(), orgID, userID, req.Organization)
+	if err != nil {
+		httpx.Error(c, err, "failed to start connecting github")
+		return
+	}
+	h.setCookie(c, manifestCookie, nonce, 3600)
+	c.JSON(http.StatusOK, gin.H{"action": action, "manifest": manifest})
+}
+
+func (h *handler) created(c *gin.Context) {
+	nonce, _ := c.Cookie(manifestCookie)
+	h.setCookie(c, manifestCookie, "", -1)
+	next, err := h.s.GitHubCreated(c.Request.Context(), c.Query("state"), nonce, c.Query("code"))
+	if err != nil {
+		h.s.logger.Warn().Err(err).Msg("making the github app failed")
+		h.back(c, "/organization", "github", "failed")
+		return
+	}
+	c.Redirect(http.StatusFound, next)
+}
+
+func (h *handler) installed(c *gin.Context) {
+	if c.Query("installation_id") == "" {
+		h.back(c, "/organization", "github", "failed")
+		return
+	}
+	if err := h.s.GitHubInstalled(c.Request.Context(), c.Param("hookKey"), c.Query("installation_id")); err != nil {
+		h.s.logger.Warn().Err(err).Msg("recording the github installation failed")
+		h.back(c, "/organization", "github", "failed")
+		return
+	}
+	h.back(c, "/organization", "github", "connected")
+}
+
+func (h *handler) sync(c *gin.Context) {
+	orgID, _, ok := caller(c)
+	if !ok {
+		return
+	}
+	if err := h.s.SyncNow(c.Request.Context(), orgID); err != nil {
+		httpx.Error(c, err, "failed to read repositories from github")
+		return
+	}
+	h.connections(c)
+}
+
+func (h *handler) disconnect(c *gin.Context) {
+	orgID, _, ok := caller(c)
+	if !ok {
+		return
+	}
+	if err := h.s.Disconnect(c.Request.Context(), orgID, c.Param("provider")); err != nil {
+		httpx.Error(c, err, "failed to disconnect")
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *handler) repositories(c *gin.Context) {
+	orgID, _, ok := caller(c)
+	if !ok {
+		return
+	}
+	list, err := h.s.Repositories(c.Request.Context(), orgID)
+	if err != nil {
+		httpx.Error(c, err, "failed to list repositories")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"repositories": list})
+}
+
+func (h *handler) setProjectRepositories(c *gin.Context) {
+	orgID, _, ok := caller(c)
+	if !ok {
+		return
+	}
+	projectID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid project id"})
+		return
+	}
+	var req struct {
+		RepositoryIDs []uuid.UUID `json:"repositoryIds"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	if err := h.s.SetProjectRepositories(c.Request.Context(), orgID, projectID, req.RepositoryIDs); err != nil {
+		httpx.Error(c, err, "failed to set the project's repositories")
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *handler) identities(c *gin.Context) {
+	orgID, userID, ok := caller(c)
+	if !ok {
+		return
+	}
+	list, err := h.s.Identities(c.Request.Context(), orgID, userID)
+	if err != nil {
+		httpx.Error(c, err, "failed to read linked accounts")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"accounts": list})
+}
+
+func (h *handler) identityStart(c *gin.Context) {
+	orgID, userID, ok := caller(c)
+	if !ok {
+		return
+	}
+	address, nonce, err := h.s.GitHubIdentityURL(c.Request.Context(), orgID, userID)
+	if err != nil {
+		httpx.Error(c, err, "failed to start linking github")
+		return
+	}
+	h.setCookie(c, identityCookie, nonce, 900)
+	c.JSON(http.StatusOK, gin.H{"url": address})
+}
+
+func (h *handler) identityDone(c *gin.Context) {
+	nonce, _ := c.Cookie(identityCookie)
+	h.setCookie(c, identityCookie, "", -1)
+	if c.Query("error") != "" {
+		h.back(c, "/settings", "github", "declined")
+		return
+	}
+	if err := h.s.GitHubIdentityDone(c.Request.Context(), c.Query("state"), nonce, c.Query("code")); err != nil {
+		h.s.logger.Warn().Err(err).Msg("linking a github account failed")
+		outcome := "failed"
+		if apperrors.IsCode(err, apperrors.CodeConflict) {
+			outcome = "taken"
+		}
+		h.back(c, "/settings", "github", outcome)
+		return
+	}
+	h.back(c, "/settings", "github", "linked")
+}
+
+func (h *handler) unlink(c *gin.Context) {
+	_, userID, ok := caller(c)
+	if !ok {
+		return
+	}
+	if err := h.s.Unlink(c.Request.Context(), userID, c.Param("provider")); err != nil {
+		httpx.Error(c, err, "failed to unlink")
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *handler) taskCode(c *gin.Context) {
+	orgID, _, ok := caller(c)
+	if !ok {
+		return
+	}
+	taskID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid task id"})
+		return
+	}
+	code, err := h.s.ForTask(c.Request.Context(), orgID, taskID)
+	if err != nil {
+		httpx.Error(c, err, "failed to read the task's code")
+		return
+	}
+	c.JSON(http.StatusOK, code)
+}
+
+// hook takes an event from GitHub. Answered at once; GitHub retries anything
+// that is not a 2xx, and a retry of one already acted on is ignored.
+func (h *handler) hook(c *gin.Context) {
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 25<<20))
+	if err != nil {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+	err = h.s.GitHubEvent(c.Request.Context(), c.Param("hookKey"), c.GetHeader("X-GitHub-Event"),
+		c.GetHeader("X-GitHub-Delivery"), c.GetHeader("X-Hub-Signature-256"), body)
+	switch {
+	case err == nil:
+		c.Status(http.StatusNoContent)
+	case errors.Is(err, ErrBadSignature):
+		c.Status(http.StatusUnauthorized)
+	case errors.Is(err, apperrors.ErrNotFound):
+		c.Status(http.StatusNotFound)
+	default:
+		h.s.logger.Warn().Err(err).Str("event", c.GetHeader("X-GitHub-Event")).Msg("github event failed")
+		c.Status(http.StatusInternalServerError)
+	}
+}

@@ -17,6 +17,7 @@ import { FormDialog } from '@/shared/components/FormDialog';
 import { applyTheme } from '@/shared/theme';
 import { formatRelativeTime } from '@/shared/utils/cn';
 import { ProfilePicture } from './ProfilePicture';
+import { ConnectedAccounts } from './ConnectedAccounts';
 import { TourAgain } from '@/features/tour/TourAgain';
 import { InstallCard } from '@/features/install/InstallApp';
 
@@ -90,6 +91,7 @@ export function SettingsPage() {
             </CardContent>
           </Card>
 
+          <ConnectedAccounts />
           <InstallCard />
           <TourAgain />
         </TabsContent>

@@ -20,6 +20,7 @@ import { PersonAvatar } from '@/shared/components/UserAvatar';
 
 interface Task {
   id: string;
+  key?: string;
   title: string;
   description: string;
   status: 'todo' | 'in_progress' | 'in_review' | 'done' | 'blocked';
@@ -381,6 +382,7 @@ function TaskCard({ task, onUpdate }: { task: Task; onUpdate: (data: { id: strin
           to={`/tasks/${task.id}`}
           className="min-w-0 flex-1 break-anywhere text-sm font-medium hover:underline"
         >
+          {task.key && <span className="mr-1.5 font-mono text-xs font-normal text-muted-foreground">{task.key}</span>}
           {task.title}
         </Link>
         <DropdownMenu>

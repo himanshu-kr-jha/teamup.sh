@@ -48,6 +48,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.POST("/scrums", h.SaveScrum)
 	rg.GET("/scrums", h.ListScrums)
 	rg.GET("/scrums/:id", h.GetScrum)
+	registerProjectRoutes(rg, h)
 }
 
 type caller struct {
@@ -255,9 +256,15 @@ func (h *Handler) GetTask(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, ok := pathUUID(c, "id")
-	if !ok {
-		return
+	// A task can be opened by its key too, as in a link written PHO-12.
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		byKey, keyErr := h.service.TaskByKey(c.Request.Context(), cl.OrgID, c.Param("id"))
+		if keyErr != nil {
+			httpx.Error(c, keyErr, "task not found")
+			return
+		}
+		id = byKey.ID
 	}
 	task, err := h.service.GetTaskFor(c.Request.Context(), cl.OrgID, id, cl.UserID,
 		auth.GetUserFromContext(c).Can(auth.PermTasksAll))
