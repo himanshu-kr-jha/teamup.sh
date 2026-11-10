@@ -49,6 +49,9 @@ export TEAMUP_GCAL_ENDPOINT="http://127.0.0.1:$E2E_GOOGLE_PORT"
 # GitHub, faked by meetings.y-github.spec.ts on this port.
 export E2E_GITHUB_PORT="${E2E_GITHUB_PORT:-18092}"
 export TEAMUP_GITHUB_WEB_URL="http://127.0.0.1:$E2E_GITHUB_PORT" TEAMUP_GITHUB_API_URL="http://127.0.0.1:$E2E_GITHUB_PORT"
+# Bitbucket, faked by meetings.y-bitbucket.spec.ts on this port.
+export E2E_BITBUCKET_PORT="${E2E_BITBUCKET_PORT:-18093}"
+export TEAMUP_BITBUCKET_WEB_URL="http://127.0.0.1:$E2E_BITBUCKET_PORT" TEAMUP_BITBUCKET_API_URL="http://127.0.0.1:$E2E_BITBUCKET_PORT"
 export TEAMUP_SETUP_OIDC_PROVIDER=google TEAMUP_SETUP_GOOGLE_CLIENT_ID=e2e.apps.googleusercontent.com TEAMUP_SETUP_GOOGLE_CLIENT_SECRET=unused
 
 cd "$ROOT"

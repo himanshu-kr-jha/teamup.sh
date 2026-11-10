@@ -60,7 +60,8 @@ export function AdminPage() {
   // Back from GitHub, the Integrations tab says how it went.
   const [params, setParams] = useSearchParams();
   const githubOutcome = params.get('github');
-  const [tab, setTab] = useState(() => params.get('tab') ?? (githubOutcome ? 'integrations' : 'members'));
+  const bitbucketOutcome = params.get('bitbucket');
+  const [tab, setTab] = useState(() => params.get('tab') ?? (githubOutcome || bitbucketOutcome ? 'integrations' : 'members'));
   const may = {
     settings: can(user, PERMS.orgSettings),
     members: can(user, PERMS.members),
@@ -141,11 +142,13 @@ export function AdminPage() {
           <TabsContent value="integrations" className="p-4 md:p-6">
             <IntegrationsTab
               outcome={githubOutcome}
+              bitbucketOutcome={bitbucketOutcome}
               onOutcomeSeen={() =>
                 setParams(
                   (current) => {
                     const next = new URLSearchParams(current);
                     next.delete('github');
+                    next.delete('bitbucket');
                     return next;
                   },
                   { replace: true }

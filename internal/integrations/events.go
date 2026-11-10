@@ -148,7 +148,7 @@ func (s *Service) onInstallationRepositories(ctx context.Context, c *connection,
 		return err
 	}
 	for _, r := range e.Added {
-		if err := upsertRepo(ctx, s.db, c, r); err != nil {
+		if err := upsertRepo(ctx, s.db, c, r.info()); err != nil {
 			return err
 		}
 	}
@@ -161,28 +161,30 @@ func (s *Service) onInstallationRepositories(ctx context.Context, c *connection,
 }
 
 // repoFor finds, or records, the repository an event is about.
-func (s *Service) repoFor(ctx context.Context, c *connection, r ghRepo) (uuid.UUID, error) {
+func (s *Service) repoFor(ctx context.Context, c *connection, r repoInfo) (uuid.UUID, error) {
 	if err := upsertRepo(ctx, s.db, c, r); err != nil {
 		return uuid.Nil, err
 	}
 	var id uuid.UUID
-	err := s.db.QueryRow(ctx, `SELECT id FROM code_repositories WHERE connection_id = $1 AND external_id = $2`, c.ID, fmt.Sprint(r.ID)).Scan(&id)
+	err := s.db.QueryRow(ctx, `SELECT id FROM code_repositories WHERE connection_id = $1 AND external_id = $2`, c.ID, r.ExternalID).Scan(&id)
 	return id, err
 }
 
-// personFor is the TeamUp person behind a GitHub login, or behind one of the
-// addresses they commit with, if they have linked their account.
-func (s *Service) personFor(ctx context.Context, orgID uuid.UUID, provider, login, email string) *uuid.UUID {
-	if login == "" && email == "" {
+// personFor is the TeamUp person behind an account on a provider: its GitHub
+// login, its Bitbucket id, or one of the addresses they commit with, once they
+// have linked it.
+func (s *Service) personFor(ctx context.Context, orgID uuid.UUID, provider, key, email string) *uuid.UUID {
+	if key == "" && email == "" {
 		return nil
 	}
 	var id uuid.UUID
 	err := s.db.QueryRow(ctx, `
 		SELECT user_id FROM code_identities
 		WHERE org_id = $1 AND provider = $2
-		  AND ((LOWER(login) = LOWER($3) AND $3 <> '') OR ($4 <> '' AND LOWER($4) = ANY(SELECT LOWER(e) FROM UNNEST(emails) e)))
+		  AND (($3 <> '' AND (LOWER(login) = LOWER($3) OR external_id = $3 OR account_id = $3))
+		       OR ($4 <> '' AND LOWER($4) = ANY(SELECT LOWER(e) FROM UNNEST(emails) e)))
 		LIMIT 1
-	`, orgID, provider, login, email).Scan(&id)
+	`, orgID, provider, key, email).Scan(&id)
 	if err != nil {
 		return nil
 	}
@@ -202,14 +204,14 @@ func (s *Service) onPullRequest(ctx context.Context, c *connection, body []byte)
 	if err := json.Unmarshal(body, &e); err != nil {
 		return err
 	}
-	pr, err := s.storePull(ctx, c, e.Repository, e.PullRequest)
+	pr, err := s.storePull(ctx, c, e.Repository.info(), e.PullRequest.info())
 	if err != nil {
 		return err
 	}
 	switch e.Action {
 	case "review_requested":
 		if e.RequestedReviewer.Login != "" {
-			if err := s.setReviewer(ctx, c.OrgID, pr, e.RequestedReviewer.Login, "requested"); err != nil {
+			if err := s.setReviewer(ctx, c.OrgID, pr, e.RequestedReviewer.Login, e.RequestedReviewer.Login, "requested"); err != nil {
 				return err
 			}
 			s.tellReviewer(ctx, c.OrgID, pr, e.RequestedReviewer.Login)
@@ -221,7 +223,7 @@ func (s *Service) onPullRequest(ctx context.Context, c *connection, body []byte)
 		}
 	case "opened", "reopened", "ready_for_review":
 		for _, r := range e.PullRequest.RequestedReviewers {
-			if err := s.setReviewer(ctx, c.OrgID, pr, r.Login, "requested"); err != nil {
+			if err := s.setReviewer(ctx, c.OrgID, pr, r.Login, r.Login, "requested"); err != nil {
 				return err
 			}
 			if e.Action != "reopened" {
@@ -242,6 +244,7 @@ func (s *Service) onPullRequest(ctx context.Context, c *connection, body []byte)
 }
 
 type storedPull struct {
+	provider string
 	id       uuid.UUID
 	number   int
 	title    string
@@ -253,16 +256,37 @@ type storedPull struct {
 	tasks    []uuid.UUID
 }
 
-// storePull keeps the pull request as GitHub has it now, and links it to every
-// task its title, branch or description names.
-func (s *Service) storePull(ctx context.Context, c *connection, repo ghRepo, p ghPull) (*storedPull, error) {
+// pullInfo is a pull request as any provider describes it.
+type pullInfo struct {
+	Number      int
+	Title       string
+	Body        string
+	State       string // open, draft, merged or closed
+	URL         string
+	Head, Base  string
+	AuthorLogin string // shown
+	AuthorKey   string // matched to a linked account: a GitHub login, a Bitbucket uuid
+	OpenedAt    time.Time
+	MergedAt    *time.Time
+	ClosedAt    *time.Time
+}
+
+func (p ghPull) info() pullInfo {
+	return pullInfo{Number: p.Number, Title: p.Title, Body: p.Body, State: p.state(), URL: p.HTMLURL,
+		Head: p.Head.Ref, Base: p.Base.Ref, AuthorLogin: p.User.Login, AuthorKey: p.User.Login,
+		OpenedAt: p.CreatedAt, MergedAt: p.MergedAt, ClosedAt: p.ClosedAt}
+}
+
+// storePull keeps the pull request as the provider has it now, and links it to
+// every task its title, branch or description names.
+func (s *Service) storePull(ctx context.Context, c *connection, repo repoInfo, p pullInfo) (*storedPull, error) {
 	repoID, err := s.repoFor(ctx, c, repo)
 	if err != nil {
 		return nil, err
 	}
-	pr := &storedPull{number: p.Number, title: p.Title, url: p.HTMLURL, state: p.state(), repoName: repo.FullName,
-		author: p.User.Login, authorID: s.personFor(ctx, c.OrgID, "github", p.User.Login, "")}
-	opened := p.CreatedAt
+	pr := &storedPull{provider: c.Provider, number: p.Number, title: p.Title, url: p.URL, state: p.State, repoName: repo.FullName,
+		author: p.AuthorLogin, authorID: s.personFor(ctx, c.OrgID, c.Provider, p.AuthorKey, "")}
+	opened := p.OpenedAt
 	if opened.IsZero() {
 		opened = time.Now()
 	}
@@ -275,11 +299,11 @@ func (s *Service) storePull(ctx context.Context, c *connection, repo ghRepo, p g
 		    author_login = EXCLUDED.author_login, author_id = COALESCE(EXCLUDED.author_id, code_pull_requests.author_id),
 		    merged_at = EXCLUDED.merged_at, closed_at = EXCLUDED.closed_at, updated_at = NOW()
 		RETURNING id
-	`, c.OrgID, repoID, p.Number, p.Title, pr.state, p.HTMLURL, p.Head.Ref, p.Base.Ref, p.User.Login, pr.authorID,
+	`, c.OrgID, repoID, p.Number, p.Title, pr.state, p.URL, p.Head, p.Base, p.AuthorLogin, pr.authorID,
 		opened, p.MergedAt, p.ClosedAt).Scan(&pr.id); err != nil {
 		return nil, fmt.Errorf("store pull request: %w", err)
 	}
-	for _, key := range KeysIn(p.Title, p.Head.Ref, p.Body) {
+	for _, key := range KeysIn(p.Title, p.Head, p.Body) {
 		task, err := s.tasks.TaskByKey(ctx, c.OrgID, key)
 		if err != nil {
 			continue
@@ -302,13 +326,14 @@ func (s *Service) storePull(ctx context.Context, c *connection, repo ghRepo, p g
 	return pr, nil
 }
 
-func (s *Service) setReviewer(ctx context.Context, orgID uuid.UUID, pr *storedPull, login, state string) error {
+// setReviewer records what a reviewer, shown as login and known by key, said.
+func (s *Service) setReviewer(ctx context.Context, orgID uuid.UUID, pr *storedPull, login, key, state string) error {
 	_, err := s.db.Exec(ctx, `
 		INSERT INTO code_pull_request_reviewers (pull_request_id, login, user_id, state, updated_at)
 		VALUES ($1, $2, $3, $4, NOW())
 		ON CONFLICT (pull_request_id, login) DO UPDATE SET state = EXCLUDED.state,
 		    user_id = COALESCE(EXCLUDED.user_id, code_pull_request_reviewers.user_id), updated_at = NOW()
-	`, pr.id, login, s.personFor(ctx, orgID, "github", login, ""), state)
+	`, pr.id, login, s.personFor(ctx, orgID, pr.provider, key, ""), state)
 	return err
 }
 
@@ -327,8 +352,8 @@ func (s *Service) tell(ctx context.Context, orgID uuid.UUID, who *uuid.UUID, kin
 	}
 }
 
-func (s *Service) tellReviewer(ctx context.Context, orgID uuid.UUID, pr *storedPull, login string) {
-	s.tell(ctx, orgID, s.personFor(ctx, orgID, "github", login, ""), "code.review_requested",
+func (s *Service) tellReviewer(ctx context.Context, orgID uuid.UUID, pr *storedPull, key string) {
+	s.tell(ctx, orgID, s.personFor(ctx, orgID, pr.provider, key, ""), "code.review_requested",
 		"Your review is wanted: "+pr.title,
 		fmt.Sprintf("%s asked you to review #%d in %s", pr.author, pr.number, pr.repoName), pr)
 }
@@ -336,7 +361,7 @@ func (s *Service) tellReviewer(ctx context.Context, orgID uuid.UUID, pr *storedP
 // moveLinked moves every task the pull request names forward, if it can.
 func (s *Service) moveLinked(ctx context.Context, orgID uuid.UUID, pr *storedPull, to, why string) {
 	for _, taskID := range pr.tasks {
-		if _, err := s.tasks.MoveByCode(ctx, orgID, taskID, to, "github", pr.authorID, why); err != nil {
+		if _, err := s.tasks.MoveByCode(ctx, orgID, taskID, to, pr.provider, pr.authorID, why); err != nil {
 			s.logger.Warn().Err(err).Msg("moving a task for its pull request failed")
 		}
 	}
@@ -353,7 +378,7 @@ func (s *Service) onMerged(ctx context.Context, orgID uuid.UUID, pr *storedPull,
 		`, taskID).Scan(&open); err != nil || open > 0 {
 			continue
 		}
-		if _, err := s.tasks.MoveByCode(ctx, orgID, taskID, "done", "github", pr.authorID,
+		if _, err := s.tasks.MoveByCode(ctx, orgID, taskID, "done", pr.provider, pr.authorID,
 			fmt.Sprintf("%s merged #%d in %s", mergedBy, pr.number, pr.repoName)); err != nil {
 			s.logger.Warn().Err(err).Msg("finishing a task for its pull request failed")
 		}
@@ -376,12 +401,12 @@ func (s *Service) onReview(ctx context.Context, c *connection, body []byte) erro
 	if e.Action != "submitted" {
 		return nil
 	}
-	pr, err := s.storePull(ctx, c, e.Repository, e.PullRequest)
+	pr, err := s.storePull(ctx, c, e.Repository.info(), e.PullRequest.info())
 	if err != nil {
 		return err
 	}
 	state := strings.ToLower(e.Review.State)
-	if err := s.setReviewer(ctx, c.OrgID, pr, e.Review.User.Login, state); err != nil {
+	if err := s.setReviewer(ctx, c.OrgID, pr, e.Review.User.Login, e.Review.User.Login, state); err != nil {
 		return err
 	}
 	if strings.EqualFold(e.Review.User.Login, pr.author) {
@@ -422,12 +447,12 @@ func (s *Service) onCheckSuite(ctx context.Context, c *connection, body []byte) 
 	if result == "" {
 		return nil
 	}
-	repoID, err := s.repoFor(ctx, c, e.Repository)
+	repoID, err := s.repoFor(ctx, c, e.Repository.info())
 	if err != nil {
 		return err
 	}
 	for _, p := range e.CheckSuite.PullRequests {
-		var pr storedPull
+		pr := storedPull{provider: c.Provider}
 		var before string
 		err := s.db.QueryRow(ctx, `
 			SELECT id, number, title, html_url, author_login, author_id, checks FROM code_pull_requests
@@ -471,8 +496,8 @@ func (s *Service) onComment(ctx context.Context, c *connection, body []byte) err
 	if e.Action != "created" || e.Issue.PullRequest == nil {
 		return nil
 	}
-	pr := &storedPull{number: e.Issue.Number, title: e.Issue.Title, url: e.Comment.HTMLURL, repoName: e.Repository.FullName}
-	if repoID, err := s.repoFor(ctx, c, e.Repository); err == nil {
+	pr := &storedPull{provider: c.Provider, number: e.Issue.Number, title: e.Issue.Title, url: e.Comment.HTMLURL, repoName: e.Repository.FullName}
+	if repoID, err := s.repoFor(ctx, c, e.Repository.info()); err == nil {
 		rows, err := s.db.Query(ctx, `
 			SELECT l.task_id FROM task_code_links l JOIN code_pull_requests p ON p.id = l.pull_request_id
 			WHERE p.repository_id = $1 AND p.number = $2`, repoID, e.Issue.Number)
@@ -493,7 +518,7 @@ func (s *Service) onComment(ctx context.Context, c *connection, body []byte) err
 			continue
 		}
 		told[login] = true
-		s.tell(ctx, c.OrgID, s.personFor(ctx, c.OrgID, "github", login, ""), "code.mention",
+		s.tell(ctx, c.OrgID, s.personFor(ctx, c.OrgID, c.Provider, login, ""), "code.mention",
 			fmt.Sprintf("%s mentioned you on #%d", e.Comment.User.Login, e.Issue.Number),
 			fmt.Sprintf("%s in %s", e.Issue.Title, e.Repository.FullName), pr)
 	}
@@ -528,14 +553,34 @@ func (s *Service) onPush(ctx context.Context, c *connection, body []byte) error 
 	if e.Deleted || !strings.HasPrefix(e.Ref, "refs/heads/") {
 		return nil
 	}
-	branch := strings.TrimPrefix(e.Ref, "refs/heads/")
-	repoID, err := s.repoFor(ctx, c, e.Repository)
+	commits := make([]commitInfo, 0, len(e.Commits))
+	for _, cm := range e.Commits {
+		commits = append(commits, commitInfo{SHA: cm.ID, Message: cm.Message, URL: cm.URL, At: cm.Timestamp,
+			AuthorLogin: cm.Author.Username, AuthorKey: cm.Author.Username, AuthorEmail: cm.Author.Email, AuthorName: cm.Author.Name})
+	}
+	return s.storeCommits(ctx, c, e.Repository.info(), strings.TrimPrefix(e.Ref, "refs/heads/"), commits)
+}
+
+// commitInfo is a commit as any provider describes it.
+type commitInfo struct {
+	SHA, Message, URL string
+	At                time.Time
+	AuthorLogin       string
+	AuthorKey         string
+	AuthorEmail       string
+	AuthorName        string
+}
+
+// storeCommits keeps the commits pushed to a branch, links each to the tasks
+// it or the branch names, and puts a task that was waiting in progress.
+func (s *Service) storeCommits(ctx context.Context, c *connection, repo repoInfo, branch string, commits []commitInfo) error {
+	repoID, err := s.repoFor(ctx, c, repo)
 	if err != nil {
 		return err
 	}
-	for _, cm := range e.Commits {
-		author := s.personFor(ctx, c.OrgID, "github", cm.Author.Username, cm.Author.Email)
-		at := cm.Timestamp
+	for _, cm := range commits {
+		author := s.personFor(ctx, c.OrgID, c.Provider, cm.AuthorKey, cm.AuthorEmail)
+		at := cm.At
 		if at.IsZero() {
 			at = time.Now()
 		}
@@ -545,7 +590,7 @@ func (s *Service) onPush(ctx context.Context, c *connection, body []byte) error 
 			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 			ON CONFLICT (repository_id, sha) DO UPDATE SET author_id = COALESCE(EXCLUDED.author_id, code_commits.author_id)
 			RETURNING id
-		`, c.OrgID, repoID, cm.ID, cm.Message, branch, cm.URL, cm.Author.Username, cm.Author.Email, cm.Author.Name, author, at).Scan(&id); err != nil {
+		`, c.OrgID, repoID, cm.SHA, cm.Message, branch, cm.URL, cm.AuthorLogin, cm.AuthorEmail, cm.AuthorName, author, at).Scan(&id); err != nil {
 			return fmt.Errorf("store commit: %w", err)
 		}
 		for _, key := range KeysIn(cm.Message, branch) {
@@ -558,8 +603,8 @@ func (s *Service) onPush(ctx context.Context, c *connection, body []byte) error 
 				return err
 			}
 			if tag.RowsAffected() > 0 {
-				_, _ = s.tasks.MoveByCode(ctx, c.OrgID, task.ID, "in_progress", "github", author,
-					fmt.Sprintf("%s pushed a commit to %s in %s", firstNonEmpty(cm.Author.Username, cm.Author.Name), branch, e.Repository.FullName))
+				_, _ = s.tasks.MoveByCode(ctx, c.OrgID, task.ID, "in_progress", c.Provider, author,
+					fmt.Sprintf("%s pushed a commit to %s in %s", firstNonEmpty(cm.AuthorLogin, cm.AuthorName), branch, repo.FullName))
 			}
 		}
 	}

@@ -5,70 +5,80 @@ import { Github, Loader2, Unlink } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/card';
 import { integrationsApi } from '@/shared/api/client';
+import { BitbucketMark } from '@/features/admin/IntegrationsTab';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
 
-const OUTCOMES: Record<string, { ok: boolean; text: string }> = {
-  linked: { ok: true, text: 'Your GitHub account is linked. Your pull requests, reviews and commits are now known as yours.' },
-  declined: { ok: false, text: 'GitHub was not linked: access was not allowed on GitHub’s page.' },
-  taken: { ok: false, text: 'That GitHub account is linked to somebody else here.' },
-  failed: { ok: false, text: 'GitHub could not be linked. Please try again.' },
+type Provider = 'github' | 'bitbucket';
+
+const NAMES: Record<Provider, string> = { github: 'GitHub', bitbucket: 'Bitbucket' };
+
+const outcomeText = (provider: Provider, outcome: string): { ok: boolean; text: string } | undefined => {
+  const name = NAMES[provider];
+  return {
+    linked: { ok: true, text: `Your ${name} account is linked. Your pull requests, reviews and commits are now known as yours.` },
+    declined: { ok: false, text: `${name} was not linked: access was not allowed on ${name}’s page.` },
+    taken: { ok: false, text: `That ${name} account is linked to somebody else here.` },
+    failed: { ok: false, text: `${name} could not be linked. Please try again.` },
+  }[outcome];
 };
 
 /**
- * Your own GitHub account, which is rarely under your work email: linking it
- * is how your pull requests, reviews and commits are known to be yours, and
- * how a review asked of you on GitHub reaches you here.
+ * The accounts you work with on GitHub and Bitbucket, which are rarely under
+ * your work email: linking them is how your pull requests, reviews and commits
+ * are known to be yours, and how a review asked of you there reaches you here.
  */
 export function ConnectedAccounts() {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [params, setParams] = useSearchParams();
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<Provider | null>(null);
   const { data } = useQuery({ queryKey: ['linked-accounts'], queryFn: () => integrationsApi.myAccounts() });
-  const github = data?.data.find((a) => a.provider === 'github');
-  const outcome = params.get('github');
+  const accounts = data?.data ?? [];
 
   useEffect(() => {
-    if (!outcome) return;
-    const said = OUTCOMES[outcome];
-    if (said) (said.ok ? toast.success : toast.error)(said.text);
-    void queryClient.invalidateQueries({ queryKey: ['linked-accounts'] });
-    setParams(
-      (current) => {
-        const next = new URLSearchParams(current);
-        next.delete('github');
-        return next;
-      },
-      { replace: true }
-    );
+    for (const provider of ['github', 'bitbucket'] as const) {
+      const outcome = params.get(provider);
+      if (!outcome) continue;
+      const said = outcomeText(provider, outcome);
+      if (said) (said.ok ? toast.success : toast.error)(said.text);
+      void queryClient.invalidateQueries({ queryKey: ['linked-accounts'] });
+      setParams(
+        (current) => {
+          const next = new URLSearchParams(current);
+          next.delete(provider);
+          return next;
+        },
+        { replace: true }
+      );
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [outcome]);
+  }, [params]);
 
-  // Nothing to link until the organization has connected GitHub.
-  if (!github) return null;
+  // Nothing to link until the organization has connected GitHub or Bitbucket.
+  if (accounts.length === 0) return null;
 
-  const link = async () => {
-    setBusy(true);
+  const link = async (provider: Provider) => {
+    setBusy(provider);
     try {
-      const { data: res } = await integrationsApi.linkGitHub();
+      const { data: res } = provider === 'github' ? await integrationsApi.linkGitHub() : await integrationsApi.linkBitbucket();
       window.location.assign(res.url);
     } catch (err) {
-      toast.error(apiErrorMessage(err, 'Could not reach GitHub.'));
-      setBusy(false);
+      toast.error(apiErrorMessage(err, `Could not reach ${NAMES[provider]}.`));
+      setBusy(null);
     }
   };
 
-  const unlink = async () => {
-    setBusy(true);
+  const unlink = async (provider: Provider) => {
+    setBusy(provider);
     try {
-      await integrationsApi.unlink('github');
+      await integrationsApi.unlink(provider);
       await queryClient.invalidateQueries({ queryKey: ['linked-accounts'] });
-      toast.success('GitHub unlinked.');
+      toast.success(`${NAMES[provider]} unlinked.`);
     } catch (err) {
-      toast.error(apiErrorMessage(err, 'Could not unlink GitHub.'));
+      toast.error(apiErrorMessage(err, `Could not unlink ${NAMES[provider]}.`));
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
 
@@ -79,27 +89,29 @@ export function ConnectedAccounts() {
       </CardHeader>
       <CardContent className="space-y-3 text-sm">
         <p className="text-muted-foreground">
-          Link the GitHub account you work with, even if it is not under your work email, so your pull requests, reviews
-          and commits show as yours and review requests reach you here.
+          Link the accounts you work with, even if they are not under your work email, so your pull requests, reviews and
+          commits show as yours and review requests reach you here.
         </p>
-        <div className="flex flex-wrap items-center gap-3 rounded-md border border-border p-3">
-          <Github className="h-5 w-5 shrink-0" aria-hidden="true" />
-          <div className="min-w-0 flex-1">
-            <p className="font-medium">GitHub</p>
-            <p className="truncate text-muted-foreground">{github.login ? `Linked as @${github.login}` : 'Not linked'}</p>
+        {accounts.map((account) => (
+          <div key={account.provider} className="flex flex-wrap items-center gap-3 rounded-md border border-border p-3">
+            {account.provider === 'github' ? <Github className="h-5 w-5 shrink-0" aria-hidden="true" /> : <BitbucketMark />}
+            <div className="min-w-0 flex-1">
+              <p className="font-medium">{NAMES[account.provider]}</p>
+              <p className="truncate text-muted-foreground">{account.login ? `Linked as @${account.login}` : 'Not linked'}</p>
+            </div>
+            {account.login ? (
+              <Button size="sm" variant="outline" disabled={busy !== null} onClick={() => unlink(account.provider)} aria-label={`Unlink ${NAMES[account.provider]}`}>
+                <Unlink className="mr-1 h-4 w-4" aria-hidden="true" />
+                Unlink
+              </Button>
+            ) : (
+              <Button size="sm" disabled={busy !== null} onClick={() => link(account.provider)}>
+                {busy === account.provider && <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden="true" />}
+                Link {NAMES[account.provider]}
+              </Button>
+            )}
           </div>
-          {github.login ? (
-            <Button size="sm" variant="outline" disabled={busy} onClick={unlink}>
-              <Unlink className="mr-1 h-4 w-4" aria-hidden="true" />
-              Unlink
-            </Button>
-          ) : (
-            <Button size="sm" disabled={busy} onClick={link}>
-              {busy ? <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden="true" /> : <Github className="mr-1 h-4 w-4" aria-hidden="true" />}
-              Link GitHub
-            </Button>
-          )}
-        </div>
+        ))}
       </CardContent>
     </Card>
   );

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, Check, FolderGit2, Pencil, Plus } from 'lucide-react';
+import { Archive, Check, FolderGit2, Github, Pencil, Plus } from 'lucide-react';
+import { BitbucketMark } from './IntegrationsTab';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
@@ -109,7 +110,7 @@ export function ProjectsTab({ canManage }: { canManage: boolean }) {
                           rel="noopener noreferrer"
                           className="flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-xs hover:bg-accent"
                         >
-                          <FolderGit2 className="h-3 w-3 text-muted-foreground" aria-hidden="true" />
+                          {r.provider === 'bitbucket' ? <BitbucketMark small /> : <Github className="h-3 w-3 text-muted-foreground" aria-hidden="true" />}
                           {r.fullName}
                         </a>
                       </li>
@@ -234,7 +235,7 @@ function RepositoriesDialog({ project, onClose, onDone }: { project: Project | n
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading repositories…</p>
       ) : repos.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No repositories yet. Connect GitHub under Integrations first.</p>
+        <p className="text-sm text-muted-foreground">No repositories yet. Connect GitHub or Bitbucket under Integrations first.</p>
       ) : (
         <div className="space-y-2">
           <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Find a repository" aria-label="Find a repository"
@@ -255,6 +256,7 @@ function RepositoriesDialog({ project, onClose, onDone }: { project: Project | n
                       />
                       <Check className="pointer-events-none absolute inset-0 m-auto h-3 w-3 text-primary-foreground opacity-0 peer-checked:opacity-100" strokeWidth={3} aria-hidden="true" />
                     </span>
+                    {r.provider === 'bitbucket' ? <BitbucketMark small /> : <Github className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />}
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm">{r.fullName}</span>
                       {elsewhere && !on && <span className="block text-xs text-muted-foreground">In {elsewhere} now</span>}

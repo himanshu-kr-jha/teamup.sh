@@ -20,9 +20,11 @@ func decodeJSON(res *http.Response, out any) error {
 }
 
 const (
-	manifestCookie = "gh_manifest"
-	identityCookie = "gh_identity"
-	cookiePath     = "/api/integrations/github"
+	manifestCookie  = "gh_manifest"
+	identityCookie  = "gh_identity"
+	bitbucketCookie = "bb_state"
+	githubPath      = "/api/integrations/github"
+	bitbucketPath   = "/api/integrations/bitbucket"
 )
 
 type handler struct{ s *Service }
@@ -34,7 +36,9 @@ func RegisterRoutes(protected, public *gin.RouterGroup, s *Service) {
 	h := &handler{s: s}
 	protected.GET("/integrations", h.admin(h.connections))
 	protected.POST("/integrations/github/manifest", h.admin(h.manifest))
-	protected.POST("/integrations/github/sync", h.admin(h.sync))
+	protected.POST("/integrations/:provider/sync", h.admin(h.sync))
+	protected.POST("/integrations/bitbucket/connect", h.admin(h.bitbucketConnect))
+	protected.POST("/integrations/bitbucket/identity", h.bitbucketIdentity)
 	protected.DELETE("/integrations/:provider", h.admin(h.disconnect))
 	protected.GET("/integrations/repositories", h.repositories)
 	protected.PUT("/projects/:id/repositories", h.admin(h.setProjectRepositories))
@@ -47,6 +51,8 @@ func RegisterRoutes(protected, public *gin.RouterGroup, s *Service) {
 	public.GET("/integrations/github/installed/:hookKey", h.installed)
 	public.GET("/integrations/github/identity/callback", h.identityDone)
 	public.POST("/integrations/github/hook/:hookKey", h.hook)
+	public.GET("/integrations/bitbucket/callback", h.bitbucketDone)
+	public.POST("/integrations/bitbucket/hook/:hookKey", h.bitbucketHook)
 }
 
 func caller(c *gin.Context) (orgID, userID uuid.UUID, ok bool) {
@@ -72,7 +78,11 @@ func (h *handler) admin(next gin.HandlerFunc) gin.HandlerFunc {
 }
 
 func (h *handler) setCookie(c *gin.Context, name, value string, life int) {
-	http.SetCookie(c.Writer, &http.Cookie{Name: name, Value: value, Path: cookiePath, MaxAge: life,
+	path := githubPath
+	if name == bitbucketCookie {
+		path = bitbucketPath
+	}
+	http.SetCookie(c.Writer, &http.Cookie{Name: name, Value: value, Path: path, MaxAge: life,
 		HttpOnly: true, Secure: !h.s.cfg.InsecureCookies, SameSite: http.SameSiteLaxMode})
 }
 
@@ -144,7 +154,7 @@ func (h *handler) sync(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := h.s.SyncNow(c.Request.Context(), orgID); err != nil {
+	if err := h.s.SyncNow(c.Request.Context(), orgID, c.Param("provider")); err != nil {
 		httpx.Error(c, err, "failed to read repositories from github")
 		return
 	}
@@ -295,6 +305,104 @@ func (h *handler) hook(c *gin.Context) {
 		c.Status(http.StatusNotFound)
 	default:
 		h.s.logger.Warn().Err(err).Str("event", c.GetHeader("X-GitHub-Event")).Msg("github event failed")
+		c.Status(http.StatusInternalServerError)
+	}
+}
+
+// ── Bitbucket ─────────────────────────────────────────────────────────────
+
+func (h *handler) bitbucketConnect(c *gin.Context) {
+	orgID, userID, ok := caller(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Workspace string `json:"workspace"`
+		Key       string `json:"key"`
+		Secret    string `json:"secret"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	address, nonce, err := h.s.BitbucketStart(c.Request.Context(), orgID, userID, req.Workspace, req.Key, req.Secret)
+	if err != nil {
+		httpx.Error(c, err, "failed to start connecting bitbucket")
+		return
+	}
+	h.setCookie(c, bitbucketCookie, nonce, 900)
+	c.JSON(http.StatusOK, gin.H{"url": address})
+}
+
+func (h *handler) bitbucketIdentity(c *gin.Context) {
+	orgID, userID, ok := caller(c)
+	if !ok {
+		return
+	}
+	address, nonce, err := h.s.BitbucketIdentityURL(c.Request.Context(), orgID, userID)
+	if err != nil {
+		httpx.Error(c, err, "failed to start linking bitbucket")
+		return
+	}
+	h.setCookie(c, bitbucketCookie, nonce, 900)
+	c.JSON(http.StatusOK, gin.H{"url": address})
+}
+
+// bitbucketDone is the one address the consumer sends everybody back to: the
+// owner connecting the workspace, and anybody linking their own account.
+func (h *handler) bitbucketDone(c *gin.Context) {
+	nonce, _ := c.Cookie(bitbucketCookie)
+	h.setCookie(c, bitbucketCookie, "", -1)
+	if c.Query("error") != "" {
+		// Which of the two it was is in the state, which a refusal still carries.
+		var st bitbucketState
+		page := "/settings"
+		if h.s.box != nil && h.s.box.ReadToken(c.Query("state"), &st) == nil && st.Purpose == "connect" {
+			page = "/organization"
+		}
+		h.back(c, page, "bitbucket", "declined")
+		return
+	}
+	purpose, err := h.s.BitbucketDone(c.Request.Context(), c.Query("state"), nonce, c.Query("code"))
+	page, ok := "/settings", "linked"
+	if purpose == "connect" {
+		page, ok = "/organization", "connected"
+	}
+	if err != nil {
+		h.s.logger.Warn().Err(err).Str("purpose", purpose).Msg("bitbucket sign-in failed")
+		outcome := "failed"
+		switch {
+		case apperrors.IsCode(err, apperrors.CodeConflict):
+			outcome = "taken"
+		case apperrors.IsCode(err, apperrors.CodeForbidden):
+			outcome = "not-owner"
+		}
+		h.back(c, page, "bitbucket", outcome)
+		return
+	}
+	h.back(c, page, "bitbucket", ok)
+}
+
+func (h *handler) bitbucketHook(c *gin.Context) {
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 25<<20))
+	if err != nil {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+	delivery := c.GetHeader("X-Request-UUID")
+	if delivery != "" {
+		delivery = c.GetHeader("X-Hook-UUID") + "/" + delivery
+	}
+	err = h.s.BitbucketEvent(c.Request.Context(), c.Param("hookKey"), c.GetHeader("X-Event-Key"), delivery, c.GetHeader("X-Hub-Signature"), body)
+	switch {
+	case err == nil:
+		c.Status(http.StatusNoContent)
+	case errors.Is(err, ErrBadSignature):
+		c.Status(http.StatusUnauthorized)
+	case errors.Is(err, apperrors.ErrNotFound):
+		c.Status(http.StatusNotFound)
+	default:
+		h.s.logger.Warn().Err(err).Str("event", c.GetHeader("X-Event-Key")).Msg("bitbucket event failed")
 		c.Status(http.StatusInternalServerError)
 	}
 }

@@ -877,6 +877,10 @@ Each person then links the GitHub account they work with under Settings → Conn
 Pull requests, reviews and commits that name a task's key (`PHO-12`, in a branch, a title or a commit message) are linked to it and move it forward: opened to In progress, waiting for review to In review, and merged to Done once every pull request on the task is merged.
 Reviewers, authors and people mentioned on GitHub are notified in TeamUp.
 
+Bitbucket is connected the same way from the same page, by an owner of the Bitbucket workspace: they make an OAuth consumer in the workspace's settings, with the callback URL and permissions the page lists, give TeamUp its key and secret, and sign in to Bitbucket.
+TeamUp then adds a webhook to the workspace and lists its repositories, and everybody links their own Bitbucket account under Settings.
+Bitbucket says nothing when a reviewer is added, so TeamUp compares each pull request's reviewers with the last it saw, and tells whoever is new.
+
 GitHub sends its events to `https://<your domain>/api/integrations/github/hook/<key>`, so the server must be reachable from the internet.
 
 ## Troubleshooting

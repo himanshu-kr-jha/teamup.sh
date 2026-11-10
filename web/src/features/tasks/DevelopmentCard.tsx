@@ -97,7 +97,7 @@ export function DevelopmentCard({ taskId, taskKey, title }: { taskId: string; ta
         </div>
 
         {data && !data.connected && prs.length === 0 && (
-          <p className="text-xs text-muted-foreground">Once an administrator connects GitHub, pull requests and commits show here.</p>
+          <p className="text-xs text-muted-foreground">Once an administrator connects GitHub or Bitbucket, pull requests and commits show here.</p>
         )}
 
         {prs.length > 0 && (

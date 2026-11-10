@@ -672,6 +672,8 @@ function CommentList({ taskId }: { taskId: string }) {
 
 /** The task's history. Every field change is already recorded server-side;
  *  the page just never asked for it. */
+const SOURCES: Record<string, string> = { github: 'GitHub', bitbucket: 'Bitbucket' };
+
 function ActivityList({ taskId }: { taskId: string }) {
   const { data, isLoading } = useQuery({
     queryKey: ['task-activities', taskId],
@@ -692,7 +694,7 @@ function ActivityList({ taskId }: { taskId: string }) {
           <div className="min-w-0 flex-1">
             <p className="break-anywhere">
               <span className="font-medium">
-                {a.source === 'github' ? (a.userName ? `${a.userName}, through GitHub,` : 'GitHub') : a.userName || 'Someone'}
+                {a.source ? (a.userName ? `${a.userName}, through ${SOURCES[a.source] ?? a.source},` : SOURCES[a.source] ?? a.source) : a.userName || 'Someone'}
               </span>{' '}
               {a.source ? 'moved' : 'changed'}{' '}
               <span className="font-medium">{a.field}</span>

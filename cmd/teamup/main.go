@@ -230,6 +230,9 @@ type Config struct {
 	// Replace GitHub's addresses. For tests only.
 	GitHubWebURL string `env:"TEAMUP_GITHUB_WEB_URL"`
 	GitHubAPIURL string `env:"TEAMUP_GITHUB_API_URL"`
+	// And Bitbucket's.
+	BitbucketWebURL string `env:"TEAMUP_BITBUCKET_WEB_URL"`
+	BitbucketAPIURL string `env:"TEAMUP_BITBUCKET_API_URL"`
 
 	// SMTP (optional)
 	SMTPHost     string `env:"TEAMUP_SMTP_HOST"`
@@ -532,6 +535,8 @@ func runServer(cmd *cobra.Command, args []string) error {
 		InsecureCookies: cfg.InsecureCookies,
 		GitHubWeb:       cfg.GitHubWebURL,
 		GitHubAPI:       cfg.GitHubAPIURL,
+		BitbucketWeb:    cfg.BitbucketWebURL,
+		BitbucketAPI:    cfg.BitbucketAPIURL,
 	}, tasksService)
 	integrationsService.SetLogger(logger)
 	// A meeting scheduled, moved or cancelled in TeamUp follows into Google.

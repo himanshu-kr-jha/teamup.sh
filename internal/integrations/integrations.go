@@ -36,6 +36,9 @@ type Config struct {
 	// GitHub's addresses, replaced in tests.
 	GitHubWeb string
 	GitHubAPI string
+	// Bitbucket's, likewise.
+	BitbucketWeb string
+	BitbucketAPI string
 }
 
 // Notifier tells somebody something, in the app and on their phone.
@@ -59,6 +62,12 @@ func NewService(db *pgxpool.Pool, cfg Config, taskService *tasks.Service) *Servi
 	}
 	if cfg.GitHubAPI == "" {
 		cfg.GitHubAPI = "https://api.github.com"
+	}
+	if cfg.BitbucketWeb == "" {
+		cfg.BitbucketWeb = "https://bitbucket.org"
+	}
+	if cfg.BitbucketAPI == "" {
+		cfg.BitbucketAPI = "https://api.bitbucket.org"
 	}
 	s := &Service{db: db, cfg: cfg, gh: newGitHub(cfg.GitHubWeb, cfg.GitHubAPI), tasks: taskService, logger: zerolog.Nop()}
 	if box, err := secretbox.New(cfg.Secret, "teamup code integrations"); err == nil {
@@ -144,12 +153,19 @@ type ConnectionStatus struct {
 	Repositories int        `json:"repositories"`
 	LastError    string     `json:"lastError,omitempty"`
 	ConnectedAt  *time.Time `json:"connectedAt,omitempty"`
+	// For Bitbucket, made by hand: where its consumer sends people back to,
+	// and what it must be allowed.
+	CallbackURL string   `json:"callbackUrl,omitempty"`
+	Permissions []string `json:"permissions,omitempty"`
 }
 
 func (s *Service) Connections(ctx context.Context, orgID uuid.UUID) ([]ConnectionStatus, error) {
 	out := []ConnectionStatus{}
-	for _, provider := range []string{"github"} {
+	for _, provider := range []string{"github", "bitbucket"} {
 		st := ConnectionStatus{Provider: provider, Available: s.Available(), Status: "none"}
+		if provider == "bitbucket" {
+			st.CallbackURL, st.Permissions = s.BitbucketCallbackURL(), BitbucketPermissions
+		}
 		var id uuid.UUID
 		var sealed []byte
 		var created time.Time
@@ -163,7 +179,7 @@ func (s *Service) Connections(ctx context.Context, orgID uuid.UUID) ([]Connectio
 		}
 		if err == nil {
 			st.ConnectedAt = &created
-			if s.box != nil {
+			if s.box != nil && provider == "github" {
 				var sec githubSecrets
 				if s.box.Open(sealed, &sec) == nil && sec.Slug != "" {
 					st.AppURL = s.cfg.GitHubWeb + "/apps/" + sec.Slug
@@ -340,7 +356,7 @@ func (s *Service) syncRepositories(ctx context.Context, c *connection) error {
 		return err
 	}
 	for _, r := range repos {
-		if err := upsertRepo(ctx, tx, c, r); err != nil {
+		if err := upsertRepo(ctx, tx, c, r.info()); err != nil {
 			return err
 		}
 	}
@@ -351,27 +367,42 @@ type execer interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
-func upsertRepo(ctx context.Context, db execer, c *connection, r ghRepo) error {
+// repoInfo is a repository as any provider describes it.
+type repoInfo struct {
+	ExternalID string
+	FullName   string
+	URL        string
+	Private    bool
+}
+
+func (r ghRepo) info() repoInfo {
 	address := r.HTMLURL
 	if address == "" {
 		address = "https://github.com/" + r.FullName
 	}
+	return repoInfo{ExternalID: fmt.Sprint(r.ID), FullName: r.FullName, URL: address, Private: r.Private}
+}
+
+func upsertRepo(ctx context.Context, db execer, c *connection, r repoInfo) error {
 	var id uuid.UUID
 	return db.QueryRow(ctx, `
 		INSERT INTO code_repositories (org_id, connection_id, provider, external_id, full_name, html_url, private, present)
-		VALUES ($1, $2, 'github', $3, $4, $5, $6, TRUE)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
 		ON CONFLICT (connection_id, external_id) DO UPDATE SET full_name = EXCLUDED.full_name,
 		    html_url = EXCLUDED.html_url, private = EXCLUDED.private, present = TRUE
 		RETURNING id
-	`, c.OrgID, c.ID, fmt.Sprint(r.ID), r.FullName, address, r.Private).Scan(&id)
+	`, c.OrgID, c.ID, c.Provider, r.ExternalID, r.FullName, r.URL, r.Private).Scan(&id)
 }
 
 // SyncNow re-reads the repositories, for an admin who just changed which ones
-// the app may see.
-func (s *Service) SyncNow(ctx context.Context, orgID uuid.UUID) error {
-	c, err := s.loadConnection(ctx, `org_id = $1 AND provider = 'github'`, orgID)
+// TeamUp may see.
+func (s *Service) SyncNow(ctx context.Context, orgID uuid.UUID, provider string) error {
+	c, err := s.loadConnection(ctx, `org_id = $1 AND provider = $2`, orgID, provider)
 	if err != nil {
 		return err
+	}
+	if provider == "bitbucket" {
+		return s.syncBitbucketRepositories(ctx, c)
 	}
 	return s.syncRepositories(ctx, c)
 }
@@ -384,6 +415,9 @@ func (s *Service) Disconnect(ctx context.Context, orgID uuid.UUID, provider stri
 		return err
 	}
 	s.gh.forget(c.Installation)
+	if provider == "bitbucket" {
+		s.removeBitbucketWebhook(ctx, c)
+	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err

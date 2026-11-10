@@ -754,6 +754,9 @@ export interface CodeConnection {
   installUrl?: string;
   repositories: number;
   lastError?: string;
+  /** Bitbucket: where its consumer sends people back to, and what it must be allowed. */
+  callbackUrl?: string;
+  permissions?: string[];
 }
 
 export interface Repository extends ProjectRepo {
@@ -803,7 +806,10 @@ export const integrationsApi = {
   connections: () => getList<CodeConnection>('/integrations', 'connections'),
   /** Where to post the GitHub App's manifest, and the manifest. */
   githubManifest: (organization: string) => api.post<{ action: string; manifest: string }>('/integrations/github/manifest', { organization }),
-  syncGitHub: () => api.post<{ connections: CodeConnection[] }>('/integrations/github/sync'),
+  sync: (provider: 'github' | 'bitbucket') => api.post<{ connections: CodeConnection[] }>(`/integrations/${provider}/sync`),
+  /** Keeps the consumer, and answers with Bitbucket's sign-in page for the workspace owner. */
+  connectBitbucket: (data: { workspace: string; key: string; secret: string }) => api.post<{ url: string }>('/integrations/bitbucket/connect', data),
+  linkBitbucket: () => api.post<{ url: string }>('/integrations/bitbucket/identity'),
   disconnect: (provider: string) => api.delete(`/integrations/${provider}`),
   repositories: () => getList<Repository>('/integrations/repositories', 'repositories'),
   myAccounts: () => getList<LinkedAccount>('/integrations/me', 'accounts'),
