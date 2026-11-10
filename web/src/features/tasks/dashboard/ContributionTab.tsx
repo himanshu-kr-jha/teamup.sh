@@ -112,7 +112,7 @@ export function ContributionTab() {
                           update({ person: row.userId });
                         }}
                       >
-                        <PersonAvatar userId={row.userId} name={row.name} className="h-6 w-6 shrink-0" fallbackClassName="text-[10px]" />
+                        <PersonAvatar userId={row.userId} name={row.name} className="h-6 w-6 shrink-0" fallbackClassName="text-[10px]" decorative />
                         <span className="truncate">{row.name}</span>
                       </button>
                     </td>

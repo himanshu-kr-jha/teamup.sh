@@ -435,7 +435,7 @@ function TaskCard({ task, onUpdate }: { task: Task; onUpdate: (data: { id: strin
         <div className="flex items-center gap-2">
           {task.assigneeName && (
             <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
-              <PersonAvatar userId={task.assigneeId} name={task.assigneeName} className="h-5 w-5" fallbackClassName="text-[9px]" />
+              <PersonAvatar userId={task.assigneeId} name={task.assigneeName} className="h-5 w-5" fallbackClassName="text-[9px]" decorative />
               <span className="truncate">{task.assigneeName}</span>
             </div>
           )}

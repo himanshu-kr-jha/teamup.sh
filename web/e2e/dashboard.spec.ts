@@ -112,9 +112,9 @@ test.describe('2. manager sees the people on their teams', () => {
     await expect(overviewRow(page, 'Mia Manager')).toHaveCount(0);
 
     // Row cells: Pending Ongoing Blocked Overdue Added to Completed
-    await expect(overviewRow(page, 'Alice Archer').getByRole('cell')).toHaveText(['Alice Archer', '2', '1', '1', '0', '0', '0']);
-    await expect(overviewRow(page, 'Ann Idle').getByRole('cell')).toHaveText(['Ann Idle', '0', '0', '0', '0', '0', '0']);
-    await expect(overviewRow(page, 'Pat Platform').getByRole('cell')).toHaveText(['Pat Platform', '2', '1', '0', '1', '0', '0']);
+    await expect(overviewRow(page, 'Alice Archer').getByRole('cell')).toHaveText([/Alice Archer$/, '2', '1', '1', '0', '0', '0']);
+    await expect(overviewRow(page, 'Ann Idle').getByRole('cell')).toHaveText([/Ann Idle$/, '0', '0', '0', '0', '0', '0']);
+    await expect(overviewRow(page, 'Pat Platform').getByRole('cell')).toHaveText([/Pat Platform$/, '2', '1', '0', '1', '0', '0']);
     // Totals across the three of them.
     expect(await tileCounts(page)).toEqual({ pending: 4, ongoing: 2, blocked: 1, overdue: 1, completed: 0 });
   });
@@ -331,7 +331,7 @@ test.describe('5b. contribution', () => {
     const open = Number(await row.getByRole('cell').nth(4).innerText());
     expect(involved).toBeGreaterThanOrEqual(1);
     expect(open).toBeGreaterThanOrEqual(3);
-    await expect(page.getByRole('row', { name: /^Ann Idle/ }).getByRole('cell')).toHaveText(['Ann Idle', '0', '0', '0', '0']);
+    await expect(page.getByRole('row', { name: /^Ann Idle/ }).getByRole('cell')).toHaveText([/Ann Idle$/, '0', '0', '0', '0']);
 
     await row.getByRole('button', { name: 'Alice Archer' }).click();
     const dialog = page.getByRole('dialog');

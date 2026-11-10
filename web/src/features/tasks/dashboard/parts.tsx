@@ -189,7 +189,7 @@ export function ScrumPersonCard({ row }: { row: ScrumRow }) {
   return (
     <section className="rounded-lg border border-border bg-card p-3 md:px-4">
       <header className="flex flex-wrap items-center gap-x-2">
-        <PersonAvatar userId={row.userId} name={row.name} className="h-7 w-7" fallbackClassName="text-[10px]" />
+        <PersonAvatar userId={row.userId} name={row.name} className="h-7 w-7" fallbackClassName="text-[10px]" decorative />
         <h2 className="min-w-0 break-anywhere text-sm font-semibold">{row.name}</h2>
         {row.teams.length > 0 && (
           <p className="min-w-0 break-anywhere text-xs text-muted-foreground">

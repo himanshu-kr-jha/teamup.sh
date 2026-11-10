@@ -20,14 +20,17 @@ export function UserAvatar({
   src,
   className,
   fallbackClassName,
+  decorative,
 }: {
   name?: string;
   src?: string | null;
   className?: string;
   fallbackClassName?: string;
+  /** Beside the person's written name, where reading out the picture too would only repeat it. */
+  decorative?: boolean;
 }) {
   return (
-    <Avatar className={cn('h-8 w-8', className)}>
+    <Avatar className={cn('h-8 w-8', className)} aria-hidden={decorative || undefined}>
       {src && <AvatarImage src={src} alt={name ? `${name}'s picture` : ''} className="object-cover" />}
       <AvatarFallback className={cn('text-xs', fallbackClassName)}>{initialsOf(name)}</AvatarFallback>
     </Avatar>
@@ -60,6 +63,7 @@ export function PersonAvatar({
   src,
   className,
   fallbackClassName,
+  decorative,
 }: {
   userId?: string | null;
   name?: string;
@@ -67,7 +71,16 @@ export function PersonAvatar({
   src?: string | null;
   className?: string;
   fallbackClassName?: string;
+  decorative?: boolean;
 }) {
   const pictureOf = usePictures();
-  return <UserAvatar name={name} src={src || pictureOf(userId)} className={className} fallbackClassName={fallbackClassName} />;
+  return (
+    <UserAvatar
+      name={name}
+      src={src || pictureOf(userId)}
+      className={className}
+      fallbackClassName={fallbackClassName}
+      decorative={decorative}
+    />
+  );
 }

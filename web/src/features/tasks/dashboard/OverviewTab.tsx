@@ -92,7 +92,7 @@ function PeopleTable({ people }: { people: DashboardPerson[] }) {
             <tr key={person.userId}>
               <td className="w-full max-w-0 truncate py-2 pl-3 pr-1 sm:px-3">
                 <Link to={linkTo('person', { person: person.userId })} className="flex min-w-0 items-center gap-2 hover:underline">
-                  <PersonAvatar userId={person.userId} name={person.name} className="h-6 w-6 shrink-0" fallbackClassName="text-[10px]" />
+                  <PersonAvatar userId={person.userId} name={person.name} className="h-6 w-6 shrink-0" fallbackClassName="text-[10px]" decorative />
                   <span className="truncate">{person.name}</span>
                 </Link>
               </td>
