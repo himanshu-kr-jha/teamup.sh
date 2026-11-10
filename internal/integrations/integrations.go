@@ -194,6 +194,23 @@ func (s *Service) Connections(ctx context.Context, orgID uuid.UUID) ([]Connectio
 
 // ── making the GitHub App (the manifest flow) ─────────────────────────────
 
+// githubPermissions is what the app asks for. A manifest takes repository and
+// organization permissions only: an account permission, such as reading
+// people's email addresses, makes GitHub refuse the whole manifest.
+var githubPermissions = map[string]string{
+	"metadata":       "read",
+	"contents":       "read",
+	"pull_requests":  "read",
+	"issues":         "read", // a pull request's conversation is its issue's comments
+	"checks":         "read",
+	"members":        "read",
+	"administration": "write", // giving and taking away access to a repository
+}
+
+// githubEvents is what the app is sent. GitHub refuses an event the
+// permissions above do not cover.
+var githubEvents = []string{"pull_request", "pull_request_review", "push", "check_suite", "issue_comment", "member", "repository"}
+
 type manifestState struct {
 	Org     uuid.UUID `json:"o"`
 	User    uuid.UUID `json:"u"`
@@ -239,20 +256,12 @@ func (s *Service) GitHubManifest(ctx context.Context, orgID, userID uuid.UUID, g
 			"url":    s.base() + "/api/integrations/github/hook/" + hookKey,
 			"active": true,
 		},
-		"redirect_url":    s.base() + "/api/integrations/github/created",
-		"callback_urls":   []string{s.base() + "/api/integrations/github/identity/callback"},
-		"setup_url":       s.base() + "/api/integrations/github/installed/" + hookKey,
-		"setup_on_update": true,
-		"default_permissions": map[string]string{
-			"metadata":        "read",
-			"contents":        "read",
-			"pull_requests":   "read",
-			"checks":          "read",
-			"members":         "read",
-			"administration":  "write", // giving and taking away access to a repository
-			"email_addresses": "read",  // matching commits to people
-		},
-		"default_events": []string{"pull_request", "pull_request_review", "push", "check_suite", "issue_comment", "member", "repository"},
+		"redirect_url":        s.base() + "/api/integrations/github/created",
+		"callback_urls":       []string{s.base() + "/api/integrations/github/identity/callback"},
+		"setup_url":           s.base() + "/api/integrations/github/installed/" + hookKey,
+		"setup_on_update":     true,
+		"default_permissions": githubPermissions,
+		"default_events":      githubEvents,
 	}
 	raw, _ := json.Marshal(m)
 	action = s.cfg.GitHubWeb + "/organizations/" + url.PathEscape(ghOrg) + "/settings/apps/new?state=" + url.QueryEscape(state)

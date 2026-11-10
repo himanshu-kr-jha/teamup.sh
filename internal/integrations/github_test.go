@@ -356,3 +356,32 @@ func TestKeysAreFoundWhereverTheyAreWritten(t *testing.T) {
 		t.Errorf("got %v, want %v (UTF-8 is found but names no task, so links nothing)", got, want)
 	}
 }
+
+// GitHub refused the first real manifest: an account permission is not
+// allowed in one, and every event needs a permission that covers it.
+func TestTheManifestIsOneGitHubAccepts(t *testing.T) {
+	// The repository and organization permissions GitHub's manifest takes.
+	allowed := map[string]bool{"actions": true, "administration": true, "checks": true, "contents": true, "deployments": true,
+		"environments": true, "issues": true, "metadata": true, "packages": true, "pages": true, "pull_requests": true,
+		"repository_hooks": true, "repository_projects": true, "secret_scanning_alerts": true, "secrets": true,
+		"security_events": true, "statuses": true, "vulnerability_alerts": true, "workflows": true,
+		"members": true, "organization_administration": true, "organization_hooks": true, "organization_projects": true}
+	for p := range githubPermissions {
+		if !allowed[p] {
+			t.Errorf("%s is not a permission a manifest may ask for", p)
+		}
+	}
+	// What each event needs, from GitHub's webhook events reference.
+	needs := map[string]string{"pull_request": "pull_requests", "pull_request_review": "pull_requests", "push": "contents",
+		"check_suite": "checks", "issue_comment": "issues", "member": "metadata", "repository": "metadata"}
+	for _, e := range githubEvents {
+		need, known := needs[e]
+		if !known {
+			t.Errorf("say which permission %s needs", e)
+			continue
+		}
+		if githubPermissions[need] == "" {
+			t.Errorf("%s needs the %s permission", e, need)
+		}
+	}
+}
