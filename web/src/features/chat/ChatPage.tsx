@@ -8,7 +8,7 @@ import {
 import { Button } from '@/shared/components/ui/button';
 import { NotifyMenu } from './NotifyMenu';
 import { Input } from '@/shared/components/ui/input';
-import { UserAvatar } from '@/shared/components/UserAvatar';
+import { PersonAvatar } from '@/shared/components/UserAvatar';
 import { cn, formatRelativeTime } from '@/shared/utils/cn';
 import {
   DropdownMenu,
@@ -956,12 +956,12 @@ export function ChatPage() {
                               // A conversation with a person shows whether that
                               // person is around, which is the thing you want to
                               // know before starting to type.
-                              <span className="relative flex h-4 w-4 shrink-0 items-center justify-center">
-                                <User className="h-4 w-4 opacity-70" />
+                              <span className="relative -my-1 flex shrink-0">
+                                <PersonAvatar userId={channel.counterpartId} name={channel.name} className="h-6 w-6" fallbackClassName="text-[10px]" />
                                 <PresenceDot
                                   status={statusOf(channel.counterpartId)}
                                   note={personOf(channel.counterpartId)?.note}
-                                  className="absolute -bottom-1 -right-1 h-2 w-2"
+                                  className="absolute -bottom-0.5 -right-0.5 h-2 w-2"
                                 />
                               </span>
                             ) : channel.type === 'announcement' ? (
@@ -1032,15 +1032,17 @@ export function ChatPage() {
               >
                 <ChevronLeft className="h-5 w-5" />
               </Button>
-              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10">
-                {activeChannel?.type === 'dm' ? (
-                  <User className="h-5 w-5 text-primary" />
-                ) : activeChannel?.type === 'announcement' ? (
-                  <Megaphone className="h-5 w-5 text-primary" />
-                ) : (
-                  <Hash className="h-5 w-5 text-primary" />
-                )}
-              </div>
+              {activeChannel?.type === 'dm' ? (
+                <PersonAvatar userId={activeChannel?.counterpartId} name={activeChannel?.name} className="h-9 w-9" />
+              ) : (
+                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+                  {activeChannel?.type === 'announcement' ? (
+                    <Megaphone className="h-5 w-5 text-primary" />
+                  ) : (
+                    <Hash className="h-5 w-5 text-primary" />
+                  )}
+                </div>
+              )}
               <div className="min-w-0">
                 <h2 className="flex items-center gap-2 truncate font-semibold leading-tight">
                   {activeChannel?.name || (channelId ? 'Channel' : 'No channel selected')}
@@ -1565,7 +1567,7 @@ function MessageBubble({
             <div className="w-8 shrink-0" aria-hidden="true" />
           ) : (
             <div className="relative shrink-0">
-              <UserAvatar name={message.userName} src={message.userAvatar} />
+              <PersonAvatar userId={message.userId} name={message.userName} src={message.userAvatar} />
               <PresenceDot status={status} note={note} className="absolute -bottom-0.5 -right-0.5" />
             </div>
           ))}

@@ -12,6 +12,7 @@ import { Button } from '@/shared/components/ui/button';
 import { Badge } from '@/shared/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs';
 import { FormDialog } from '@/shared/components/FormDialog';
+import { PersonAvatar } from '@/shared/components/UserAvatar';
 import { PeoplePicker, addEach, addLabel } from '@/shared/components/PeoplePicker';
 import { channelsApi, filesApi, orgApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
@@ -106,11 +107,7 @@ export function ChannelSettingsDialog({
               <ul className="max-h-72 space-y-1 overflow-y-auto">
                 {members.map((m: any) => (
                   <li key={m.userId} className="flex items-center gap-3 rounded-md p-2 hover:bg-accent">
-                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10">
-                      <span className="text-sm font-medium text-primary">
-                        {(m.name || '?').charAt(0).toUpperCase()}
-                      </span>
-                    </div>
+                    <PersonAvatar userId={m.userId} name={m.name} src={m.avatarUrl} fallbackClassName="bg-primary/10 font-medium text-primary" />
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium">{m.name}</p>
                       <p className="truncate text-xs text-muted-foreground">{m.email}</p>

@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Search, Filter, MoreVertical, Calendar, User, Lock } from 'lucide-react';
+import { Search, Filter, MoreVertical, Calendar, Lock } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/shared/components/ui/dropdown-menu';
@@ -16,6 +16,7 @@ import { restrictionNote, type TaskAbilities } from './abilities';
 import { DANGER_TEXT, dueLabel } from './dueDate';
 import { liveTaskQuery } from './liveQuery';
 import { ErrorState, LoadingState } from './dashboard/parts';
+import { PersonAvatar } from '@/shared/components/UserAvatar';
 
 interface Task {
   id: string;
@@ -433,9 +434,9 @@ function TaskCard({ task, onUpdate }: { task: Task; onUpdate: (data: { id: strin
       <div className="flex items-center justify-between border-t border-border pt-2">
         <div className="flex items-center gap-2">
           {task.assigneeName && (
-            <div className="flex items-center gap-1 text-xs text-muted-foreground">
-              <User className="h-3 w-3" />
-              <span>{task.assigneeName}</span>
+            <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+              <PersonAvatar userId={task.assigneeId} name={task.assigneeName} className="h-5 w-5" fallbackClassName="text-[9px]" />
+              <span className="truncate">{task.assigneeName}</span>
             </div>
           )}
           {due && (

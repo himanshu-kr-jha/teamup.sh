@@ -10,6 +10,7 @@ import { orderContributions, rangeProblem, rangeToApi, readRange, type DateRange
 import { EmptyState, ErrorState, LoadingState, TaskRow, TeamFilter, ViewFrame } from './parts';
 import { useDashboard } from './useDashboard';
 import { useTabParams } from './useTabParams';
+import { PersonAvatar } from '@/shared/components/UserAvatar';
 
 const COLUMNS = ['completed', 'involved', 'addedTo', 'open'] as const;
 const COLUMN_LABELS = { completed: 'Completed', involved: 'Involved', addedTo: 'Added to', open: 'Open' };
@@ -105,13 +106,14 @@ export function ContributionTab() {
                       {/* The row is the big target; this is the one a keyboard reaches. */}
                       <button
                         type="button"
-                        className="max-w-full truncate text-left hover:underline"
+                        className="flex max-w-full items-center gap-2 text-left hover:underline"
                         onClick={(e) => {
                           e.stopPropagation();
                           update({ person: row.userId });
                         }}
                       >
-                        {row.name}
+                        <PersonAvatar userId={row.userId} name={row.name} className="h-6 w-6 shrink-0" fallbackClassName="text-[10px]" />
+                        <span className="truncate">{row.name}</span>
                       </button>
                     </td>
                     {COLUMNS.map((column) => (

@@ -20,6 +20,7 @@ import { useWebSocket } from '@/features/websocket/WSProvider';
 import { AttachmentChip } from '@/features/files/AttachmentChip';
 import { MentionTextarea } from '@/features/chat/MentionTextarea';
 import { MessageText } from '@/features/chat/MentionUI';
+import { PersonAvatar } from '@/shared/components/UserAvatar';
 import { PeoplePicker, addEach, addLabel } from '@/shared/components/PeoplePicker';
 import { useUpload } from '@/features/files/useUpload';
 import { StagedFiles, type StagedFile } from '@/features/files/StagedFiles';
@@ -316,9 +317,13 @@ export function TaskDetailPage() {
                   <CardContent className="space-y-3">
                     {task.assigneeName && (
                       <div className="flex items-center gap-3">
-                        <div className="h-10 w-10 rounded-full bg-primary/10 flex items-center justify-center">
-                          <span className="text-lg font-medium text-primary">{task.assigneeName.charAt(0)}</span>
-                        </div>
+                        <PersonAvatar
+                          userId={task.assigneeId}
+                          name={task.assigneeName}
+                          src={task.assigneeAvatar}
+                          className="h-10 w-10"
+                          fallbackClassName="bg-primary/10 text-sm font-medium text-primary"
+                        />
                         <div>
                           <p className="font-medium">{task.assigneeName}</p>
                           <p className="text-sm text-muted-foreground">Assignee</p>
@@ -388,9 +393,7 @@ export function TaskDetailPage() {
                   </CardHeader>
                   <CardContent>
                     <div className="flex items-center gap-3">
-                      <div className="h-8 w-8 rounded-full bg-secondary flex items-center justify-center">
-                        <span className="text-sm font-medium">{task.reporterName?.charAt(0)}</span>
-                      </div>
+                      <PersonAvatar userId={task.reporterId} name={task.reporterName} />
                       <div>
                         <p className="font-medium">{task.reporterName}</p>
                         <p className="text-sm text-muted-foreground">Created {formatRelativeTime(task.createdAt)}</p>
@@ -602,11 +605,7 @@ function CommentList({ taskId }: { taskId: string }) {
     <ul className="space-y-4">
       {comments.map((comment: any) => (
         <li key={comment.id} className="flex gap-3">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10">
-            <span className="text-sm font-medium text-primary">
-              {(comment.userName || '?').charAt(0).toUpperCase()}
-            </span>
-          </div>
+          <PersonAvatar userId={comment.userId} name={comment.userName} fallbackClassName="bg-primary/10 font-medium text-primary" />
           <div className="min-w-0 flex-1">
             <p className="text-sm">
               <span className="font-medium">{comment.userName || 'Someone'}</span>{' '}
@@ -739,7 +738,10 @@ function WatchersCard({ taskId }: { taskId: string }) {
           <ul className="space-y-1">
             {watchers.map((w: any) => (
               <li key={w.userId} className="flex items-center justify-between gap-2 text-sm">
-                <span className="truncate">{w.name}</span>
+                <span className="flex min-w-0 items-center gap-2">
+                  <PersonAvatar userId={w.userId} name={w.name} className="h-6 w-6" fallbackClassName="text-[10px]" />
+                  <span className="truncate">{w.name}</span>
+                </span>
                 <button
                   onClick={() => remove(w.userId)}
                   aria-label={`Remove ${w.name}`}

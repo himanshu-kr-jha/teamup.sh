@@ -10,6 +10,7 @@ import { cn } from '@/shared/utils/cn';
 import { DANGER_TEXT, taskDateLabel } from '../dueDate';
 import type { BucketSection, ScrumRow } from './logic';
 import { useTabParams } from './useTabParams';
+import { PersonAvatar } from '@/shared/components/UserAvatar';
 
 /** The scrolling page every dashboard view sits in. */
 export function ViewFrame({ children }: { children: ReactNode }) {
@@ -187,7 +188,8 @@ export function BucketList({ sections }: { sections: BucketSection[] }) {
 export function ScrumPersonCard({ row }: { row: ScrumRow }) {
   return (
     <section className="rounded-lg border border-border bg-card p-3 md:px-4">
-      <header className="flex flex-wrap items-baseline gap-x-2">
+      <header className="flex flex-wrap items-center gap-x-2">
+        <PersonAvatar userId={row.userId} name={row.name} className="h-7 w-7" fallbackClassName="text-[10px]" />
         <h2 className="min-w-0 break-anywhere text-sm font-semibold">{row.name}</h2>
         {row.teams.length > 0 && (
           <p className="min-w-0 break-anywhere text-xs text-muted-foreground">

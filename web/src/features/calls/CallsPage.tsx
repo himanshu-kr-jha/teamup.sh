@@ -14,6 +14,7 @@ import { JOIN_EARLY_MINUTES, meetingStillOn } from '@/features/calendar/layout';
 import { CallLogDialog } from './CallLogDialog';
 import { CreateCallDialog } from './CreateCallDialog';
 import { copyCallLink } from './copyLink';
+import { PersonAvatar } from '@/shared/components/UserAvatar';
 import { StandingMeetings } from './standing/StandingMeetings';
 
 interface Call {
@@ -212,9 +213,12 @@ function CallCard({ call, onJoin }: { call: Call; onJoin: (id: string) => void }
             <div className="flex flex-wrap items-center gap-2">
               {(call.participants ?? []).slice(0, 5).map((p) => (
                 <div key={p.userId} className="relative -ml-1" title={p.userName}>
-                  <div className="h-8 w-8 rounded-full bg-primary/20 flex items-center justify-center border-2 border-background">
-                    <span className="text-xs font-medium text-primary">{p.userName.charAt(0).toUpperCase()}</span>
-                  </div>
+                  <PersonAvatar
+                    userId={p.userId}
+                    name={p.userName}
+                    className="border-2 border-background"
+                    fallbackClassName="bg-primary/20 font-medium text-primary"
+                  />
                 </div>
               ))}
               {(call.participants ?? []).length > 5 && (

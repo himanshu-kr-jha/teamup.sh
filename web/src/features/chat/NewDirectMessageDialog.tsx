@@ -13,6 +13,7 @@ import { channelsApi, orgApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
 import { useAuth } from '@/features/auth/AuthProvider';
+import { PersonAvatar } from '@/shared/components/UserAvatar';
 
 /**
  * Finding somebody and talking to them one to one. There is exactly one
@@ -101,11 +102,7 @@ export function NewDirectMessageDialog({
                 disabled={!!opening}
                 className="flex w-full items-center gap-3 rounded-md p-2 text-left hover:bg-accent disabled:opacity-60"
               >
-                <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10">
-                  <span className="text-sm font-medium text-primary">
-                    {(person.name || '?').charAt(0).toUpperCase()}
-                  </span>
-                </div>
+                <PersonAvatar userId={person.id} name={person.name} src={person.avatarUrl} fallbackClassName="bg-primary/10 font-medium text-primary" />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{person.name}</p>
                   <p className="truncate text-xs text-muted-foreground">{person.email}</p>

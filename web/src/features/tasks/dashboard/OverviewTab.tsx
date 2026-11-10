@@ -6,6 +6,7 @@ import { bucketSections, completedCaption, orderPeople } from './logic';
 import { BucketList, EmptyState, ErrorState, LoadingState, StatTiles, TeamFilter, ViewFrame } from './parts';
 import { useDashboard } from './useDashboard';
 import { useTabParams } from './useTabParams';
+import { PersonAvatar } from '@/shared/components/UserAvatar';
 
 export function OverviewTab() {
   const { team } = useTabParams();
@@ -90,8 +91,9 @@ function PeopleTable({ people }: { people: DashboardPerson[] }) {
           {orderPeople(people).map((person) => (
             <tr key={person.userId}>
               <td className="w-full max-w-0 truncate py-2 pl-3 pr-1 sm:px-3">
-                <Link to={linkTo('person', { person: person.userId })} className="hover:underline">
-                  {person.name}
+                <Link to={linkTo('person', { person: person.userId })} className="flex min-w-0 items-center gap-2 hover:underline">
+                  <PersonAvatar userId={person.userId} name={person.name} className="h-6 w-6 shrink-0" fallbackClassName="text-[10px]" />
+                  <span className="truncate">{person.name}</span>
                 </Link>
               </td>
               {COLUMNS.map(({ key, warn }) => (

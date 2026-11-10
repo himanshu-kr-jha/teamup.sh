@@ -18,6 +18,7 @@ import { callsApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
 import { cn } from '@/shared/utils/cn';
+import { PersonAvatar } from '@/shared/components/UserAvatar';
 import {
   MAX_TILES_COMPACT,
   MAX_TILES_PER_PAGE,
@@ -364,18 +365,24 @@ function ParticipantPanel({
         ) : (
           // A camera that is off should show the person, not a black rectangle.
           <div className="flex h-full w-full items-center justify-center">
-            <span
-              className={cn(
-                'flex items-center justify-center rounded-full bg-primary/20 font-semibold text-primary',
-                compact ? 'h-8 w-8 text-xs' : 'h-20 w-20 text-2xl'
-              )}
-            >
-              {notes ? (
+            {notes ? (
+              <span
+                className={cn(
+                  'flex items-center justify-center rounded-full bg-primary/20 font-semibold text-primary',
+                  compact ? 'h-8 w-8 text-xs' : 'h-20 w-20 text-2xl'
+                )}
+              >
                 <NotebookPen className={compact ? 'h-4 w-4' : 'h-9 w-9'} aria-label="Notes" />
-              ) : (
-                initialsOf(name)
-              )}
-            </span>
+              </span>
+            ) : (
+              <PersonAvatar
+                // A member's identity is their id; a guest has none to look up.
+                userId={guest ? null : participant.identity}
+                name={name}
+                className={compact ? 'h-8 w-8' : 'h-20 w-20'}
+                fallbackClassName={cn('bg-primary/20 font-semibold text-primary', compact ? 'text-xs' : 'text-2xl')}
+              />
+            )}
           </div>
         )}
 
@@ -455,12 +462,4 @@ function trackKey(track: TrackReferenceOrPlaceholder) {
 
 function nameOf(track: TrackReferenceOrPlaceholder) {
   return track.participant.name || track.participant.identity;
-}
-
-/** Up to two initials, which is what fits legibly in a circle. */
-function initialsOf(name: string) {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return '?';
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
