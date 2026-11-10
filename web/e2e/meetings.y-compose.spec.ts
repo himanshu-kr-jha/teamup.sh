@@ -64,13 +64,15 @@ test.describe('writing a message', () => {
     await expect.poll(() => isFocused(page), { message: 'back from the thread' }).toBe(true);
   });
 
-  test('on a phone the keyboard stays down until the box is tapped', async ({ as }) => {
+  test('on a phone too, the box is ready to type in', async ({ as }) => {
     const olivia = await as('owner', { phone: 'android' });
+    const page = olivia.page;
     const { channelId } = readState();
-    await olivia.page.goto(`/chat/${channelId}`);
-    await expect(messageBox(olivia.page)).toBeEnabled();
-    await olivia.page.waitForTimeout(500);
-    expect(await isFocused(olivia.page)).toBe(false);
+    await page.goto(`/chat/${channelId}`);
+    await expect.poll(() => isFocused(page)).toBe(true);
+    await page.keyboard.type('from the phone');
+    await expect(messageBox(page)).toHaveValue('from the phone');
+    await page.screenshot({ path: 'test-results/compose-phone-focus.png' });
   });
 
   test('several files are attached at once, and each can be looked at before it is sent', async ({ as }) => {
