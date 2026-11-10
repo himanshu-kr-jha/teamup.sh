@@ -191,6 +191,14 @@ finish() {
 
 TOTAL_STAGES=6
 
+# It asks for values as it goes, so it needs somebody at a keyboard: run from
+# something with no terminal (an editor's or assistant's shell), every answer
+# would arrive empty.
+if [[ ! -t 0 ]]; then
+  printf 'This wizard asks you for values as it goes, so it has to run in your own terminal:\n  cd %s && scripts/setup-google-calendar.sh\n' "$(pwd)" >&2
+  exit 1
+fi
+
 DEPLOY_ENV="${1:-.deploy.env}"
 [[ -f "$DEPLOY_ENV" ]] || { printf '%s not found: it names the server (TEAMUP_DEPLOY_HOST, TEAMUP_DEPLOY_KEY).\n' "$DEPLOY_ENV" >&2; exit 1; }
 # shellcheck disable=SC1090
