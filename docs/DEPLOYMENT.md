@@ -849,6 +849,24 @@ Cost follows speech, not meeting length: only what people say is sent to Sarvam,
 Transcripts and minutes stay in the database with the call.
 `0026_meeting_notes` adds the two tables, and its down migration drops them with every transcript.
 
+## Google Calendar
+
+Each person can connect their own Google Calendar from the Calendar page.
+Meetings in it then show on TeamUp as busy time, and TeamUp meetings they are in are added to it, and moved or removed with them.
+Standing meetings are not sent, and whole-day events, events marked free and declined invitations are not read.
+
+It is off until an administrator sets up a Google OAuth client, which `scripts/setup-google-calendar.sh` walks through.
+The wizard writes three values to the server's `.env` and restarts TeamUp:
+
+| `.env` | What it is |
+| --- | --- |
+| `GCAL_CLIENT_ID` | The OAuth client's ID, from Google Cloud. |
+| `GCAL_CLIENT_SECRET` | Its secret. |
+| `GCAL_TOKEN_KEY` | Seals each person's Google token in the database. Changing it means everybody connects again. |
+
+The client's authorized redirect URI is `https://<your domain>/api/calendar/google/callback`.
+It is a separate client from Google sign-in on purpose: setting it up does not offer "Sign in with Google".
+
 ## Troubleshooting
 
 These are all things that were hit while testing this guide, except the last three, which come from earlier work.

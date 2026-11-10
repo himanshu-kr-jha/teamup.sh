@@ -195,6 +195,12 @@ services:
       # backup does not carry the ability to mint access tokens. Keep it: the
       # stored key cannot be read back without the value it was sealed with.
       TEAMUP_AUTH_SECRET: ${AUTH_SECRET:?set AUTH_SECRET in .env}
+      # Google Calendar sync. Optional: left empty, nobody is offered it.
+      # scripts/setup-google-calendar.sh sets all three. The token key seals
+      # each person's Google token; changing it means everybody connects again.
+      TEAMUP_GCAL_CLIENT_ID: ${GCAL_CLIENT_ID:-}
+      TEAMUP_GCAL_CLIENT_SECRET: ${GCAL_CLIENT_SECRET:-}
+      TEAMUP_GCAL_TOKEN_KEY: ${GCAL_TOKEN_KEY:-}
     depends_on:
       migrate:
         condition: service_completed_successfully

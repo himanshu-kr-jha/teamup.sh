@@ -10,6 +10,7 @@ const KIND_DOT: Record<CalendarItem['kind'], string> = {
   busy: 'bg-primary',
   focus: 'bg-amber-500',
   open: 'bg-emerald-500',
+  entry: 'bg-violet-500',
 };
 
 /**

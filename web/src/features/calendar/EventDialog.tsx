@@ -3,7 +3,7 @@ import { PERMS, can } from '@/shared/permissions';
 import { GuestAccess } from '@/features/calls/GuestAccess';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
-import { CalendarClock, History, Loader2, Pencil, Timer, Trash2, Video } from 'lucide-react';
+import { CalendarClock, ExternalLink, History, Loader2, Pencil, Timer, Trash2, Video } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog';
 import { calendarApi, meetingsApi } from '@/shared/api/client';
@@ -20,6 +20,7 @@ const SOURCE_LABEL: Record<string, string> = {
   meeting: 'Scheduled meeting',
   call: 'Call',
   standing: 'Standing meeting',
+  google: 'From Google Calendar',
 };
 
 /** One thing on a calendar, and whatever may be done with it. */
@@ -106,10 +107,19 @@ export function EventDialog({
           <div className="min-w-0 space-y-2 text-sm">
             <p className="flex items-center gap-2 text-muted-foreground">
               <CalendarClock className="h-4 w-4 shrink-0" aria-hidden="true" />
-              {item.source === 'block' && !own ? kindLabel(item.kind) : SOURCE_LABEL[item.source ?? ''] ?? kindLabel(item.kind)}
+              {item.kind === 'entry'
+                ? own
+                  ? 'Your entry'
+                  : 'Entry'
+                : item.source === 'block' && !own
+                  ? kindLabel(item.kind)
+                  : SOURCE_LABEL[item.source ?? ''] ?? kindLabel(item.kind)}
               {item.status === 'ended' && !stillOn && ', finished'}
               {item.status === 'active' && ', happening now'}
             </p>
+            {item.details && (
+              <p className="whitespace-pre-wrap break-anywhere rounded-md bg-muted/50 p-2 text-foreground">{item.details}</p>
+            )}
             {extendedText(item) && (
               <p className="flex items-center gap-2 font-medium text-foreground">
                 <Timer className="h-4 w-4 shrink-0" aria-hidden="true" />
@@ -127,6 +137,20 @@ export function EventDialog({
                 <span className="text-muted-foreground">Invited: </span>
                 {invited.map(nameOf).join(', ')}
               </p>
+            )}
+            {item.source === 'google' && own && (
+              <p className="text-muted-foreground">Change it in Google Calendar; TeamUp shows it as it is there.</p>
+            )}
+            {item.link && (
+              <a
+                href={item.link}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
+              >
+                <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                Open in Google Calendar
+              </a>
             )}
             {startsLater && own && (
               <p className="text-muted-foreground">You can join from {JOIN_EARLY_MINUTES} minutes before it starts.</p>

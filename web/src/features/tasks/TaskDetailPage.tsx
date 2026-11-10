@@ -18,6 +18,8 @@ import { FormDialog } from '@/shared/components/FormDialog';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { useWebSocket } from '@/features/websocket/WSProvider';
 import { AttachmentChip } from '@/features/files/AttachmentChip';
+import { MentionTextarea } from '@/features/chat/MentionTextarea';
+import { MessageText } from '@/features/chat/MentionUI';
 import { PeoplePicker, addEach, addLabel } from '@/shared/components/PeoplePicker';
 import { useUpload } from '@/features/files/useUpload';
 import { StagedFiles, type StagedFile } from '@/features/files/StagedFiles';
@@ -433,11 +435,13 @@ export function TaskDetailPage() {
                     }}
                     className="mb-4 space-y-3"
                   >
-                    <Textarea
+                    <MentionTextarea
                       value={commentText}
-                      onChange={(e) => setCommentText(e.target.value)}
-                      placeholder="Write a comment…"
+                      onValueChange={setCommentText}
+                      placeholder="Write a comment… Type @ to mention someone."
+                      aria-label="Comment"
                       rows={3}
+                      autoFocus
                     />
 
                     <StagedFiles
@@ -609,9 +613,9 @@ function CommentList({ taskId }: { taskId: string }) {
               <span className="text-muted-foreground">{formatRelativeTime(comment.createdAt)}</span>
             </p>
             {comment.content && (
-              <p className="whitespace-pre-wrap break-anywhere text-sm">
-                <LinkedText text={comment.content} />
-              </p>
+              <div className="text-sm">
+                <MessageText content={comment.content} isOwn={false} />
+              </div>
             )}
             {comment.attachments?.length > 0 && (
               <div className={cn('flex flex-wrap gap-2', comment.content && 'mt-2')}>

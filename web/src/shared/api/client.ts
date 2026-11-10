@@ -530,6 +530,7 @@ export interface KnockRequest {
 export interface BlockBody {
   kind: Exclude<CalendarKind, 'busy'>;
   title?: string;
+  details?: string;
   startsAt: string;
   endsAt: string;
 }
@@ -558,7 +559,23 @@ export const calendarApi = {
   createBlock: (data: BlockBody) => api.post('/calendar/blocks', data),
   updateBlock: (id: string, data: Partial<BlockBody>) => api.patch(`/calendar/blocks/${id}`, data),
   deleteBlock: (id: string) => api.delete(`/calendar/blocks/${id}`),
+  /** Whether a Google Calendar is connected, and how its last sync went. */
+  google: () => api.get<GoogleCalendarStatus>('/calendar/google'),
+  /** Google's consent page for this person. */
+  connectGoogle: () => api.post<{ url: string }>('/calendar/google/connect'),
+  syncGoogle: () => api.post<GoogleCalendarStatus>('/calendar/google/sync'),
+  disconnectGoogle: () => api.delete('/calendar/google'),
 };
+
+export interface GoogleCalendarStatus {
+  /** False until an administrator has set Google Calendar up. */
+  available: boolean;
+  connected: boolean;
+  email?: string;
+  needsReconnect?: boolean;
+  lastSyncedAt?: string;
+  lastError?: string;
+}
 
 export const meetingsApi = {
   create: (data: MeetingBody) =>

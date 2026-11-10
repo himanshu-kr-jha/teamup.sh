@@ -84,6 +84,11 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        // A page the server makes, never the app's shell. Google sends people
+        // back to /api/calendar/google/callback and /api/auth/callback/...;
+        // answered with the cached index.html, the browser never reached the
+        // server and connecting (or signing in) silently went nowhere.
+        navigateFallbackDenylist: [/^\/api\//, /^\/ws/, /^\/livekit\//],
         // Push handling, pulled into the worker Workbox generates. Building our
         // own worker instead would mean reimplementing everything below.
         importScripts: ['/push-sw.js'],

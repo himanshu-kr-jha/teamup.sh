@@ -142,6 +142,7 @@ type item struct {
 	Kind     string    `json:"kind"`   // busy | focus | open
 	Source   string    `json:"source"` // block | meeting | call | standing (only with authority)
 	Title    string    `json:"title"`
+	Details  string    `json:"details"`
 	StartsAt time.Time `json:"startsAt"`
 	EndsAt   time.Time `json:"endsAt"`
 }

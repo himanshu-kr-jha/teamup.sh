@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -1356,7 +1357,63 @@ func (s *Service) AddComment(ctx context.Context, orgID, taskID, userID uuid.UUI
 	// Everybody following the task sees it appear rather than finding it on
 	// their next reload.
 	s.announceComment(ctx, orgID, taskID, &c)
+	s.notifyCommentMentions(ctx, orgID, taskID, &c)
 	return &c, nil
+}
+
+// commentMention matches @-handles as chat reads them (internal/chat): the
+// part of an email before the @, or a name with the spaces taken out.
+var commentMention = regexp.MustCompile(`@([A-Za-z0-9._-]+)`)
+
+// notifyCommentMentions tells each person a comment names, once, whoever they
+// are in the organization: a task can be read by anybody in it, so bringing
+// somebody into the conversation needs no other step. Best effort, and the
+// author is never told about themselves.
+func (s *Service) notifyCommentMentions(ctx context.Context, orgID, taskID uuid.UUID, c *TaskComment) {
+	if s.notifier == nil {
+		return
+	}
+	var handles []string
+	for _, m := range commentMention.FindAllStringSubmatch(c.Content, -1) {
+		if h := strings.ToLower(strings.TrimRight(m[1], "._-")); h != "" {
+			handles = append(handles, h)
+		}
+	}
+	if len(handles) == 0 {
+		return
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT u.id, t.title, COALESCE(a.name, 'Somebody')
+		FROM users u
+		JOIN tasks t ON t.id = $2 AND t.org_id = u.org_id
+		LEFT JOIN users a ON a.id = $3
+		WHERE u.org_id = $1 AND u.deleted_at IS NULL AND u.id <> $3
+		  AND (REPLACE(LOWER(u.name), ' ', '') = ANY($4)
+		       OR LOWER(split_part(u.email, '@', 1)) = ANY($4))
+	`, orgID, taskID, c.UserID, handles)
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("comment mention lookup failed")
+		return
+	}
+	type named struct {
+		id           uuid.UUID
+		task, author string
+	}
+	var people []named
+	for rows.Next() {
+		var p named
+		if err := rows.Scan(&p.id, &p.task, &p.author); err == nil {
+			people = append(people, p)
+		}
+	}
+	rows.Close()
+	for _, p := range people {
+		if err := s.notifier.Notify(ctx, orgID, p.id, "task.mention",
+			p.author+" mentioned you on "+p.task, c.Content,
+			map[string]any{"taskId": taskID.String(), "commentId": c.ID.String()}); err != nil {
+			s.logger.Warn().Err(err).Msg("comment mention notification failed")
+		}
+	}
 }
 
 // announceComment tells everybody involved in a task that something was said.

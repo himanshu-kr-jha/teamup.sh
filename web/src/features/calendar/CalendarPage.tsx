@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { addDays, format, isSameDay, isToday, parse, isValid } from 'date-fns';
-import { AlertTriangle, CalendarPlus, ChevronLeft, ChevronRight, Eye, Loader2, TimerOff } from 'lucide-react';
+import { AlertTriangle, CalendarPlus, ChevronLeft, ChevronRight, Eye, Loader2, NotebookPen, TimerOff } from 'lucide-react';
 import type { AxiosError } from 'axios';
 import { Button } from '@/shared/components/ui/button';
 import {
@@ -25,6 +25,7 @@ import { CalendarGrid } from './CalendarGrid';
 import { MonthGrid } from './MonthGrid';
 import { EventDialog } from './EventDialog';
 import { ScheduleDialog } from './ScheduleDialog';
+import { GoogleCalendarButton } from './GoogleCalendar';
 import { possessive, whoseCalendar, type CalendarGroup } from './people';
 import {
   dayLabelKey,
@@ -158,12 +159,13 @@ export function CalendarPage() {
   }, []);
 
   const [selected, setSelected] = useState<CalendarItem | null>(null);
-  const [blockDialog, setBlockDialog] = useState<{ item: CalendarItem | null; slot: Slot } | null>(null);
+  const [blockDialog, setBlockDialog] = useState<{ item: CalendarItem | null; slot: Slot; kind?: 'focus' | 'entry' } | null>(null);
   const [scheduleDialog, setScheduleDialog] = useState<{ item: CalendarItem | null; slot: Slot } | null>(null);
 
   // A meeting still going keeps growing between reads of the calendar.
   const liveItems = useMemo(() => withLiveEnds(items, now), [items, now]);
   const newBlock = (slot: Slot = defaultSlot(now)) => setBlockDialog({ item: null, slot });
+  const newEntry = (slot: Slot = defaultSlot(now)) => setBlockDialog({ item: null, slot, kind: 'entry' });
   const newMeeting = (slot: Slot = defaultSlot(now)) => setScheduleDialog({ item: null, slot });
 
   return (
@@ -223,6 +225,13 @@ export function CalendarPage() {
                   ))}
                 </SelectContent>
               </Select>
+            )}
+            {own && <GoogleCalendarButton outcome={params.get('google')} onOutcomeSeen={() => setParam({ google: null })} />}
+            {own && (
+              <Button variant="outline" size="sm" className="h-9" onClick={() => newEntry()}>
+                <NotebookPen className="mr-1 h-4 w-4" aria-hidden="true" />
+                Add entry
+              </Button>
             )}
             {own && (
               <Button variant="outline" size="sm" className="h-9" onClick={() => newBlock()}>
@@ -342,6 +351,7 @@ export function CalendarPage() {
         open={!!blockDialog}
         item={blockDialog?.item ?? null}
         slot={blockDialog?.slot ?? null}
+        startKind={blockDialog?.kind}
         onOpenChange={(open) => !open && setBlockDialog(null)}
       />
       <ScheduleDialog
@@ -394,6 +404,14 @@ function Legend() {
       <span className="flex items-center gap-1">
         <span className="h-2.5 w-2.5 rounded-sm bg-emerald-500/50" aria-hidden="true" />
         Open
+      </span>
+      <span className="flex items-center gap-1">
+        <span className="h-2.5 w-2.5 rounded-sm bg-violet-500/80" aria-hidden="true" />
+        Entry
+      </span>
+      <span className="flex items-center gap-1">
+        <span className="h-2.5 w-2.5 rounded-sm bg-sky-500/80" aria-hidden="true" />
+        Google
       </span>
     </span>
   );

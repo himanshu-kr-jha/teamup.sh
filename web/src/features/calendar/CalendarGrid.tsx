@@ -27,9 +27,11 @@ const pixels = (minutes: number) => (minutes / 60) * HOUR_HEIGHT;
 /** A strip of an open slot stays showing beside whatever is inside it. */
 const INSET_PERCENT = 12;
 
-const EVENT_STYLE: Record<'busy' | 'focus', string> = {
+const EVENT_STYLE: Record<'busy' | 'focus' | 'entry' | 'google', string> = {
   busy: 'border-primary/60 bg-primary/15 text-foreground hover:bg-primary/25 dark:bg-primary/25 dark:hover:bg-primary/35',
   focus: 'border-amber-500/70 bg-amber-100 text-amber-950 hover:bg-amber-200 dark:bg-amber-900/50 dark:text-amber-50 dark:hover:bg-amber-900/70',
+  google: 'border-sky-500/70 bg-sky-100 text-sky-950 hover:bg-sky-200 dark:bg-sky-900/50 dark:text-sky-50 dark:hover:bg-sky-900/70',
+  entry: 'border-violet-500/70 bg-violet-100 text-violet-950 hover:bg-violet-200 dark:bg-violet-900/50 dark:text-violet-50 dark:hover:bg-violet-900/70',
 };
 
 function rangeText(item: CalendarItem): string {
@@ -281,7 +283,7 @@ function EventBlock({ segment, onSelect }: { segment: PlacedSegment; onSelect: (
   const finished =
     item.status === 'ended' &&
     !(item.source === 'meeting' && meetingStillOn({ status: item.status, scheduledEnd: item.endsAt }, new Date()));
-  const kind = item.kind === 'focus' ? 'focus' : 'busy';
+  const kind = item.kind === 'focus' || item.kind === 'entry' ? item.kind : item.source === 'google' ? 'google' : 'busy';
 
   return (
     <button

@@ -42,6 +42,10 @@ export TEAMUP_LIVEKIT_URL="${E2E_LIVEKIT_URL:-http://localhost:7880}" TEAMUP_LIV
 export TEAMUP_AUTH_SECRET="e2e-secret-e2e-secret-e2e-secret-0123456789" TEAMUP_INSECURE_COOKIES=true
 export TEAMUP_AUTO_SETUP=true TEAMUP_SETUP_ORG_NAME="E2E Org" TEAMUP_SETUP_ORG_SUBDOMAIN=e2e
 export TEAMUP_SETUP_ADMIN_NAME="Olivia Owner" TEAMUP_SETUP_ADMIN_EMAIL=owner@e2e.test TEAMUP_SETUP_ADMIN_PASSWORD="Owner-pass-12345"
+# Google Calendar sync, against the fake Google that meetings.y-gcal.spec.ts runs on this port.
+export E2E_GOOGLE_PORT="${E2E_GOOGLE_PORT:-18091}"
+export TEAMUP_GCAL_CLIENT_ID=e2e-gcal TEAMUP_GCAL_CLIENT_SECRET=e2e-gcal-secret TEAMUP_GCAL_TOKEN_KEY=e2e-gcal-token-key-0123456789
+export TEAMUP_GCAL_ENDPOINT="http://127.0.0.1:$E2E_GOOGLE_PORT"
 export TEAMUP_SETUP_OIDC_PROVIDER=google TEAMUP_SETUP_GOOGLE_CLIENT_ID=e2e.apps.googleusercontent.com TEAMUP_SETUP_GOOGLE_CLIENT_SECRET=unused
 
 cd "$ROOT"

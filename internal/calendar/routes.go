@@ -178,6 +178,7 @@ func (h *Handler) CreateBlock(c *gin.Context) {
 	var req struct {
 		Kind     string  `json:"kind"`
 		Title    string  `json:"title"`
+		Details  string  `json:"details"`
 		StartsAt *string `json:"startsAt"`
 		EndsAt   *string `json:"endsAt"`
 	}
@@ -192,7 +193,7 @@ func (h *Handler) CreateBlock(c *gin.Context) {
 		return
 	}
 	b, err := h.service.CreateBlock(c.Request.Context(), orgID, userID,
-		Block{Kind: req.Kind, Title: strings.TrimSpace(req.Title), StartsAt: *start, EndsAt: *end})
+		Block{Kind: req.Kind, Title: strings.TrimSpace(req.Title), Details: strings.TrimSpace(req.Details), StartsAt: *start, EndsAt: *end})
 	if err != nil {
 		httpx.Error(c, err, "failed to create block")
 		return
@@ -212,6 +213,7 @@ func (h *Handler) UpdateBlock(c *gin.Context) {
 	var req struct {
 		Kind     *string `json:"kind"`
 		Title    *string `json:"title"`
+		Details  *string `json:"details"`
 		StartsAt *string `json:"startsAt"`
 		EndsAt   *string `json:"endsAt"`
 	}
@@ -226,7 +228,7 @@ func (h *Handler) UpdateBlock(c *gin.Context) {
 		return
 	}
 	b, err := h.service.UpdateBlock(c.Request.Context(), orgID, userID, id,
-		blockPatch{Kind: req.Kind, Title: req.Title, StartsAt: start, EndsAt: end})
+		blockPatch{Kind: req.Kind, Title: req.Title, Details: req.Details, StartsAt: start, EndsAt: end})
 	if err != nil {
 		httpx.Error(c, err, "failed to update block")
 		return

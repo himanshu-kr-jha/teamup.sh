@@ -58,6 +58,24 @@ type Service struct {
 	clock func() time.Time
 	// guests is told when a meeting with guests from outside moves or ends.
 	guests GuestNotifier
+	// changed is told whose meetings were scheduled, moved or cancelled, so a
+	// copy kept elsewhere (Google Calendar) can follow.
+	changed func(people []uuid.UUID)
+}
+
+// OnMeetingsChanged is called with everybody a scheduled, moved or cancelled
+// meeting concerns. It must not block.
+func (s *Service) OnMeetingsChanged(f func(people []uuid.UUID)) { s.changed = f }
+
+func (s *Service) meetingsChanged(people ...[]uuid.UUID) {
+	if s.changed == nil {
+		return
+	}
+	var all []uuid.UUID
+	for _, p := range people {
+		all = append(all, p...)
+	}
+	s.changed(all)
 }
 
 func NewService(db *pgxpool.Pool) *Service {
@@ -85,10 +103,16 @@ func (s *Service) SetClock(now func() time.Time) { s.clock = now }
 // the organization, through availability and conflicts; the rest is detail, for
 // them and whoever has authority over them.
 type Item struct {
-	ID                string     `json:"id,omitempty"`
-	Kind              string     `json:"kind"` // busy, focus or open
-	Source            string     `json:"source,omitempty"`
-	Title             string     `json:"title,omitempty"`
+	ID     string `json:"id,omitempty"`
+	Kind   string `json:"kind"` // busy, focus, open or entry
+	Source string `json:"source,omitempty"`
+	Title  string `json:"title,omitempty"`
+	// What an entry says beyond its name. Only its owner and their managers read it.
+	Details string `json:"details,omitempty"`
+	// Where a meeting from Google Calendar opens there. Only for its owner.
+	Link string `json:"link,omitempty"`
+	// Marked private in Google Calendar: its name is for its owner alone.
+	private           bool
 	StartsAt          time.Time  `json:"startsAt"`
 	EndsAt            time.Time  `json:"endsAt"`
 	CallID            *uuid.UUID `json:"callId,omitempty"`
@@ -111,7 +135,14 @@ type Item struct {
 }
 
 // shape is the item as somebody without authority may see it.
-func (i Item) shape() Item { return Item{Kind: i.Kind, StartsAt: i.StartsAt, EndsAt: i.EndsAt} }
+func (i Item) shape() Item {
+	kind := i.Kind
+	// What somebody did is theirs to tell; to anybody else they were busy.
+	if kind == "entry" {
+		kind = "busy"
+	}
+	return Item{Kind: kind, StartsAt: i.StartsAt, EndsAt: i.EndsAt}
+}
 
 func overlaps(startA, endA, startB, endB time.Time) bool {
 	return startA.Before(endB) && endA.After(startB)
@@ -164,6 +195,14 @@ func (s *Service) Calendar(ctx context.Context, orgID, viewerID, userID uuid.UUI
 	}
 	items := byPerson[userID]
 	for i := range items {
+		// A manager reads what a report's time goes to, but not what Google
+		// Calendar says is private, nor a way into the report's Google account.
+		if items[i].Source == "google" && viewerID != userID {
+			items[i].Link = ""
+			if items[i].private {
+				items[i].Title = ""
+			}
+		}
 		if items[i].CallID != nil {
 			readable, err := s.mayReadLog(ctx, orgID, viewerID, isOrgAdmin, items[i])
 			if err != nil {
@@ -341,6 +380,9 @@ func (s *Service) loadItems(ctx context.Context, orgID uuid.UUID, people []uuid.
 	if err := s.loadBlocks(ctx, orgID, people, from, to, out); err != nil {
 		return nil, err
 	}
+	if err := s.loadGoogle(ctx, orgID, people, from, to, out); err != nil {
+		return nil, err
+	}
 	attended, err := s.loadCalls(ctx, orgID, people, from, to, out)
 	if err != nil {
 		return nil, err
@@ -362,7 +404,7 @@ func (s *Service) loadItems(ctx context.Context, orgID uuid.UUID, people []uuid.
 
 func (s *Service) loadBlocks(ctx context.Context, orgID uuid.UUID, people []uuid.UUID, from, to time.Time, out map[uuid.UUID][]Item) error {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, user_id, kind, title, starts_at, ends_at FROM calendar_blocks
+		SELECT id, user_id, kind, title, details, starts_at, ends_at FROM calendar_blocks
 		WHERE org_id = $1 AND user_id = ANY($2) AND starts_at < $4 AND ends_at > $3
 	`, orgID, people, from, to)
 	if err != nil {
@@ -372,10 +414,33 @@ func (s *Service) loadBlocks(ctx context.Context, orgID uuid.UUID, people []uuid
 	for rows.Next() {
 		var id, user uuid.UUID
 		item := Item{Source: "block"}
-		if err := rows.Scan(&id, &user, &item.Kind, &item.Title, &item.StartsAt, &item.EndsAt); err != nil {
+		if err := rows.Scan(&id, &user, &item.Kind, &item.Title, &item.Details, &item.StartsAt, &item.EndsAt); err != nil {
 			return fmt.Errorf("scan block: %w", err)
 		}
 		item.ID = id.String()
+		out[user] = append(out[user], item)
+	}
+	return rows.Err()
+}
+
+// loadGoogle adds the meetings read from each person's Google Calendar.
+func (s *Service) loadGoogle(ctx context.Context, orgID uuid.UUID, people []uuid.UUID, from, to time.Time, out map[uuid.UUID][]Item) error {
+	rows, err := s.db.Query(ctx, `
+		SELECT user_id, google_id, title, starts_at, ends_at, private, html_link FROM google_calendar_events
+		WHERE org_id = $1 AND user_id = ANY($2) AND starts_at < $4 AND ends_at > $3
+	`, orgID, people, from, to)
+	if err != nil {
+		return fmt.Errorf("load google events: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var user uuid.UUID
+		var googleID string
+		item := Item{Kind: "busy", Source: "google"}
+		if err := rows.Scan(&user, &googleID, &item.Title, &item.StartsAt, &item.EndsAt, &item.private, &item.Link); err != nil {
+			return fmt.Errorf("scan google event: %w", err)
+		}
+		item.ID = "google:" + googleID
 		out[user] = append(out[user], item)
 	}
 	return rows.Err()
@@ -585,16 +650,29 @@ type Block struct {
 	ID       uuid.UUID `json:"id"`
 	Kind     string    `json:"kind"`
 	Title    string    `json:"title"`
+	Details  string    `json:"details"`
 	StartsAt time.Time `json:"startsAt"`
 	EndsAt   time.Time `json:"endsAt"`
 }
 
+// maxDetails is what an entry may say beyond its name: notes from a meeting, not a document.
+const maxDetails = 5000
+
 func validateBlock(b *Block) error {
-	if b.Kind != "focus" && b.Kind != "open" {
-		return apperrors.New(apperrors.CodeBadRequest, "kind must be focus or open")
+	if b.Kind != "focus" && b.Kind != "open" && b.Kind != "entry" {
+		return apperrors.New(apperrors.CodeBadRequest, "kind must be focus, open or entry")
 	}
 	if len(b.Title) > 255 {
 		return apperrors.New(apperrors.CodeBadRequest, "title is too long")
+	}
+	if b.Kind == "entry" && strings.TrimSpace(b.Title) == "" {
+		return apperrors.New(apperrors.CodeBadRequest, "say what the entry is")
+	}
+	if b.Kind != "entry" {
+		b.Details = ""
+	}
+	if len(b.Details) > maxDetails {
+		return apperrors.New(apperrors.CodeBadRequest, "the details are too long")
 	}
 	if !b.EndsAt.After(b.StartsAt) {
 		return apperrors.New(apperrors.CodeBadRequest, "a block must end after it starts")
@@ -610,9 +688,9 @@ func (s *Service) CreateBlock(ctx context.Context, orgID, userID uuid.UUID, b Bl
 		return nil, err
 	}
 	if err := s.db.QueryRow(ctx, `
-		INSERT INTO calendar_blocks (org_id, user_id, kind, title, starts_at, ends_at)
-		VALUES ($1, $2, $3, $4, $5, $6) RETURNING id
-	`, orgID, userID, b.Kind, b.Title, b.StartsAt, b.EndsAt).Scan(&b.ID); err != nil {
+		INSERT INTO calendar_blocks (org_id, user_id, kind, title, details, starts_at, ends_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id
+	`, orgID, userID, b.Kind, b.Title, b.Details, b.StartsAt, b.EndsAt).Scan(&b.ID); err != nil {
 		return nil, fmt.Errorf("create block: %w", err)
 	}
 	return &b, nil
@@ -620,8 +698,8 @@ func (s *Service) CreateBlock(ctx context.Context, orgID, userID uuid.UUID, b Bl
 
 // blockPatch holds what an edit sent. Empty fields keep what is stored.
 type blockPatch struct {
-	Kind, Title      *string
-	StartsAt, EndsAt *time.Time
+	Kind, Title, Details *string
+	StartsAt, EndsAt     *time.Time
 }
 
 // UpdateBlock is the owner's alone. Anybody else, an admin included, gets the same
@@ -629,9 +707,9 @@ type blockPatch struct {
 func (s *Service) UpdateBlock(ctx context.Context, orgID, userID, id uuid.UUID, p blockPatch) (*Block, error) {
 	var b Block
 	err := s.db.QueryRow(ctx, `
-		SELECT id, kind, title, starts_at, ends_at FROM calendar_blocks
+		SELECT id, kind, title, details, starts_at, ends_at FROM calendar_blocks
 		WHERE id = $1 AND org_id = $2 AND user_id = $3
-	`, id, orgID, userID).Scan(&b.ID, &b.Kind, &b.Title, &b.StartsAt, &b.EndsAt)
+	`, id, orgID, userID).Scan(&b.ID, &b.Kind, &b.Title, &b.Details, &b.StartsAt, &b.EndsAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, apperrors.ErrNotFound
 	}
@@ -644,6 +722,9 @@ func (s *Service) UpdateBlock(ctx context.Context, orgID, userID, id uuid.UUID, 
 	if p.Title != nil {
 		b.Title = *p.Title
 	}
+	if p.Details != nil {
+		b.Details = *p.Details
+	}
 	if p.StartsAt != nil {
 		b.StartsAt = *p.StartsAt
 	}
@@ -654,9 +735,9 @@ func (s *Service) UpdateBlock(ctx context.Context, orgID, userID, id uuid.UUID, 
 		return nil, err
 	}
 	if _, err := s.db.Exec(ctx, `
-		UPDATE calendar_blocks SET kind = $2, title = $3, starts_at = $4, ends_at = $5, updated_at = NOW()
+		UPDATE calendar_blocks SET kind = $2, title = $3, details = $4, starts_at = $5, ends_at = $6, updated_at = NOW()
 		WHERE id = $1
-	`, id, b.Kind, b.Title, b.StartsAt, b.EndsAt); err != nil {
+	`, id, b.Kind, b.Title, b.Details, b.StartsAt, b.EndsAt); err != nil {
 		return nil, fmt.Errorf("update block: %w", err)
 	}
 	return &b, nil
@@ -781,6 +862,7 @@ func (s *Service) ScheduleMeeting(ctx context.Context, orgID, organizer uuid.UUI
 	}
 
 	s.notify(ctx, orgID, invitees, organizer, "meeting.invited", "You were invited to "+title, m)
+	s.meetingsChanged([]uuid.UUID{organizer}, invitees)
 	return m, conflicts, nil
 }
 
@@ -803,7 +885,8 @@ func (s *Service) conflicts(ctx context.Context, orgID uuid.UUID, people []uuid.
 			switch {
 			case item.Kind == "focus":
 				kind = "focus"
-			case item.Source == "meeting" || item.Source == "standing":
+			// An entry is usually a meeting held somewhere else.
+			case item.Source == "meeting" || item.Source == "standing" || item.Source == "google" || item.Kind == "entry":
 				kind = "meeting"
 			}
 			if kind != "" && !seen[kind] {
@@ -933,6 +1016,7 @@ func (s *Service) UpdateMeeting(ctx context.Context, orgID, id, actor uuid.UUID,
 	}
 
 	added, stayed, removed := diffPeople(before, invitees)
+	s.meetingsChanged([]uuid.UUID{m.OrganizerID}, invitees, removed)
 	s.notify(ctx, orgID, added, actor, "meeting.invited", "You were invited to "+title, m)
 	s.notify(ctx, orgID, removed, actor, "meeting.cancelled", title+" is off your calendar", m)
 	if moved {
@@ -1018,6 +1102,7 @@ func (s *Service) CancelMeeting(ctx context.Context, orgID, id, actor uuid.UUID,
 		s.logger.Warn().Err(err).Msg("could not end requests on a cancelled meeting")
 	}
 	s.notify(ctx, orgID, append(m.InviteeIDs, m.OrganizerID), actor, "meeting.cancelled", m.Title+" was cancelled", m)
+	s.meetingsChanged(m.InviteeIDs, []uuid.UUID{m.OrganizerID})
 	if s.guests != nil {
 		s.guests.GuestsMeetingChanged(ctx, orgID, id, true)
 	}

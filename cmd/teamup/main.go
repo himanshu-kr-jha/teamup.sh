@@ -29,6 +29,7 @@ import (
 	"github.com/teamup/teamup/internal/calls"
 	"github.com/teamup/teamup/internal/chat"
 	"github.com/teamup/teamup/internal/files"
+	"github.com/teamup/teamup/internal/gcal"
 	"github.com/teamup/teamup/internal/mail"
 	"github.com/teamup/teamup/internal/notetaker"
 	"github.com/teamup/teamup/internal/notifications"
@@ -214,6 +215,16 @@ type Config struct {
 	CustomIssuer       string `env:"TEAMUP_CUSTOM_ISSUER"`
 	CustomClientID     string `env:"TEAMUP_CUSTOM_CLIENT_ID"`
 	CustomClientSecret string `env:"TEAMUP_CUSTOM_CLIENT_SECRET"`
+
+	// Google Calendar sync (optional). Its own OAuth client, apart from Google
+	// sign-in: setting it up does not offer "Sign in with Google". The token key
+	// seals each person's Google token where it is stored; once people have
+	// connected, changing it means they connect again.
+	GCalClientID     string `env:"TEAMUP_GCAL_CLIENT_ID"`
+	GCalClientSecret string `env:"TEAMUP_GCAL_CLIENT_SECRET"`
+	GCalTokenKey     string `env:"TEAMUP_GCAL_TOKEN_KEY"`
+	// Replaces Google's addresses. For tests only.
+	GCalEndpoint string `env:"TEAMUP_GCAL_ENDPOINT"`
 
 	// SMTP (optional)
 	SMTPHost     string `env:"TEAMUP_SMTP_HOST"`
@@ -498,6 +509,20 @@ func runServer(cmd *cobra.Command, args []string) error {
 	notificationsService.SetLogger(logger)
 	tasksService.SetLogger(logger)
 	calendarService.SetLogger(logger)
+	gcalService, err := gcal.NewService(dbPool, gcal.Config{
+		ClientID:        cfg.GCalClientID,
+		ClientSecret:    cfg.GCalClientSecret,
+		TokenKey:        cfg.GCalTokenKey,
+		BaseURL:         cfg.BaseURL,
+		Endpoint:        cfg.GCalEndpoint,
+		InsecureCookies: cfg.InsecureCookies,
+	})
+	if err != nil {
+		return fmt.Errorf("google calendar: %w", err)
+	}
+	gcalService.SetLogger(logger)
+	// A meeting scheduled, moved or cancelled in TeamUp follows into Google.
+	calendarService.OnMeetingsChanged(func(people []uuid.UUID) { gcalService.Nudge(people...) })
 
 	// Create combined service for WebSocket hub
 	combinedService := &combinedService{
@@ -702,6 +727,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 			presence.RegisterRoutes(protected, presenceService)
 			tasks.RegisterRoutes(protected, tasksService)
 			calendar.RegisterRoutes(protected, calendarService)
+			gcal.RegisterRoutes(protected, api, gcalService)
 			notetaker.RegisterRoutes(protected, notetakerService)
 		}
 
@@ -800,6 +826,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 
 	// Meeting reminders. Every replica sweeps, and claiming one is atomic.
 	go calendarService.RunReminders(sweepCtx, 30*time.Second)
+	// Everybody's Google Calendar, both ways, every few minutes and whenever a
+	// meeting of theirs changes.
+	go gcalService.Run(sweepCtx, 5*time.Minute)
 	// A call whose room finished while nothing was listening. Every replica sweeps,
 	// and ending a call is atomic.
 	go callsService.RunVanishedRoomSweep(sweepCtx, 5*time.Minute)

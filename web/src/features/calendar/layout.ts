@@ -7,8 +7,8 @@ import { formatTime } from '@/shared/utils/cn';
  * ones, so an hour line says the time it says on the day the clocks change.
  */
 
-export type CalendarKind = 'busy' | 'focus' | 'open';
-export type CalendarSource = 'block' | 'meeting' | 'call' | 'standing';
+export type CalendarKind = 'busy' | 'focus' | 'open' | 'entry';
+export type CalendarSource = 'block' | 'meeting' | 'call' | 'standing' | 'google';
 
 /**
  * One thing on somebody's calendar. Without authority over that person the server
@@ -21,6 +21,10 @@ export interface CalendarItem {
   id?: string;
   source?: CalendarSource;
   title?: string;
+  /** What an entry says beyond its name, for its owner and their managers. */
+  details?: string;
+  /** Where a meeting from Google Calendar opens there. Only on your own calendar. */
+  link?: string;
   callId?: string;
   standingMeetingId?: string;
   organizerId?: string;
@@ -235,6 +239,7 @@ const KIND_LABELS: Record<CalendarKind, string> = {
   busy: 'Busy',
   focus: 'Focus time',
   open: 'Open for meetings',
+  entry: 'Entry',
 };
 
 /** The title if the server sent one. Anything else is only what the kind says. */
@@ -320,7 +325,9 @@ export function availabilityAt(items: AvailabilityPerson['items'], start: Date, 
   for (const item of items) {
     if (ignore && item.kind === 'busy' && sameInstant(item.startsAt, ignore.startsAt) && sameInstant(item.endsAt, ignore.endsAt)) continue;
     if (!hasOverlap(start, end, new Date(item.startsAt), new Date(item.endsAt))) continue;
-    if (RANK[item.kind] > RANK[answer]) answer = item.kind;
+    // The server tells nobody else what an entry is; it is busy time.
+    const kind = item.kind === 'entry' ? 'busy' : item.kind;
+    if (RANK[kind] > RANK[answer]) answer = kind;
   }
   return answer;
 }
