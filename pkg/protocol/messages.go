@@ -382,6 +382,10 @@ type Push struct {
 	Renotify           bool           `json:"renotify,omitempty"`
 	Data               map[string]any `json:"data,omitempty"`
 	RequireInteraction bool           `json:"requireInteraction,omitempty"`
+	// Seconds the push service keeps trying a device that is off; zero is an hour.
+	TTL int `json:"-"`
+	// How hard the push service tries to wake a device; empty is "high".
+	Urgency string `json:"-"`
 }
 
 // CallKnockPayload tells a member that somebody asks to join. Connected says

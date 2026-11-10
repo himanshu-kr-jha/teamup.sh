@@ -144,7 +144,7 @@ func (s *Service) announceKnock(ctx context.Context, call *CallModel, req *Knock
 			continue
 		}
 		if err := s.notifier.Notify(ctx, call.OrgID, id, "call.knock", title, "They are waiting to be let in.",
-			map[string]any{"callId": call.ID.String(), "requestId": req.ID.String()}); err != nil {
+			map[string]any{"callId": call.ID.String(), "requestId": req.ID.String(), "url": "/calls/" + call.ID.String()}); err != nil {
 			s.logger.Warn().Err(err).Msg("could not notify about a knock")
 		}
 	}

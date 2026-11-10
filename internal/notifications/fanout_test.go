@@ -203,72 +203,49 @@ func TestPushDeliveryKeepsItsConnectionsBetweenBursts(t *testing.T) {
 	}
 }
 
-// hubSockets stands in for the hub's view of who is connected.
-type hubSockets struct{ connected map[string]bool }
-
-func (h hubSockets) IsConnected(userID string) bool { return h.connected[userID] }
-
-// Somebody with the app open already got the message over the socket, and the
-// client raises its own notification for a conversation they are not watching.
-// Pushing to them as well is a wasted encryption, a wasted request and a
-// duplicate notification.
-func TestPushIsSkippedForAnybodyTheSocketAlreadyReached(t *testing.T) {
-	svc, pool, counter := tracedService(t)
+// A person with TeamUp open on the laptop on their desk was skipped altogether,
+// because they had a socket, so the phone in their pocket never rang and never
+// showed a message. Every device of theirs has to be reached; each one's
+// service worker decides whether it needs to show anything.
+func TestEveryDeviceIsReachedWhateverElseThePersonHasOpen(t *testing.T) {
+	svc, pool, _ := tracedService(t)
 	ctx := context.Background()
-	endpoint := newPushEndpoint(t)
 	org := testsupport.SeedOrg(t, pool)
 
-	ids := seedSubscribers(t, svc, pool, org, endpoint.server.URL, channelSize)
+	var mu sync.Mutex
+	reached := map[string]http.Header{}
+	push := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		reached[r.URL.Path] = r.Header.Clone()
+		mu.Unlock()
+		w.WriteHeader(http.StatusCreated)
+	}))
+	t.Cleanup(push.Close)
 
-	// Half of the channel has TeamUp open.
-	connected := map[string]bool{}
-	for i, id := range ids {
-		if i%2 == 0 {
-			connected[id.String()] = true
+	for _, device := range []string{"laptop", "phone"} {
+		if err := svc.SaveSubscription(ctx, org.OwnerID.String(), org.ID.String(),
+			realSubscription(t, push.URL+"/"+device)); err != nil {
+			t.Fatalf("save subscription: %v", err)
 		}
 	}
-	svc.SetSocketRegistry(hubSockets{connected: connected})
 
-	counter.reset()
-	svc.pushToUsers(ctx, ids, PushPayload{Title: "#general", Body: "third time"})
+	svc.pushToUsers(ctx, []uuid.UUID{org.OwnerID}, PushPayload{Title: "Asha", Body: "Incoming call", TTL: 45})
 
-	want := len(ids) - len(connected)
-	delivered, _ := endpoint.counts()
-	if delivered != want {
-		t.Errorf("delivered %d pushes, want %d — the %d people already on a socket should have been skipped",
-			delivered, want, len(connected))
-	}
-
-	// And they should not have been looked up either.
-	for _, q := range counter.matching("FROM push_subscriptions") {
-		if strings.Contains(q, "user_id = $1") {
-			t.Errorf("subscriptions were still read one user at a time: %s", q)
+	mu.Lock()
+	defer mu.Unlock()
+	for _, device := range []string{"/laptop", "/phone"} {
+		header, ok := reached[device]
+		if !ok {
+			t.Errorf("the %s was never reached", device[1:])
+			continue
 		}
-	}
-}
-
-// Nobody to reach is not a reason to talk to the database.
-func TestPushToAFullyConnectedChannelTouchesNothing(t *testing.T) {
-	svc, pool, counter := tracedService(t)
-	ctx := context.Background()
-	endpoint := newPushEndpoint(t)
-	org := testsupport.SeedOrg(t, pool)
-
-	ids := seedSubscribers(t, svc, pool, org, endpoint.server.URL, 4)
-	connected := map[string]bool{}
-	for _, id := range ids {
-		connected[id.String()] = true
-	}
-	svc.SetSocketRegistry(hubSockets{connected: connected})
-
-	counter.reset()
-	svc.pushToUsers(ctx, ids, PushPayload{Title: "#general", Body: "nobody needs this"})
-
-	if queries := counter.matching("FROM push_subscriptions"); len(queries) != 0 {
-		t.Errorf("everybody was connected, but subscriptions were still read: %v", queries)
-	}
-	if delivered, _ := endpoint.counts(); delivered != 0 {
-		t.Errorf("delivered %d pushes to people who were all on a socket", delivered)
+		// A phone asleep holds back anything less than high until it next wakes.
+		if got := header.Get("Urgency"); got != "high" {
+			t.Errorf("%s: Urgency %q, want high", device[1:], got)
+		}
+		if got := header.Get("TTL"); got != "45" {
+			t.Errorf("%s: TTL %q, want the 45 seconds asked for", device[1:], got)
+		}
 	}
 }
 

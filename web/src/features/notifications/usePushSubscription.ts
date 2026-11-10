@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { notificationsApi } from '@/shared/api/client';
+import { setPushOn } from './pushState';
 
 export type PushState =
   | 'unsupported' // no service worker or no push in this browser
@@ -51,7 +52,11 @@ function keysOf(sub: PushSubscription) {
  * silently going deaf is the worst of the failure modes.
  */
 export function usePushSubscription() {
-  const [state, setState] = useState<PushState>('checking');
+  const [state, setStateOnly] = useState<PushState>('checking');
+  const setState = useCallback((next: PushState) => {
+    setPushOn(next === 'on');
+    setStateOnly(next);
+  }, []);
   const [busy, setBusy] = useState(false);
 
   const supported =
@@ -107,7 +112,7 @@ export function usePushSubscription() {
     return () => {
       cancelled = true;
     };
-  }, [supported, subscribe]);
+  }, [supported, subscribe, setState]);
 
   /** Asks for permission and registers. Call this from a click. */
   const enable = useCallback(async () => {
@@ -122,7 +127,7 @@ export function usePushSubscription() {
     } finally {
       setBusy(false);
     }
-  }, [subscribe]);
+  }, [subscribe, setState]);
 
   /** Stops this device receiving them. Permission is the browser's to revoke. */
   const disable = useCallback(async () => {
@@ -140,7 +145,7 @@ export function usePushSubscription() {
     } finally {
       setBusy(false);
     }
-  }, []);
+  }, [setState]);
 
   return { state, busy, enable, disable };
 }

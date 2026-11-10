@@ -116,7 +116,10 @@ export function ChatNotifications() {
         // One notification per conversation: a burst replaces itself rather
         // than burying the screen.
         tag: `chat-${incoming.channelId}`,
+        url: `/chat/${incoming.channelId}`,
         onClick: () => navigate(`/chat/${incoming.channelId}`),
+        // The server pushes every message to every device of the person's.
+        alsoPushed: true,
       });
     });
   }, [on, user, queryClient, navigate, ping, notify]);

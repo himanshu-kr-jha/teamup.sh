@@ -48,6 +48,13 @@ self.addEventListener('push', (event) => {
       if (looking && data.kind !== 'call.incoming') return;
 
       const isCall = data.kind === 'call.incoming';
+      // A call rings by being put up again every few seconds (keepRinging on
+      // the server). In front of the person, the call's own dialog is already
+      // ringing, so once it is up it is not sounded over that again.
+      if (isCall && looking && payload.tag) {
+        const up = await self.registration.getNotifications({ tag: payload.tag });
+        if (up.length > 0) return;
+      }
       await self.registration.showNotification(payload.title || 'TeamUp', {
         body: payload.body || '',
         icon: payload.icon || '/icons/icon-192.png',

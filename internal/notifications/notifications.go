@@ -31,26 +31,15 @@ type Broadcaster interface {
 	BroadcastToUser(userID string, msg *protocol.Message)
 }
 
-// SocketRegistry reports whether somebody already has a live socket to this
-// server. The hub is the one that knows.
-type SocketRegistry interface {
-	IsConnected(userID string) bool
-}
-
 type Service struct {
 	db          *pgxpool.Pool
 	redis       *redis.Client
 	cfg         Config
 	logger      zerolog.Logger
 	broadcaster Broadcaster
-	sockets     SocketRegistry
 }
 
 func (s *Service) SetBroadcaster(b Broadcaster) { s.broadcaster = b }
-
-// SetSocketRegistry wires the hub, so a push is not sent to somebody the
-// socket has already reached.
-func (s *Service) SetSocketRegistry(r SocketRegistry) { s.sockets = r }
 
 // SetVAPIDKeys lets the keys stored with the organization at setup take
 // precedence over the environment. Without this an instance provisioned
@@ -93,9 +82,18 @@ type PushPayload struct {
 	Data               map[string]interface{} `json:"data,omitempty"`
 	Actions            []NotificationAction   `json:"actions,omitempty"`
 	RequireInteraction bool                   `json:"requireInteraction,omitempty"`
-	TTL                int                    `json:"ttl,omitempty"`
-	Urgency            string                 `json:"urgency,omitempty"`
+	// How long the push service keeps trying a device that is off, in seconds.
+	// Zero is an hour. Said to the push service, not put in the payload.
+	TTL int `json:"-"`
+	// How hard the push service tries to wake a device: "very-low", "low",
+	// "normal" or "high". Empty is high. Said to the push service, not put in
+	// the payload.
+	Urgency string `json:"-"`
 }
+
+// defaultPushTTL is how long a push waits for a device that is off: a message
+// an hour old is still worth seeing on the phone it was meant for.
+const defaultPushTTL = 3600
 
 type NotificationAction struct {
 	Action string `json:"action"`
@@ -242,11 +240,25 @@ func (s *Service) sendToSubscription(ctx context.Context, sub PushSubscription, 
 		return
 	}
 
+	ttl := payload.TTL
+	if ttl <= 0 {
+		ttl = defaultPushTTL
+	}
+	// High unless said otherwise. Every push here puts something on the screen
+	// that a person is waiting for, and an Android phone asleep in a pocket
+	// holds back anything less until it next wakes up on its own, which can be
+	// many minutes: a call that arrives then has long been missed.
+	urgency := webpush.UrgencyHigh
+	if payload.Urgency != "" {
+		urgency = webpush.Urgency(payload.Urgency)
+	}
+
 	resp, err := webpush.SendNotification(body, pushSub, &webpush.Options{
 		VAPIDPublicKey:  s.cfg.VAPIDPublicKey,
 		VAPIDPrivateKey: s.cfg.VAPIDPrivateKey,
 		Subscriber:      s.cfg.VAPIDSubject,
-		TTL:             3600,
+		TTL:             ttl,
+		Urgency:         urgency,
 		HTTPClient:      pushClient,
 	})
 	if err != nil {
@@ -256,6 +268,13 @@ func (s *Service) sendToSubscription(ctx context.Context, sub PushSubscription, 
 	// The body has to be drained and closed or every push leaks a connection.
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
+
+	// Anything else that is not accepted is a push that never arrives, and
+	// was until now dropped without a word: a key the push service refuses,
+	// a payload it will not take.
+	if resp.StatusCode >= 300 && resp.StatusCode != http.StatusNotFound && resp.StatusCode != http.StatusGone {
+		s.logger.Warn().Int("status", resp.StatusCode).Str("endpoint", sub.Endpoint).Msg("push refused by the push service")
+	}
 
 	// A dead endpoint answers 404/410 with no error, so checking only err
 	// meant expired subscriptions were never pruned.
@@ -401,11 +420,6 @@ func (s *Service) NotifyMany(ctx context.Context, orgID uuid.UUID, userIDs []uui
 	}
 
 	// Push is best effort and slow enough that it must not hold up the post.
-	//
-	// Everybody is reached, including people who are connected: unlike a chat
-	// message, the client does not raise its own notification for one of these
-	// — the bell only updates its badge — so skipping the connected would mean
-	// an announcement nobody notices.
 	go func() {
 		pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
 		defer cancel()
@@ -436,6 +450,8 @@ func (s *Service) PushToUsers(ctx context.Context, userIDs []uuid.UUID, push pro
 		Renotify:           push.Renotify,
 		Data:               push.Data,
 		RequireInteraction: push.RequireInteraction,
+		TTL:                push.TTL,
+		Urgency:            push.Urgency,
 	}
 	pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
 	go func() {
@@ -453,28 +469,17 @@ const pushFanOut = 32
 // pushToUsers is PushToUsers with the goroutine taken off, so it can be waited
 // on — by a test, and by anything that needs delivery finished before it moves.
 //
-// Anybody the hub already has a socket to is dropped first. They have had the
-// message live, and the client raises its own notification for a conversation
-// they are not looking at (see ChatNotifications), so a push to them is a
-// wasted lookup, a wasted encryption and a duplicate on their screen.
+// Every device is reached, including those of somebody who has TeamUp open
+// somewhere. People with a live socket used to be skipped on the grounds that
+// the open page raises its own notification, but a socket is a person's, not a
+// device's: a laptop left open on a desk silenced the phone in their pocket,
+// and a phone app put in the background keeps its socket for minutes after it
+// has stopped being able to show anything. Whether this device needs telling
+// is for this device to decide, and its service worker does: it stays quiet
+// when TeamUp is in front of the person, and the page in turn leaves to the
+// push what the push will show (useDesktopNotifications).
 func (s *Service) pushToUsers(ctx context.Context, userIDs []uuid.UUID, payload PushPayload) {
-	s.deliverToUsers(ctx, s.notYetReached(userIDs), payload)
-}
-
-// notYetReached drops the people who already have a live socket. With no hub
-// wired in, nobody is assumed to be connected — failing towards delivering a
-// notification twice rather than not at all.
-func (s *Service) notYetReached(userIDs []uuid.UUID) []uuid.UUID {
-	if s.sockets == nil {
-		return userIDs
-	}
-	remaining := make([]uuid.UUID, 0, len(userIDs))
-	for _, id := range userIDs {
-		if !s.sockets.IsConnected(id.String()) {
-			remaining = append(remaining, id)
-		}
-	}
-	return remaining
+	s.deliverToUsers(ctx, userIDs, payload)
 }
 
 // deliverToUsers sends one payload to every device of every person named, with

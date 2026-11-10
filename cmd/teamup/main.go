@@ -562,8 +562,6 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// Notifications reach the browser over the same socket, and the features
 	// that raise them talk to the service through a narrow Notifier interface.
 	notificationsService.SetBroadcaster(wsHub)
-	// So a chat push is not sent to somebody the socket has already reached.
-	notificationsService.SetSocketRegistry(wsHub)
 	chatService.SetNotifier(notificationsService)
 	// Forwarding a file copies it into the conversation it goes to.
 	chatService.SetObjectCopier(filesService)
@@ -866,6 +864,8 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// The note-taker saves what it has heard in each call and hands the call
 	// to whichever server comes next, while the database is still open.
 	notetakerService.Stop(drainCtx)
+	// Calls still ringing stop being rung again while the database is open.
+	callsService.Close()
 	if shutdownErr != nil {
 		logger.Error().Err(shutdownErr).Msg("Drain did not finish within the grace period")
 	}

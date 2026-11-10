@@ -188,6 +188,8 @@ test.describe('ticket 22 and 31: a standing meeting on your own calendar', () =>
     await expect(dialog.getByText(NAME('pat'))).toHaveCount(0);
     await expect(dialog.getByText('Invited:')).toHaveCount(0);
     await expect(dialog.getByRole('button', { name: 'Log' })).toHaveCount(0);
+    // It recurs every day; left behind it crowds other tests' calendars.
+    await owner.del(`/standing-meetings/${roomOf}`);
     await owner.dispose();
   });
 });

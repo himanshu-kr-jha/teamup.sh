@@ -38,7 +38,14 @@ export function KnockCenter() {
       heard.current.add(prompt.requestId);
       chime();
       if (document.visibilityState !== 'visible') {
-        notify({ title: `${prompt.userName} asks to join`, body: 'Open TeamUp to let them in.', tag: `knock-${prompt.requestId}` });
+        notify({
+          title: `${prompt.userName} asks to join`,
+          body: 'Open TeamUp to let them in.',
+          tag: `knock-${prompt.requestId}`,
+          url: `/calls/${prompt.callId}`,
+          // With nobody in the call, the server pushes the knock as well.
+          alsoPushed: prompt.connected === false,
+        });
       }
     },
     [chime, notify]

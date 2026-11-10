@@ -757,6 +757,18 @@ test.describe('7. the standing meeting', () => {
   const EVENING = 'Evening scrum';
   const SILENT = 'Silent scrum';
 
+  // A standing meeting recurs every day of the week and shows on everybody's
+  // calendar. Left behind, these filled the hours around the time the suite ran
+  // and folded later tests' own events away into "+3" (team calendars).
+  test.afterAll(async () => {
+    const owner = await apiAs('owner');
+    const rooms = (await owner.get('/standing-meetings')).standingMeetings as { id: string; name: string }[];
+    for (const room of rooms.filter((r) => [MORNING, EVENING, SILENT].includes(r.name))) {
+      await owner.del(`/standing-meetings/${room.id}`);
+    }
+    await owner.dispose();
+  });
+
   test('an admin makes the morning and evening rooms; an employee and a manager cannot manage them', async ({ as }) => {
     const olivia = await as('owner');
     await createStandingInUi(olivia.page, MORNING, timeOfDay(-30));
@@ -1196,6 +1208,7 @@ test.describe('10. defects found by this suite, kept fixed', () => {
     await olivia.page.getByRole('button', { name: /Show the call log/ }).first().click();
     await expect(olivia.page.getByRole('dialog')).toBeVisible();
     await expect(olivia.page.getByText('You do not have access to the log of this call.')).toHaveCount(0);
+    await owner.del(`/standing-meetings/${made.standingMeeting.id}`);
     await Promise.all([owner.dispose(), alice.dispose()]);
   });
 });

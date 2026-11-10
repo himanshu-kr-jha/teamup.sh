@@ -114,6 +114,7 @@ func newLK(t *testing.T) *lkEnv {
 	t.Helper()
 	pool := testsupport.DB(t)
 	svc := NewService(pool, Config{LiveKitAPIKey: lkKey, LiveKitAPISecret: lkSecret})
+	t.Cleanup(svc.Close)
 	e := &lkEnv{svc: svc, pool: pool, org: testsupport.SeedOrg(t, pool), frames: &frameLog{}}
 	e.push = &pushLog{Service: notifications.NewService(pool, nil, notifications.Config{})}
 	svc.SetBroadcaster(e.frames)

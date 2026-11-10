@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -34,7 +35,9 @@ func markConnected(ctx context.Context, pool *pgxpool.Pool, callID, userID uuid.
 func newService(t *testing.T) (*Service, *pgxpool.Pool) {
 	t.Helper()
 	pool := testsupport.DB(t)
-	return NewService(pool, Config{}), pool
+	svc := NewService(pool, Config{})
+	t.Cleanup(svc.Close)
+	return svc, pool
 }
 
 // CreateCall used to build the LiveKit room and return a struct without ever
@@ -437,6 +440,7 @@ func TestAChannelCallInviteListIsBounded(t *testing.T) {
 	// A cap low enough to reach without seeding a crowd. The bound is
 	// configuration, so the test sets it rather than inheriting the default.
 	svc := NewService(pool, Config{MaxCallParticipants: 10})
+	t.Cleanup(svc.Close)
 	ctx := context.Background()
 	org := testsupport.SeedOrg(t, pool)
 
@@ -886,11 +890,29 @@ func TestADeclinedCallSaysSoRatherThanCallingItMissed(t *testing.T) {
 
 // rungDevices records what would have been put on somebody's lock screen.
 type rungDevices struct {
+	mu       sync.Mutex
 	payloads []protocol.Push
+	to       [][]uuid.UUID
 }
 
-func (r *rungDevices) PushToUsers(_ context.Context, _ []uuid.UUID, payload protocol.Push) {
+func (r *rungDevices) PushToUsers(_ context.Context, ids []uuid.UUID, payload protocol.Push) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.payloads = append(r.payloads, payload)
+	r.to = append(r.to, append([]uuid.UUID(nil), ids...))
+}
+
+// sent is what has gone out so far, of one kind, and to whom.
+func (r *rungDevices) sent(kind string) [][]uuid.UUID {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out [][]uuid.UUID
+	for i, p := range r.payloads {
+		if p.Data["kind"] == kind {
+			out = append(out, r.to[i])
+		}
+	}
+	return out
 }
 
 func (r *rungDevices) Notify(context.Context, uuid.UUID, uuid.UUID, string, string, string, map[string]any) error {
@@ -912,6 +934,7 @@ func TestACallRingsTheDeviceAndStopsWhenItIsOver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create call: %v", err)
 	}
+	svc.ringEvery = 0 // the ringing again is the test below
 	svc.Ring(ctx, call, org.OwnerID.String(), "QA Alice", []uuid.UUID{callee})
 
 	if len(rung.payloads) != 1 {
@@ -947,6 +970,82 @@ func TestACallRingsTheDeviceAndStopsWhenItIsOver(t *testing.T) {
 	}
 	if cancelled.Data["kind"] != "call.cancelled" {
 		t.Errorf("the device is told to take it away, got %v", cancelled.Data["kind"])
+	}
+}
+
+// A notification sounds once, so a call rung once is a single ding on a phone
+// in a pocket. It has to sound again and again until it is answered, and stop
+// on every device of whoever answered, wherever they answered it.
+func TestACallKeepsRingingUntilItIsAnsweredAndThenStopsEverywhere(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	answers := testsupport.SeedUser(t, pool, org, "answers@example.test", "member")
+	away := testsupport.SeedUser(t, pool, org, "away@example.test", "member")
+
+	rung := &rungDevices{}
+	svc.SetNotifier(rung)
+	svc.ringEvery, svc.ringFor = 20*time.Millisecond, 5*time.Second
+
+	call, err := svc.CreateCall(ctx, org.ID, org.OwnerID, nil, "audio", nil, []string{answers.String(), away.String()})
+	if err != nil {
+		t.Fatalf("create call: %v", err)
+	}
+	svc.Ring(ctx, call, org.OwnerID.String(), "QA Alice", []uuid.UUID{answers, away})
+
+	rung.mu.Lock()
+	first := rung.payloads[0]
+	rung.mu.Unlock()
+	if !first.Renotify {
+		t.Error("each ring has to sound, not replace the last one in silence")
+	}
+	if first.Urgency != "high" || first.TTL != 5 {
+		t.Errorf("a call wakes a sleeping phone and is not kept past its ringing: urgency %q, TTL %d", first.Urgency, first.TTL)
+	}
+
+	waitFor(t, "the call to ring again", func() bool { return len(rung.sent("call.incoming")) >= 3 })
+
+	// Picked up on the laptop.
+	if _, err := pool.Exec(ctx, `UPDATE call_participants SET answered_at = NOW() WHERE call_id = $1 AND user_id = $2`, call.ID, answers); err != nil {
+		t.Fatalf("answer: %v", err)
+	}
+	waitFor(t, "the phone of whoever answered to be told to stop", func() bool {
+		for _, to := range rung.sent("call.cancelled") {
+			if len(to) == 1 && to[0] == answers {
+				return true
+			}
+		}
+		return false
+	})
+	settled := len(rung.sent("call.incoming"))
+	waitFor(t, "the others to go on ringing", func() bool { return len(rung.sent("call.incoming")) > settled+1 })
+	for _, to := range rung.sent("call.incoming")[settled:] {
+		if len(to) != 1 || to[0] != away {
+			t.Fatalf("after answering, only the one still being called should ring, got %v", to)
+		}
+	}
+
+	// The caller gives up: nothing rings any more.
+	if err := svc.MarkCallEnded(ctx, org.ID, call.ID); err != nil {
+		t.Fatalf("end call: %v", err)
+	}
+	time.Sleep(60 * time.Millisecond)
+	over := len(rung.sent("call.incoming"))
+	time.Sleep(100 * time.Millisecond)
+	if after := len(rung.sent("call.incoming")); after != over {
+		t.Errorf("a call that is over went on ringing: %d more", after-over)
+	}
+}
+
+// waitFor polls until ok, or fails the test after a couple of seconds.
+func waitFor(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !ok() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

@@ -192,10 +192,12 @@ func TestACallInviteFrameCreatesTheCallAndRingsTheInvitee(t *testing.T) {
 func newTokenService(t *testing.T) (*Service, *pgxpool.Pool) {
 	t.Helper()
 	pool := testsupport.DB(t)
-	return NewService(pool, Config{
+	svc := NewService(pool, Config{
 		LiveKitAPIKey:    "APItestkey",
 		LiveKitAPISecret: "secret-long-enough-to-sign-with-0123456789",
-	}), pool
+	})
+	t.Cleanup(svc.Close)
+	return svc, pool
 }
 
 // A call invite names whoever it likes: the frame is client-supplied, and the

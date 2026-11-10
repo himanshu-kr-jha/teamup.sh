@@ -3,10 +3,12 @@ package calls
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -67,6 +69,14 @@ type Service struct {
 	// note-taker uses it to join.
 	joined func(ctx context.Context, orgID, callID uuid.UUID, roomName string)
 	clock  func() time.Time
+
+	// How often a call's notification is put up again, and for how long; see
+	// keepRinging. A zero ringEvery rings once.
+	ringEvery, ringFor time.Duration
+	// Closed by Close, which waits for every ringing call to let go.
+	ringStop chan struct{}
+	ringOnce sync.Once
+	ringers  sync.WaitGroup
 	// guestMail emails invitations to people from outside; baseURL starts
 	// the links in them.
 	guestMail GuestMailer
@@ -117,6 +127,10 @@ func NewService(db *pgxpool.Pool, cfg Config) *Service {
 		cfg:   cfg,
 		chart: tasks.NewService(db),
 		clock: time.Now,
+
+		ringEvery: 5 * time.Second,
+		ringFor:   45 * time.Second,
+		ringStop:  make(chan struct{}),
 	}
 
 	// Initialize LiveKit room service client
@@ -1007,13 +1021,20 @@ func (s *Service) SetJoinHook(f func(ctx context.Context, orgID, callID uuid.UUI
 	s.joined = f
 }
 
+// Close stops ringing anybody, and returns once nothing is left ringing.
+func (s *Service) Close() {
+	s.ringOnce.Do(func() { close(s.ringStop) })
+	s.ringers.Wait()
+}
+
 // ringDevices makes the phone itself ring, rather than only a browser tab that
 // happens to still be open.
 //
 // A call is the one thing here that is worthless late: a message read an hour
 // on is still the message, but a call nobody was told about is just a missed
-// one. It holds the screen until it is dealt with, and its tag lets it be taken
-// away again when the caller gives up.
+// one. It holds the screen until it is dealt with, it is not kept for a phone
+// that is off any longer than it rings, and its tag lets it be taken away again
+// when the caller gives up.
 func (s *Service) ringDevices(ctx context.Context, call *Call, callerName string, invitees []uuid.UUID) {
 	if s.notifier == nil || len(invitees) == 0 {
 		return
@@ -1022,18 +1043,130 @@ func (s *Service) ringDevices(ctx context.Context, call *Call, callerName string
 	if call.CallType == "audio" {
 		what = "call"
 	}
-	s.notifier.PushToUsers(ctx, invitees, protocol.Push{
+	ring := protocol.Push{
 		Title: callerName,
 		Body:  "Incoming " + what,
 		Tag:   "call-" + call.ID.String(),
+		// Sounds again each time it is put up, which is what makes it ring.
+		Renotify: true,
 		// It waits to be answered rather than sliding away unseen.
 		RequireInteraction: true,
+		TTL:                int(s.ringFor / time.Second),
+		Urgency:            "high",
 		Data: map[string]any{
 			"kind":   "call.incoming",
 			"url":    "/calls/" + call.ID.String(),
 			"callId": call.ID.String(),
 		},
-	})
+	}
+	s.notifier.PushToUsers(ctx, invitees, ring)
+	if s.ringEvery <= 0 {
+		return
+	}
+	select {
+	case <-s.ringStop:
+		return
+	default:
+	}
+	s.ringers.Add(1)
+	go func() {
+		defer s.ringers.Done()
+		s.keepRinging(context.WithoutCancel(ctx), call.ID, invitees, ring)
+	}()
+}
+
+// keepRinging rings again, every ringEvery, whoever is still being called.
+//
+// A notification sounds once, and a phone that sounds once and falls silent is
+// a message, not a call. So the call's notification is put up again, sounding
+// each time, until the person answers, turns it down, or the call is over, and
+// for no longer than ringFor: as long as the callee's own dialog rings
+// (IncomingCallDialog).
+//
+// Somebody who has picked up or turned it down on one device is still being
+// rung on the others, so they are told to stop there too: answered on the
+// laptop, the phone falls silent.
+func (s *Service) keepRinging(ctx context.Context, callID uuid.UUID, invitees []uuid.UUID, ring protocol.Push) {
+	ringing := invitees
+	tick := time.NewTicker(s.ringEvery)
+	defer tick.Stop()
+	deadline := time.After(s.ringFor)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-s.ringStop:
+			return
+		case <-deadline:
+			return
+		case <-tick.C:
+		}
+		still, err := s.stillRinging(ctx, callID, ringing)
+		if err != nil {
+			s.logger.Warn().Err(err).Str("call", callID.String()).Msg("could not tell who is still being rung")
+			return
+		}
+		// A call that is over was taken off everybody's screen by AnnounceCallOver.
+		if still == nil {
+			return
+		}
+		if done := without(ringing, still); len(done) > 0 {
+			s.stopRinging(ctx, callID, done)
+		}
+		ringing = still
+		if len(ringing) == 0 {
+			return
+		}
+		s.notifier.PushToUsers(ctx, ringing, ring)
+	}
+}
+
+// stillRinging is who among the people named has neither picked up nor turned
+// the call down. Nil, rather than empty, when the call itself is over.
+func (s *Service) stillRinging(ctx context.Context, callID uuid.UUID, people []uuid.UUID) ([]uuid.UUID, error) {
+	var over bool
+	if err := s.db.QueryRow(ctx, `SELECT status = 'ended' FROM calls WHERE id = $1`, callID).Scan(&over); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read call status: %w", err)
+	}
+	if over {
+		return nil, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT user_id FROM call_participants
+		WHERE call_id = $1 AND user_id = ANY($2)
+		  AND joined_at IS NULL AND answered_at IS NULL AND left_at IS NULL
+	`, callID, people)
+	if err != nil {
+		return nil, fmt.Errorf("read who is still being rung: %w", err)
+	}
+	defer rows.Close()
+	still := []uuid.UUID{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		still = append(still, id)
+	}
+	return still, rows.Err()
+}
+
+// without is everybody in all who is not in keep.
+func without(all, keep []uuid.UUID) []uuid.UUID {
+	kept := make(map[uuid.UUID]bool, len(keep))
+	for _, id := range keep {
+		kept[id] = true
+	}
+	var out []uuid.UUID
+	for _, id := range all {
+		if !kept[id] {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // stopRinging takes back a notification for a call that is over. Without it a
@@ -1043,10 +1176,12 @@ func (s *Service) stopRinging(ctx context.Context, callID uuid.UUID, invitees []
 		return
 	}
 	s.notifier.PushToUsers(ctx, invitees, protocol.Push{
-		Title: "Call ended",
-		Body:  "",
-		Tag:   "call-" + callID.String(),
-		Data:  map[string]any{"kind": "call.cancelled"},
+		Title:   "Call ended",
+		Body:    "",
+		Tag:     "call-" + callID.String(),
+		TTL:     60,
+		Urgency: "high",
+		Data:    map[string]any{"kind": "call.cancelled"},
 	})
 }
 
