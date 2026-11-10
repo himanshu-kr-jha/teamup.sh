@@ -30,8 +30,11 @@ import (
 // installation, its repositories, and people signing in to link accounts.
 type fakeGitHub struct {
 	server *httptest.Server
-	key    *rsa.PrivateKey
-	users  map[string]struct {
+	mu     sync.Mutex
+	// collaborator changes asked for, as "PUT acme/photon-web alice-gh push"
+	collaborators []string
+	key           *rsa.PrivateKey
+	users         map[string]struct {
 		id     int64
 		login  string
 		emails []string
@@ -71,6 +74,28 @@ func (g *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 			return false
 		}
 		return true
+	}
+	if strings.HasPrefix(r.URL.Path, "/repos/") && strings.Contains(r.URL.Path, "/collaborators/") {
+		if r.Header.Get("Authorization") != "token installation-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/repos/"), "/")
+		var body struct {
+			Permission string `json:"permission"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		g.mu.Lock()
+		g.collaborators = append(g.collaborators, strings.TrimSpace(fmt.Sprintf("%s %s/%s %s %s", r.Method, parts[0], parts[1], parts[3], body.Permission)))
+		g.mu.Unlock()
+		// Somebody outside the organization is sent an invitation; a member is added.
+		if r.Method == http.MethodPut && parts[3] == "alice-gh" {
+			w.WriteHeader(http.StatusCreated)
+			reply(map[string]any{"id": 99})
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
 	}
 	switch {
 	case strings.HasPrefix(r.URL.Path, "/app-manifests/") && r.Method == http.MethodPost:

@@ -27,6 +27,7 @@ async function fakeGitHub() {
     publicKeyEncoding: { type: 'spki', format: 'pem' },
   });
   const app: { manifest?: any } = {};
+  const collaborators: string[] = [];
   let nextUser = 'alice-code';
   const read = (req: IncomingMessage) =>
     new Promise<string>((done) => {
@@ -41,6 +42,13 @@ async function fakeGitHub() {
     const json = (value: unknown) => res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(value));
     const go = (to: string) => res.writeHead(302, { Location: to }).end();
 
+    // Giving and taking away a repository: somebody outside the organization is invited.
+    const collab = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/collaborators\/([^/]+)$/);
+    if (collab) {
+      collaborators.push(`${req.method} ${collab[1]}/${collab[2]} ${collab[3]}${body ? ' ' + JSON.parse(body).permission : ''}`);
+      if (req.method === 'PUT') return res.writeHead(201, { 'Content-Type': 'application/json' }).end(JSON.stringify({ id: 7 }));
+      return res.writeHead(204).end();
+    }
     // The admin presses Create on GitHub's page.
     if (/^\/organizations\/[^/]+\/settings\/apps\/new$/.test(url.pathname) && req.method === 'POST') {
       app.manifest = JSON.parse(new URLSearchParams(body).get('manifest') ?? '{}');
@@ -74,6 +82,7 @@ async function fakeGitHub() {
   await new Promise<void>((done) => server.listen(PORT, '127.0.0.1', done));
   return {
     signInAs: (code: string) => (nextUser = code),
+    collaborators,
     hookUrl: () => app.manifest?.hook_attributes?.url as string,
     close: () => new Promise((done) => server.close(done)),
   };
@@ -185,6 +194,50 @@ test('GitHub: connected once, then pull requests move tasks and reach reviewers'
     await page.getByRole('button', { name: 'Post comment' }).click();
     await page.getByRole('link', { name: `${key.toLowerCase()}-1` }).click();
     await expect(page).toHaveURL(new RegExp(`/tasks/${taskId}$`));
+
+    // Alice asks for write access to the project; an administrator approves it, and GitHub invites her.
+    const aliceSession = await as('alice');
+    await aliceSession.page.goto('/projects');
+    const aliceCard = aliceSession.page.locator('li', { has: aliceSession.page.getByRole('heading', { name: new RegExp(`Photon ${key}`) }) });
+    await expect(aliceCard.getByTestId('my-access')).toHaveText('You have no access to its code');
+    await aliceCard.getByRole('button', { name: 'Request access' }).click();
+    const ask = aliceSession.page.getByRole('dialog');
+    await ask.getByRole('button', { name: /Write/ }).click();
+    await ask.getByLabel('Why (optional)').fill('Fixing the Safari sign-in');
+    await aliceSession.page.screenshot({ path: 'test-results/access-request.png' });
+    await ask.getByRole('button', { name: 'Send request' }).click();
+    await expect(aliceCard.getByTestId('my-access')).toContainText('You asked for write access');
+
+    const owner2 = await apiAs('owner');
+    await expect
+      .poll(async () => ((await owner2.get('/notifications?limit=20')).notifications as any[]).some((n) => n.type === 'access.requested'))
+      .toBe(true);
+    await owner2.dispose();
+    await page.goto('/projects');
+    const waiting = page.getByRole('list', { name: 'Access requests' });
+    await expect(waiting.getByText('Fixing the Safari sign-in', { exact: false })).toBeVisible();
+    await page.screenshot({ path: 'test-results/access-waiting.png' });
+    await waiting.getByRole('button', { name: `Approve ${PEOPLE.alice.name}` }).click();
+    await expect(page.getByText(`${PEOPLE.alice.name} has write access`, { exact: false }).first()).toBeVisible();
+    expect(github.collaborators).toContain('PUT cognecto/photon-web alice-gh push');
+    expect(github.collaborators).toContain('PUT cognecto/photon-api alice-gh push');
+
+    await aliceSession.page.reload();
+    await expect(aliceCard.getByTestId('my-access')).toContainText('You have write access (accept GitHub’s invitation to use it)');
+
+    // ...and takes it away again; the history says so.
+    await page.getByRole('button', { name: `Access to Photon ${key}` }).click();
+    const accessDialog = page.getByRole('dialog', { name: new RegExp(`Access to Photon ${key}`) });
+    await expect(accessDialog.getByRole('list', { name: `${PEOPLE.alice.name}'s repositories` }).getByText('invited on GitHub').first()).toBeVisible();
+    await page.screenshot({ path: 'test-results/access-dialog.png' });
+    await accessDialog.getByRole('button', { name: `Remove ${PEOPLE.alice.name}'s access` }).click();
+    await accessDialog.getByRole('button', { name: 'Remove access' }).click();
+    await expect(page.getByText(`${PEOPLE.alice.name}'s access is removed.`).first()).toBeVisible();
+    expect(github.collaborators).toContain('DELETE cognecto/photon-web alice-gh');
+    const history = accessDialog.getByRole('list', { name: 'Access history' });
+    await expect(history.getByText('asked for', { exact: false })).toBeVisible();
+    await expect(history.getByText(`${PEOPLE.alice.name}'s access was removed`, { exact: false })).toBeVisible();
+    await page.keyboard.press('Escape');
 
     // A forged event is refused.
     const forged = await request.post(github.hookUrl().replace(/^https?:\/\/[^/]+/, ''), {

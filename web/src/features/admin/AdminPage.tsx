@@ -136,7 +136,7 @@ export function AdminPage() {
           </TabsContent>
         )}
         <TabsContent value="projects" className="p-4 md:p-6">
-          <ProjectsTab canManage={may.settings} />
+          <ProjectsTab canManage={may.settings} userId={user?.id} />
         </TabsContent>
         {may.settings && (
           <TabsContent value="integrations" className="p-4 md:p-6">

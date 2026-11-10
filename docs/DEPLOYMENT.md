@@ -881,6 +881,11 @@ Bitbucket is connected the same way from the same page, by an owner of the Bitbu
 TeamUp then adds a webhook to the workspace and lists its repositories, and everybody links their own Bitbucket account under Settings.
 Bitbucket says nothing when a reviewer is added, so TeamUp compares each pull request's reviewers with the last it saw, and tells whoever is new.
 
+Access to a project's code is asked for and given in TeamUp, under Projects.
+Somebody asks for read or write access to a project; administrators are told, and approve or decline.
+Approved, TeamUp gives the account they linked on GitHub or Bitbucket that access on each repository of the project: GitHub adds a member of the organization directly and sends anybody else an invitation, and Bitbucket can only give a repository to somebody who is already a member of the workspace.
+An administrator can also give or remove access directly, and every step, including somebody added on GitHub by hand, is kept in the access history.
+
 GitHub sends its events to `https://<your domain>/api/integrations/github/hook/<key>`, so the server must be reachable from the internet.
 
 ## Troubleshooting

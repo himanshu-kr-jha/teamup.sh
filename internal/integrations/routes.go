@@ -46,6 +46,15 @@ func RegisterRoutes(protected, public *gin.RouterGroup, s *Service) {
 	protected.POST("/integrations/github/identity", h.identityStart)
 	protected.DELETE("/integrations/me/:provider", h.unlink)
 	protected.GET("/tasks/:id/code", h.taskCode)
+	protected.GET("/projects/:id/access", h.projectAccess)
+	protected.POST("/projects/:id/access/requests", h.requestAccess)
+	protected.POST("/projects/:id/access/grants", h.admin(h.grantAccess))
+	protected.DELETE("/access/requests/:id", h.cancelRequest)
+	protected.POST("/access/requests/:id/approve", h.admin(h.decide(true)))
+	protected.POST("/access/requests/:id/decline", h.admin(h.decide(false)))
+	protected.DELETE("/access/grants/:id", h.admin(h.revoke))
+	protected.GET("/access/requests", h.admin(h.pendingRequests))
+	protected.GET("/access/log", h.admin(h.accessLog))
 
 	public.GET("/integrations/github/created", h.created)
 	public.GET("/integrations/github/installed/:hookKey", h.installed)
@@ -405,4 +414,176 @@ func (h *handler) bitbucketHook(c *gin.Context) {
 		h.s.logger.Warn().Err(err).Str("event", c.GetHeader("X-Event-Key")).Msg("bitbucket event failed")
 		c.Status(http.StatusInternalServerError)
 	}
+}
+
+// ── access to projects ────────────────────────────────────────────────────
+
+func idParam(c *gin.Context) (uuid.UUID, bool) {
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+func (h *handler) projectAccess(c *gin.Context) {
+	orgID, userID, ok := caller(c)
+	if !ok {
+		return
+	}
+	id, ok := idParam(c)
+	if !ok {
+		return
+	}
+	view, err := h.s.ProjectAccess(c.Request.Context(), orgID, id, userID, auth.GetUserFromContext(c).Can(auth.PermOrgSettings))
+	if err != nil {
+		httpx.Error(c, err, "failed to read access")
+		return
+	}
+	c.JSON(http.StatusOK, view)
+}
+
+func (h *handler) requestAccess(c *gin.Context) {
+	orgID, userID, ok := caller(c)
+	if !ok {
+		return
+	}
+	id, ok := idParam(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Level  string `json:"level"`
+		Reason string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	r, err := h.s.RequestAccess(c.Request.Context(), orgID, id, userID, req.Level, req.Reason)
+	if err != nil {
+		httpx.Error(c, err, "failed to request access")
+		return
+	}
+	c.JSON(http.StatusCreated, r)
+}
+
+func (h *handler) grantAccess(c *gin.Context) {
+	orgID, adminID, ok := caller(c)
+	if !ok {
+		return
+	}
+	id, ok := idParam(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		UserID uuid.UUID `json:"userId"`
+		Level  string    `json:"level"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		return
+	}
+	g, err := h.s.Grant(c.Request.Context(), orgID, id, req.UserID, adminID, req.Level)
+	if err != nil {
+		httpx.Error(c, err, "failed to give access")
+		return
+	}
+	c.JSON(http.StatusOK, g)
+}
+
+func (h *handler) cancelRequest(c *gin.Context) {
+	orgID, userID, ok := caller(c)
+	if !ok {
+		return
+	}
+	id, ok := idParam(c)
+	if !ok {
+		return
+	}
+	if err := h.s.CancelRequest(c.Request.Context(), orgID, id, userID); err != nil {
+		httpx.Error(c, err, "failed to withdraw the request")
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *handler) decide(approve bool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		orgID, adminID, ok := caller(c)
+		if !ok {
+			return
+		}
+		id, ok := idParam(c)
+		if !ok {
+			return
+		}
+		var req struct {
+			Note string `json:"note"`
+		}
+		_ = c.ShouldBindJSON(&req)
+		g, err := h.s.Decide(c.Request.Context(), orgID, id, adminID, approve, req.Note)
+		if err != nil {
+			httpx.Error(c, err, "failed to answer the request")
+			return
+		}
+		if g == nil {
+			c.Status(http.StatusNoContent)
+			return
+		}
+		c.JSON(http.StatusOK, g)
+	}
+}
+
+func (h *handler) revoke(c *gin.Context) {
+	orgID, adminID, ok := caller(c)
+	if !ok {
+		return
+	}
+	id, ok := idParam(c)
+	if !ok {
+		return
+	}
+	if err := h.s.Revoke(c.Request.Context(), orgID, id, adminID); err != nil {
+		httpx.Error(c, err, "failed to remove access")
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
+func (h *handler) pendingRequests(c *gin.Context) {
+	orgID, _, ok := caller(c)
+	if !ok {
+		return
+	}
+	list, err := h.s.PendingRequests(c.Request.Context(), orgID)
+	if err != nil {
+		httpx.Error(c, err, "failed to list requests")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"requests": list})
+}
+
+func (h *handler) accessLog(c *gin.Context) {
+	orgID, _, ok := caller(c)
+	if !ok {
+		return
+	}
+	var projectID *uuid.UUID
+	if raw := c.Query("projectId"); raw != "" {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid project id"})
+			return
+		}
+		projectID = &id
+	}
+	list, err := h.s.AccessLog(c.Request.Context(), orgID, projectID, 200)
+	if err != nil {
+		httpx.Error(c, err, "failed to read the access log")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"entries": list})
 }

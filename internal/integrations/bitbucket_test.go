@@ -30,6 +30,8 @@ type fakeBitbucket struct {
 	// refresh tokens still good; each refresh retires the one used.
 	refresh map[string]bool
 	next    int
+	// permission changes asked for, as "PUT acme/cortex {alice} write"
+	permissions []string
 }
 
 var bbPeople = map[string]bbAccount{
@@ -53,6 +55,22 @@ func (b *fakeBitbucket) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(v)
 	}
 	who := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer access-")
+	if strings.Contains(r.URL.Path, "/permissions-config/users/") {
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/2.0/repositories/"), "/")
+		var body struct {
+			Permission string `json:"permission"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		b.permissions = append(b.permissions, strings.TrimSpace(r.Method+" "+parts[0]+"/"+parts[1]+" "+parts[4]+" "+body.Permission))
+		// Only workspace members can be given a repository.
+		if r.Method == http.MethodPut && parts[4] != "{alice}" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		reply(map[string]any{"permission": body.Permission})
+		return
+	}
 	switch {
 	case r.URL.Path == "/site/oauth2/access_token":
 		key, secret, _ := r.BasicAuth()

@@ -8,6 +8,7 @@ import { CallsPage } from '@/features/calls/CallsPage';
 import { TasksPage } from '@/features/tasks/TasksPage';
 import { SettingsPage } from '@/features/settings/SettingsPage';
 import { AdminPage } from '@/features/admin/AdminPage';
+import { ProjectsPage } from '@/features/admin/ProjectsPage';
 import { CallViewPage } from '@/features/calls/CallViewPage';
 import { MinutesPage } from '@/features/calls/MinutesPage';
 import { MeetingNotesPage } from '@/features/calls/MeetingNotesPage';
@@ -107,6 +108,7 @@ export const router = createBrowserRouter([
       { path: 'calendar', element: <CalendarPage /> },
       { path: 'tasks', element: <TasksPage /> },
       { path: 'tasks/:taskId', element: <TaskDetailPage /> },
+      { path: 'projects', element: <ProjectsPage /> },
       { path: 'settings', element: <SettingsPage /> },
       { path: 'organization', element: <OnlyForAdministrators /> },
     ],

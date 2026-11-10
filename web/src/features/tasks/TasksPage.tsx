@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Plus } from 'lucide-react';
+import { FolderGit2, Plus } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { Button } from '@/shared/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs';
 import { BoardView } from './BoardView';
@@ -97,7 +98,13 @@ export function TasksPage() {
             )}
           </div>
         )}
-        <Button className="ml-auto hidden md:inline-flex" size="sm" onClick={() => setCreateOpen(true)}>
+        {/* Without the sidebar, the way to the projects is from here. */}
+        <Button asChild variant="outline" size="icon" className="ml-auto shrink-0 lg:hidden" aria-label="Projects">
+          <Link to="/projects">
+            <FolderGit2 className="h-5 w-5" aria-hidden="true" />
+          </Link>
+        </Button>
+        <Button className="hidden md:ml-0 md:inline-flex lg:ml-auto" size="sm" onClick={() => setCreateOpen(true)}>
           New Task
         </Button>
         <Button size="icon" className="shrink-0 md:hidden" aria-label="New task" onClick={() => setCreateOpen(true)}>

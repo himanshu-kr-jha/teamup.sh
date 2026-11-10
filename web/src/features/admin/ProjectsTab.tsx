@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Archive, Check, FolderGit2, Github, Pencil, Plus } from 'lucide-react';
+import { Archive, Check, FolderGit2, Github, KeyRound, Pencil, Plus } from 'lucide-react';
+import { AccessLogCard, MyProjectAccess, PendingAccessRequests, ProjectAccessDialog } from './ProjectAccess';
 import { BitbucketMark } from './IntegrationsTab';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
@@ -24,7 +25,7 @@ export function suggestKey(name: string): string {
 const KEY = /^[A-Z][A-Z0-9]{1,9}$/;
 
 /** The organization's projects, the repositories each is made of, and their task keys. */
-export function ProjectsTab({ canManage }: { canManage: boolean }) {
+export function ProjectsTab({ canManage, userId }: { canManage: boolean; userId?: string }) {
   const toast = useToast();
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery({ queryKey: ['projects'], queryFn: () => projectsApi.list() });
@@ -32,6 +33,7 @@ export function ProjectsTab({ canManage }: { canManage: boolean }) {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Project | null>(null);
   const [choosing, setChoosing] = useState<Project | null>(null);
+  const [managingAccess, setManagingAccess] = useState<Project | null>(null);
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['projects'] });
 
   const archive = async (p: Project) => {
@@ -61,6 +63,8 @@ export function ProjectsTab({ canManage }: { canManage: boolean }) {
         )}
       </div>
 
+      {canManage && <PendingAccessRequests />}
+
       {projects.length === 0 && (
         <Card>
           <CardContent className="py-8 text-center text-sm text-muted-foreground">
@@ -87,6 +91,10 @@ export function ProjectsTab({ canManage }: { canManage: boolean }) {
                   </div>
                   {canManage && (
                     <div className="flex flex-wrap gap-1">
+                      <Button size="sm" variant="outline" onClick={() => setManagingAccess(p)} aria-label={`Access to ${p.name}`}>
+                        <KeyRound className="mr-1 h-4 w-4" aria-hidden="true" />
+                        Access
+                      </Button>
                       <Button size="sm" variant="outline" onClick={() => setChoosing(p)}>
                         <FolderGit2 className="mr-1 h-4 w-4" aria-hidden="true" />
                         Repositories
@@ -119,6 +127,7 @@ export function ProjectsTab({ canManage }: { canManage: boolean }) {
                 ) : (
                   <p className="text-xs text-muted-foreground">No repositories yet.</p>
                 )}
+                <MyProjectAccess project={p} userId={userId} />
               </CardContent>
             </Card>
           </li>
@@ -128,6 +137,8 @@ export function ProjectsTab({ canManage }: { canManage: boolean }) {
       <ProjectDialog open={creating} onOpenChange={setCreating} onDone={refresh} />
       <ProjectDialog open={!!editing} project={editing} onOpenChange={(o) => !o && setEditing(null)} onDone={refresh} />
       <RepositoriesDialog project={choosing} onClose={() => setChoosing(null)} onDone={refresh} />
+      <ProjectAccessDialog project={managingAccess} onClose={() => setManagingAccess(null)} />
+      {canManage && projects.length > 0 && <AccessLogCard />}
     </div>
   );
 }

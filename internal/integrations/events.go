@@ -91,6 +91,8 @@ func (s *Service) dispatch(ctx context.Context, c *connection, event string, bod
 		return s.onCheckSuite(ctx, c, body)
 	case "issue_comment":
 		return s.onComment(ctx, c, body)
+	case "member":
+		return s.onMember(ctx, c, body)
 	}
 	return nil
 }

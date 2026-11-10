@@ -818,3 +818,68 @@ export const integrationsApi = {
   taskCode: (taskId: string) =>
     api.get<{ pullRequests: CodePullRequest[]; commits: CodeCommit[]; connected: boolean }>(`/tasks/${taskId}/code`),
 };
+
+// ── access to projects ────────────────────────────────────────────────────
+
+export type AccessLevel = 'read' | 'write';
+
+export interface AccessRequest {
+  id: string;
+  projectId: string;
+  projectName: string;
+  userId: string;
+  userName: string;
+  level: AccessLevel;
+  reason: string;
+  status: 'pending' | 'approved' | 'declined' | 'cancelled';
+  note?: string;
+  createdAt: string;
+}
+
+export interface RepoAccess {
+  repository: string;
+  provider: 'github' | 'bitbucket';
+  /** granted, invited (waiting for them to accept on GitHub), failed or revoked. */
+  status: 'granted' | 'invited' | 'failed' | 'revoked';
+  detail?: string;
+}
+
+export interface AccessGrant {
+  id: string;
+  projectId: string;
+  userId: string;
+  userName: string;
+  level: AccessLevel;
+  grantedBy?: string;
+  grantedAt: string;
+  repositories: RepoAccess[];
+}
+
+export interface ProjectAccess {
+  grants: AccessGrant[];
+  requests: AccessRequest[];
+  /** Providers of the project's repositories the caller has linked no account for. */
+  unlinked: Array<'github' | 'bitbucket'>;
+}
+
+export interface AccessLogEntry {
+  id: string;
+  projectName?: string;
+  subject: string;
+  actor?: string;
+  action: string;
+  detail?: string;
+  at: string;
+}
+
+export const accessApi = {
+  project: (projectId: string) => api.get<ProjectAccess>(`/projects/${projectId}/access`).then((r) => r.data),
+  request: (projectId: string, data: { level: AccessLevel; reason: string }) => api.post<AccessRequest>(`/projects/${projectId}/access/requests`, data),
+  cancel: (requestId: string) => api.delete(`/access/requests/${requestId}`),
+  approve: (requestId: string, note = '') => api.post<AccessGrant | ''>(`/access/requests/${requestId}/approve`, { note }),
+  decline: (requestId: string, note = '') => api.post(`/access/requests/${requestId}/decline`, { note }),
+  grant: (projectId: string, data: { userId: string; level: AccessLevel }) => api.post<AccessGrant>(`/projects/${projectId}/access/grants`, data),
+  revoke: (grantId: string) => api.delete(`/access/grants/${grantId}`),
+  pending: () => getList<AccessRequest>('/access/requests', 'requests'),
+  log: (projectId?: string) => getList<AccessLogEntry>('/access/log', 'entries', projectId ? { projectId } : undefined),
+};

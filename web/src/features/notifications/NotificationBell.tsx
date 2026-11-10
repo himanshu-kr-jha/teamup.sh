@@ -93,6 +93,8 @@ export function NotificationBell() {
     else if (n.type.startsWith('meeting.')) navigate(calendarLink(n.data?.startsAt));
     else if (n.type === 'call.knock' && n.data?.callId) navigate(`/calls/${n.data.callId}`);
     else if (n.type.startsWith('minutes.') && n.data?.callId) navigate(`/calls/${n.data.callId}/minutes`);
+    // Access to a project is asked for, given and taken away under Projects.
+    else if (n.type.startsWith('access.')) navigate('/projects');
     // A pull request no task names opens on GitHub.
     else if (n.type.startsWith('code.') && typeof n.data?.url === 'string' && /^https:\/\//.test(n.data.url)) {
       window.open(n.data.url, '_blank', 'noopener');
