@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import type { Page } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import { expect, test } from './support/fixtures';
 import { apiAs, idOf } from './support/meetings';
 import { BASE_URL } from './support/api';
@@ -129,43 +129,63 @@ test.describe('unread chats', () => {
     const aliceId = idOf('alice');
     const stamp = Date.now();
     const rooms: string[] = [];
-    for (const n of ['a', 'b']) {
-      const room = await owner.post('/channels', { type: 'public', name: `badge-${n}-${stamp}` });
-      await owner.post(`/channels/${room.id}/members`, { userId: aliceId });
-      rooms.push(room.id);
+    try {
+      for (const n of ['a', 'b']) {
+        const room = await owner.post('/channels', { type: 'public', name: `badge-${n}-${stamp}` });
+        await owner.post(`/channels/${room.id}/members`, { userId: aliceId });
+        rooms.push(room.id);
+      }
+
+      const alice = await as('alice');
+      const aliceApi = await apiAs('alice');
+      // What the server says is unread. Read afresh at each step: other specs'
+      // conversations (a meeting's notes posted after it ends, say) can turn up
+      // at any moment, and the badge is right to count them.
+      const unread = async () => {
+        const channels = (await aliceApi.get('/channels')).channels as Array<{ id: string; unreadCount: number }>;
+        return { count: channels.filter((c) => c.unreadCount > 0).length, of: (id: string) => channels.find((c) => c.id === id)?.unreadCount ?? 0 };
+      };
+      const badgeMatches = (badge: Locator) =>
+        expect
+          .poll(async () => {
+            const { count } = await unread();
+            const shown = (await badge.isVisible()) ? await badge.textContent() : '0';
+            return `badge ${shown}, server ${count > 9 ? '9+' : count}`;
+          }, { message: 'the badge counts what the server says is unread' })
+          .toMatch(/^badge (\S+), server \1$/);
+
+      // Counted once the page has settled: signing in lands on Chat, which opens the
+      // conversation Alice last had open and reads it, a moment after the sign-in.
+      await alice.page.goto('/tasks');
+      await alice.page.waitForLoadState('networkidle');
+      const badge = alice.page.getByRole('navigation', { name: 'Main' }).getByTestId('chat-unread-badge');
+      await badgeMatches(badge);
+      const before = (await unread()).count;
+
+      // Three messages in one room and one in the other: two chats, not four messages.
+      for (const text of ['one', 'two', 'three']) await owner.post(`/channels/${rooms[0]}/messages`, { content: text });
+      await owner.post(`/channels/${rooms[1]}/messages`, { content: 'hello' });
+      await expect.poll(async () => (await unread()).count).toBeGreaterThanOrEqual(before + 2);
+      await badgeMatches(badge);
+
+      // On a phone, along the bottom.
+      const phone = await as('alice', { width: 390, height: 844 });
+      await phone.page.goto('/tasks');
+      await badgeMatches(phone.page.getByRole('navigation', { name: 'Sections' }).getByTestId('chat-unread-badge'));
+
+      // Reading one leaves the other. Reading only counts in a window in front, as
+      // for anybody who opens a conversation in a tab they are not looking at.
+      await alice.page.bringToFront();
+      await alice.page.goto(`/chat/${rooms[0]}`);
+      await expect(alice.page.getByText('three')).toBeVisible();
+      await expect.poll(async () => (await unread()).of(rooms[0]), { message: 'the room read is read' }).toBe(0);
+      expect((await unread()).of(rooms[1])).toBeGreaterThan(0);
+      await badgeMatches(badge);
+      await aliceApi.dispose();
+    } finally {
+      for (const id of rooms) await owner.del(`/channels/${id}`).catch(() => {});
+      await owner.dispose();
     }
-
-    const alice = await as('alice');
-    const aliceApi = await apiAs('alice');
-    // Counted once the page has settled: signing in lands on Chat, which opens the
-    // conversation Alice last had open and reads it, a moment after the sign-in.
-    await alice.page.goto('/tasks');
-    await alice.page.waitForLoadState('networkidle');
-    const already = ((await aliceApi.get('/channels')).channels as Array<{ unreadCount: number }>).filter(
-      (c) => c.unreadCount > 0
-    ).length;
-    const badge = alice.page.getByRole('navigation', { name: 'Main' }).getByTestId('chat-unread-badge');
-    if (already === 0) await expect(badge).toBeHidden();
-    else await expect(badge).toHaveText(String(already));
-
-    // Three messages in one room and one in the other: two chats, not four messages.
-    for (const text of ['one', 'two', 'three']) await owner.post(`/channels/${rooms[0]}/messages`, { content: text });
-    await owner.post(`/channels/${rooms[1]}/messages`, { content: 'hello' });
-    await expect(badge).toHaveText(String(already + 2));
-
-    // On a phone, along the bottom.
-    const phone = await as('alice', { width: 390, height: 844 });
-    await phone.page.goto('/tasks');
-    await expect(phone.page.getByRole('navigation', { name: 'Sections' }).getByTestId('chat-unread-badge')).toHaveText(
-      String(already + 2)
-    );
-
-    // Reading one leaves one. Reading only counts in a window in front, as for
-    // anybody who opens a conversation in a tab they are not looking at.
-    await alice.page.bringToFront();
-    await alice.page.goto(`/chat/${rooms[0]}`);
-    await expect(alice.page.getByText('three')).toBeVisible();
-    await expect(badge).toHaveText(String(already + 1));
   });
 });
 

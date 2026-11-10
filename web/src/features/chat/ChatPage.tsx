@@ -62,7 +62,7 @@ import {
 } from './reactions';
 import { applyReadReceipt, type ReadReceipt } from './readReceipts';
 import { restoreDraft, restoreStaged, whenVisible } from './composerDraft';
-import { focusWhenFree } from './composerFocus';
+import { focusWhenFree, typesOnOpen } from './composerFocus';
 import { applyDelete, applyEdit, isEditFrame } from './liveChanges';
 
 interface Message {
@@ -298,12 +298,12 @@ export function ChatPage() {
   const composerRef = useRef<HTMLInputElement>(null);
 
   // Opening a conversation, or closing a thread back to it, leaves the cursor
-  // in the message box, so nobody has to click or tap it before they can type;
-  // on a phone that brings the keyboard up, as people asked for. A
+  // in the message box, so nobody has to click it before they can type. Not on
+  // a phone, where it would throw the keyboard up over the conversation. A
   // conversation started from a dialog is waited for: the dialog hands focus
   // back to its button as it closes, after this would have run.
   useEffect(() => {
-    if (!channelId || openThreadId) return;
+    if (!channelId || openThreadId || !typesOnOpen()) return;
     return focusWhenFree(() => composerRef.current);
   }, [channelId, openThreadId]);
 
@@ -1951,7 +1951,10 @@ function ThreadPanel({
   const endRef = useRef<HTMLDivElement>(null);
   // A thread is opened to answer in it.
   const replyRef = useRef<HTMLInputElement>(null);
-  useEffect(() => focusWhenFree(() => replyRef.current), [rootId]);
+  useEffect(() => {
+    if (!typesOnOpen()) return;
+    return focusWhenFree(() => replyRef.current);
+  }, [rootId]);
   const { data, isLoading, error } = useQuery({
     queryKey: ['thread', rootId],
     queryFn: () => channelsApi.thread(rootId),
