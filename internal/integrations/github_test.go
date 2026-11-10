@@ -19,8 +19,8 @@ import (
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/rs/zerolog"
 	"github.com/google/uuid"
+	"github.com/rs/zerolog"
 
 	"github.com/teamup/teamup/internal/tasks"
 	"github.com/teamup/teamup/internal/testsupport"
