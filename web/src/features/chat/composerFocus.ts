@@ -25,20 +25,36 @@ export function typingElsewhere(doc: Document, box: HTMLElement): boolean {
 
 /**
  * Puts the cursor in `box` once nothing else is in the way. A dialog or a menu
- * that is closing hands focus back to whatever opened it, after anything done
- * on the same frame, so this waits for it to go first. Returns the way to stop.
+ * that is closing hands focus back to whatever opened it, sometimes just after
+ * the overlay has gone, so this waits for it to go and then holds the cursor
+ * there a moment, taking it back from a button that grabs it. Never from a
+ * box somebody is typing in. Time-based, as frames slow down under load.
+ * Returns the way to stop.
  */
 export function focusWhenFree(box: () => HTMLInputElement | HTMLTextAreaElement | null): () => void {
+  const WAIT_MS = 3000;
+  const HOLD_MS = 400;
+  const started = performance.now();
+  let placedAt = 0;
   let frame = 0;
-  let tries = 0;
   const attempt = () => {
+    const now = performance.now();
     const el = box();
-    if (el && !el.disabled && !overlayOpen(document)) {
-      if (!typingElsewhere(document, el)) el.focus({ preventScroll: true });
-      return;
+    if (placedAt === 0) {
+      if (el && !el.disabled && !overlayOpen(document)) {
+        if (typingElsewhere(document, el)) return;
+        el.focus({ preventScroll: true });
+        placedAt = now;
+      } else if (now - started > WAIT_MS) {
+        return;
+      }
+    } else {
+      if (now - placedAt > HOLD_MS || !el) return;
+      if (document.activeElement !== el && !typingElsewhere(document, el) && !overlayOpen(document)) {
+        el.focus({ preventScroll: true });
+      }
     }
-    // About a second and a half; a dialog still up after that is one being used.
-    if (++tries < 90) frame = requestAnimationFrame(attempt);
+    frame = requestAnimationFrame(attempt);
   };
   frame = requestAnimationFrame(attempt);
   return () => cancelAnimationFrame(frame);

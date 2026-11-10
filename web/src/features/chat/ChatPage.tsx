@@ -153,7 +153,7 @@ export function ChatPage() {
   const channelId = params.channelId || activeChannelId;
 
   // Fetch channels
-  const { data: channelsResponse, isLoading: channelsLoading } = useQuery({
+  const { data: channelsResponse, isLoading: channelsLoading, dataUpdatedAt: channelsUpdatedAt } = useQuery({
     queryKey: ['channels'],
     queryFn: () => channelsApi.list(),
   });
@@ -747,8 +747,12 @@ export function ChatPage() {
     // and on the open conversation showing as unread: a list read back from
     // the server before it stored the marker brings the old count with it,
     // and the conversation in front of you must not keep a badge for that.
+    // A list of conversations that was already on its way when this cleared the
+    // count lands with the old one; arriving in the same render as the
+    // clearing, it left the flag above unchanged and the badge stuck. So every
+    // list that arrives is checked again.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [channelId, messages[messages.length - 1]?.id, openConversationShowsUnread]);
+  }, [channelId, messages[messages.length - 1]?.id, openConversationShowsUnread, channelsUpdatedAt]);
 
   /**
    * Records how far somebody has read.
@@ -764,20 +768,15 @@ export function ChatPage() {
   const markChannelRead = (id: string, messageId: string) => {
     // The badge is zero the moment you are looking at it, whatever the server
     // has got round to storing.
-    const clear = () =>
-      queryClient.setQueryData(['channels'], (old: any) => {
-        if (!old?.data) return old;
-        return {
-          ...old,
-          data: old.data.map((c: any) => (c.id === id && c.unreadCount ? { ...c, unreadCount: 0 } : c)),
-        };
-      });
-    clear();
-    // A list already on its way was read before this, and would put the old
-    // count back the moment it landed; when that happens in the same render as
-    // the clearing, nothing notices to clear it again, and the badge sticks.
-    // So whatever is in flight is called off, and the count cleared once more.
-    void queryClient.cancelQueries({ queryKey: ['channels'] }).then(clear);
+    // Nothing to clear changes nothing: writing the list anyway would count as
+    // a fresh one, and set off the check that called this again.
+    queryClient.setQueryData(['channels'], (old: any) => {
+      if (!old?.data?.some((c: any) => c.id === id && c.unreadCount)) return undefined;
+      return {
+        ...old,
+        data: old.data.map((c: any) => (c.id === id && c.unreadCount ? { ...c, unreadCount: 0 } : c)),
+      };
+    });
 
     if (lastReadRef.current[id] === messageId) return;
     lastReadRef.current[id] = messageId;
