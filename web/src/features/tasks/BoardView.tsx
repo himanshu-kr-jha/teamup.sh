@@ -76,6 +76,9 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
   const [scope, setScope] = useState<'mine' | 'team' | 'all'>('mine');
   const [teamId, setTeamId] = useState('all');
   const [assigneeId, setAssigneeId] = useState('all');
+  // Which of your own: what is yours to do, what you handed out, or what you
+  // were added to. Kept apart, or a manager's list is their people's work.
+  const [mineAs, setMineAs] = useState<'assigned' | 'created' | 'added'>('assigned');
   // Which column a phone is showing. Separate from the status filter, which is
   // the wide screen's way of narrowing a board that shows every column at once.
   const [phoneColumn, setPhoneColumn] = useState('todo');
@@ -101,12 +104,13 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
   // isLoading back to true, replaced the page with the spinner and tore the
   // search box out of the DOM, losing focus after each letter.
   const { data: tasksResponse, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ['tasks', { status: statusFilter, scope, teamId, assigneeId }],
+    queryKey: ['tasks', { status: statusFilter, scope, teamId, assigneeId, mineAs }],
     queryFn: () =>
       tasksApi.list({
         status: statusFilter !== 'all' ? statusFilter : undefined,
         // 'all' is everything in the organization; the server takes no scope for it.
         scope: scope === 'all' ? undefined : scope,
+        as: scope === 'mine' && mineAs !== 'assigned' ? mineAs : undefined,
         teamId: scope === 'team' && teamId !== 'all' ? teamId : undefined,
         assigneeId: scope === 'team' && assigneeId !== 'all' ? assigneeId : undefined,
       }),
@@ -154,6 +158,17 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
         </SelectContent>
       </Select>
     </>
+  );
+
+  const mineFilter = (phone: boolean) => (
+    <Select value={mineAs} onValueChange={(v) => setMineAs(v as typeof mineAs)}>
+      <SelectTrigger className={phone ? 'h-9 min-w-0 flex-1' : 'h-9 w-40'} aria-label="Which of my tasks"><SelectValue /></SelectTrigger>
+      <SelectContent>
+        <SelectItem value="assigned">Assigned to me</SelectItem>
+        <SelectItem value="created">Created by me</SelectItem>
+        <SelectItem value="added">Added to</SelectItem>
+      </SelectContent>
+    </Select>
   );
 
   return (
@@ -232,6 +247,7 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
             </DropdownMenuContent>
           </DropdownMenu>
           {scope === 'team' && teamFilters(false)}
+          {scope === 'mine' && mineFilter(false)}
         </div>
       </div>
 
@@ -250,6 +266,9 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
       )}
       {scope === 'team' && (
         <div className="flex shrink-0 gap-2 border-b border-border px-3 py-2 md:hidden">{teamFilters(true)}</div>
+      )}
+      {scope === 'mine' && (
+        <div className="flex shrink-0 gap-2 border-b border-border px-3 py-2 md:hidden">{mineFilter(true)}</div>
       )}
 
       {/* Phone: one column at a time, picked here. Columns side by side on a

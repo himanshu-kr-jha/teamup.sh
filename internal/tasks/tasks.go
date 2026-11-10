@@ -142,17 +142,28 @@ type Filters struct {
 	ManagedBy *uuid.UUID
 	// TeamID narrows further to a single one of those teams.
 	TeamID *uuid.UUID
-	// Involving narrows to this person's own work: assigned to them, raised by
-	// them, or a task they were put on. A task somebody adds you to is work you
-	// are expected to be across, so it belongs in your list rather than only in
-	// the notification that told you about it.
-	Involving *uuid.UUID
+	// Mine narrows to one person's tasks, in the sense MineAs says:
+	//   "" (assigned): the work that is theirs to do — assigned to them, or
+	//     raised by them and not handed to anybody yet, which would otherwise
+	//     vanish from their list the moment they created it;
+	//   "created": work they raised and handed to somebody else;
+	//   "added": tasks they were put on to follow.
+	// These were one list, so a manager's "My tasks" filled up with the work
+	// they had handed out, under their own name.
+	Mine   *uuid.UUID
+	MineAs string
 	// Viewer is who the board is being drawn for. Not a filter: it narrows
 	// nothing, it decides what each returned task says about what this caller
 	// may do to it.
 	Viewer           *uuid.UUID
 	ViewerIsOrgAdmin bool
 }
+
+// What Filters.MineAs may say, besides the default of assigned.
+const (
+	MineCreated = "created"
+	MineAdded   = "added"
+)
 
 func NewService(db *pgxpool.Pool) *Service {
 	return &Service{db: db}
@@ -222,15 +233,20 @@ func (s *Service) ListTasks(ctx context.Context, orgID uuid.UUID, f Filters) ([]
 	if f.LabelID != nil {
 		add("EXISTS (SELECT 1 FROM task_labels tl WHERE tl.task_id = t.id AND tl.label_id = $%d)", *f.LabelID)
 	}
-	if f.Involving != nil {
-		args = append(args, *f.Involving)
+	if f.Mine != nil {
+		args = append(args, *f.Mine)
 		n := len(args)
-		where = append(where, fmt.Sprintf(`(
-			t.assignee_id = $%d
-			OR t.reporter_id = $%d
-			OR EXISTS (SELECT 1 FROM task_watchers tw
-			           WHERE tw.task_id = t.id AND tw.user_id = $%d)
-		)`, n, n, n))
+		switch f.MineAs {
+		case MineCreated:
+			where = append(where, fmt.Sprintf(
+				`(t.reporter_id = $%d AND t.assignee_id IS NOT NULL AND t.assignee_id <> $%d)`, n, n))
+		case MineAdded:
+			where = append(where, fmt.Sprintf(
+				`EXISTS (SELECT 1 FROM task_watchers tw WHERE tw.task_id = t.id AND tw.user_id = $%d)`, n))
+		default:
+			where = append(where, fmt.Sprintf(
+				`(t.assignee_id = $%d OR (t.reporter_id = $%d AND t.assignee_id IS NULL))`, n, n))
+		}
 	}
 	if f.ManagedBy != nil {
 		// Walks down from every team this person manages, so a team lead who

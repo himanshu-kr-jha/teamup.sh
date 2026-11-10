@@ -909,14 +909,17 @@ func titlesOf(tasks []Task) []string {
 	return out
 }
 
-// "My tasks" has to include work somebody raised but has not handed out yet,
-// otherwise creating a task makes it disappear from your own view.
-func TestMyTasksCoversWorkAssignedToMeAndWorkIRaised(t *testing.T) {
+// "My tasks" is the work that is yours to do: assigned to you, or raised by you
+// and not handed to anybody yet, or creating a task would make it disappear from
+// your own view. Work you raised and handed to somebody else is theirs: it was
+// in "My tasks" too, so a manager's own list filled up with their people's work.
+func TestMyTasksIsTheWorkThatIsMineToDo(t *testing.T) {
 	svc, pool := newService(t)
 	ctx := context.Background()
 	org := testsupport.SeedOrg(t, pool)
-	me := testsupport.SeedUser(t, pool, org, "me7@example.test", "member")
-	somebody := testsupport.SeedUser(t, pool, org, "them7@example.test", "member")
+	me := testsupport.SeedUser(t, pool, org, "me7@example.test", "manager")
+	report := testsupport.SeedUser(t, pool, org, "them7@example.test", "member")
+	testsupport.SeedTeam(t, pool, org, "mine7", &me, nil, report)
 
 	if _, err := svc.CreateTask(ctx, org.ID, org.OwnerID, "Given to me", "", "", "", "",
 		nil, &me, nil, nil, nil, true); err != nil {
@@ -926,18 +929,39 @@ func TestMyTasksCoversWorkAssignedToMeAndWorkIRaised(t *testing.T) {
 		nil, nil, nil, nil, nil, false); err != nil {
 		t.Fatalf("raised by me: %v", err)
 	}
+	if _, err := svc.CreateTask(ctx, org.ID, me, "Handed to my report", "", "", "", "",
+		nil, &report, nil, nil, nil, false); err != nil {
+		t.Fatalf("handed out: %v", err)
+	}
 	if _, err := svc.CreateTask(ctx, org.ID, org.OwnerID, "Nothing to do with me", "", "", "", "",
-		nil, &somebody, nil, nil, nil, true); err != nil {
+		nil, &org.OwnerID, nil, nil, nil, true); err != nil {
 		t.Fatalf("someone else: %v", err)
 	}
 
-	mine, err := svc.ListTasks(ctx, org.ID, Filters{Involving: &me})
+	mine, err := svc.ListTasks(ctx, org.ID, Filters{Mine: &me})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(mine) != 2 {
-		t.Errorf("my tasks: got %+v", titlesOf(mine))
+	if got := titlesOf(mine); len(got) != 2 || !hasTitle(got, "Given to me") || !hasTitle(got, "Raised by me, unassigned") {
+		t.Errorf("my tasks: got %v", got)
 	}
+
+	created, err := svc.ListTasks(ctx, org.ID, Filters{Mine: &me, MineAs: MineCreated})
+	if err != nil {
+		t.Fatalf("list created: %v", err)
+	}
+	if got := titlesOf(created); len(got) != 1 || got[0] != "Handed to my report" {
+		t.Errorf("created by me: got %v", got)
+	}
+}
+
+func hasTitle(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 // The create form should only offer people the org chart will accept, so
@@ -1025,8 +1049,8 @@ func TestSomebodyWhoManagesNothingIsOfferedOnlyThemselves(t *testing.T) {
 	}
 }
 
-// Being added to a task is being asked to pay attention to it, so it belongs
-// in your list — not only in the notification that told you about it.
+// Being added to a task is being asked to pay attention to it, so it is listed
+// for you under "Added to" — not only in the notification that told you about it.
 func TestATaskYouWereAddedToIsInYourList(t *testing.T) {
 	svc, pool := newService(t)
 	ctx := context.Background()
@@ -1040,7 +1064,7 @@ func TestATaskYouWereAddedToIsInYourList(t *testing.T) {
 		t.Fatalf("create: %v", err)
 	}
 
-	before, err := svc.ListTasks(ctx, org.ID, Filters{Involving: &me})
+	before, err := svc.ListTasks(ctx, org.ID, Filters{Mine: &me, MineAs: MineAdded})
 	if err != nil {
 		t.Fatalf("list before: %v", err)
 	}
@@ -1052,7 +1076,7 @@ func TestATaskYouWereAddedToIsInYourList(t *testing.T) {
 		t.Fatalf("add to task: %v", err)
 	}
 
-	after, err := svc.ListTasks(ctx, org.ID, Filters{Involving: &me})
+	after, err := svc.ListTasks(ctx, org.ID, Filters{Mine: &me, MineAs: MineAdded})
 	if err != nil {
 		t.Fatalf("list after: %v", err)
 	}
@@ -1080,7 +1104,7 @@ func TestBeingRemovedFromATaskTakesItOutOfYourList(t *testing.T) {
 		t.Fatalf("remove: %v", err)
 	}
 
-	mine, err := svc.ListTasks(ctx, org.ID, Filters{Involving: &me})
+	mine, err := svc.ListTasks(ctx, org.ID, Filters{Mine: &me, MineAs: MineAdded})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
@@ -1105,7 +1129,7 @@ func TestATaskYouAreBothAssignedAndAddedToAppearsOnce(t *testing.T) {
 		t.Fatalf("add: %v", err)
 	}
 
-	mine, err := svc.ListTasks(ctx, org.ID, Filters{Involving: &me})
+	mine, err := svc.ListTasks(ctx, org.ID, Filters{Mine: &me})
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}

@@ -403,7 +403,7 @@ func TestAMalformedListFilterIsRefusedRatherThanIgnored(t *testing.T) {
 
 	// What the web client actually sends still works, and stays in its own
 	// organization.
-	for _, query := range []string{"", "?scope=mine", "?scope=team", "?assigneeId=" + org.OwnerID.String()} {
+	for _, query := range []string{"", "?scope=mine", "?scope=mine&as=created", "?scope=mine&as=added", "?scope=team", "?assigneeId=" + org.OwnerID.String()} {
 		t.Run("still fine "+query, func(t *testing.T) {
 			w := list(query)
 			if w.Code != http.StatusOK {
