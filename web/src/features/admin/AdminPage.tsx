@@ -38,6 +38,7 @@ import {
   DialogTitle,
 } from '@/shared/components/ui/dialog';
 import { FormDialog } from '@/shared/components/FormDialog';
+import { PeoplePicker, addEach, addLabel } from '@/shared/components/PeoplePicker';
 import { orgApi, tasksApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
@@ -824,7 +825,7 @@ function TeamsTab({
   // with nothing chosen rather than with a choice they are not allowed.
   const [newParentId, setNewParentId] = useState(isAdmin ? TOP_LEVEL : '');
   const [addTo, setAddTo] = useState<any | null>(null);
-  const [memberId, setMemberId] = useState('');
+  const [memberIds, setMemberIds] = useState<string[]>([]);
   const [managerFor, setManagerFor] = useState<any | null>(null);
   const [movingTeam, setMovingTeam] = useState<any | null>(null);
   const [moveToId, setMoveToId] = useState(isAdmin ? TOP_LEVEL : '');
@@ -836,6 +837,14 @@ function TeamsTab({
   const teams = data?.data ?? [];
   const users = usersData?.data ?? [];
   const tree = asTree(teams);
+  // Who is on the team being added to, so the list offers only who is not.
+  const { data: addToMembersData } = useQuery({
+    queryKey: ['team-members', addTo?.id],
+    queryFn: () => orgApi.listTeamMembers(addTo.id),
+    enabled: !!addTo,
+  });
+  const onTeam = new Set((addToMembersData?.data ?? []).map((m: any) => m.id ?? m.userId));
+  const joinable = users.filter((u: any) => !onTeam.has(u.id));
 
   // An administrator may file a team anywhere; a lead only underneath one they
   // run. Passing undefined rather than the whole set is what says "no limit".
@@ -1090,30 +1099,35 @@ function TeamsTab({
         onOpenChange={(o) => {
           if (!o) {
             setAddTo(null);
-            setMemberId('');
+            setMemberIds([]);
           }
         }}
-        title={addTo ? `Add someone to ${addTo.name}` : 'Add a member'}
-        submitLabel="Add member"
-        disabledReason={!memberId ? 'Pick a member' : undefined}
+        title={addTo ? `Add people to ${addTo.name}` : 'Add members'}
+        submitLabel={addLabel(memberIds.length, 'Add member', (n) => `Add ${n} members`)}
+        disabledReason={memberIds.length === 0 ? 'Pick a member' : undefined}
         onSubmit={async () => {
-          await orgApi.addTeamMember(addTo.id, memberId);
-          queryClient.invalidateQueries({ queryKey: ['teams'] });
-          setAddTo(null);
-          setMemberId('');
+          const team = addTo;
+          try {
+            await addEach(
+              memberIds,
+              (id) => orgApi.addTeamMember(team.id, id),
+              (id) => users.find((u: any) => u.id === id)?.name ?? 'somebody',
+              setMemberIds
+            );
+            setAddTo(null);
+            setMemberIds([]);
+          } finally {
+            queryClient.invalidateQueries({ queryKey: ['teams'] });
+            queryClient.invalidateQueries({ queryKey: ['team-members', team.id] });
+          }
         }}
       >
-        <div className="space-y-2">
-          <Label htmlFor="teamMember">Member</Label>
-          <Select value={memberId} onValueChange={setMemberId}>
-            <SelectTrigger id="teamMember"><SelectValue placeholder="Choose someone" /></SelectTrigger>
-            <SelectContent>
-              {users.map((u: any) => (
-                <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+        <PeoplePicker
+          people={joinable.map((u: any) => ({ id: u.id, name: u.name, email: u.email, avatarUrl: u.avatarUrl }))}
+          selected={memberIds}
+          onChange={setMemberIds}
+          empty="Everybody is already on this team."
+        />
       </FormDialog>
     </>
   );

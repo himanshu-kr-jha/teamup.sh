@@ -1,11 +1,13 @@
 import { useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
 import { Textarea } from '@/shared/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
 import { FormDialog } from '@/shared/components/FormDialog';
-import { channelsApi } from '@/shared/api/client';
+import { channelsApi, orgApi } from '@/shared/api/client';
+import { PeoplePicker, addEach } from '@/shared/components/PeoplePicker';
+import { useAuth } from '@/features/auth/AuthProvider';
 
 interface Props {
   open: boolean;
@@ -18,11 +20,19 @@ export function CreateChannelDialog({ open, onOpenChange, onCreated }: Props) {
   const [name, setName] = useState('');
   const [type, setType] = useState('group');
   const [description, setDescription] = useState('');
+  const [memberIds, setMemberIds] = useState<string[]>([]);
+  // Created already, when only adding its people failed: retrying must not make a second one.
+  const [createdId, setCreatedId] = useState<string | null>(null);
+  const { user } = useAuth();
+  const { data: usersData } = useQuery({ queryKey: ['users'], queryFn: () => orgApi.listUsers(), enabled: open });
+  const others = (usersData?.data ?? []).filter((u: any) => u.id !== user?.id);
 
   const reset = () => {
     setName('');
     setType('group');
     setDescription('');
+    setMemberIds([]);
+    setCreatedId(null);
   };
 
   return (
@@ -34,16 +44,33 @@ export function CreateChannelDialog({ open, onOpenChange, onCreated }: Props) {
       }}
       title="New channel"
       description="Channels are where conversations happen. Public channels can be read by anyone in your organization."
-      submitLabel="Create channel"
+      submitLabel={createdId ? 'Try again' : 'Create channel'}
       disabledReason={!name.trim() ? 'Give the channel a name' : undefined}
       onSubmit={async () => {
-        const res = await channelsApi.create({
-          name: name.trim(),
-          type,
-          description: description.trim() || undefined,
-        });
+        let id = createdId;
+        if (!id) {
+          const res = await channelsApi.create({
+            name: name.trim(),
+            type,
+            description: description.trim() || undefined,
+          });
+          id = res.data.id as string;
+          setCreatedId(id);
+        }
+        // Everybody is in a public channel already; a private one has only who is added.
+        if (type === 'group' && memberIds.length > 0) {
+          await addEach(
+            memberIds,
+            (userId) => channelsApi.addMember(id!, userId),
+            (userId) => others.find((u: any) => u.id === userId)?.name ?? 'somebody',
+            setMemberIds
+          ).catch(async (err) => {
+            await queryClient.invalidateQueries({ queryKey: ['channels'] });
+            throw new Error(`The channel was made. ${(err as Error).message}`);
+          });
+        }
         await queryClient.invalidateQueries({ queryKey: ['channels'] });
-        onCreated(res.data.id);
+        onCreated(id);
         reset();
       }}
     >
@@ -76,10 +103,23 @@ export function CreateChannelDialog({ open, onOpenChange, onCreated }: Props) {
           id="channelDescription"
           value={description}
           onChange={(e) => setDescription(e.target.value)}
-          rows={3}
+          rows={2}
           placeholder="What is this channel for?"
         />
       </div>
+
+      {type === 'group' && (
+        <div className="space-y-2">
+          <Label>Members (optional)</Label>
+          <PeoplePicker
+            people={others.map((u: any) => ({ id: u.id, name: u.name, email: u.email, avatarUrl: u.avatarUrl }))}
+            selected={memberIds}
+            onChange={setMemberIds}
+            empty="Nobody else is in the organization yet."
+            listClassName="max-h-44"
+          />
+        </div>
+      )}
     </FormDialog>
   );
 }

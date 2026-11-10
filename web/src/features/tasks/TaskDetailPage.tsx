@@ -14,12 +14,13 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { tasksApi, filesApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
-import { Label } from '@/shared/components/ui/label';
 import { FormDialog } from '@/shared/components/FormDialog';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { useWebSocket } from '@/features/websocket/WSProvider';
 import { AttachmentChip } from '@/features/files/AttachmentChip';
-import { useUpload, type UploadedFile } from '@/features/files/useUpload';
+import { PeoplePicker, addEach, addLabel } from '@/shared/components/PeoplePicker';
+import { useUpload } from '@/features/files/useUpload';
+import { StagedFiles, type StagedFile } from '@/features/files/StagedFiles';
 import { cn } from '@/shared/utils/cn';
 import { restrictionNote, type TaskAbilities } from './abilities';
 import { endOfDueDay } from './dueDate';
@@ -83,7 +84,7 @@ export function TaskDetailPage() {
   const [commentText, setCommentText] = useState('');
   // Uploaded but not yet posted, so a file arrives with the words that explain
   // it rather than on its own the moment it finishes uploading.
-  const [staged, setStaged] = useState<UploadedFile[]>([]);
+  const [staged, setStaged] = useState<StagedFile[]>([]);
   const commentFileRef = useRef<HTMLInputElement>(null);
   const { upload, progress: uploadProgress, error: uploadError } = useUpload('tasks', taskId ?? '');
 
@@ -439,40 +440,31 @@ export function TaskDetailPage() {
                       rows={3}
                     />
 
-                    {staged.length > 0 && (
-                      <div className="flex flex-wrap items-start gap-2">
-                        {staged.map((file) => (
-                          <span key={file.id} className="flex items-start gap-1">
-                            <AttachmentChip attachment={{ ...file, sizeBytes: file.size }} />
-                            <button
-                              type="button"
-                              aria-label={`Remove ${file.filename}`}
-                              className="text-muted-foreground hover:text-foreground"
-                              onClick={() => {
-                                setStaged((all) => all.filter((f) => f.id !== file.id));
-                                filesApi.discard(file.id).catch(() => {
-                                  // The sweep collects it either way.
-                                });
-                              }}
-                            >
-                              ×
-                            </button>
-                          </span>
-                        ))}
-                      </div>
-                    )}
+                    <StagedFiles
+                      sendWord="Post comment"
+                      files={staged}
+                      onRemove={(file) => {
+                        setStaged((all) => all.filter((f) => f.id !== file.id));
+                        filesApi.discard(file.id).catch(() => {
+                          // The sweep collects it either way.
+                        });
+                      }}
+                    />
 
                     <input
                       ref={commentFileRef}
                       type="file"
+                      multiple
                       className="hidden"
-                      aria-label="Attach a file to this comment"
+                      aria-label="Attach files to this comment"
                       onChange={async (e) => {
-                        const file = e.target.files?.[0];
+                        const files = Array.from(e.target.files ?? []);
                         e.target.value = '';
-                        if (!file) return;
-                        const uploaded = await upload(file);
-                        if (uploaded) setStaged((all) => [...all, uploaded]);
+                        // One after another, each with its own progress.
+                        for (const file of files) {
+                          const uploaded = await upload(file);
+                          if (uploaded) setStaged((all) => [...all, { ...uploaded, local: file }]);
+                        }
                       }}
                     />
 
@@ -688,7 +680,7 @@ function WatchersCard({ taskId }: { taskId: string }) {
   const queryClient = useQueryClient();
   const { user } = useAuth();
   const [adding, setAdding] = useState(false);
-  const [pickedId, setPickedId] = useState('');
+  const [picked, setPicked] = useState<string[]>([]);
 
   const { data } = useQuery({
     queryKey: ['task-watchers', taskId],
@@ -763,30 +755,33 @@ function WatchersCard({ taskId }: { taskId: string }) {
       <FormDialog
         open={adding}
         onOpenChange={(o) => {
-          if (!o) setPickedId('');
+          if (!o) setPicked([]);
           setAdding(o);
         }}
-        title="Add somebody to this task"
+        title="Add people to this task"
         description="They will see it in their notifications and follow every change."
-        submitLabel="Add"
-        disabledReason={!pickedId ? 'Choose somebody to add.' : undefined}
+        submitLabel={addLabel(picked.length)}
+        disabledReason={picked.length === 0 ? 'Choose somebody to add.' : undefined}
         onSubmit={async () => {
-          await tasksApi.addWatcher(taskId, pickedId);
-          setPickedId('');
-          refresh();
+          try {
+            await addEach(
+              picked,
+              (id) => tasksApi.addWatcher(taskId, id),
+              (id) => candidates.find((u: any) => u.userId === id)?.name ?? 'somebody',
+              setPicked
+            );
+            setPicked([]);
+          } finally {
+            refresh();
+          }
         }}
       >
-        <div className="space-y-2">
-          <Label htmlFor="taskMember">Person</Label>
-          <Select value={pickedId} onValueChange={setPickedId}>
-            <SelectTrigger id="taskMember"><SelectValue placeholder="Choose somebody" /></SelectTrigger>
-            <SelectContent>
-              {candidates.map((u: any) => (
-                <SelectItem key={u.userId} value={u.userId}>{u.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+        <PeoplePicker
+          people={candidates.map((u: any) => ({ id: u.userId, name: u.name, email: u.email, avatarUrl: u.avatarUrl }))}
+          selected={picked}
+          onChange={setPicked}
+          empty="Everybody you can add is already on this task."
+        />
       </FormDialog>
     </>
   );

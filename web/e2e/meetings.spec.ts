@@ -979,8 +979,7 @@ async function addToTaskInUi(page: Page, title: string, who: string) {
   await expect(page.getByRole('heading', { name: title })).toBeVisible();
   await page.getByRole('button', { name: 'Add', exact: true }).click();
   const dialog = page.getByRole('dialog');
-  await dialog.getByLabel('Person').click();
-  await page.getByRole('option', { name: who }).click();
+  await dialog.getByRole('checkbox', { name: new RegExp(who) }).check();
   await dialog.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(dialog).toBeHidden();
   await expect(page.getByRole('button', { name: `Remove ${who}` })).toBeVisible();

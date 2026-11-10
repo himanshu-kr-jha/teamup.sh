@@ -10,16 +10,9 @@ import {
 } from '@/shared/components/ui/dialog';
 import { Button } from '@/shared/components/ui/button';
 import { Badge } from '@/shared/components/ui/badge';
-import { Label } from '@/shared/components/ui/label';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/shared/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs';
 import { FormDialog } from '@/shared/components/FormDialog';
+import { PeoplePicker, addEach, addLabel } from '@/shared/components/PeoplePicker';
 import { channelsApi, filesApi, orgApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
@@ -42,7 +35,7 @@ export function ChannelSettingsDialog({
   const toast = useToast();
   const queryClient = useQueryClient();
   const [adding, setAdding] = useState(false);
-  const [pickedId, setPickedId] = useState('');
+  const [picked, setPicked] = useState<string[]>([]);
 
   const { data: membersData, isLoading: membersLoading } = useQuery({
     queryKey: ['channel-members', channelId],
@@ -104,7 +97,7 @@ export function ChannelSettingsDialog({
             <TabsContent value="members" className="space-y-3">
               <Button size="sm" variant="outline" className="w-full" onClick={() => setAdding(true)}>
                 <UserPlus className="mr-2 h-4 w-4" />
-                Add member
+                Add members
               </Button>
               {membersLoading && <p className="text-sm text-muted-foreground">Loading members…</p>}
               {!membersLoading && members.length === 0 && (
@@ -158,31 +151,34 @@ export function ChannelSettingsDialog({
       <FormDialog
         open={adding}
         onOpenChange={(o) => {
-          if (!o) setPickedId('');
+          if (!o) setPicked([]);
           setAdding(o);
         }}
-        title="Add member"
-        description="They will be notified that you added them."
-        submitLabel="Add member"
-        disabledReason={!pickedId ? 'Choose somebody to add.' : undefined}
+        title="Add members"
+        description="Tick everyone to add. They will each be notified that you added them."
+        submitLabel={addLabel(picked.length, 'Add member', (n) => `Add ${n} members`)}
+        disabledReason={picked.length === 0 ? 'Choose somebody to add.' : undefined}
         onSubmit={async () => {
-          await channelsApi.addMember(channelId!, pickedId);
-          setPickedId('');
-          refreshMembers();
-          queryClient.invalidateQueries({ queryKey: ['channels'] });
+          try {
+            await addEach(
+              picked,
+              (id) => channelsApi.addMember(channelId!, id),
+              (id) => candidates.find((u: any) => u.id === id)?.name ?? 'somebody',
+              setPicked
+            );
+            setPicked([]);
+          } finally {
+            refreshMembers();
+            queryClient.invalidateQueries({ queryKey: ['channels'] });
+          }
         }}
       >
-        <div className="space-y-2">
-          <Label htmlFor="channelMember">Person</Label>
-          <Select value={pickedId} onValueChange={setPickedId}>
-            <SelectTrigger id="channelMember"><SelectValue placeholder="Choose somebody" /></SelectTrigger>
-            <SelectContent>
-              {candidates.map((u: any) => (
-                <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
+        <PeoplePicker
+          people={candidates.map((u: any) => ({ id: u.id, name: u.name, email: u.email, avatarUrl: u.avatarUrl }))}
+          selected={picked}
+          onChange={setPicked}
+          empty="Everybody in the organization is already in this channel."
+        />
       </FormDialog>
     </>
   );

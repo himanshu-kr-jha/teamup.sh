@@ -31,6 +31,7 @@ import { useUpload, type UploadedFile } from '@/features/files/useUpload';
 import { useToast, useToastStore } from '@/shared/hooks/useToast';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { AttachmentChip } from '@/features/files/AttachmentChip';
+import { StagedFiles, type StagedFile } from '@/features/files/StagedFiles';
 import { downloadAttachment } from '@/features/files/download';
 import { ForwardContext, ForwardDialog, useForward, type ForwardableMessage } from './ForwardDialog';
 import { MentionSuggestions, MessageText, useMentionables } from './MentionUI';
@@ -61,6 +62,7 @@ import {
 } from './reactions';
 import { applyReadReceipt, type ReadReceipt } from './readReceipts';
 import { restoreDraft, restoreStaged, whenVisible } from './composerDraft';
+import { focusWhenFree, typesOnOpen } from './composerFocus';
 import { applyDelete, applyEdit, isEditFrame } from './liveChanges';
 
 interface Message {
@@ -122,7 +124,7 @@ export function ChatPage() {
   // Uploaded but not yet sent. A file used to appear in the channel the instant
   // it finished uploading; now it waits here until you press Send, so it can go
   // on its own or alongside a message.
-  const [staged, setStaged] = useState<UploadedFile[]>([]);
+  const [staged, setStaged] = useState<StagedFile[]>([]);
   const [newChatOpen, setNewChatOpen] = useState(false);
   const [startingCall, setStartingCall] = useState(false);
   // What we last told the server was read, per channel, so scrolling or a
@@ -295,6 +297,15 @@ export function ChatPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLInputElement>(null);
 
+  // Opening a conversation, or closing a thread back to it, leaves the cursor
+  // in the message box, so nobody has to click it before they can type. A
+  // conversation started from a dialog is waited for: the dialog hands focus
+  // back to its button as it closes, after this would have run.
+  useEffect(() => {
+    if (!channelId || openThreadId || !typesOnOpen()) return;
+    return focusWhenFree(() => composerRef.current);
+  }, [channelId, openThreadId]);
+
   // Who is being named, while an @-word is typed.
   const mentionables = useMentionables();
   const [mention, setMention] = useState<{ query: string; start: number } | null>(null);
@@ -327,7 +338,7 @@ export function ChatPage() {
   const attachFiles = async (files: File[]) => {
     for (const file of files) {
       const uploaded = await upload(file);
-      if (uploaded) setStaged((all) => [...all, uploaded]);
+      if (uploaded) setStaged((all) => [...all, { ...uploaded, local: file }]);
     }
   };
   const { upload, progress, error: uploadError } = useUpload('chat', channelId || '');
@@ -1168,33 +1179,18 @@ export function ChatPage() {
 
           {/* Message input */}
           {staged.length > 0 && (
-            <div className="border-t border-border bg-muted/30 px-4 py-2">
-              <p className="mb-1.5 text-xs font-medium text-muted-foreground">
-                {staged.length === 1 ? 'Attached' : `${staged.length} attached`}. Press Send to share.
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {staged.map((file) => (
-                  <span key={file.id} className="flex items-center gap-1">
-                    <AttachmentChip attachment={{ ...file, sizeBytes: file.size }} />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setStaged((all) => all.filter((f) => f.id !== file.id));
-                        // Throw the bytes away too, rather than leaving them
-                        // in storage for the sweep to find a day later.
-                        filesApi.discard(file.id).catch(() => {
-                          // Best effort: the sweep collects it either way.
-                        });
-                      }}
-                      aria-label={`Remove ${file.filename}`}
-                      className="text-muted-foreground hover:text-foreground"
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-            </div>
+            <StagedFiles
+              className="border-t border-border bg-muted/30 px-4 py-2"
+              files={staged}
+              onRemove={(file) => {
+                setStaged((all) => all.filter((f) => f.id !== file.id));
+                // Throw the bytes away too, rather than leaving them in
+                // storage for the sweep to find a day later.
+                filesApi.discard(file.id).catch(() => {
+                  // Best effort: the sweep collects it either way.
+                });
+              }}
+            />
           )}
 
           <form onSubmit={handleSend} className="p-4 border-t border-border">
@@ -1952,6 +1948,12 @@ function ThreadPanel({
 }) {
   const [draft, setDraft] = useState('');
   const endRef = useRef<HTMLDivElement>(null);
+  // A thread is opened to answer in it.
+  const replyRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!typesOnOpen()) return;
+    return focusWhenFree(() => replyRef.current);
+  }, [rootId]);
   const { data, isLoading, error } = useQuery({
     queryKey: ['thread', rootId],
     queryFn: () => channelsApi.thread(rootId),
@@ -2053,6 +2055,7 @@ function ThreadPanel({
             onChange={(e) => setDraft(e.target.value)}
             placeholder="Reply…"
             aria-label="Reply in thread"
+            ref={replyRef}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
