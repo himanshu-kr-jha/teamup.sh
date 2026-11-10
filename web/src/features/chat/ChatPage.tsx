@@ -764,13 +764,20 @@ export function ChatPage() {
   const markChannelRead = (id: string, messageId: string) => {
     // The badge is zero the moment you are looking at it, whatever the server
     // has got round to storing.
-    queryClient.setQueryData(['channels'], (old: any) => {
-      if (!old?.data) return old;
-      return {
-        ...old,
-        data: old.data.map((c: any) => (c.id === id && c.unreadCount ? { ...c, unreadCount: 0 } : c)),
-      };
-    });
+    const clear = () =>
+      queryClient.setQueryData(['channels'], (old: any) => {
+        if (!old?.data) return old;
+        return {
+          ...old,
+          data: old.data.map((c: any) => (c.id === id && c.unreadCount ? { ...c, unreadCount: 0 } : c)),
+        };
+      });
+    clear();
+    // A list already on its way was read before this, and would put the old
+    // count back the moment it landed; when that happens in the same render as
+    // the clearing, nothing notices to clear it again, and the badge sticks.
+    // So whatever is in flight is called off, and the count cleared once more.
+    void queryClient.cancelQueries({ queryKey: ['channels'] }).then(clear);
 
     if (lastReadRef.current[id] === messageId) return;
     lastReadRef.current[id] = messageId;
