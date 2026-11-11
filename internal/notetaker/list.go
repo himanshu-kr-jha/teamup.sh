@@ -137,7 +137,7 @@ func (s *Service) Retry(ctx context.Context, orgID, callID, userID uuid.UUID, is
 		return ErrCannotRetry
 	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		ctx, cancel := context.WithTimeout(context.Background(), composeTimeout)
 		defer cancel()
 		stop := s.keepAlive(callID)
 		defer stop()

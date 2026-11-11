@@ -248,7 +248,7 @@ loop:
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), composeTimeout)
 	defer cancel()
 	stop := sess.svc.keepAlive(sess.callID)
 	defer stop()
@@ -466,7 +466,13 @@ func (s *Service) compose(ctx context.Context, orgID, callID uuid.UUID, set Sett
 	}
 	minutes, err := Write(ctx, set.writer(), title, startedAt, names, segments, time.UTC)
 	if err != nil {
-		s.logger.Warn().Err(err).Str("call", callID.String()).Msg("notetaker: the minutes could not be written")
+		log := s.logger.Warn().Err(err).Str("call", callID.String())
+		// What the model said instead, so the next failure can be understood.
+		var unusable *UnusableAnswer
+		if errors.As(err, &unusable) {
+			log = log.Str("answer", unusable.Sample)
+		}
+		log.Msg("notetaker: the minutes could not be written")
 		s.markFailed(callID, err.Error())
 		s.notify(ctx, orgID, callID, attendees, "minutes.failed", "Minutes could not be written: "+title,
 			"The transcript is kept. Open it to see why, and to try again.")

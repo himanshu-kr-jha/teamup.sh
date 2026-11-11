@@ -110,7 +110,7 @@ func (s *Service) Resume(ctx context.Context) {
 		log.Msg("notetaker: writing the minutes another server left unwritten")
 		go func(l left) {
 			defer s.running.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+			ctx, cancel := context.WithTimeout(context.Background(), composeTimeout)
 			defer cancel()
 			stop := s.keepAlive(l.callID)
 			defer stop()

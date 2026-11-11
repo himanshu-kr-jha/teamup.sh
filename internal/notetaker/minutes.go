@@ -3,6 +3,7 @@ package notetaker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -63,20 +64,74 @@ func shorten(transcript string) string {
 	return transcript[:half] + "\n[... the middle of the meeting is left out for length ...]\n" + transcript[len(transcript)-half:]
 }
 
-// Write asks the model for the minutes and reads its answer.
+// composeTimeout is how long writing one meeting's minutes may take: up to
+// three answers from a model that may think for minutes before each.
+const composeTimeout = 30 * time.Minute
+
+// attempts is how many times the model is asked before the minutes are given
+// up on. A model answers differently each time, and one that wandered off or
+// ran out of room usually answers properly when asked again.
+const attempts = 3
+
+// again is added to the question when the last answer could not be used.
+const again = "\n\nYour last answer could not be used: it was not the JSON object asked for, or it was cut off. Answer again with that JSON object and nothing else, and keep any thinking short."
+
+// UnusableAnswer is an answer that held no minutes, with its start, so the log
+// can show what the model said instead.
+type UnusableAnswer struct {
+	Err    error
+	Sample string
+}
+
+func (u *UnusableAnswer) Error() string { return u.Err.Error() }
+func (u *UnusableAnswer) Unwrap() error { return u.Err }
+
+// Write asks the model for the minutes and reads its answer, asking again,
+// with more room when it ran out, when the answer could not be used. A service
+// that could not be reached is not asked again here: that is for the person
+// pressing "Write the minutes again" once it is back.
 func Write(ctx context.Context, w Writer, title string, date time.Time, attendees []string, segments []Segment, loc *time.Location) (Minutes, error) {
 	prompt := fmt.Sprintf("Meeting: %s\nDate: %s\nAttendees: %s\n\nTranscript:\n%s",
 		title, date.In(loc).Format("Monday 2 January 2006, 15:04 MST"), strings.Join(attendees, ", "), shorten(Transcript(segments, loc)))
-	answer, err := w.Write(ctx, systemPrompt, prompt)
-	if err != nil {
-		return Minutes{}, err
+	var last error
+	for i := 0; i < attempts; i++ {
+		question := prompt
+		if i > 0 {
+			question += again
+		}
+		answer, err := w.Write(ctx, systemPrompt, question)
+		switch {
+		case errors.Is(err, ErrNoRoom):
+			if r, ok := w.(roomier); ok {
+				w = r.withMoreRoom()
+			}
+			last = &UnusableAnswer{Err: err, Sample: sample(answer)}
+			continue
+		case errors.Is(err, ErrNoAnswer):
+			last = err
+			continue
+		case err != nil:
+			return Minutes{}, err
+		}
+		m, err := parseMinutes(answer)
+		if err != nil {
+			last = &UnusableAnswer{Err: err, Sample: sample(answer)}
+			continue
+		}
+		m.Title, m.Date, m.Attendees = title, date, attendees
+		return m, nil
 	}
-	m, err := parseMinutes(answer)
-	if err != nil {
-		return Minutes{}, err
+	return Minutes{}, last
+}
+
+// sample is the start of an answer, short enough for a log line.
+func sample(answer string) string {
+	const most = 600
+	runes := []rune(strings.TrimSpace(answer))
+	if len(runes) > most {
+		return string(runes[:most]) + "\u2026"
 	}
-	m.Title, m.Date, m.Attendees = title, date, attendees
-	return m, nil
+	return string(runes)
 }
 
 // parseMinutes reads the model's JSON, allowing for the code fence or the
