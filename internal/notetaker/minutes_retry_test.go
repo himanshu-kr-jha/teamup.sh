@@ -238,3 +238,79 @@ func TestClaudeCutOffMidAnswerIsAskedAgainWithMoreRoom(t *testing.T) {
 		t.Errorf("limits %v", limits)
 	}
 }
+
+// What the server's own logs and NVIDIA showed on 11 November: the model asked
+// for answered 404 "Function not found for account" though NVIDIA still listed
+// it, and the first fallback answered with nothing. Every offered Nemotron
+// model is now tried until one writes the minutes, each asked not to think.
+func TestWhenTheChosenNVIDIAModelIsGoneAndTheNextAnswersNothingAnotherWritesTheMinutes(t *testing.T) {
+	var mu sync.Mutex
+	var asked []string
+	var thinking []any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]string{
+				{"id": "nvidia/nemotron-3-super-120b-a12b"}, {"id": "nvidia/nemotron-3-ultra-550b-a55b"}, {"id": "nvidia/nemotron-3.5-super-vl-120b-a12b"}}})
+			return
+		}
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		model := body["model"].(string)
+		mu.Lock()
+		asked = append(asked, model)
+		thinking = append(thinking, body["chat_template_kwargs"])
+		mu.Unlock()
+		switch model {
+		case "nvidia/nemotron-3-super-120b-a12b":
+			http.Error(w, `{"status":404,"title":"Not Found","detail":"Function not found for account"}`, http.StatusNotFound)
+		case "nvidia/nemotron-3-ultra-550b-a55b":
+			says("", "stop")(w)
+		default:
+			says(goodMinutes, "stop")(w)
+		}
+	}))
+	defer srv.Close()
+
+	w := Settings{LLMProvider: "nvidia", LLMBaseURL: srv.URL + "/v1", LLMKey: "k", LLMModel: "nvidia/nemotron-3-super-120b-a12b"}.writer()
+	m, err := write(t, w)
+	if err != nil || m.Summary == "" {
+		t.Fatalf("no minutes: %+v %v", m, err)
+	}
+	want := []string{"nvidia/nemotron-3-super-120b-a12b", "nvidia/nemotron-3.5-super-vl-120b-a12b"}
+	if strings.Join(asked, ",") != strings.Join(want, ",") {
+		t.Errorf("asked %v, want the chosen one then the first working fallback %v", asked, want)
+	}
+	for i, kw := range thinking {
+		if k, ok := kw.(map[string]any); !ok || k["enable_thinking"] != false {
+			t.Errorf("request %d did not ask the model not to think first: %v", i, kw)
+		}
+	}
+}
+
+func TestTheUltraModelThatAnswersNothingIsTriedLast(t *testing.T) {
+	if NVIDIAFallbacks[len(NVIDIAFallbacks)-1] != "nvidia/nemotron-3-ultra-550b-a55b" || DefaultNVIDIAModel != NVIDIAFallbacks[0] {
+		t.Errorf("order: default %s, fallbacks %v", DefaultNVIDIAModel, NVIDIAFallbacks)
+	}
+}
+
+func TestAModelThatRefusesTheThinkingSwitchIsAskedPlainly(t *testing.T) {
+	var bodies []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies = append(bodies, body)
+		if body["chat_template_kwargs"] != nil {
+			http.Error(w, "unknown field chat_template_kwargs", http.StatusBadRequest)
+			return
+		}
+		says(goodMinutes, "stop")(w)
+	}))
+	defer srv.Close()
+	w := NVIDIA{OpenAICompatible: OpenAICompatible{BaseURL: srv.URL, Model: "nvidia/llama-3.1-nemotron-70b-instruct"}}
+	if m, err := write(t, w); err != nil || m.Summary == "" {
+		t.Fatalf("got %+v %v", m, err)
+	}
+	if len(bodies) != 2 {
+		t.Errorf("asked %d times", len(bodies))
+	}
+}

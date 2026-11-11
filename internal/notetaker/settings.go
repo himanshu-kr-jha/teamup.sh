@@ -32,7 +32,7 @@ const (
 	DefaultAnthropicURL   = "https://api.anthropic.com"
 	DefaultOpenAIURL      = "https://api.openai.com/v1"
 	DefaultNVIDIAURL      = "https://integrate.api.nvidia.com/v1"
-	DefaultNVIDIAModel    = "nvidia/nemotron-3-super-120b-a12b"
+	DefaultNVIDIAModel    = "nvidia/nemotron-3.5-lightning-30b-a3b"
 	DefaultAnthropicModel = "claude-sonnet-5-5"
 	DefaultLanguage       = "en-IN"
 )
@@ -134,7 +134,7 @@ func (s Settings) writer() Writer {
 		}
 		// Reasoning models spend tokens thinking before they answer, and
 		// NVIDIA's default allowance is too small for minutes after that.
-		return NVIDIA{OpenAICompatible{BaseURL: base, APIKey: s.LLMKey, Model: model, MaxTokens: 16384}}
+		return NVIDIA{OpenAICompatible: OpenAICompatible{BaseURL: base, APIKey: s.LLMKey, Model: model, MaxTokens: 16384}}
 	case "openai-compatible":
 		return OpenAICompatible{BaseURL: s.LLMBaseURL, APIKey: s.LLMKey, Model: s.LLMModel}
 	default:

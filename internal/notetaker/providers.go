@@ -191,6 +191,9 @@ type OpenAICompatible struct {
 	// MaxTokens is sent only when set: some services answer briefly without
 	// it, and OpenAI's newest models refuse it.
 	MaxTokens int
+	// Extra is added to the request as it is, for what one service alone
+	// understands.
+	Extra map[string]any
 }
 
 func (o OpenAICompatible) Write(ctx context.Context, system, prompt string) (string, error) {
@@ -204,6 +207,9 @@ func (o OpenAICompatible) Write(ctx context.Context, system, prompt string) (str
 	}
 	if o.MaxTokens > 0 {
 		body["max_tokens"] = o.MaxTokens
+	}
+	for k, v := range o.Extra {
+		body[k] = v
 	}
 	// Streamed, so a model that thinks for a long time keeps the connection
 	// busy rather than looking like one that has gone away.
@@ -320,24 +326,34 @@ func (o OpenAICompatible) withMoreRoom() Writer {
 // ── NVIDIA ──────────────────────────────────────────────────────────────────
 
 // NVIDIA is NVIDIA's hosted models (build.nvidia.com), which serve the OpenAI
-// chat API. NVIDIA retires models every few months, and a retired one answers
-// 404 or 410, so when the chosen model is gone the minutes are written by the
-// first of NVIDIAFallbacks that NVIDIA still lists, rather than not at all.
+// chat API. A model can stop working for an account while still listed: on
+// 11 November 2026 nemotron-3-super-120b-a12b answered 404 "Function not
+// found for account", and nemotron-3-ultra-550b-a55b, the next one tried,
+// answered with nothing at all. So when the model asked for cannot write the
+// minutes, every Nemotron model NVIDIA offers is tried in turn until one does.
 type NVIDIA struct {
 	OpenAICompatible
+	// OnAttempt hears which model was asked and how it went, for the log.
+	OnAttempt func(model string, err error)
 }
 
-// NVIDIAFallbacks are tried in order when the chosen model is retired.
+// NVIDIAFallbacks are tried in order when the model asked for cannot write the
+// minutes: the ones that answered well first, the one that answered nothing last.
 var NVIDIAFallbacks = []string{
+	"nvidia/nemotron-3.5-lightning-30b-a3b",
+	"nvidia/nemotron-3.5-super-vl-120b-a12b",
 	"nvidia/nemotron-3-super-120b-a12b",
 	"nvidia/nemotron-3-ultra-550b-a55b",
-	"nvidia/nemotron-3.5-super-vl-120b-a12b",
-	"nvidia/nemotron-3.5-lightning-30b-a3b",
 }
 
+// noThinking asks a Nemotron model to answer without reasoning first. Minutes
+// are a summary, not a puzzle: asked this way the models answered in seconds
+// rather than minutes, and none thought itself out of room before answering.
+var noThinking = map[string]any{"chat_template_kwargs": map[string]any{"enable_thinking": false}}
+
 func (n NVIDIA) Write(ctx context.Context, system, prompt string) (string, error) {
-	text, err := n.OpenAICompatible.Write(ctx, system, prompt)
-	if !isGone(err) {
+	text, err := n.ask(ctx, n.OpenAICompatible, system, prompt)
+	if !worthAnother(err) {
 		return text, err
 	}
 	offered, lerr := ListModels(ctx, n.BaseURL, n.APIKey)
@@ -345,13 +361,40 @@ func (n NVIDIA) Write(ctx context.Context, system, prompt string) (string, error
 		return "", err
 	}
 	for _, m := range NVIDIAFallbacks {
-		if m != n.Model && contains(offered, m) {
-			next := n.OpenAICompatible
-			next.Model = m
-			return next.Write(ctx, system, prompt)
+		if m == n.Model || !contains(offered, m) {
+			continue
 		}
+		next := n.OpenAICompatible
+		next.Model = m
+		text, nerr := n.ask(ctx, next, system, prompt)
+		if !worthAnother(nerr) {
+			return text, nerr
+		}
+		err = nerr
 	}
 	return "", err
+}
+
+// ask is one model, asked not to think first. A model whose template does not
+// know that switch may refuse the request for it, and is asked again plainly.
+func (n NVIDIA) ask(ctx context.Context, o OpenAICompatible, system, prompt string) (string, error) {
+	o.Extra = noThinking
+	text, err := o.Write(ctx, system, prompt)
+	var he *httpError
+	if errors.As(err, &he) && he.Status == http.StatusBadRequest {
+		o.Extra = nil
+		text, err = o.Write(ctx, system, prompt)
+	}
+	if n.OnAttempt != nil {
+		n.OnAttempt(o.Model, err)
+	}
+	return text, err
+}
+
+// worthAnother is a failure another model may not share: this one is gone for
+// the account, answered nothing, or is busy.
+func worthAnother(err error) bool {
+	return isGone(err) || errors.Is(err, ErrNoAnswer) || errors.Is(err, ErrUnavailable)
 }
 
 func (n NVIDIA) withMoreRoom() Writer {

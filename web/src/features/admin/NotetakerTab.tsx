@@ -46,7 +46,7 @@ const LANGUAGES = [
 const MODEL_HINT: Record<Form['llmProvider'], string> = {
   anthropic: 'Leave empty for claude-sonnet-5-5.',
   openai: 'The model to use, for example gpt-4.1.',
-  nvidia: 'Leave empty for nvidia/nemotron-3-super-120b-a12b, or name another model from build.nvidia.com. If NVIDIA retires the one named, another Nemotron model writes the minutes.',
+  nvidia: 'Leave empty for nvidia/nemotron-3.5-lightning-30b-a3b, or name another model from build.nvidia.com. If the one named stops working, another Nemotron model writes the minutes.',
   'openai-compatible': 'The model name your server expects, for example nvidia/nemotron-3-super-120b-a12b.',
 };
 

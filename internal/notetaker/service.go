@@ -464,7 +464,20 @@ func (s *Service) compose(ctx context.Context, orgID, callID uuid.UUID, set Sett
 	for _, g := range guests {
 		names = append(names, g+" (guest)")
 	}
-	minutes, err := Write(ctx, set.writer(), title, startedAt, names, segments, time.UTC)
+	w := set.writer()
+	if nv, ok := w.(NVIDIA); ok {
+		// Which model was asked, and how it went: the first thing to know when
+		// minutes do not come.
+		nv.OnAttempt = func(model string, err error) {
+			ev := s.logger.Info()
+			if err != nil {
+				ev = s.logger.Warn().Err(err)
+			}
+			ev.Str("call", callID.String()).Str("model", model).Msg("notetaker: asked a model for the minutes")
+		}
+		w = nv
+	}
+	minutes, err := Write(ctx, w, title, startedAt, names, segments, time.UTC)
 	if err != nil {
 		log := s.logger.Warn().Err(err).Str("call", callID.String())
 		// What the model said instead, so the next failure can be understood.
