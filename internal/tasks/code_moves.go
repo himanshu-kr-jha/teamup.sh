@@ -26,6 +26,19 @@ func (s *Service) TaskByKey(ctx context.Context, orgID uuid.UUID, key string) (*
 // they put it. Recorded as the provider's doing, with the person behind it
 // when they are known. Reports whether it moved.
 func (s *Service) MoveByCode(ctx context.Context, orgID, taskID uuid.UUID, to, source string, actor *uuid.UUID, why string) (bool, error) {
+	return s.moveByCode(ctx, orgID, taskID, to, source, actor, why, false)
+}
+
+// ReopenByCode is MoveByCode for a pull request just opened, which is new work
+// on its tasks: a task already done goes back to where the pull request puts
+// it (in progress, or in review), as well as forward from anywhere else.
+// Blocked still stays where somebody put it. A commit does not reopen
+// anything, because merging a pull request makes one that names the task.
+func (s *Service) ReopenByCode(ctx context.Context, orgID, taskID uuid.UUID, to, source string, actor *uuid.UUID, why string) (bool, error) {
+	return s.moveByCode(ctx, orgID, taskID, to, source, actor, why, true)
+}
+
+func (s *Service) moveByCode(ctx context.Context, orgID, taskID uuid.UUID, to, source string, actor *uuid.UUID, why string, reopen bool) (bool, error) {
 	toRank, ok := statusRank[to]
 	if !ok {
 		return false, fmt.Errorf("cannot move a task to %q", to)
@@ -46,7 +59,8 @@ func (s *Service) MoveByCode(ctx context.Context, orgID, taskID uuid.UUID, to, s
 		return false, err
 	}
 	fromRank, known := statusRank[from]
-	if !known || fromRank >= toRank {
+	reopening := reopen && from == "done" && to != "done"
+	if !known || (fromRank >= toRank && !reopening) {
 		return false, nil
 	}
 	if _, err := tx.Exec(ctx, `
@@ -71,6 +85,10 @@ func (s *Service) MoveByCode(ctx context.Context, orgID, taskID uuid.UUID, to, s
 	if actor != nil {
 		except = append(except, *actor)
 	}
-	s.notifyInvolved(ctx, orgID, taskID, "task.updated", title+" moved to "+strings.ReplaceAll(to, "_", " "), why, except...)
+	headline := title + " moved to " + strings.ReplaceAll(to, "_", " ")
+	if reopening {
+		headline = title + " was reopened, " + strings.ReplaceAll(to, "_", " ")
+	}
+	s.notifyInvolved(ctx, orgID, taskID, "task.updated", headline, why, except...)
 	return true, nil
 }

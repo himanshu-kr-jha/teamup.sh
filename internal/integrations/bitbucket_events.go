@@ -141,7 +141,7 @@ func (s *Service) onBitbucketPull(ctx context.Context, c *connection, action str
 		if len(e.PullRequest.Reviewers) > 0 && pr.state == "open" {
 			to = "in_review"
 		}
-		s.moveLinked(ctx, c.OrgID, pr, to, fmt.Sprintf("%s opened #%d in %s", pr.author, pr.number, pr.repoName))
+		s.reopenLinked(ctx, c.OrgID, pr, to, fmt.Sprintf("%s opened #%d in %s", pr.author, pr.number, pr.repoName))
 	case "updated":
 		if len(added) > 0 && pr.state == "open" {
 			s.moveLinked(ctx, c.OrgID, pr, "in_review", fmt.Sprintf("#%d in %s is waiting for review", pr.number, pr.repoName))

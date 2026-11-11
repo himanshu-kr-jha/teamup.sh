@@ -208,3 +208,30 @@ func TestDueTasksAreWhatIsMineToSeeThrough(t *testing.T) {
 		t.Error("a read of over 92 days was allowed")
 	}
 }
+
+// A pull request just opened is new work: a done task goes back to it, and
+// everybody on the task hears it was reopened. A commit alone does not.
+func TestANewPullRequestReopensADoneTaskButACommitDoesNot(t *testing.T) {
+	s := setupInvolved(t)
+	ctx := context.Background()
+	if _, err := s.svc.UpdateTask(ctx, s.org.ID, s.task, s.owner, map[string]interface{}{"status": "done"}, true); err != nil {
+		t.Fatalf("done: %v", err)
+	}
+	if moved, _ := s.svc.MoveByCode(ctx, s.org.ID, s.task, "in_progress", "github", nil, "a commit"); moved {
+		t.Error("a commit reopened a done task")
+	}
+	s.notes.reset()
+	moved, err := s.svc.ReopenByCode(ctx, s.org.ID, s.task, "in_progress", "github", nil, "opened #8")
+	if err != nil || !moved {
+		t.Fatalf("reopen: %v %v", moved, err)
+	}
+	got, _ := s.svc.GetTask(ctx, s.org.ID, s.task)
+	if got.Status != "in_progress" || got.CompletedAt != nil {
+		t.Errorf("reopened as %s, completed %v", got.Status, got.CompletedAt)
+	}
+	sameKinds(t, "the assignee", s.notes.kinds(s.assignee), "task.updated")
+	// Opening it again changes nothing.
+	if moved, _ := s.svc.ReopenByCode(ctx, s.org.ID, s.task, "in_progress", "github", nil, "opened #8"); moved {
+		t.Error("an open task was moved again")
+	}
+}
