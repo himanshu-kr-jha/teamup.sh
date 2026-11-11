@@ -157,6 +157,11 @@ jobs:
       TEAMUP_TEST_MINIO_ACCESS_KEY: minioadmin
       TEAMUP_TEST_MINIO_SECRET_KEY: minioadmin
       TEAMUP_TEST_MINIO_BUCKET: teamup-files-test
+      # internal/calls closes a real room on the LiveKit started below, and
+      # skips without this, which the skip guard turns into a failed build.
+      # --dev serves the key "devkey" with the secret "secret".
+      TEAMUP_TEST_LIVEKIT_URL: ws://localhost:7880
+      TEAMUP_TEST_LIVEKIT_SECRET: secret
       # 487 top-level tests pass locally as of the threading/multipart wave.
       # The floor sits below that on purpose — it exists to catch a suite that
       # has silently lost most of itself, not to be updated on every commit.
