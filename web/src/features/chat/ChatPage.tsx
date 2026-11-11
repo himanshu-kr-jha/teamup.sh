@@ -2,7 +2,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } fr
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   Hash, Send, Paperclip, Smile, Settings, ChevronLeft, MessageSquare, User,
-  Megaphone, MoreVertical, Pencil, Trash2, Eye, Ban, Check, CheckCheck, PhoneMissed,
+  Megaphone, MoreVertical, Pencil, Trash2, Eye, Ban, Check, CheckCheck, PhoneMissed, PhoneOff, PhoneForwarded,
   MessagesSquare, X, Download, Phone, Forward, Mic, Video,
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
@@ -60,6 +60,7 @@ import {
   summariseReactions,
   type ReactionMap,
 } from './reactions';
+import { callEventView } from './callEvent';
 import { applyReadReceipt, type ReadReceipt } from './readReceipts';
 import { restoreDraft, restoreStaged, whenVisible } from './composerDraft';
 import { focusWhenFree, typesOnOpen } from './composerFocus';
@@ -1477,14 +1478,21 @@ function DaySeparator({ when }: { when: string }) {
  * dressing it as their message would have you replying to nobody.
  */
 function CallEvent({ message, isOwn }: { message: Message; isOwn: boolean }) {
+  // The caller knows they called; what they did not know is how it went. The
+  // other person needs to be told it happened at all, and how.
+  const view = callEventView(message.content, isOwn, message.userName ?? '');
+  const Icon = view.kind === 'declined' ? PhoneOff : view.kind === 'busy' && isOwn ? PhoneForwarded : PhoneMissed;
   return (
-    <div className="flex justify-center py-1.5">
-      <span className="flex items-center gap-2 rounded-full bg-muted px-3 py-1 text-xs text-muted-foreground">
-        <PhoneMissed className="h-3.5 w-3.5" aria-hidden="true" />
-        {/* The caller knows they called; what they did not know is that it went
-            unanswered. The other person needs to be told it happened at all. */}
-        <span>{isOwn ? 'No answer' : `${message.content} from ${message.userName}`}</span>
-        <span>
+    <div className="flex justify-center py-1.5" data-testid="call-event" data-kind={view.kind}>
+      <span
+        className={cn(
+          'flex items-center gap-2 rounded-full px-3 py-1 text-xs',
+          view.alert ? 'bg-red-50 text-red-700 dark:bg-red-950/40 dark:text-red-300' : 'bg-muted text-muted-foreground'
+        )}
+      >
+        <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+        <span>{view.text}</span>
+        <span className={view.alert ? 'opacity-80' : undefined}>
           {new Date(message.createdAt).toLocaleTimeString(undefined, {
             hour: '2-digit',
             minute: '2-digit',
