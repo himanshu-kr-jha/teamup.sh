@@ -8,6 +8,7 @@ import { IncomingCallDialog } from "@/features/calls/IncomingCallDialog";
 import { ActiveCallProvider } from "@/features/calls/ActiveCallProvider";
 import { UpdateOffer } from "@/sw/UpdateOffer";
 import { KnockCenter } from "@/features/calls/KnockCenter";
+import { TaskNotifications } from '@/features/notifications/TaskNotifications';
 import { ChatNotifications } from "@/features/chat/ChatNotifications";
 import { usePushSubscription } from "@/features/notifications/usePushSubscription";
 import { cn } from "@/shared/utils/cn";
@@ -67,6 +68,8 @@ export function Layout() {
       {/* A message has to reach you wherever you are too, not only on the
           page that happens to be about chat. */}
       <ChatNotifications />
+      {/* And news about a task, with its sound. */}
+      <TaskNotifications />
         <UpdateOffer />
         {/* A look around for somebody signing in for the first time. */}
         <WelcomeTour />

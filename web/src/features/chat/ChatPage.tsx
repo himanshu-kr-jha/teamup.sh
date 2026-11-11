@@ -418,6 +418,18 @@ export function ChatPage() {
       if (!me || receipt.channelId !== channelId) return;
       const applyTo = (list: Message[]) => applyReadReceipt(list, receipt, me);
 
+      // A thread's marker crosses only that thread's replies.
+      if (receipt.threadId) {
+        queryClient.setQueryData(['thread', receipt.threadId], (old: any) => {
+          if (!old?.data) return old;
+          const replies = applyTo(old.data.replies ?? []);
+          return replies === old.data.replies ? old : { ...old, data: { ...old.data, replies } };
+        });
+        return;
+      }
+
+      // The conversation's marker crosses the conversation, a thread's root
+      // included, and never a reply.
       setOlder(applyTo);
       queryClient.setQueryData(['messages', channelId], (old: any) => {
         if (!old) return old;
@@ -426,11 +438,9 @@ export function ChatPage() {
       });
       if (openThreadId) {
         queryClient.setQueryData(['thread', openThreadId], (old: any) => {
-          if (!old?.data) return old;
-          const replies = applyTo(old.data.replies ?? []);
-          const [root] = applyTo(old.data.root ? [old.data.root] : []);
-          if (replies === old.data.replies && root === old.data.root) return old;
-          return { ...old, data: { ...old.data, root: root ?? old.data.root, replies } };
+          if (!old?.data?.root) return old;
+          const [root] = applyTo([old.data.root]);
+          return root === old.data.root ? old : { ...old, data: { ...old.data, root } };
         });
       }
     },
@@ -1976,6 +1986,21 @@ function ThreadPanel({
   const newestReplyId = replies[replies.length - 1]?.id;
   useEffect(() => {
     if (newestReplyId) endRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [newestReplyId]);
+
+  // An open thread in front of you is read: its replies turn to a double tick
+  // for whoever wrote them. A tab in the background has not been read yet.
+  useEffect(() => {
+    if (!newestReplyId) return;
+    const read = () => {
+      if (document.visibilityState !== 'visible') return;
+      channelsApi.markThreadRead(newestReplyId).catch(() => {
+        // Marked again on the next reply, or the next time the thread opens.
+      });
+    };
+    read();
+    document.addEventListener('visibilitychange', read);
+    return () => document.removeEventListener('visibilitychange', read);
   }, [newestReplyId]);
 
   const submit = (e: React.FormEvent) => {

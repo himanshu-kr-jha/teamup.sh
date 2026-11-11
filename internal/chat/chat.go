@@ -1683,6 +1683,12 @@ type ReadReceipt struct {
 	ReadAt time.Time `json:"readAt"`
 }
 
+// readMarker is how far a member (cm) has read message m: for a reply, how far
+// they have read its thread (tr), because a reply is not in the conversation
+// and reading the conversation does not show it; for anything else, how far
+// they have read the conversation. NULL, never read, compares as not read.
+const readMarker = `CASE WHEN m.reply_to IS NULL THEN cm.last_read_at ELSE tr.last_read_at END`
+
 // ReadBy lists who has read a message, derived from how far each member has
 // read rather than from a row per message per person — the read marker already
 // says everything needed and costs nothing to keep.
@@ -1690,17 +1696,18 @@ type ReadReceipt struct {
 // The author is left out: you have obviously read your own message.
 func (s *Service) ReadBy(ctx context.Context, orgID, messageID uuid.UUID) ([]ReadReceipt, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT cm.user_id, u.name, cm.last_read_at
+		SELECT cm.user_id, u.name, `+readMarker+` AS read_at
 		FROM messages m
 		JOIN channels c ON c.id = m.channel_id
 		JOIN channel_members cm ON cm.channel_id = m.channel_id
 		JOIN users u ON u.id = cm.user_id
+		LEFT JOIN thread_reads tr
+		  ON m.reply_to IS NOT NULL AND tr.root_id = m.reply_to AND tr.user_id = cm.user_id
 		WHERE m.id = $1
 		  AND c.org_id = $2
 		  AND cm.user_id <> m.user_id
-		  AND cm.last_read_at IS NOT NULL
-		  AND cm.last_read_at >= m.created_at
-		ORDER BY cm.last_read_at
+		  AND `+readMarker+` >= m.created_at
+		ORDER BY read_at
 	`, messageID, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("list who has read a message: %w", err)
@@ -1725,15 +1732,18 @@ func (s *Service) attachReadCounts(ctx context.Context, channelID uuid.UUID, mes
 	if len(messages) == 0 {
 		return messages, nil
 	}
+	// A reply is read as far as its thread has been read, and anything else as
+	// far as the conversation has (see readMarker).
 	rows, err := s.db.Query(ctx, `
 		SELECT m.id, COUNT(cm.user_id)
 		FROM messages m
 		JOIN channel_members cm
 		  ON cm.channel_id = m.channel_id
 		 AND cm.user_id <> m.user_id
-		 AND cm.last_read_at IS NOT NULL
-		 AND cm.last_read_at >= m.created_at
+		LEFT JOIN thread_reads tr
+		  ON m.reply_to IS NOT NULL AND tr.root_id = m.reply_to AND tr.user_id = cm.user_id
 		WHERE m.channel_id = $1 AND m.id = ANY($2)
+		  AND `+readMarker+` >= m.created_at
 		GROUP BY m.id
 	`, channelID, messageIDs(messages))
 	if err != nil {
@@ -2124,6 +2134,49 @@ func (s *Service) MarkRead(ctx context.Context, channelID, userID, messageID uui
 	}
 	if advanced {
 		s.announceRead(channelID, userID, from, to)
+	}
+	return nil
+}
+
+// MarkThreadRead records that somebody has read a thread as far as one of its
+// messages, and tells the conversation so the ticks under the replies they
+// have just read change for whoever wrote them. Never backwards.
+func (s *Service) MarkThreadRead(ctx context.Context, orgID, userID, messageID uuid.UUID) error {
+	rootID, channelID, err := s.ThreadOf(ctx, orgID, messageID)
+	if err != nil {
+		return err
+	}
+	var before *time.Time
+	var after time.Time
+	err = s.db.QueryRow(ctx, `
+		WITH prev AS (
+			SELECT last_read_at FROM thread_reads WHERE root_id = $1 AND user_id = $2
+		)
+		INSERT INTO thread_reads (root_id, user_id, last_read_at)
+		SELECT $1, $2, m.created_at FROM messages m
+		WHERE m.id = $3 AND (m.id = $1 OR m.reply_to = $1)
+		ON CONFLICT (root_id, user_id) DO UPDATE
+		SET last_read_at = GREATEST(thread_reads.last_read_at, EXCLUDED.last_read_at)
+		RETURNING (SELECT last_read_at FROM prev), last_read_at
+	`, rootID, userID, messageID).Scan(&before, &after)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("mark thread read: %w", err)
+	}
+	if (before == nil || after.After(*before)) && s.broadcaster != nil {
+		s.broadcaster.BroadcastToChannel(
+			channelID.String(),
+			protocol.NewMessage(protocol.TypeChatReadReceipt, protocol.ChatReadReceiptPayload{
+				ChannelID: channelID.String(),
+				ThreadID:  rootID.String(),
+				UserID:    userID.String(),
+				From:      before,
+				To:        after,
+			}),
+			userID.String(),
+		)
 	}
 	return nil
 }

@@ -26,6 +26,12 @@ export interface ReadableMessage {
 
 export interface ReadReceipt {
   channelId: string;
+  /**
+   * Set when the marker that moved is a thread's, and then only that thread's
+   * replies were crossed. A reply is not in the conversation, so the
+   * conversation's own marker never reads one.
+   */
+  threadId?: string;
   userId: string;
   /** The reader's previous marker; null the first time they read here. */
   from: string | null;

@@ -67,17 +67,10 @@ func (s *Service) MoveByCode(ctx context.Context, orgID, taskID uuid.UUID, to, s
 	}
 
 	// Everybody on the task hears of it, and their boards refresh with it.
-	who := uuid.Nil
+	var except []uuid.UUID
 	if actor != nil {
-		who = *actor
+		except = append(except, *actor)
 	}
-	headline := title + " moved to " + strings.ReplaceAll(to, "_", " ")
-	if moved, err := s.GetTask(ctx, orgID, taskID); err == nil && moved.AssigneeID != nil && *moved.AssigneeID != who && s.notifier != nil {
-		if err := s.notifier.Notify(ctx, orgID, *moved.AssigneeID, "task.updated", headline, why,
-			map[string]any{"taskId": taskID.String()}); err != nil {
-			s.logger.Warn().Err(err).Msg("move notification failed")
-		}
-	}
-	s.notifyWatchers(ctx, orgID, taskID, who, headline, why)
+	s.notifyInvolved(ctx, orgID, taskID, "task.updated", title+" moved to "+strings.ReplaceAll(to, "_", " "), why, except...)
 	return true, nil
 }

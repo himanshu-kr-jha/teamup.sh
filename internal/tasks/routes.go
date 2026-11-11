@@ -29,6 +29,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.GET("/tasks/managed-teams", h.ManagedTeams)
 	rg.GET("/tasks/assignable-users", h.AssignableUsers)
 	rg.GET("/tasks/dashboard", h.Dashboard)
+	rg.GET("/tasks/due", h.DueTasks)
 	rg.GET("/tasks/contributions", h.Contributions)
 	rg.GET("/tasks/contributions/:userId", h.ContributionDetail)
 	rg.POST("/tasks", h.CreateTask)
@@ -69,6 +70,26 @@ func callerFrom(c *gin.Context) (caller, bool) {
 		return caller{}, false
 	}
 	return caller{OrgID: orgID, UserID: userID}, true
+}
+
+// DueTasks is the caller's work due between from and to, for their calendar.
+func (h *Handler) DueTasks(c *gin.Context) {
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	from, err1 := time.Parse(time.RFC3339, c.Query("from"))
+	to, err2 := time.Parse(time.RFC3339, c.Query("to"))
+	if err1 != nil || err2 != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "from and to must be RFC 3339 times"})
+		return
+	}
+	tasks, err := h.service.DueTasks(c.Request.Context(), cl.OrgID, cl.UserID, from, to)
+	if err != nil {
+		httpx.Error(c, err, "failed to list due tasks")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"tasks": tasks})
 }
 
 func pathUUID(c *gin.Context, param string) (uuid.UUID, bool) {

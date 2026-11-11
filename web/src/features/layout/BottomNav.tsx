@@ -2,6 +2,8 @@ import { NavLink } from 'react-router-dom';
 import { CalendarDays, MessageSquare, Video, CheckSquare, Settings } from 'lucide-react';
 import { cn } from '@/shared/utils/cn';
 import { badgeText, useUnreadChatCount } from '@/features/chat/useUnreadChats';
+import { useUnreadTasks } from '@/features/notifications/unreadTasks';
+import { navBadge } from './navBadge';
 
 /**
  * The places worth going, along the bottom of a phone.
@@ -25,6 +27,7 @@ const tabs = [
 
 export function BottomNav() {
   const unreadChats = useUnreadChatCount();
+  const unreadTasks = useUnreadTasks().size;
   return (
     <nav
       // Part of the page's column rather than floating over it, so nothing ends
@@ -47,30 +50,29 @@ export function BottomNav() {
               )
             }
           >
-            {({ isActive }) => (
-              <>
-                <span className="relative">
-                  <tab.icon
-                    className={cn('h-5 w-5', isActive && 'fill-primary/10')}
-                    aria-hidden="true"
-                  />
-                  {tab.path === '/chat' && unreadChats > 0 && (
-                    <span
-                      className="absolute -right-2.5 -top-1.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold leading-none text-destructive-foreground"
-                      data-testid="chat-unread-badge"
-                    >
-                      {badgeText(unreadChats)}
-                    </span>
-                  )}
-                </span>
-                <span>{tab.label}</span>
-                {tab.path === '/chat' && unreadChats > 0 && (
-                  <span className="sr-only">
-                    , {unreadChats === 1 ? '1 chat with unread messages' : `${unreadChats} chats with unread messages`}
+            {({ isActive }) => {
+              const badge = navBadge(tab.path, { chats: unreadChats, tasks: unreadTasks });
+              return (
+                <>
+                  <span className="relative">
+                    <tab.icon
+                      className={cn('h-5 w-5', isActive && 'fill-primary/10')}
+                      aria-hidden="true"
+                    />
+                    {badge && (
+                      <span
+                        className="absolute -right-2.5 -top-1.5 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold leading-none text-destructive-foreground"
+                        data-testid={badge.testId}
+                      >
+                        {badgeText(badge.count)}
+                      </span>
+                    )}
                   </span>
-                )}
-              </>
-            )}
+                  <span>{tab.label}</span>
+                  {badge && <span className="sr-only">, {badge.spoken}</span>}
+                </>
+              );
+            }}
           </NavLink>
         ))}
       </div>

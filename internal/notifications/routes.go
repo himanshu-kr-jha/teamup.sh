@@ -30,6 +30,8 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.POST("/notifications/subscribe", h.Subscribe)
 	rg.DELETE("/notifications/subscribe", h.Unsubscribe)
 	rg.GET("/notifications/unread-count", h.UnreadCount)
+	rg.GET("/notifications/unread-tasks", h.UnreadTasks)
+	rg.PATCH("/notifications/tasks/:taskId/read", h.MarkTaskRead)
 	rg.GET("/notifications/vapid-key", h.VAPIDKey)
 }
 
@@ -56,6 +58,38 @@ func (h *Handler) UnreadCount(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"count": count})
+}
+
+func (h *Handler) UnreadTasks(c *gin.Context) {
+	userID, err := uuid.Parse(auth.GetUserFromContext(c).UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+	ids, err := h.service.UnreadTasks(c.Request.Context(), userID)
+	if err != nil {
+		httpx.Error(c, err, "failed to list unread tasks")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"taskIds": ids})
+}
+
+func (h *Handler) MarkTaskRead(c *gin.Context) {
+	userID, err := uuid.Parse(auth.GetUserFromContext(c).UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+	taskID, err := uuid.Parse(c.Param("taskId"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid task id"})
+		return
+	}
+	if err := h.service.MarkTaskRead(c.Request.Context(), userID, taskID); err != nil {
+		httpx.Error(c, err, "failed to mark read")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "marked as read"})
 }
 
 func (h *Handler) ListNotifications(c *gin.Context) {

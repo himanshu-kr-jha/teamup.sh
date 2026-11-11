@@ -335,6 +335,8 @@ export const channelsApi = {
     getList<{ userId: string; name: string; readAt: string }>(`/messages/${messageId}/reads`, 'reads'),
   removeMember: (id: string, userId: string) => api.delete(`/channels/${id}/members/${userId}`),
   markRead: (id: string, messageId: string) => api.post(`/channels/${id}/read`, { messageId }),
+  /** You have read a thread as far as this message, its newest reply on your screen. */
+  markThreadRead: (messageId: string) => api.post(`/messages/${messageId}/thread/read`),
   /** What you hear about from a conversation: every message, only mentions of you, or nothing. */
   setNotifyLevel: (id: string, level: NotifyLevel) =>
     api.put<{ notifyLevel: NotifyLevel }>(`/channels/${id}/notifications`, { level }),
@@ -396,7 +398,19 @@ export const presenceApi = {
   update: (status: string) => api.patch('/presence', { status }),
 };
 
+/** A task as the calendar shows it, on the day it is due. */
+export interface DueTask {
+  id: string;
+  key: string;
+  title: string;
+  status: string;
+  priority: string;
+  dueDate: string;
+}
+
 export const tasksApi = {
+  /** Your work due in a range: what you hold, made for nobody yet, or were added to. */
+  due: (from: string, to: string) => api.get<{ tasks: DueTask[] }>('/tasks/due', { params: { from, to } }),
   list: (params?: {
     projectId?: string;
     assigneeId?: string;
@@ -699,6 +713,10 @@ export const notificationsApi = {
   list: (params?: { unreadOnly?: boolean; limit?: number; offset?: number }) => getList('/notifications', 'notifications', params),
   markRead: (id: string) => api.patch(`/notifications/${id}/read`),
   markAllRead: () => api.patch('/notifications/read-all'),
+  /** The tasks with something unread for you, so they can be marked wherever they show. */
+  unreadTasks: () => api.get<{ taskIds: string[] }>('/notifications/unread-tasks'),
+  /** Opening a task reads everything you were told about it. */
+  markTaskRead: (taskId: string) => api.patch(`/notifications/tasks/${taskId}/read`),
   archive: (id: string) => api.delete(`/notifications/${id}`),
   subscribe: (data: { endpoint: string; p256dh: string; auth: string; deviceName?: string }) => api.post('/notifications/subscribe', data),
   unsubscribe: (endpoint: string) => api.delete('/notifications/subscribe', { data: { endpoint } }),

@@ -11,7 +11,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
 import { formatRelativeTime, formatDate } from '@/shared/utils/cn';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { tasksApi, filesApi } from '@/shared/api/client';
+import { tasksApi, filesApi, orgApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
 import { FormDialog } from '@/shared/components/FormDialog';
@@ -27,6 +27,8 @@ import { useUpload } from '@/features/files/useUpload';
 import { StagedFiles, type StagedFile } from '@/features/files/StagedFiles';
 import { cn } from '@/shared/utils/cn';
 import { restrictionNote, type TaskAbilities } from './abilities';
+import { useReadTaskWhileOpen } from '@/features/notifications/unreadTasks';
+import { activityLine } from './activityText';
 import { endOfDueDay } from './dueDate';
 import { liveTaskQuery } from './liveQuery';
 
@@ -130,6 +132,8 @@ function TaskDetailView() {
   });
 
   const task = taskResponse?.data;
+  // Opening a task is reading what you were told about it.
+  useReadTaskWhileOpen(task?.id);
 
   const updateTaskMutation = useMutation({
     mutationFn: (data: Partial<Task>) => tasksApi.update(taskId!, data),
@@ -243,7 +247,7 @@ function TaskDetailView() {
         <div className="flex-1 items-center justify-center">Loading...</div>
       ) : (
         <div className="flex-1 overflow-auto p-4 md:p-6">
-          <div className="max-w-4xl mx-auto space-y-6">
+          <div className="mx-auto max-w-6xl space-y-6">
             {/* Main task info */}
             <div className="flex min-w-0 flex-col gap-6 md:flex-row md:items-start">
               <div className="min-w-0 flex-1 space-y-4">
@@ -680,6 +684,9 @@ function ActivityList({ taskId }: { taskId: string }) {
     queryFn: () => tasksApi.getActivities(taskId),
   });
   const activities = data?.data ?? [];
+  // Whoever a task was handed to, by name: everybody in the organization.
+  const { data: usersData } = useQuery({ queryKey: ['users'], queryFn: () => orgApi.listUsers() });
+  const nameOf = (id: string) => (usersData?.data as { id: string; name: string }[] | undefined)?.find((u) => u.id === id)?.name;
 
   if (isLoading) return <p className="py-4 text-sm text-muted-foreground">Loading history…</p>;
   if (activities.length === 0) {
@@ -696,10 +703,30 @@ function ActivityList({ taskId }: { taskId: string }) {
               <span className="font-medium">
                 {a.source ? (a.userName ? `${a.userName}, through ${SOURCES[a.source] ?? a.source},` : SOURCES[a.source] ?? a.source) : a.userName || 'Someone'}
               </span>{' '}
-              {a.source ? 'moved' : 'changed'}{' '}
-              <span className="font-medium">{a.field}</span>
-              {a.oldValue ? <> from <span className="text-muted-foreground">{shorten(a.oldValue)}</span></> : null}
-              {a.newValue ? <> to <span className="text-muted-foreground">{shorten(a.newValue)}</span></> : null}
+              {a.source ? (
+                <>
+                  moved it to <span className="text-muted-foreground">{activityLine(a, nameOf).to}</span>
+                </>
+              ) : (
+                (() => {
+                  const line = activityLine(a, nameOf);
+                  if (a.field === 'comment') {
+                    return (
+                      <>
+                        {line.verb}
+                        {line.to ? <span className="text-muted-foreground">: {shorten(line.to)}</span> : null}
+                      </>
+                    );
+                  }
+                  return (
+                    <>
+                      {line.verb}
+                      {line.from ? <> from <span className="text-muted-foreground">{shorten(line.from)}</span></> : null}
+                      {line.to ? <> to <span className="text-muted-foreground">{shorten(line.to)}</span></> : null}
+                    </>
+                  );
+                })()
+              )}
             </p>
             <p className="text-xs text-muted-foreground">{formatRelativeTime(a.createdAt)}</p>
           </div>

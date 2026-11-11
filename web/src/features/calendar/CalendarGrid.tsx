@@ -19,6 +19,8 @@ import { meetingStillOn,
   type PlacedSegment,
   type Segment,
 } from './layout';
+import type { DueTask } from '@/shared/api/client';
+import { DueChip, tasksDueOn } from './DueTasks';
 
 /** Pixels per hour. Twenty minutes comes to one readable line of text. */
 const HOUR_HEIGHT = 56;
@@ -66,9 +68,12 @@ export function CalendarGrid({
   onSelect,
   onEmptyClick,
   emptyClickLabel,
+  dueTasks = [],
 }: {
   days: Date[];
   items: CalendarItem[];
+  /** Work due each day, in a row of its own above the hours: a deadline has no time. */
+  dueTasks?: DueTask[];
   now: Date;
   view: CalendarView;
   onSelect: (item: CalendarItem) => void;
@@ -90,32 +95,52 @@ export function CalendarGrid({
   }, []);
 
   const columns = `3.25rem repeat(${days.length}, minmax(0, 1fr))`;
+  const dueByDay = useMemo(() => days.map((day) => tasksDueOn(dueTasks, day)), [days, dueTasks]);
 
   return (
     <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden" tabIndex={0} aria-label="Hours of the day">
-      {view === 'week' && (
-        <div
-          className="sticky top-0 z-20 grid border-b border-border bg-background"
-          style={{ gridTemplateColumns: columns }}
-        >
-          <div />
-          {days.map((day) => {
-            const today = isSameDay(day, now);
-            return (
-              <div key={dayLabelKey(day)} className="border-l border-border py-1.5 text-center">
-                <div className="text-xs text-muted-foreground">{format(day, 'EEE')}</div>
-                <div
-                  className={cn(
-                    'mx-auto flex h-7 w-7 items-center justify-center rounded-full text-sm font-medium tabular-nums',
-                    today && 'bg-primary text-primary-foreground'
-                  )}
-                  aria-current={today ? 'date' : undefined}
-                >
-                  {format(day, 'd')}
-                </div>
-              </div>
-            );
-          })}
+      {(view === 'week' || dueByDay.some((due) => due.length > 0)) && (
+        <div className="sticky top-0 z-20 border-b border-border bg-background">
+          {view === 'week' && (
+            <div className="grid" style={{ gridTemplateColumns: columns }}>
+              <div />
+              {days.map((day) => {
+                const today = isSameDay(day, now);
+                return (
+                  <div key={dayLabelKey(day)} className="border-l border-border py-1.5 text-center">
+                    <div className="text-xs text-muted-foreground">{format(day, 'EEE')}</div>
+                    <div
+                      className={cn(
+                        'mx-auto flex h-7 w-7 items-center justify-center rounded-full text-sm font-medium tabular-nums',
+                        today && 'bg-primary text-primary-foreground'
+                      )}
+                      aria-current={today ? 'date' : undefined}
+                    >
+                      {format(day, 'd')}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+          {dueByDay.some((due) => due.length > 0) && (
+            <div
+              className={cn('grid', view === 'week' && 'border-t border-border')}
+              style={{ gridTemplateColumns: columns }}
+              data-testid="due-row"
+            >
+              <div className="py-1.5 pr-1.5 text-right text-[11px] text-muted-foreground">Due</div>
+              {days.map((day, i) => (
+                <ul key={dayLabelKey(day)} className="max-h-24 min-w-0 space-y-0.5 overflow-y-auto border-l border-border p-0.5">
+                  {dueByDay[i].map((task) => (
+                    <li key={task.id}>
+                      <DueChip task={task} now={now} compact={view === 'week'} />
+                    </li>
+                  ))}
+                </ul>
+              ))}
+            </div>
+          )}
         </div>
       )}
 

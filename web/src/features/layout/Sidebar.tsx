@@ -7,6 +7,8 @@ import { useOrganizationAccess } from './useOrganizationAccess';
 import { BrandMark } from '@/features/branding/BrandMark';
 import { UserAvatar } from '@/shared/components/UserAvatar';
 import { badgeText, useUnreadChatCount } from '@/features/chat/useUnreadChats';
+import { useUnreadTasks } from '@/features/notifications/unreadTasks';
+import { navBadge } from './navBadge';
 
 export function Sidebar() {
   const { sidebarOpen, toggleSidebar } = useUIStore();
@@ -16,6 +18,7 @@ export function Sidebar() {
   // offered to them; administrators and whoever runs a team still have it.
   const { allowed: mayAdminister } = useOrganizationAccess();
   const unreadChats = useUnreadChatCount();
+  const unreadTasks = useUnreadTasks().size;
   // A call's minutes live under /calls but belong with the meeting notes.
   const onMinutes = useLocation().pathname.endsWith('/minutes');
 
@@ -79,37 +82,33 @@ export function Sidebar() {
               }
             >
               {({ isActive }) => {
-                const badge = item.path === '/chat' && unreadChats > 0 ? unreadChats : 0;
+                const badge = navBadge(item.path, { chats: unreadChats, tasks: unreadTasks });
                 return (
                   <>
                     <span className="relative flex-shrink-0">
                       <item.icon className="h-5 w-5" aria-hidden="true" />
-                      {badge > 0 && !sidebarOpen && (
+                      {badge && !sidebarOpen && (
                         <span
                           className="absolute -right-2 -top-2 flex h-4 min-w-[1rem] items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold leading-none text-destructive-foreground"
-                          data-testid="chat-unread-badge"
+                          data-testid={badge.testId}
                         >
-                          {badgeText(badge)}
+                          {badgeText(badge.count)}
                         </span>
                       )}
                     </span>
                     {sidebarOpen && <span className="flex-1">{item.label}</span>}
-                    {badge > 0 && sidebarOpen && (
+                    {badge && sidebarOpen && (
                       <span
                         className={cn(
                           'flex h-5 min-w-[1.25rem] items-center justify-center rounded-full px-1.5 text-xs font-semibold',
                           isActive ? 'bg-primary-foreground/20 text-primary-foreground' : 'bg-destructive text-destructive-foreground'
                         )}
-                        data-testid="chat-unread-badge"
+                        data-testid={badge.testId}
                       >
-                        {badgeText(badge)}
+                        {badgeText(badge.count)}
                       </span>
                     )}
-                    {badge > 0 && (
-                      <span className="sr-only">
-                        , {badge === 1 ? '1 chat with unread messages' : `${badge} chats with unread messages`}
-                      </span>
-                    )}
+                    {badge && <span className="sr-only">, {badge.spoken}</span>}
                   </>
                 );
               }}

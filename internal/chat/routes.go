@@ -42,6 +42,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.POST("/messages/:id/forward", h.ForwardMessage)
 	rg.GET("/messages/:id/reads", h.MessageReads)
 	rg.GET("/messages/:id/thread", h.GetThread)
+	rg.POST("/messages/:id/thread/read", h.MarkThreadRead)
 	rg.POST("/messages/:id/reactions", h.AddReaction)
 	rg.DELETE("/messages/:id/reactions/:emoji", h.RemoveReaction)
 	rg.POST("/channels/:id/read", h.MarkRead)
@@ -740,6 +741,32 @@ func (h *Handler) MarkRead(c *gin.Context) {
 		return
 	}
 	if err := h.service.MarkRead(c.Request.Context(), channelID, cl.UserID, messageID); err != nil {
+		httpx.Error(c, err, "failed to mark read")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "read"})
+}
+
+// MarkThreadRead records that the caller has read a thread as far as the
+// message named, which is the newest reply they have seen.
+func (h *Handler) MarkThreadRead(c *gin.Context) {
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	messageID, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	_, channelID, err := h.service.ThreadOf(c.Request.Context(), cl.OrgID, messageID)
+	if err != nil {
+		httpx.Error(c, err, "message not found")
+		return
+	}
+	if !h.requireMembership(c, cl, channelID, false) {
+		return
+	}
+	if err := h.service.MarkThreadRead(c.Request.Context(), cl.OrgID, cl.UserID, messageID); err != nil {
 		httpx.Error(c, err, "failed to mark read")
 		return
 	}

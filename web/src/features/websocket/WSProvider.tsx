@@ -3,6 +3,7 @@ import { useAuthStore } from '@/shared/store/authStore';
 import type { Message, WSMessageType } from '@/shared/types/protocol';
 import { newId } from '@/shared/utils/id';
 import { reconnectDelay, shouldReconnect } from './backoff';
+import { authApi } from '@/shared/api/client';
 
 /**
  * 'reconnecting' is a socket that was working and is not right now, with
@@ -66,7 +67,9 @@ export function WSProvider({ children }: { children: ReactNode }) {
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
+    let opened = false;
     ws.onopen = () => {
+      opened = true;
       if (wsRef.current !== ws) return;
       setState(attemptRef.current > 0 ? 'reconnecting' : 'connecting');
       ws.send(JSON.stringify({
@@ -123,6 +126,16 @@ export function WSProvider({ children }: { children: ReactNode }) {
       // Never stops trying. The server drains and closes cleanly on shutdown,
       // so the well-behaved deploy used to be the one that killed every tab:
       // clean close, no retry, silently dead until somebody reloaded.
+      // Refused before it opened is most often a session that has expired: the
+      // handshake carries the access cookie, and only an ordinary request knows
+      // how to renew it. Asking who you are renews it (or, if the session is
+      // over, goes to sign-in), so the next attempt gets in. Without this a tab
+      // left alone said Reconnecting for good while every other call worked.
+      if (!opened) {
+        authApi.me().catch(() => {
+          // Offline or the server is away; the next attempt asks again.
+        });
+      }
       const delay = reconnectDelay(attemptRef.current);
       attemptRef.current++;
       setRetryCount(attemptRef.current);

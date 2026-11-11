@@ -591,6 +591,9 @@ func (s *Service) MarkRead(ctx context.Context, userID, id uuid.UUID) error {
 	if err != nil {
 		return fmt.Errorf("mark read: %w", err)
 	}
+	if tag.RowsAffected() > 0 {
+		s.announceRead(userID)
+	}
 	if tag.RowsAffected() == 0 {
 		var exists bool
 		if err := s.db.QueryRow(ctx,
@@ -606,12 +609,60 @@ func (s *Service) MarkRead(ctx context.Context, userID, id uuid.UUID) error {
 }
 
 func (s *Service) MarkAllRead(ctx context.Context, userID uuid.UUID) error {
-	_, err := s.db.Exec(ctx,
+	tag, err := s.db.Exec(ctx,
 		`UPDATE notifications SET read_at = NOW() WHERE user_id = $1 AND read_at IS NULL`, userID)
 	if err != nil {
 		return fmt.Errorf("mark all read: %w", err)
 	}
+	if tag.RowsAffected() > 0 {
+		s.announceRead(userID)
+	}
 	return nil
+}
+
+// UnreadTasks is which tasks have a notification this person has not read,
+// so the app can mark them wherever they are listed.
+func (s *Service) UnreadTasks(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT DISTINCT data->>'taskId' FROM notifications
+		WHERE user_id = $1 AND read_at IS NULL AND archived_at IS NULL AND data->>'taskId' <> ''
+	`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("unread tasks: %w", err)
+	}
+	defer rows.Close()
+	ids := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan unread task: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// MarkTaskRead marks everything this person was told about one task as read:
+// opening the task is reading it.
+func (s *Service) MarkTaskRead(ctx context.Context, userID, taskID uuid.UUID) error {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE notifications SET read_at = NOW()
+		WHERE user_id = $1 AND read_at IS NULL AND data->>'taskId' = $2
+	`, userID, taskID.String())
+	if err != nil {
+		return fmt.Errorf("mark task read: %w", err)
+	}
+	if tag.RowsAffected() > 0 {
+		s.announceRead(userID)
+	}
+	return nil
+}
+
+// announceRead lets this person's other tabs and devices take the badges down.
+func (s *Service) announceRead(userID uuid.UUID) {
+	if s.broadcaster != nil {
+		s.broadcaster.BroadcastToUser(userID.String(), protocol.NewMessage(protocol.TypeNotificationRead, map[string]any{}))
+	}
 }
 
 func (s *Service) Archive(ctx context.Context, userID, id uuid.UUID) error {

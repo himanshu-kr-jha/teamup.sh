@@ -86,22 +86,22 @@ export function AttachmentChip({ attachment }: { attachment: Attachment }) {
     }
     setBusy(true);
     try {
-      const { data } = await filesApi.getDownloadUrl(
-        attachment.objectKey,
-        attachment.filename,
-        isImage
-      );
       if (isImage) {
+        const { data } = await filesApi.getDownloadUrl(attachment.objectKey, attachment.filename, true);
         setEnlarged({
           objectKey: attachment.objectKey,
           filename: attachment.filename,
           url: data.downloadUrl,
         });
       } else {
-        window.open(data.downloadUrl, '_blank', 'noopener');
+        // Saved where you are rather than opened in a new tab: a tab opened
+        // once the address has come back is no longer the click's, and
+        // browsers, phones and the installed app above all, block it as a
+        // popup without a word, so the file simply never arrived.
+        await downloadAttachment(attachment.objectKey, attachment.filename);
       }
     } catch (err) {
-      toast.error(apiErrorMessage(err, 'Could not open that file.'));
+      toast.error(apiErrorMessage(err, isImage ? 'Could not open that file.' : 'Could not download that file.'));
     } finally {
       setBusy(false);
     }

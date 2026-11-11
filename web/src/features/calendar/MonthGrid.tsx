@@ -2,6 +2,8 @@ import { format, isSameDay, isSameMonth } from 'date-fns';
 
 import { cn, formatTime } from '@/shared/utils/cn';
 import { itemKey, itemLabel, itemsOnDay, type CalendarItem } from './layout';
+import type { DueTask } from '@/shared/api/client';
+import { DueChip, tasksDueOn } from './DueTasks';
 
 /** How many things a day lists before saying how many more. */
 const SHOWN_PER_DAY = 3;
@@ -25,10 +27,13 @@ export function MonthGrid({
   now,
   onSelect,
   onOpenDay,
+  dueTasks = [],
 }: {
   days: Date[];
   anchor: Date;
   items: CalendarItem[];
+  /** Work due each day, listed first: a deadline is what a month view is for. */
+  dueTasks?: DueTask[];
   now: Date;
   onSelect: (item: CalendarItem) => void;
   onOpenDay: (day: Date) => void;
@@ -54,12 +59,16 @@ export function MonthGrid({
           const inMonth = isSameMonth(day, anchor);
           const today = isSameDay(day, now);
           const onDay = itemsOnDay(items, day);
-          const hidden = onDay.length - SHOWN_PER_DAY;
+          const due = tasksDueOn(dueTasks, day);
+          const dueShown = due.slice(0, SHOWN_PER_DAY);
+          const itemsShown = onDay.slice(0, SHOWN_PER_DAY - dueShown.length);
+          const total = onDay.length + due.length;
+          const hidden = total - dueShown.length - itemsShown.length;
           return (
             <div
               key={day.toISOString()}
               role="gridcell"
-              aria-label={`${format(day, 'EEEE, MMMM d')}${onDay.length ? `, ${onDay.length} ${onDay.length === 1 ? 'thing' : 'things'}` : ''}`}
+              aria-label={`${format(day, 'EEEE, MMMM d')}${total ? `, ${total} ${total === 1 ? 'thing' : 'things'}` : ''}`}
               className={cn(
                 'group relative flex min-w-0 flex-col gap-0.5 border-b border-r border-border p-1 text-left',
                 !inMonth && 'bg-muted/30'
@@ -84,9 +93,12 @@ export function MonthGrid({
               </span>
 
               {/* Phones: one dot each. */}
-              {onDay.length > 0 && (
+              {total > 0 && (
                 <span className="pointer-events-none relative flex flex-wrap gap-0.5 sm:hidden" aria-hidden="true">
-                  {onDay.slice(0, 4).map((item, i) => (
+                  {due.slice(0, 4).map((task) => (
+                    <span key={task.id} className="h-1.5 w-1.5 rounded-[1px] bg-foreground/60" />
+                  ))}
+                  {onDay.slice(0, Math.max(0, 4 - due.length)).map((item, i) => (
                     <span key={itemKey(item, i)} className={cn('h-1.5 w-1.5 rounded-full', KIND_DOT[item.kind])} />
                   ))}
                 </span>
@@ -96,7 +108,12 @@ export function MonthGrid({
               {/* Only the entries themselves catch clicks: the space between and below
                   them is the day's, and opens it. */}
               <ul className="pointer-events-none relative hidden min-w-0 space-y-0.5 sm:block">
-                {onDay.slice(0, SHOWN_PER_DAY).map((item, i) => (
+                {dueShown.map((task) => (
+                  <li key={task.id}>
+                    <DueChip task={task} now={now} compact />
+                  </li>
+                ))}
+                {itemsShown.map((item, i) => (
                   <li key={itemKey(item, i)}>
                     <button
                       type="button"

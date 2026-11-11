@@ -14,6 +14,7 @@ import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
 import { restrictionNote, type TaskAbilities } from './abilities';
 import { DANGER_TEXT, dueLabel } from './dueDate';
+import { UnreadTaskDot } from '@/features/notifications/UnreadTaskDot';
 import { liveTaskQuery } from './liveQuery';
 import { ErrorState, LoadingState } from './dashboard/parts';
 import { PersonAvatar } from '@/shared/components/UserAvatar';
@@ -378,6 +379,7 @@ function TaskCard({ task, onUpdate }: { task: Task; onUpdate: (data: { id: strin
       <div className="mb-2 flex items-start justify-between gap-2">
         {/* The card had no way into the task at all, so the detail page
             (comments, history, members) was unreachable from the board. */}
+        <UnreadTaskDot taskId={task.id} className="mt-1.5 shrink-0" />
         <Link
           to={`/tasks/${task.id}`}
           className="min-w-0 flex-1 break-anywhere text-sm font-medium hover:underline"

@@ -465,3 +465,58 @@ func TestALongTitleIsShortenedRatherThanLosingTheNotification(t *testing.T) {
 		}
 	}
 }
+
+func TestUnreadTasksAreTheTasksWithSomethingUnreadAndOpeningOneReadsIt(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	live := &recordingBroadcaster{}
+	svc.SetBroadcaster(live)
+	first, second := uuid.New(), uuid.New()
+	for _, n := range []struct {
+		kind string
+		data map[string]any
+	}{
+		{"task.updated", map[string]any{"taskId": first.String()}},
+		{"task.comment", map[string]any{"taskId": first.String()}},
+		{"task.assigned", map[string]any{"taskId": second.String()}},
+		{"meeting.invited", map[string]any{"callId": "x"}},
+	} {
+		if err := svc.Notify(ctx, org.ID, org.OwnerID, n.kind, "t", "b", n.data); err != nil {
+			t.Fatalf("notify: %v", err)
+		}
+	}
+
+	ids, err := svc.UnreadTasks(ctx, org.OwnerID)
+	if err != nil {
+		t.Fatalf("unread tasks: %v", err)
+	}
+	if len(ids) != 2 {
+		t.Fatalf("want the two tasks, got %v", ids)
+	}
+
+	before := live.count(org.OwnerID.String())
+	if err := svc.MarkTaskRead(ctx, org.OwnerID, first); err != nil {
+		t.Fatalf("mark task read: %v", err)
+	}
+	if live.count(org.OwnerID.String()) != before+1 {
+		t.Error("other tabs were not told the task was read")
+	}
+	ids, _ = svc.UnreadTasks(ctx, org.OwnerID)
+	if len(ids) != 1 || ids[0] != second.String() {
+		t.Errorf("after reading the first task, want only the second, got %v", ids)
+	}
+	count, _ := svc.UnreadCount(ctx, org.OwnerID)
+	if count != 2 {
+		t.Errorf("the meeting and the second task should still be unread, got %d", count)
+	}
+
+	// Reading it again changes nothing, and tells nobody.
+	before = live.count(org.OwnerID.String())
+	if err := svc.MarkTaskRead(ctx, org.OwnerID, first); err != nil {
+		t.Fatalf("mark again: %v", err)
+	}
+	if live.count(org.OwnerID.String()) != before {
+		t.Error("a read that read nothing was announced")
+	}
+}

@@ -1,6 +1,7 @@
 import { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { AlertTriangle, Loader2 } from 'lucide-react';
+import { UnreadTaskDot } from '@/features/notifications/UnreadTaskDot';
 import { Badge } from '@/shared/components/ui/badge';
 import { Button } from '@/shared/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
@@ -136,6 +137,7 @@ export function TaskRow({ task }: { task: RowTask }) {
   return (
     <li className="flex min-w-0 flex-col gap-x-3 gap-y-1 py-1.5 text-sm sm:flex-row sm:items-center">
       <span className="flex min-w-0 flex-1 items-center gap-2">
+        <UnreadTaskDot taskId={task.id} className="shrink-0" />
         <Link to={`/tasks/${task.id}`} className="min-w-0 break-anywhere hover:underline sm:truncate">
           {task.title}
         </Link>

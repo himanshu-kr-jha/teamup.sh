@@ -1176,6 +1176,7 @@ func (s *Service) UpdateTask(ctx context.Context, orgID, id, actorID uuid.UUID, 
 		return nil, apperrors.ErrNotFound
 	}
 
+	changed := map[string]bool{}
 	for key, value := range updates {
 		if _, ok := updatableFields[key]; !ok {
 			continue
@@ -1185,6 +1186,7 @@ func (s *Service) UpdateTask(ctx context.Context, orgID, id, actorID uuid.UUID, 
 		if oldValue == newValue {
 			continue
 		}
+		changed[key] = true
 		if err := recordActivity(ctx, tx, id, actorID, key, oldValue, newValue); err != nil {
 			return nil, err
 		}
@@ -1197,10 +1199,19 @@ func (s *Service) UpdateTask(ctx context.Context, orgID, id, actorID uuid.UUID, 
 	if err != nil {
 		return nil, err
 	}
-	if _, reassigned := updates["assigneeId"]; reassigned {
+	// Whoever was just handed the task hears that instead, and nobody hears of
+	// a change that changed nothing.
+	except := []uuid.UUID{actorID}
+	if changed["assigneeId"] {
 		s.notifyAssignee(ctx, orgID, actorID, after)
+		if after.AssigneeID != nil {
+			except = append(except, *after.AssigneeID)
+		}
 	}
-	s.notifyWatchers(ctx, orgID, id, actorID, "A task you follow changed", after.Title)
+	if what := describeChanges(changed, after); what != "" {
+		s.notifyInvolved(ctx, orgID, id, "task.updated",
+			s.personName(ctx, actorID)+" updated "+after.Title, what, except...)
+	}
 	return after, nil
 }
 
@@ -1401,7 +1412,8 @@ func (s *Service) AddComment(ctx context.Context, orgID, taskID, userID uuid.UUI
 	// Everybody following the task sees it appear rather than finding it on
 	// their next reload.
 	s.announceComment(ctx, orgID, taskID, &c)
-	s.notifyCommentMentions(ctx, orgID, taskID, &c)
+	mentioned := s.notifyCommentMentions(ctx, orgID, taskID, &c)
+	s.notifyComment(ctx, orgID, taskID, &c, mentioned)
 	return &c, nil
 }
 
@@ -1412,10 +1424,11 @@ var commentMention = regexp.MustCompile(`@([A-Za-z0-9._-]+)`)
 // notifyCommentMentions tells each person a comment names, once, whoever they
 // are in the organization: a task can be read by anybody in it, so bringing
 // somebody into the conversation needs no other step. Best effort, and the
-// author is never told about themselves.
-func (s *Service) notifyCommentMentions(ctx context.Context, orgID, taskID uuid.UUID, c *TaskComment) {
+// author is never told about themselves. It returns who was told, so they are
+// not told a second time that a comment was written.
+func (s *Service) notifyCommentMentions(ctx context.Context, orgID, taskID uuid.UUID, c *TaskComment) []uuid.UUID {
 	if s.notifier == nil {
-		return
+		return nil
 	}
 	var handles []string
 	for _, m := range commentMention.FindAllStringSubmatch(c.Content, -1) {
@@ -1424,7 +1437,7 @@ func (s *Service) notifyCommentMentions(ctx context.Context, orgID, taskID uuid.
 		}
 	}
 	if len(handles) == 0 {
-		return
+		return nil
 	}
 	rows, err := s.db.Query(ctx, `
 		SELECT u.id, t.title, COALESCE(a.name, 'Somebody')
@@ -1437,7 +1450,7 @@ func (s *Service) notifyCommentMentions(ctx context.Context, orgID, taskID uuid.
 	`, orgID, taskID, c.UserID, handles)
 	if err != nil {
 		s.logger.Warn().Err(err).Msg("comment mention lookup failed")
-		return
+		return nil
 	}
 	type named struct {
 		id           uuid.UUID
@@ -1451,13 +1464,16 @@ func (s *Service) notifyCommentMentions(ctx context.Context, orgID, taskID uuid.
 		}
 	}
 	rows.Close()
+	told := make([]uuid.UUID, 0, len(people))
 	for _, p := range people {
+		told = append(told, p.id)
 		if err := s.notifier.Notify(ctx, orgID, p.id, "task.mention",
 			p.author+" mentioned you on "+p.task, c.Content,
 			map[string]any{"taskId": taskID.String(), "commentId": c.ID.String()}); err != nil {
 			s.logger.Warn().Err(err).Msg("comment mention notification failed")
 		}
 	}
+	return told
 }
 
 // announceComment tells everybody involved in a task that something was said.
@@ -1467,27 +1483,12 @@ func (s *Service) announceComment(ctx context.Context, orgID, taskID uuid.UUID, 
 	if s.broadcaster == nil {
 		return
 	}
-	rows, err := s.db.Query(ctx, `
-		SELECT DISTINCT person FROM (
-			SELECT assignee_id AS person FROM tasks WHERE id = $1 AND org_id = $2
-			UNION
-			SELECT reporter_id FROM tasks WHERE id = $1 AND org_id = $2
-			UNION
-			SELECT user_id FROM task_watchers WHERE task_id = $1
-		) involved
-		WHERE person IS NOT NULL AND person <> $3
-	`, taskID, orgID, c.UserID)
+	people, err := s.involvedIn(ctx, orgID, taskID, c.UserID)
 	if err != nil {
 		s.logger.Warn().Err(err).Msg("could not work out who to tell about a comment")
 		return
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var userID uuid.UUID
-		if err := rows.Scan(&userID); err != nil {
-			continue
-		}
+	for _, userID := range people {
 		s.broadcaster.BroadcastToUser(userID.String(), protocol.NewMessage("task.comment", map[string]any{
 			"taskId":    taskID.String(),
 			"commentId": c.ID.String(),
@@ -1745,8 +1746,6 @@ func (s *Service) ListWatchers(ctx context.Context, orgID, taskID uuid.UUID) ([]
 	return watchers, rows.Err()
 }
 
-// notifyWatchers tells everyone following a task that it changed. The person
-// who made the change is never notified about their own action.
 // NotifyAddedToTask tells somebody they were put on a task. Being added is not
 // something you would otherwise notice.
 func (s *Service) NotifyAddedToTask(ctx context.Context, orgID, taskID, userID, actorID uuid.UUID) {
@@ -1767,25 +1766,5 @@ func (s *Service) NotifyAddedToTask(ctx context.Context, orgID, taskID, userID, 
 		actorName+" added you to "+taskTitle,
 		map[string]any{"taskId": taskID.String()}); err != nil {
 		s.logger.Warn().Err(err).Msg("task add notification failed")
-	}
-}
-
-func (s *Service) notifyWatchers(ctx context.Context, orgID, taskID, actorID uuid.UUID, title, body string) {
-	if s.notifier == nil {
-		return
-	}
-	watchers, err := s.ListWatchers(ctx, orgID, taskID)
-	if err != nil {
-		s.logger.Warn().Err(err).Msg("could not load watchers to notify")
-		return
-	}
-	for _, w := range watchers {
-		if w.UserID == actorID {
-			continue
-		}
-		if err := s.notifier.Notify(ctx, orgID, w.UserID, "task.updated", title, body,
-			map[string]any{"taskId": taskID.String()}); err != nil {
-			s.logger.Warn().Err(err).Msg("watcher notification failed")
-		}
 	}
 }

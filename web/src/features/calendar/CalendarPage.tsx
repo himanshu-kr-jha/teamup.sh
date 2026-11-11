@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { addDays, format, isSameDay, isToday, parse, isValid } from 'date-fns';
-import { AlertTriangle, CalendarPlus, ChevronLeft, ChevronRight, Eye, Loader2, NotebookPen, TimerOff } from 'lucide-react';
+import { AlertTriangle, CalendarPlus, CheckSquare, ChevronLeft, ChevronRight, Eye, Loader2, NotebookPen, TimerOff } from 'lucide-react';
 import type { AxiosError } from 'axios';
 import { Button } from '@/shared/components/ui/button';
 import {
@@ -15,7 +15,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/shared/components/ui/select';
-import { calendarApi, orgApi } from '@/shared/api/client';
+import { calendarApi, orgApi, tasksApi, type DueTask } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { cn } from '@/shared/utils/cn';
 import { useAuth } from '@/features/auth/AuthProvider';
@@ -135,6 +135,16 @@ export function CalendarPage() {
     retry: (count, err) => (err as AxiosError)?.response?.status !== 403 && count < 1,
   });
   const refused = (error as AxiosError | null)?.response?.status === 403;
+  // Your own work, on the day it is due. Somebody else's calendar is their time,
+  // and their tasks are on the board.
+  const { data: dueData } = useQuery({
+    queryKey: ['tasks', 'due', range.from, range.to],
+    queryFn: () => tasksApi.due(range.from, range.to).then((res) => res.data.tasks),
+    enabled: own,
+    placeholderData: keepPreviousData,
+    staleTime: 15_000,
+  });
+  const dueTasks: DueTask[] = useMemo(() => (own ? dueData ?? [] : []), [own, dueData]);
   const openMine = () => setParam({ person: null });
   const items: CalendarItem[] = useMemo(() => (refused ? [] : data ?? []), [data, refused]);
 
@@ -146,6 +156,7 @@ export function CalendarPage() {
       on('notification.new', (msg) => {
         const type = (msg.payload as { type?: string })?.type ?? '';
         if (type.startsWith('meeting.')) void refresh();
+        if (type.startsWith('task.')) void queryClient.invalidateQueries({ queryKey: ['tasks', 'due'] });
       }),
       on('call.ended', () => void refresh()),
     ];
@@ -296,7 +307,7 @@ export function CalendarPage() {
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
           Loading the calendar
         </div>
-      ) : items.length === 0 ? (
+      ) : items.length === 0 && dueTasks.length === 0 ? (
         <p className="shrink-0 border-b border-border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground md:px-6">
           {own
             ? view === 'month'
@@ -312,6 +323,7 @@ export function CalendarPage() {
           days={days}
           anchor={anchor}
           items={liveItems}
+          dueTasks={dueTasks}
           now={now}
           onSelect={setSelected}
           onOpenDay={(day) => setParam({ view: 'day', date: dayLabelKey(day) })}
@@ -320,6 +332,7 @@ export function CalendarPage() {
         <CalendarGrid
           days={days}
           items={liveItems}
+          dueTasks={dueTasks}
           now={now}
           view={view}
           onSelect={setSelected}
@@ -412,6 +425,10 @@ function Legend() {
       <span className="flex items-center gap-1">
         <span className="h-2.5 w-2.5 rounded-sm bg-sky-500/80" aria-hidden="true" />
         Google
+      </span>
+      <span className="flex items-center gap-1">
+        <CheckSquare className="h-3 w-3" aria-hidden="true" />
+        Task due
       </span>
     </span>
   );

@@ -208,10 +208,13 @@ type ChatReadPayload struct {
 // From is nil the first time somebody reads in a channel, meaning the window
 // opens at the beginning.
 type ChatReadReceiptPayload struct {
-	ChannelID string     `json:"channelId"`
-	UserID    string     `json:"userId"`
-	From      *time.Time `json:"from"`
-	To        time.Time  `json:"to"`
+	ChannelID string `json:"channelId"`
+	// ThreadID is set when the marker that moved is a thread's: then only the
+	// replies in that thread were crossed. Empty for the conversation's own.
+	ThreadID string     `json:"threadId,omitempty"`
+	UserID   string     `json:"userId"`
+	From     *time.Time `json:"from"`
+	To       time.Time  `json:"to"`
 }
 
 type ChatMembershipChangedPayload struct {
