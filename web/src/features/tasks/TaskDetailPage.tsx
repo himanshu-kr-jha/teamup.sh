@@ -344,7 +344,7 @@ function TaskDetailView() {
                 </div>
 
                 {/* What was done for it in GitHub, under what it is. */}
-                {task.key && <DevelopmentCard taskId={taskId!} taskKey={task.key} title={task.title} />}
+                {task.key && <DevelopmentCard taskId={taskId!} taskKey={task.key} title={task.title} projectId={task.projectId} />}
               </div>
 
               {/* Sidebar */}

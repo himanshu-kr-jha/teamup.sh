@@ -214,6 +214,19 @@ test('GitHub: connected once, then pull requests move tasks and reach reviewers'
     await expect(page.getByTestId('task-key')).toHaveText(`${key}-1`);
     const prs = page.getByRole('list', { name: 'Pull requests' });
     await expect(prs.getByRole('link', { name: 'Safari sign-in' })).toHaveAttribute('href', 'https://github.com/cognecto/photon-web/pull/42');
+    await expect(page.getByLabel('Copy branch name')).toBeVisible();
+
+    // Reported: a task about no code, outside any project, offered a branch name.
+    const plain = await owner.post('/tasks', { title: 'Find remaining TRRDA video' });
+    try {
+      await page.goto(`/tasks/${plain.id}`);
+      await expect(page.getByTestId('task-key')).toHaveText(plain.key);
+      await expect(page.getByText('Branch for this task')).toHaveCount(0);
+      await expect(page.getByRole('heading', { name: 'Development' })).toHaveCount(0);
+    } finally {
+      await owner.del(`/tasks/${plain.id}`).catch(() => {});
+    }
+    await page.goto(`/tasks/${taskId}`);
     await expect(prs.getByText(PEOPLE.alice.name)).toBeVisible();
     await expect(prs.getByRole('list', { name: 'Reviewers' }).getByText('review requested')).toBeVisible();
     await expect(page.getByRole('combobox').filter({ hasText: /in review/i }).first()).toBeVisible();

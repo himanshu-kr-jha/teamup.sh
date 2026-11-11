@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Check, CircleDot, Copy, GitBranch, GitCommitHorizontal, GitMerge, GitPullRequest, GitPullRequestClosed, GitPullRequestDraft, X } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/card';
-import { integrationsApi, type CodePerson, type CodePullRequest } from '@/shared/api/client';
+import { integrationsApi, projectsApi, type CodePerson, type CodePullRequest } from '@/shared/api/client';
 import { PersonAvatar } from '@/shared/components/UserAvatar';
 import { useToast } from '@/shared/hooks/useToast';
 import { cn, formatRelativeTime } from '@/shared/utils/cn';
@@ -44,11 +44,15 @@ function Who({ person }: { person: CodePerson }) {
 }
 
 /**
- * The work done for a task in GitHub: its pull requests, who made them and
- * who is reviewing, and its commits. Anything that names the task's key is
- * here; the branch to use is offered to copy.
+ * The work done for a task in GitHub or Bitbucket: its pull requests, who
+ * made them and who is reviewing, and its commits. Anything that names the
+ * task's key is here; the branch to use is offered to copy.
+ *
+ * Only a task whose project has repositories is about code, so only there is
+ * a branch offered. Anywhere else the card shows only once some code has
+ * named the task anyway, and is left out otherwise.
  */
-export function DevelopmentCard({ taskId, taskKey, title }: { taskId: string; taskKey: string; title: string }) {
+export function DevelopmentCard({ taskId, taskKey, title, projectId }: { taskId: string; taskKey: string; title: string; projectId?: string }) {
   const toast = useToast();
   const [copied, setCopied] = useState(false);
   const { data } = useQuery({
@@ -56,7 +60,9 @@ export function DevelopmentCard({ taskId, taskKey, title }: { taskId: string; ta
     queryFn: () => integrationsApi.taskCode(taskId).then((r) => r.data),
     ...liveTaskQuery,
   });
+  const { data: projectsData } = useQuery({ queryKey: ['projects'], queryFn: () => projectsApi.list(), enabled: !!projectId });
   const branch = branchFor(taskKey, title);
+  const hasRepos = !!projectId && (projectsData?.data.find((p) => p.id === projectId)?.repositories.length ?? 0) > 0;
 
   const copy = async () => {
     try {
@@ -70,6 +76,7 @@ export function DevelopmentCard({ taskId, taskKey, title }: { taskId: string; ta
 
   const prs = data?.pullRequests ?? [];
   const commits = data?.commits ?? [];
+  if (!hasRepos && prs.length === 0 && commits.length === 0) return null;
 
   return (
     <Card>
@@ -77,27 +84,25 @@ export function DevelopmentCard({ taskId, taskKey, title }: { taskId: string; ta
         <CardTitle>Development</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4 text-sm">
-        <div className="space-y-1">
-          <p className="text-xs text-muted-foreground">Branch for this task</p>
-          <div className="flex items-center gap-1 rounded-md border border-border bg-muted/40 py-1 pl-2 pr-1">
-            <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
-            <code className="min-w-0 flex-1 truncate text-xs" title={branch}>{branch}</code>
-            <button
-              type="button"
-              onClick={copy}
-              aria-label="Copy branch name"
-              className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-            >
-              {copied ? <Check className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" /> : <Copy className="h-3.5 w-3.5" aria-hidden="true" />}
-            </button>
+        {hasRepos && (
+          <div className="space-y-1">
+            <p className="text-xs text-muted-foreground">Branch for this task</p>
+            <div className="flex items-center gap-1 rounded-md border border-border bg-muted/40 py-1 pl-2 pr-1">
+              <GitBranch className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <code className="min-w-0 flex-1 truncate text-xs" title={branch}>{branch}</code>
+              <button
+                type="button"
+                onClick={copy}
+                aria-label="Copy branch name"
+                className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                {copied ? <Check className="h-3.5 w-3.5 text-emerald-600" aria-hidden="true" /> : <Copy className="h-3.5 w-3.5" aria-hidden="true" />}
+              </button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Or put <span className="font-mono">{taskKey}</span> in a pull request&apos;s title or a commit message.
+            </p>
           </div>
-          <p className="text-xs text-muted-foreground">
-            Or put <span className="font-mono">{taskKey}</span> in a pull request&apos;s title or a commit message.
-          </p>
-        </div>
-
-        {data && !data.connected && prs.length === 0 && (
-          <p className="text-xs text-muted-foreground">Once an administrator connects GitHub or Bitbucket, pull requests and commits show here.</p>
         )}
 
         {prs.length > 0 && (
