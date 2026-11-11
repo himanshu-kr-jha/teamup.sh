@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { AlertTriangle, Video, Phone, Users, Search, Loader2, Clock, CheckCircle, XCircle, History, Link2, NotebookPen, ChevronRight } from 'lucide-react';
+import { AlertTriangle, Video, Phone, Users, Search, Loader2, Clock, CheckCircle, XCircle, History, Link2, NotebookPen, ChevronRight, PhoneMissed, PhoneOff, PhoneForwarded } from 'lucide-react';
+import { useAuth } from '@/features/auth/AuthProvider';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Card, CardContent } from '@/shared/components/ui/card';
@@ -34,6 +35,8 @@ interface Call {
   startedAt?: string;
   endedAt?: string;
   durationSeconds?: number;
+  /** Why a call between two people never happened. */
+  missedReason?: 'no_answer' | 'declined' | 'busy';
   participants?: { userId: string; userName: string; userAvatar?: string; role: string }[];
   createdAt: string;
 }
@@ -44,6 +47,29 @@ const statusConfig = {
   ended: { color: 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200', icon: CheckCircle },
   cancelled: { color: 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200', icon: XCircle },
 };
+
+const NEUTRAL = 'bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200';
+const MISSED = 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200';
+
+/**
+ * The mark on a call that never happened, as each side would say it: the
+ * person called missed it (red, as on a phone), or turned it down, or was
+ * busy; the caller got no answer, was declined, or found them busy.
+ */
+function missedMark(reason: NonNullable<Call['missedReason']>, isCaller: boolean) {
+  switch (reason) {
+    case 'declined':
+      return { label: isCaller ? 'Declined' : 'You declined', icon: PhoneOff, color: NEUTRAL };
+    case 'busy':
+      return isCaller
+        ? { label: 'Busy', icon: PhoneForwarded, color: NEUTRAL }
+        : { label: 'Missed while busy', icon: PhoneMissed, color: MISSED };
+    default:
+      return isCaller
+        ? { label: 'No answer', icon: PhoneMissed, color: NEUTRAL }
+        : { label: 'Missed', icon: PhoneMissed, color: MISSED };
+  }
+}
 
 export function CallsPage() {
   const navigate = useNavigate();
@@ -158,6 +184,8 @@ function CallCard({ call, onJoin }: { call: Call; onJoin: (id: string) => void }
   const stillOn = meetingStillOn(call, new Date());
   const status = stillOn ? 'scheduled' : call.status;
   const config = statusConfig[status];
+  const { user } = useAuth();
+  const mark = status === 'ended' && call.missedReason ? missedMark(call.missedReason, call.createdBy === user?.id) : null;
   const toast = useToast();
   const [showingLog, setShowingLog] = useState(false);
 
@@ -168,9 +196,9 @@ function CallCard({ call, onJoin }: { call: Call; onJoin: (id: string) => void }
           <div className="flex-1 min-w-0">
             <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1">
               <h3 className="min-w-0 break-anywhere text-lg font-semibold">{call.title || 'Untitled Call'}</h3>
-              <Badge variant="secondary" className={config.color}>
-                <config.icon className="mr-1 h-3 w-3" />
-                {status}
+              <Badge variant="secondary" className={mark ? mark.color : config.color} data-testid="call-status">
+                {mark ? <mark.icon className="mr-1 h-3 w-3" aria-hidden="true" /> : <config.icon className="mr-1 h-3 w-3" />}
+                {mark ? mark.label : status}
               </Badge>
               <Badge variant="outline" className="text-xs">
                 {call.callType === 'video' ? <Video className="mr-1 h-3 w-3" /> : <Phone className="mr-1 h-3 w-3" />}
@@ -193,7 +221,8 @@ function CallCard({ call, onJoin }: { call: Call; onJoin: (id: string) => void }
                       <>
                         {' • '}
                         Ended {formatDate(call.endedAt)} at {formatTime(call.endedAt)}
-                        {call.durationSeconds && (
+                        {/* A count of nothing printed itself as a stray "0". */}
+                        {!!call.durationSeconds && (
                           <>
                             {' • '}
                             Duration: {Math.floor(call.durationSeconds / 60)}m {call.durationSeconds % 60}s

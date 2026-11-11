@@ -366,6 +366,13 @@ func (s *Service) Ring(ctx context.Context, call *Call, callerID, callerName str
 		return
 	}
 
+	// Somebody already in a call or a meeting is not rung: whoever is calling
+	// hears at once that they are busy (see busy.go).
+	invitees, busy := s.splitBusy(ctx, call, invitees)
+	if len(busy) > 0 {
+		go s.answerBusy(context.WithoutCancel(ctx), call, callerID, busy)
+	}
+
 	// Devices first, and regardless of whether anything is open: somebody with
 	// no tab is exactly who this reaches.
 	s.ringDevices(ctx, call, callerName, invitees)
@@ -855,6 +862,10 @@ type CallModel struct {
 	// is offered a button whose only answer is a refusal. Set for a reader, not stored.
 	CanReadLog *bool `json:"canReadLog,omitempty"`
 
+	// MissedReason says why a call between two people never happened:
+	// no_answer, declined, or busy (they were in another call). Nil otherwise.
+	MissedReason *string `json:"missedReason,omitempty"`
+
 	CreatedBy        uuid.UUID          `json:"createdBy"`
 	CreatedByName    string             `json:"createdByName"`
 	ParticipantCount int                `json:"participantCount"`
@@ -870,7 +881,8 @@ const callColumns = `
 	       c.recording_url, c.recording_status,
 	       c.scheduled_start, c.scheduled_end, c.standing_meeting_id, c.occurrence_date::text,
 	       c.created_by, u.name, c.created_at, c.updated_at,
-	       (SELECT COUNT(*) FROM call_participants p WHERE p.call_id = c.id)
+	       (SELECT COUNT(*) FROM call_participants p WHERE p.call_id = c.id),
+	       c.missed_reason
 	FROM calls c JOIN users u ON u.id = c.created_by`
 
 func scanCall(row pgx.Row) (*CallModel, error) {
@@ -879,7 +891,8 @@ func scanCall(row pgx.Row) (*CallModel, error) {
 		&m.CallType, &m.Status, &m.StartedAt, &m.EndedAt, &m.DurationSeconds,
 		&m.RecordingURL, &m.RecordingStatus,
 		&m.ScheduledStart, &m.ScheduledEnd, &m.StandingMeetingID, &m.OccurrenceDate,
-		&m.CreatedBy, &m.CreatedByName, &m.CreatedAt, &m.UpdatedAt, &m.ParticipantCount)
+		&m.CreatedBy, &m.CreatedByName, &m.CreatedAt, &m.UpdatedAt, &m.ParticipantCount,
+		&m.MissedReason)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, apperrors.ErrNotFound
@@ -1241,6 +1254,10 @@ func (s *Service) NoteIfMissed(ctx context.Context, callID uuid.UUID, reason str
 		return
 	}
 
+	if _, err := s.db.Exec(ctx, `UPDATE calls SET missed_reason = $2 WHERE id = $1`, callID, missedReason(reason)); err != nil {
+		s.logger.Warn().Err(err).Msg("could not record why a call was missed")
+	}
+
 	channelID, err := s.chat.RecordCallEvent(ctx, orgID, createdBy, callees[0], noteFor(reason))
 	if err != nil {
 		s.logger.Warn().Err(err).Msg("could not write a missed call into the conversation")
@@ -1255,6 +1272,9 @@ func (s *Service) NoteIfMissed(ctx context.Context, callID uuid.UUID, reason str
 			"callId":    callID.String(),
 			"channelId": channelID.String(),
 			"reason":    reason,
+			// Who it was, for "Asha is in another call": that one arrives before
+			// the caller's screen has even shown the call.
+			"name": s.DisplayName(ctx, callees[0]),
 		}))
 	}
 }
@@ -1262,11 +1282,26 @@ func (s *Service) NoteIfMissed(ctx context.Context, callID uuid.UUID, reason str
 // noteFor is what the conversation says happened. Turning somebody down and
 // not being there are different things, and the person who was called knows
 // which they did.
+//
+// The words are what the web app reads to choose the mark and the wording for
+// each side, so they are fixed: see CallEvent in the chat page.
 func noteFor(reason string) string {
-	if reason == "declined" {
+	switch reason {
+	case "declined":
 		return "Call declined"
+	case "busy":
+		return "Missed call, in another call"
 	}
 	return "Missed call"
+}
+
+// missedReason is what the calls list is told, one of the three it knows.
+func missedReason(reason string) string {
+	switch reason {
+	case "declined", "busy":
+		return reason
+	}
+	return "no_answer"
 }
 
 func (s *Service) isReachable(userID string) bool {

@@ -728,9 +728,10 @@ test.describe('52. a due date set on the task page', () => {
 
     await page.getByLabel('Set due date').fill(localDay(0));
     const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-    await expect(page.getByText(today, { exact: true })).toBeVisible();
+    // The card, not the history, which says the same date once it was set.
+    await expect(page.getByTestId('due-date')).toHaveText(today);
     await page.reload();
-    await expect(page.getByText(today, { exact: true })).toBeVisible();
+    await expect(page.getByTestId('due-date')).toHaveText(today);
 
     await openTasks(page);
     await expect(page.getByRole('link', { name: title }).first()).toBeVisible();

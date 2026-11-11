@@ -95,11 +95,15 @@ export function useActiveCall() {
   return context;
 }
 
+/** Whether the phone at the other end is ringing, switched off, or already on a call. */
+type Reach = boolean | 'busy';
+
 /**
  * What to call the wait. A phone that is switched off is not ringing, and
  * telling the caller it is leaves them wondering why nobody picks up.
  */
-function waitingLabel(reachable: boolean | null): string {
+function waitingLabel(reachable: Reach | null): string {
+  if (reachable === 'busy') return 'In another call or meeting';
   if (reachable === true) return 'Ringing\u2026';
   if (reachable === false) return 'Calling\u2026';
   return 'Waiting for others';
@@ -229,7 +233,7 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
   // Keyed by call, because the server says whether the other end is there as
   // soon as the call goes out - which is before joining has finished, and
   // before there is an active call to attribute it to.
-  const [reach, setReach] = useState<Record<string, boolean>>({});
+  const [reach, setReach] = useState<Record<string, Reach>>({});
   const [joining, setJoining] = useState(false);
   const [failure, setFailure] = useState<JoinFailure | null>(null);
   const [watchedDoor, watchDoor] = useState<string | null>(null);
@@ -281,6 +285,19 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
     setFailure(null);
   }, [location.pathname, navigate]);
 
+  // "Busy" can come from either of two frames, depending on which arrives
+  // first; it is said once per person per call.
+  const toldBusyRef = useRef(new Set<string>());
+  const sayBusy = useCallback(
+    (callId: string, name?: string) => {
+      const key = `${callId}/${name ?? ''}`;
+      if (toldBusyRef.current.has(key)) return;
+      toldBusyRef.current.add(key);
+      toast.toast(name ? `${name} is in another call or meeting.` : 'They are in another call or meeting.');
+    },
+    [toast]
+  );
+
   // Somebody declining, or the call being ended, has to reach whoever started
   // it - otherwise they sit in an empty room with no idea why.
   useEffect(() => {
@@ -299,10 +316,17 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
         toast.toast(`${who}declined the call.`);
         return;
       }
+      // Not rung at all: they are talking to somebody else. Said here when
+      // others are still being rung; when they were the only one, the call is
+      // over at once, and call.missed below says it.
+      if (payload.reason === 'busy') {
+        sayBusy(payload.callId, payload.declinedBy);
+        return;
+      }
       toast.toast('The call has ended.');
       setActiveCall(null);
     });
-  }, [on, toast]);
+  }, [on, toast, sayBusy]);
 
   // A call that did not happen almost always turns into a message, so whoever
   // was calling is put into that conversation rather than left on an empty
@@ -315,9 +339,12 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
       // to pull them off another call, off joining one, or off whatever they moved on to.
       if (activeCallIdRef.current && activeCallIdRef.current !== payload.callId) return;
       const waitingOnIt = latestCallIdRef.current === payload.callId || window.location.pathname === `/calls/${payload.callId}`;
-      if (waitingOnIt) navigate(`/chat/${payload.channelId}`);
+      if (!waitingOnIt) return;
+      // Busy is known before the call has even opened here, so it is said now.
+      if (payload.reason === 'busy') sayBusy(payload.callId, payload.name);
+      navigate(`/chat/${payload.channelId}`);
     });
-  }, [on, navigate]);
+  }, [on, navigate, sayBusy]);
 
   // Whether the phone at the other end is actually ringing. The server says so
   // when the call goes out and again if they come online while it is still
@@ -326,7 +353,7 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
     return on('call.reach', (msg) => {
       const payload = msg.payload as any;
       if (!payload?.callId) return;
-      setReach((current) => ({ ...current, [payload.callId]: !!payload.reachable }));
+      setReach((current) => ({ ...current, [payload.callId]: payload.busy ? 'busy' : !!payload.reachable }));
     });
   }, [on]);
 
@@ -418,7 +445,7 @@ function CallFrame({
   expanded: boolean;
   onLeave: () => void;
   /** Whether the other end has a session open; null until the server says. */
-  reachable: boolean | null;
+  reachable: Reach | null;
 }) {
   const navigate = useNavigate();
   const toast = useToast();

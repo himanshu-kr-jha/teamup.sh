@@ -89,6 +89,8 @@ func (s *Service) HandleWebhook(ctx context.Context, event *livekit.WebhookEvent
 	if strings.HasPrefix(participant.GetIdentity(), GuestIdentityPrefix) {
 		if event.GetEvent() == webhook.EventParticipantJoined {
 			s.guestArrived(ctx, call, roomName, participant.GetIdentity())
+			// A guest makes a meeting as much as a colleague does.
+			s.tellJoined(ctx, call, roomName)
 		}
 		return nil
 	}
@@ -112,9 +114,7 @@ func (s *Service) HandleWebhook(ctx context.Context, event *livekit.WebhookEvent
 			s.putOut(ctx, roomName, userID)
 			return nil
 		}
-		if s.joined != nil && call.Status != "ended" {
-			s.joined(context.WithoutCancel(ctx), call.OrgID, call.ID, roomName)
-		}
+		s.tellJoined(ctx, call, roomName)
 		return nil
 	case webhook.EventParticipantLeft:
 		return s.recordLeft(ctx, call, userID, participant.GetSid(), participant.GetJoinedAt(), at)

@@ -264,40 +264,11 @@ func (h *Handler) DeclineCall(c *gin.Context) {
 		reason = "declined"
 	}
 
-	if err := h.service.MarkParticipantLeft(ctx, id, userID); err != nil {
+	// Answered here rather than left to run on: the caller is told, and a call
+	// nobody else could answer is over, before this request returns.
+	if err := h.service.TurnedDown(context.WithoutCancel(ctx), orgID, call, userID, reason); err != nil {
 		httpx.Error(c, err, "failed to decline call")
 		return
-	}
-
-	// Tell the person who started it, not everybody: one person turning it
-	// down does not end the call for the rest.
-	go h.service.AnnounceCallOver(context.WithoutCancel(ctx), call, reason, h.service.DisplayName(ctx, userID),
-		[]string{call.CreatedBy.String()})
-
-	// If nobody is left who might still pick up, the call is over. Otherwise
-	// the caller waits in an empty room until they notice.
-	waiting, err := h.service.AnybodyLeftToAnswer(ctx, id, call.CreatedBy)
-	if err != nil {
-		httpx.Error(c, err, "failed to decline call")
-		return
-	}
-	if !waiting {
-		joined, err := h.service.SomebodyJoined(ctx, id, call.CreatedBy)
-		if err != nil {
-			httpx.Error(c, err, "failed to decline call")
-			return
-		}
-		// Only drop it if the call never actually got going.
-		if !joined {
-			ended, err := h.service.endRecordThenRoom(ctx, orgID, call)
-			if err != nil {
-				httpx.Error(c, err, "failed to end call")
-				return
-			}
-			if ended {
-				go h.service.NoteIfMissed(context.WithoutCancel(ctx), id, reason)
-			}
-		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": reason})

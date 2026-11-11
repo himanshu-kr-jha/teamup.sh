@@ -410,7 +410,7 @@ function TaskDetailView() {
                     {task.dueDate ? (
                       <div className="flex items-center gap-2 text-sm">
                         <Calendar className="h-4 w-4 text-muted-foreground" />
-                        <span>{formatDate(task.dueDate)}</span>
+                        <span data-testid="due-date">{formatDate(task.dueDate)}</span>
                       </div>
                     ) : (
                       <Input

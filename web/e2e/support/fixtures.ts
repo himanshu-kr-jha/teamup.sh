@@ -138,6 +138,23 @@ export async function signIn(page: Page, who: PersonKey | { email: string; passw
   await expect(page).toHaveURL(/\/chat/);
 }
 
+/**
+ * Ends a session the way closing a browser tab does. A real tab runs its
+ * unload handlers, and the call library says it is leaving there, so the media
+ * server lets the person go at once. Closing the context outright skipped
+ * that: somebody whose test had ended stayed connected to its call for the
+ * seconds the media server takes to notice, and so was still in a call, and
+ * busy, when the next test rang them.
+ */
+async function closeLikeATab(session: Session) {
+  await Promise.all(
+    session.context.pages().map((page) => page.close({ runBeforeUnload: true }).catch(() => undefined))
+  );
+  // Long enough for "leaving" to go out on the socket before the browser goes.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  await session.context.close();
+}
+
 export const test = base.extend<{
   as: (who: PersonKey | Person, options?: SessionOptions) => Promise<Session>;
 }>({
@@ -149,7 +166,7 @@ export const test = base.extend<{
       return session;
     });
     const all = sessions.flatMap((s) => s.problems.map((p) => `${s.who}: ${p}`));
-    await Promise.all(sessions.map((s) => s.context.close()));
+    await Promise.all(sessions.map(closeLikeATab));
     // A page that logs errors to the console is broken in a way no assertion
     // above necessarily noticed.
     expect(all, 'console errors and uncaught exceptions').toEqual([]);
