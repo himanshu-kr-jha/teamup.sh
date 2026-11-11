@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { expect, test } from './support/fixtures';
+import { expect, settled, test } from './support/fixtures';
 
 // TeamUp on a phone's home screen: what the browser needs to install it, and
 // the app's own offer to, on Android at a tap and on an iPhone by showing how.
@@ -51,7 +51,9 @@ test.describe('TeamUp as an app on a phone', () => {
     await offerInstall(sam.page);
     await expect(banner).toBeVisible();
     await expect(banner).toContainText('Get the TeamUp app');
-    // Above the bottom navigation, not over it.
+    // Above the bottom navigation, not over it, and on the screen, once it has
+    // arrived: part way in, it was measured off to the right.
+    await settled(sam.page);
     const bar = await sam.page.getByRole('navigation', { name: 'Sections' }).boundingBox();
     const box = await banner.boundingBox();
     expect(box!.y + box!.height).toBeLessThanOrEqual(bar!.y);

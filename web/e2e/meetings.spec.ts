@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 import { PEOPLE, readState } from './support/people';
-import { createTaskInUi, expect, openTasks, test } from './support/fixtures';
+import { createTaskInUi, expect, openTasks, settled, test } from './support/fixtures';
 import {
   EXTRA,
   apiAs,
@@ -1183,6 +1183,8 @@ test.describe('10. defects found by this suite, kept fixed', () => {
     await olivia.page.getByRole('button', { name: /^Copy the link to/ }).first().click();
     const toast = olivia.page.getByText(/^(Link copied|Could not copy)/).first();
     await expect(toast).toBeVisible();
+    // Where it stops, not where it is part way up from below.
+    await settled(olivia.page);
     const box = (await toast.boundingBox())!;
     const nav = (await olivia.page.getByRole('navigation').last().boundingBox())!;
     expect(box.y + box.height, 'clear of the bottom navigation').toBeLessThanOrEqual(nav.y);

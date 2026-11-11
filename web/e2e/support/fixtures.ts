@@ -219,3 +219,19 @@ export async function createTaskInUi(
   await dialog.getByRole('button', { name: 'Create task' }).click();
   await expect(dialog).toBeHidden();
 }
+
+/**
+ * Waits for whatever is sliding or fading in to arrive, so a position is
+ * measured where the thing stops rather than part way. Endless animations
+ * (a spinner) are left running.
+ */
+export async function settled(page: Page) {
+  await page.evaluate(() =>
+    Promise.all(
+      document
+        .getAnimations()
+        .filter((a) => a.effect?.getComputedTiming().iterations !== Infinity)
+        .map((a) => a.finished.catch(() => undefined))
+    )
+  );
+}
