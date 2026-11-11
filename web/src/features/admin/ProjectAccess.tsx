@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Check, Clock, KeyRound, Loader2, ShieldCheck, UserMinus, X } from 'lucide-react';
+import { Check, Clock, KeyRound, Loader2, RefreshCw, ShieldCheck, UserMinus, X } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Label } from '@/shared/components/ui/label';
 import { Textarea } from '@/shared/components/ui/textarea';
@@ -35,7 +35,21 @@ const REPO_STATUS: Record<RepoAccess['status'], { label: string; tone: string }>
   invited: { label: 'invited on GitHub', tone: 'text-amber-800 bg-amber-50 dark:text-amber-200 dark:bg-amber-950/50' },
   failed: { label: 'not given', tone: 'text-red-700 bg-red-50 dark:text-red-300 dark:bg-red-950/50' },
   revoked: { label: 'removed', tone: 'text-muted-foreground bg-muted' },
+  existing: { label: 'already has access', tone: 'text-emerald-700 bg-emerald-50 dark:text-emerald-300 dark:bg-emerald-950/50' },
+  none: { label: 'no access yet', tone: 'text-muted-foreground bg-muted' },
 };
+
+/** "GitHub", "Bitbucket" or "GitHub and Bitbucket": where access found was held. */
+function foundOn(grant: AccessGrant): string {
+  const where = [...new Set(grant.repositories.filter((r) => r.status === 'existing').map((r) => PROVIDER[r.provider]))];
+  return where.length ? where.join(' and ') : 'GitHub or Bitbucket';
+}
+
+/** "" when every repository is covered, or " on 1 of its 2 repositories". */
+function foundShare(grant: AccessGrant): string {
+  const have = grant.repositories.filter((r) => r.status === 'existing').length;
+  return have < grant.repositories.length ? ` on ${have} of its ${grant.repositories.length} repositories` : '';
+}
 
 function invalidateAccess(queryClient: ReturnType<typeof useQueryClient>) {
   return Promise.all(
@@ -77,8 +91,17 @@ export function MyProjectAccess({ project, userId }: { project: Project; userId?
       <span className="mr-auto" data-testid="my-access">
         {held ? (
           <>
-            You have <span className="font-medium">{held.level}</span> access
-            {held.repositories.some((r) => r.status === 'invited') && ' (accept GitHub’s invitation to use it)'}
+            {held.source === 'found' ? (
+              <>
+                You already have <span className="font-medium">{held.level}</span> access on {foundOn(held)}
+                {foundShare(held)}
+              </>
+            ) : (
+              <>
+                You have <span className="font-medium">{held.level}</span> access
+                {held.repositories.some((r) => r.status === 'invited') && ' (accept GitHub’s invitation to use it)'}
+              </>
+            )}
           </>
         ) : pending ? (
           <>
@@ -218,8 +241,23 @@ export function ProjectAccessDialog({ project, onClose }: { project: Project | n
             )}
 
             <section className="space-y-2">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <h3 className="mr-auto font-semibold">Who has access</h3>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy !== null}
+                  title="Ask GitHub and Bitbucket who can open these repositories already"
+                  onClick={() =>
+                    act('check', async () => {
+                      const fresh = await accessApi.check(project!.id);
+                      queryClient.setQueryData(['project-access', project!.id], fresh);
+                    }, 'Access on GitHub and Bitbucket checked.')
+                  }
+                >
+                  {busy === 'check' ? <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden="true" /> : <RefreshCw className="mr-1 h-4 w-4" aria-hidden="true" />}
+                  Check now
+                </Button>
                 <Button size="sm" variant="outline" onClick={() => setGiving((g) => !g)}>
                   Give access
                 </Button>
@@ -321,7 +359,7 @@ function GrantRow({ grant, busy, onRevoke }: { grant: AccessGrant; busy: boolean
             <span className="font-medium">{grant.userName}</span> · {grant.level}
           </p>
           <p className="text-xs text-muted-foreground">
-            {grant.grantedBy ? `by ${grant.grantedBy}, ` : ''}
+            {grant.source === 'found' ? `already had it on ${foundOn(grant)}, seen ` : grant.grantedBy ? `by ${grant.grantedBy}, ` : ''}
             {formatRelativeTime(grant.grantedAt)}
           </p>
         </div>
@@ -378,6 +416,10 @@ export function describeAccess(e: LogEntry): string {
       return `${e.subject}'s access was removed ${detail}${by}`;
     case 'failed':
       return `${e.subject}: could not change ${detail}`;
+    case 'found':
+      return `${e.subject} already had ${detail} on GitHub or Bitbucket`;
+    case 'lost':
+      return `${e.subject} no longer has access on GitHub or Bitbucket`;
     case 'outside_added':
       return `${e.subject} was added to ${detail}`;
     case 'outside_removed':

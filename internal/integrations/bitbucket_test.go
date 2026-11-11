@@ -32,6 +32,8 @@ type fakeBitbucket struct {
 	next    int
 	// permission changes asked for, as "PUT acme/cortex {alice} write"
 	permissions []string
+	// what people may do with every repository already, by uuid
+	holds map[string]string
 }
 
 var bbPeople = map[string]bbAccount{
@@ -41,7 +43,7 @@ var bbPeople = map[string]bbAccount{
 }
 
 func newFakeBitbucket(t *testing.T) *fakeBitbucket {
-	b := &fakeBitbucket{owner: true, refresh: map[string]bool{}}
+	b := &fakeBitbucket{owner: true, refresh: map[string]bool{}, holds: map[string]string{}}
 	b.server = httptest.NewServer(http.HandlerFunc(b.serve))
 	t.Cleanup(b.server.Close)
 	return b
@@ -55,6 +57,15 @@ func (b *fakeBitbucket) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(v)
 	}
 	who := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer access-")
+	if strings.HasPrefix(r.URL.Path, "/2.0/workspaces/") && strings.Contains(r.URL.Path, "/permissions/repositories/") {
+		uuid := strings.TrimSuffix(strings.TrimPrefix(r.URL.Query().Get("q"), `user.uuid="`), `"`)
+		values := []map[string]any{}
+		if held := b.holds[uuid]; held != "" {
+			values = append(values, map[string]any{"permission": held})
+		}
+		reply(map[string]any{"values": values})
+		return
+	}
 	if strings.Contains(r.URL.Path, "/permissions-config/users/") {
 		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/2.0/repositories/"), "/")
 		var body struct {

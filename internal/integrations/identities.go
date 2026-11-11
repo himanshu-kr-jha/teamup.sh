@@ -153,6 +153,7 @@ func (s *Service) GitHubIdentityDone(ctx context.Context, state, nonce, code str
 	_, _ = s.db.Exec(ctx, `UPDATE code_pull_requests SET author_id = $1 WHERE org_id = $2 AND LOWER(author_login) = LOWER($3) AND author_id IS NULL`, st.User, st.Org, me.Login)
 	_, _ = s.db.Exec(ctx, `UPDATE code_commits SET author_id = $1 WHERE org_id = $2 AND author_id IS NULL AND (LOWER(author_login) = LOWER($3) OR LOWER(author_email) = ANY($4))`, st.User, st.Org, me.Login, verified)
 	_, _ = s.db.Exec(ctx, `UPDATE code_pull_request_reviewers r SET user_id = $1 FROM code_pull_requests p WHERE p.id = r.pull_request_id AND p.org_id = $2 AND LOWER(r.login) = LOWER($3) AND r.user_id IS NULL`, st.User, st.Org, me.Login)
+	s.findAfterLinking(ctx, st.Org, st.User)
 	return nil
 }
 

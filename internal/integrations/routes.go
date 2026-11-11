@@ -47,6 +47,7 @@ func RegisterRoutes(protected, public *gin.RouterGroup, s *Service) {
 	protected.DELETE("/integrations/me/:provider", h.unlink)
 	protected.GET("/tasks/:id/code", h.taskCode)
 	protected.GET("/projects/:id/access", h.projectAccess)
+	protected.POST("/projects/:id/access/check", h.admin(h.checkAccess))
 	protected.POST("/projects/:id/access/requests", h.requestAccess)
 	protected.POST("/projects/:id/access/grants", h.admin(h.grantAccess))
 	protected.DELETE("/access/requests/:id", h.cancelRequest)
@@ -168,6 +169,7 @@ func (h *handler) sync(c *gin.Context) {
 		httpx.Error(c, err, "failed to read repositories from github")
 		return
 	}
+	h.s.findLater(orgID, nil, nil)
 	h.connections(c)
 }
 
@@ -217,6 +219,8 @@ func (h *handler) setProjectRepositories(c *gin.Context) {
 		httpx.Error(c, err, "failed to set the project's repositories")
 		return
 	}
+	// Who can open them already is looked up meanwhile.
+	h.s.findLater(orgID, &projectID, nil)
 	c.Status(http.StatusNoContent)
 }
 
@@ -443,6 +447,24 @@ func (h *handler) projectAccess(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, view)
+}
+
+// checkAccess asks GitHub and Bitbucket now who can open the project's
+// repositories already, and answers with the project's access as it stands.
+func (h *handler) checkAccess(c *gin.Context) {
+	orgID, _, ok := caller(c)
+	if !ok {
+		return
+	}
+	id, ok := idParam(c)
+	if !ok {
+		return
+	}
+	if err := h.s.FindExistingAccess(c.Request.Context(), orgID, &id, nil); err != nil {
+		httpx.Error(c, err, "failed to look for existing access")
+		return
+	}
+	h.projectAccess(c)
 }
 
 func (h *handler) requestAccess(c *gin.Context) {

@@ -48,12 +48,15 @@ type RepoAccess struct {
 }
 
 type AccessGrant struct {
-	ID        uuid.UUID    `json:"id"`
-	ProjectID uuid.UUID    `json:"projectId"`
-	UserID    uuid.UUID    `json:"userId"`
-	UserName  string       `json:"userName"`
-	Level     string       `json:"level"`
-	GrantedBy string       `json:"grantedBy,omitempty"`
+	ID        uuid.UUID `json:"id"`
+	ProjectID uuid.UUID `json:"projectId"`
+	UserID    uuid.UUID `json:"userId"`
+	UserName  string    `json:"userName"`
+	Level     string    `json:"level"`
+	GrantedBy string    `json:"grantedBy,omitempty"`
+	// Source is "teamup" for access given here, "found" for access held on
+	// GitHub or Bitbucket already when TeamUp looked.
+	Source    string       `json:"source"`
 	GrantedAt time.Time    `json:"grantedAt"`
 	Repos     []RepoAccess `json:"repositories"`
 }
@@ -90,7 +93,7 @@ func (s *Service) ProjectAccess(ctx context.Context, orgID, projectID, viewer uu
 		args = append(args, viewer)
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT g.id, g.project_id, g.user_id, u.name, g.level, COALESCE(b.name, ''), g.granted_at
+		SELECT g.id, g.project_id, g.user_id, u.name, g.level, COALESCE(b.name, ''), g.source, g.granted_at
 		FROM project_access_grants g JOIN users u ON u.id = g.user_id LEFT JOIN users b ON b.id = g.granted_by
 		WHERE g.project_id = $1 AND g.revoked_at IS NULL`+who+` ORDER BY LOWER(u.name)`, args...)
 	if err != nil {
@@ -98,7 +101,7 @@ func (s *Service) ProjectAccess(ctx context.Context, orgID, projectID, viewer uu
 	}
 	for rows.Next() {
 		var g AccessGrant
-		if err := rows.Scan(&g.ID, &g.ProjectID, &g.UserID, &g.UserName, &g.Level, &g.GrantedBy, &g.GrantedAt); err != nil {
+		if err := rows.Scan(&g.ID, &g.ProjectID, &g.UserID, &g.UserName, &g.Level, &g.GrantedBy, &g.Source, &g.GrantedAt); err != nil {
 			rows.Close()
 			return nil, err
 		}

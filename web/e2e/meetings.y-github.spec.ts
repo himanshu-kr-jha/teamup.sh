@@ -28,6 +28,8 @@ async function fakeGitHub() {
   });
   const app: { manifest?: any } = {};
   const collaborators: string[] = [];
+  // What people may do with every repository already, by GitHub login.
+  const holds: Record<string, string> = {};
   let nextUser = 'alice-code';
   let personalCode = 'made';
   const read = (req: IncomingMessage) =>
@@ -43,6 +45,9 @@ async function fakeGitHub() {
     const json = (value: unknown) => res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(value));
     const go = (to: string) => res.writeHead(302, { Location: to }).end();
 
+    // What somebody may do with a repository already.
+    const permission = url.pathname.match(/^\/repos\/[^/]+\/[^/]+\/collaborators\/([^/]+)\/permission$/);
+    if (permission) return json({ permission: holds[permission[1]] ?? 'none' });
     // Giving and taking away a repository: somebody outside the organization is invited.
     const collab = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/collaborators\/([^/]+)$/);
     if (collab) {
@@ -93,6 +98,7 @@ async function fakeGitHub() {
     signInAs: (code: string) => (nextUser = code),
     personalCodeIs: (code: string) => (personalCode = code),
     collaborators,
+    holds,
     hookUrl: () => app.manifest?.hook_attributes?.url as string,
     close: () => new Promise((done) => server.close(done)),
   };
@@ -273,6 +279,26 @@ test('GitHub: connected once, then pull requests move tasks and reach reviewers'
     await expect(history.getByText('asked for', { exact: false })).toBeVisible();
     await expect(history.getByText(`${PEOPLE.alice.name}'s access was removed`, { exact: false })).toBeVisible();
     await page.keyboard.press('Escape');
+
+    // Sam could push to both repositories on GitHub before TeamUp looked. An
+    // admin checks, and Sam is shown as having it, without asking.
+    github.holds['sam-gh'] = 'write';
+    if (!(await accessDialog.isVisible())) await page.getByRole('button', { name: `Access to Photon ${key}` }).click();
+    await accessDialog.getByRole('button', { name: 'Check now' }).click();
+    await expect(page.getByText('Access on GitHub and Bitbucket checked.').first()).toBeVisible();
+    const people = accessDialog.getByRole('list', { name: 'People with access' });
+    await expect(people.getByText('already had it on GitHub, seen', { exact: false })).toBeVisible();
+    await expect(accessDialog.getByRole('list', { name: `${PEOPLE.sam.name}'s repositories` }).getByText('already has access')).toHaveCount(2);
+    await expect(history.getByText(`${PEOPLE.sam.name} already had write access to 2 of 2 repositories on GitHub or Bitbucket`)).toBeVisible();
+    await page.screenshot({ path: 'test-results/access-found.png' });
+    await page.keyboard.press('Escape');
+    expect(github.collaborators.filter((c) => c.includes('sam-gh'))).toEqual([]);
+    const samSession = await as('sam');
+    await samSession.page.goto('/projects');
+    const samCard = samSession.page.locator('li', { has: samSession.page.getByRole('heading', { name: new RegExp(`Photon ${key}`) }) });
+    await expect(samCard.getByTestId('my-access')).toHaveText('You already have write access on GitHub');
+    await expect(samCard.getByRole('button', { name: /Request access|Ask for write access/ })).toHaveCount(0);
+    await samSession.page.screenshot({ path: 'test-results/access-found-member.png' });
 
     // A forged event is refused.
     const forged = await request.post(github.hookUrl().replace(/^https?:\/\/[^/]+/, ''), {

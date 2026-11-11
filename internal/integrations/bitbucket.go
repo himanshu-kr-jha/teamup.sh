@@ -428,6 +428,7 @@ func (s *Service) linkBitbucket(ctx context.Context, st bitbucketState, token st
 		UPDATE code_commits c SET author_id = $1 FROM code_repositories r
 		WHERE r.id = c.repository_id AND r.provider = 'bitbucket' AND c.org_id = $2 AND c.author_id IS NULL AND LOWER(c.author_email) = ANY($3)`,
 		st.User, st.Org, confirmed)
+	s.findAfterLinking(ctx, st.Org, st.User)
 	return nil
 }
 

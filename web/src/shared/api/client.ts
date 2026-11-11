@@ -839,8 +839,11 @@ export interface AccessRequest {
 export interface RepoAccess {
   repository: string;
   provider: 'github' | 'bitbucket';
-  /** granted, invited (waiting for them to accept on GitHub), failed or revoked. */
-  status: 'granted' | 'invited' | 'failed' | 'revoked';
+  /**
+   * granted, invited (waiting for them to accept on GitHub), failed or revoked;
+   * for access found already held: existing, or none on this repository.
+   */
+  status: 'granted' | 'invited' | 'failed' | 'revoked' | 'existing' | 'none';
   detail?: string;
 }
 
@@ -851,6 +854,8 @@ export interface AccessGrant {
   userName: string;
   level: AccessLevel;
   grantedBy?: string;
+  /** teamup: given here; found: held on GitHub or Bitbucket already when TeamUp looked. */
+  source: 'teamup' | 'found';
   grantedAt: string;
   repositories: RepoAccess[];
 }
@@ -874,6 +879,8 @@ export interface AccessLogEntry {
 
 export const accessApi = {
   project: (projectId: string) => api.get<ProjectAccess>(`/projects/${projectId}/access`).then((r) => r.data),
+  /** Asks GitHub and Bitbucket now who can open the project's repositories already. */
+  check: (projectId: string) => api.post<ProjectAccess>(`/projects/${projectId}/access/check`).then((r) => r.data),
   request: (projectId: string, data: { level: AccessLevel; reason: string }) => api.post<AccessRequest>(`/projects/${projectId}/access/requests`, data),
   cancel: (requestId: string) => api.delete(`/access/requests/${requestId}`),
   approve: (requestId: string, note = '') => api.post<AccessGrant | ''>(`/access/requests/${requestId}/approve`, { note }),

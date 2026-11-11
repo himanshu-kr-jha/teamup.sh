@@ -816,6 +816,31 @@ func runServer(cmd *cobra.Command, args []string) error {
 		IdleTimeout:  120 * time.Second,
 	}
 
+	// Access people already hold on GitHub and Bitbucket is looked at again
+	// now and then, so what TeamUp shows does not drift from what is there.
+	findCtx, stopFinding := context.WithCancel(context.Background())
+	defer stopFinding()
+	go func() {
+		first := time.NewTimer(time.Minute)
+		defer first.Stop()
+		select {
+		case <-findCtx.Done():
+			return
+		case <-first.C:
+			integrationsService.FindAllExistingAccess(findCtx)
+		}
+		ticker := time.NewTicker(integrations.FindEvery)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-findCtx.Done():
+				return
+			case <-ticker.C:
+				integrationsService.FindAllExistingAccess(findCtx)
+			}
+		}
+	}()
+
 	// Uploads that were staged and never sent would otherwise sit in object
 	// storage for ever. Nothing else reclaims them.
 	sweepCtx, stopSweep := context.WithCancel(context.Background())

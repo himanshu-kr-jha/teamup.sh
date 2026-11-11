@@ -33,8 +33,10 @@ type fakeGitHub struct {
 	mu     sync.Mutex
 	// collaborator changes asked for, as "PUT acme/photon-web alice-gh push"
 	collaborators []string
-	key           *rsa.PrivateKey
-	users         map[string]struct {
+	// what people may do with every repository already, by login: "admin", "read"...
+	holds map[string]string
+	key   *rsa.PrivateKey
+	users map[string]struct {
 		id     int64
 		login  string
 		emails []string
@@ -56,6 +58,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		"alice-code": {101, "alice-gh", []string{"alice@home.example"}},
 		"bob-code":   {102, "bob-gh", nil},
 	}}
+	g.holds = map[string]string{}
 	g.server = httptest.NewServer(http.HandlerFunc(g.serve))
 	t.Cleanup(g.server.Close)
 	return g
@@ -74,6 +77,21 @@ func (g *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 			return false
 		}
 		return true
+	}
+	if strings.HasPrefix(r.URL.Path, "/repos/") && strings.HasSuffix(r.URL.Path, "/permission") {
+		if r.Header.Get("Authorization") != "token installation-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/repos/"), "/")
+		g.mu.Lock()
+		held := g.holds[parts[3]]
+		g.mu.Unlock()
+		if held == "" {
+			held = "none"
+		}
+		reply(map[string]any{"permission": held})
+		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/repos/") && strings.Contains(r.URL.Path, "/collaborators/") {
 		if r.Header.Get("Authorization") != "token installation-token" {
