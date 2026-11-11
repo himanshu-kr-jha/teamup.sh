@@ -5,6 +5,7 @@ package notetaker
 // method, so a test can stand in for either.
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -12,8 +13,10 @@ import (
 	"fmt"
 	"io"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -33,6 +36,25 @@ var ErrNoRoom = errors.New("the model ran out of room while thinking, before it 
 
 // ErrNoAnswer is a model that answered with nothing at all.
 var ErrNoAnswer = errors.New("the model answered with nothing")
+
+// ErrUnavailable is a service that could not be reached, or that said it was
+// busy or failing (429, 5xx). Asked again a little later, it often answers.
+var ErrUnavailable = errors.New("the service is not available")
+
+// ErrStalled is a model that stopped sending its answer part way, and sent
+// nothing more for streamIdle.
+var ErrStalled = errors.New("the model stopped sending its answer")
+
+// streamIdle is how long a model may send nothing before it is given up on.
+// A reasoning model sends its thinking as it goes, so silence this long is a
+// model that has stopped, not one that is still thinking.
+var streamIdle = 5 * time.Minute
+
+// streamClient has no overall limit: an answer that keeps arriving is waited
+// for however long it takes (within the caller's context), and streamIdle is
+// what stops one that has gone quiet. A fixed five minutes is what cut off
+// TEA-2's minutes while the model was still thinking.
+var streamClient = &http.Client{}
 
 // roomier is a writer that can be asked again with more room to answer in.
 type roomier interface {
@@ -183,32 +205,105 @@ func (o OpenAICompatible) Write(ctx context.Context, system, prompt string) (str
 	if o.MaxTokens > 0 {
 		body["max_tokens"] = o.MaxTokens
 	}
+	// Streamed, so a model that thinks for a long time keeps the connection
+	// busy rather than looking like one that has gone away.
+	body["stream"] = true
 	payload, _ := json.Marshal(body)
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var stalled atomic.Bool
+	idle := time.AfterFunc(streamIdle, func() { stalled.Store(true); cancel() })
+	defer idle.Stop()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(o.BaseURL, "/")+"/chat/completions", bytes.NewReader(payload))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
 	if o.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+o.APIKey)
 	}
-	var out struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-			FinishReason string `json:"finish_reason"`
-		} `json:"choices"`
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		if stalled.Load() {
+			return "", ErrStalled
+		}
+		return "", fmt.Errorf("writing the minutes: %w", unreachable(req.URL.Host, err))
 	}
-	if err := do(req, &out); err != nil {
-		return "", fmt.Errorf("writing the minutes: %w", err)
+	defer resp.Body.Close()
+	if resp.StatusCode/100 != 2 {
+		return "", fmt.Errorf("writing the minutes: %w", refusal(req.URL.Host, resp))
 	}
-	if len(out.Choices) == 0 {
-		return "", ErrNoAnswer
+
+	// A service may answer all at once even when asked to stream.
+	if !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {
+		var out struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+				FinishReason string `json:"finish_reason"`
+			} `json:"choices"`
+		}
+		raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		if err != nil {
+			if stalled.Load() {
+				return "", ErrStalled
+			}
+			return "", fmt.Errorf("writing the minutes: %w", unreachable(req.URL.Host, err))
+		}
+		if err := json.Unmarshal(raw, &out); err != nil {
+			return "", fmt.Errorf("%s sent something that is not JSON", req.URL.Host)
+		}
+		if len(out.Choices) == 0 {
+			return "", ErrNoAnswer
+		}
+		// A reasoning model's thinking may come back beside the answer rather
+		// than in it, so an answer cut short can be empty here.
+		return answerOf(out.Choices[0].Message.Content, out.Choices[0].FinishReason == "length")
 	}
-	// A reasoning model's thinking may come back beside the answer rather
-	// than in it, so an answer cut short can be empty here.
-	return answerOf(out.Choices[0].Message.Content, out.Choices[0].FinishReason == "length")
+
+	var content strings.Builder
+	finish := ""
+	lines := bufio.NewScanner(resp.Body)
+	lines.Buffer(make([]byte, 0, 64<<10), 4<<20)
+	for lines.Scan() {
+		idle.Reset(streamIdle)
+		data, ok := strings.CutPrefix(lines.Text(), "data:")
+		if !ok {
+			continue
+		}
+		data = strings.TrimSpace(data)
+		if data == "[DONE]" {
+			break
+		}
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+				FinishReason *string `json:"finish_reason"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal([]byte(data), &chunk) != nil {
+			continue
+		}
+		for _, c := range chunk.Choices {
+			content.WriteString(c.Delta.Content)
+			if c.FinishReason != nil && *c.FinishReason != "" {
+				finish = *c.FinishReason
+			}
+		}
+	}
+	if err := lines.Err(); err != nil {
+		if stalled.Load() {
+			return content.String(), ErrStalled
+		}
+		return "", fmt.Errorf("writing the minutes: %w", unreachable(req.URL.Host, err))
+	}
+	return answerOf(content.String(), finish == "length")
 }
 
 // withMoreRoom is the same model allowed twice as long an answer. A service
@@ -313,22 +408,45 @@ func (e *httpError) Error() string {
 	return fmt.Sprintf("%s answered %d: %s", e.Host, e.Status, e.Body)
 }
 
+// Is makes a busy or failing service (429, 5xx) an ErrUnavailable, worth
+// asking again; a refusal of the request itself (401, 400) is not.
+func (e *httpError) Is(target error) bool {
+	return target == ErrUnavailable && (e.Status == http.StatusTooManyRequests || e.Status >= 500)
+}
+
+// refusal reads a service's non-2xx answer into an httpError.
+func refusal(host string, resp *http.Response) error {
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	msg := strings.TrimSpace(string(raw))
+	if len(msg) > 300 {
+		msg = msg[:300]
+	}
+	return &httpError{Host: host, Status: resp.StatusCode, Body: msg}
+}
+
+// unreachable says why a service could not be heard from: it took too long,
+// or it could not be reached at all. Either may pass, so both are
+// ErrUnavailable.
+func unreachable(host string, err error) error {
+	var ne net.Error
+	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()) {
+		return fmt.Errorf("%s took too long to answer: %w", host, ErrUnavailable)
+	}
+	return fmt.Errorf("could not reach %s: %w", host, ErrUnavailable)
+}
+
 // do sends a request and decodes a JSON answer, turning anything else into an
 // error that carries what the service said, without the key.
 func do(req *http.Request, out any) error {
 	resp, err := httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("could not reach %s", req.URL.Host)
+		return unreachable(req.URL.Host, err)
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode/100 != 2 {
-		msg := strings.TrimSpace(string(raw))
-		if len(msg) > 300 {
-			msg = msg[:300]
-		}
-		return &httpError{Host: req.URL.Host, Status: resp.StatusCode, Body: msg}
+		return refusal(req.URL.Host, resp)
 	}
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err := json.Unmarshal(raw, out); err != nil {
 		return fmt.Errorf("%s sent something that is not JSON", req.URL.Host)
 	}

@@ -86,10 +86,15 @@ type UnusableAnswer struct {
 func (u *UnusableAnswer) Error() string { return u.Err.Error() }
 func (u *UnusableAnswer) Unwrap() error { return u.Err }
 
-// Write asks the model for the minutes and reads its answer, asking again,
-// with more room when it ran out, when the answer could not be used. A service
-// that could not be reached is not asked again here: that is for the person
-// pressing "Write the minutes again" once it is back.
+// retryPause is how long to wait before asking a service that was busy, slow
+// or out of reach again.
+var retryPause = 30 * time.Second
+
+// Write asks the model for the minutes and reads its answer, asking again
+// when the answer could not be used (with more room when it ran out of it),
+// and, after a pause, when the service was busy, failing, out of reach, or
+// stopped part way. A request the service refused outright (a wrong key, a
+// model it does not have) is not asked again: that needs a person.
 func Write(ctx context.Context, w Writer, title string, date time.Time, attendees []string, segments []Segment, loc *time.Location) (Minutes, error) {
 	prompt := fmt.Sprintf("Meeting: %s\nDate: %s\nAttendees: %s\n\nTranscript:\n%s",
 		title, date.In(loc).Format("Monday 2 January 2006, 15:04 MST"), strings.Join(attendees, ", "), shorten(Transcript(segments, loc)))
@@ -109,6 +114,16 @@ func Write(ctx context.Context, w Writer, title string, date time.Time, attendee
 			continue
 		case errors.Is(err, ErrNoAnswer):
 			last = err
+			continue
+		case errors.Is(err, ErrUnavailable), errors.Is(err, ErrStalled):
+			last = err
+			if i+1 < attempts {
+				select {
+				case <-time.After(retryPause):
+				case <-ctx.Done():
+					return Minutes{}, err
+				}
+			}
 			continue
 		case err != nil:
 			return Minutes{}, err

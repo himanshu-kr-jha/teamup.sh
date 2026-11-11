@@ -114,16 +114,107 @@ func TestThreeUnusableAnswersFailWithWhatTheModelSaid(t *testing.T) {
 	}
 }
 
-func TestAServiceThatIsDownIsNotAskedAgainAndAgain(t *testing.T) {
+func TestARefusedRequestIsNotAskedAgainAndAgain(t *testing.T) {
 	model := &scriptedModel{replies: []func(http.ResponseWriter){
-		func(w http.ResponseWriter) { http.Error(w, "overloaded", http.StatusServiceUnavailable) },
+		func(w http.ResponseWriter) { http.Error(w, "invalid api key", http.StatusUnauthorized) },
 	}}
 	srv := model.server(t)
 	if _, err := write(t, OpenAICompatible{BaseURL: srv.URL, Model: "m"}); err == nil {
-		t.Fatal("a service that is down wrote minutes")
+		t.Fatal("a refused request wrote minutes")
 	}
 	if len(model.asked) != 1 {
 		t.Errorf("asked %d times", len(model.asked))
+	}
+}
+
+func TestABusyServiceIsAskedAgainAfterAPause(t *testing.T) {
+	quick(t)
+	model := &scriptedModel{replies: []func(http.ResponseWriter){
+		func(w http.ResponseWriter) { http.Error(w, "overloaded", http.StatusServiceUnavailable) },
+		func(w http.ResponseWriter) { http.Error(w, "slow down", http.StatusTooManyRequests) },
+		says(goodMinutes, "stop"),
+	}}
+	srv := model.server(t)
+	if m, err := write(t, OpenAICompatible{BaseURL: srv.URL, Model: "m"}); err != nil || m.Summary == "" {
+		t.Fatalf("got %+v %v", m, err)
+	}
+	if len(model.asked) != 3 {
+		t.Errorf("asked %d times", len(model.asked))
+	}
+}
+
+// streamed answers as a model sends them: thinking first, then the answer in
+// pieces, each a server-sent event.
+func streamed(pieces []string, finish string, pauseBefore int, pause time.Duration) func(w http.ResponseWriter) {
+	return func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher := w.(http.Flusher)
+		for i, p := range pieces {
+			if i == pauseBefore {
+				time.Sleep(pause)
+			}
+			chunk, _ := json.Marshal(map[string]any{"choices": []map[string]any{{"delta": map[string]string{"reasoning_content": "thinking...", "content": p}}}})
+			_, _ = w.Write([]byte("data: " + string(chunk) + "\n\n"))
+			flusher.Flush()
+		}
+		last, _ := json.Marshal(map[string]any{"choices": []map[string]any{{"delta": map[string]string{}, "finish_reason": finish}}})
+		_, _ = w.Write([]byte("data: " + string(last) + "\n\ndata: [DONE]\n\n"))
+		flusher.Flush()
+	}
+}
+
+// quick makes the waits short for a test.
+func quick(t *testing.T) {
+	t.Helper()
+	pause, idle := retryPause, streamIdle
+	retryPause, streamIdle = 0, 300*time.Millisecond
+	t.Cleanup(func() { retryPause, streamIdle = pause, idle })
+}
+
+func TestAStreamedAnswerIsPutTogether(t *testing.T) {
+	quick(t)
+	half := len(goodMinutes) / 2
+	model := &scriptedModel{replies: []func(http.ResponseWriter){
+		// Longer in all than the model may be silent, but never silent that long.
+		streamed([]string{"", "", goodMinutes[:half], goodMinutes[half:]}, "stop", 1, 200*time.Millisecond),
+	}}
+	srv := model.server(t)
+	m, err := write(t, Settings{LLMProvider: "nvidia", LLMBaseURL: srv.URL, LLMKey: "k"}.writer())
+	if err != nil || m.Summary != "We reviewed the VM configuration." {
+		t.Fatalf("got %+v %v", m, err)
+	}
+	if model.asked[0]["stream"] != true {
+		t.Error("the answer should be asked for as a stream")
+	}
+}
+
+func TestAModelThatGoesQuietPartWayIsAskedAgain(t *testing.T) {
+	quick(t)
+	model := &scriptedModel{replies: []func(http.ResponseWriter){
+		streamed([]string{`{"summary": "We rev`, `iewed"}`}, "stop", 1, 2*time.Second),
+		streamed([]string{goodMinutes}, "stop", -1, 0),
+	}}
+	srv := model.server(t)
+	m, err := write(t, OpenAICompatible{BaseURL: srv.URL, Model: "m"})
+	if err != nil || m.Summary == "" {
+		t.Fatalf("got %+v %v", m, err)
+	}
+	if len(model.asked) != 2 {
+		t.Errorf("asked %d times", len(model.asked))
+	}
+}
+
+func TestAModelThatNeverAnswersSaysSoTruthfully(t *testing.T) {
+	quick(t)
+	silent := func(w http.ResponseWriter) { time.Sleep(time.Second) }
+	model := &scriptedModel{replies: []func(http.ResponseWriter){silent, silent, silent}}
+	srv := model.server(t)
+	_, err := write(t, OpenAICompatible{BaseURL: srv.URL, Model: "m"})
+	if !errors.Is(err, ErrStalled) {
+		t.Fatalf("want the model to be said to have stopped, got %v", err)
+	}
+	if strings.Contains(err.Error(), "could not reach") {
+		t.Errorf("a slow model is not one that could not be reached: %v", err)
 	}
 }
 
