@@ -236,7 +236,7 @@ func (s *Service) onPullRequest(ctx context.Context, c *connection, body []byte)
 		if len(e.PullRequest.RequestedReviewers) > 0 && pr.state == "open" {
 			to = "in_review"
 		}
-		s.moveLinked(ctx, c.OrgID, pr, to, fmt.Sprintf("%s opened #%d in %s", e.PullRequest.User.Login, pr.number, pr.repoName))
+		s.reopenLinked(ctx, c.OrgID, pr, to, fmt.Sprintf("%s opened #%d in %s", e.PullRequest.User.Login, pr.number, pr.repoName))
 	case "closed":
 		if pr.state == "merged" {
 			s.onMerged(ctx, c.OrgID, pr, e.Sender.Login)
@@ -365,6 +365,16 @@ func (s *Service) moveLinked(ctx context.Context, orgID uuid.UUID, pr *storedPul
 	for _, taskID := range pr.tasks {
 		if _, err := s.tasks.MoveByCode(ctx, orgID, taskID, to, pr.provider, pr.authorID, why); err != nil {
 			s.logger.Warn().Err(err).Msg("moving a task for its pull request failed")
+		}
+	}
+}
+
+// reopenLinked is moveLinked for a pull request just opened: new work on a
+// task that was done takes it back out of Done.
+func (s *Service) reopenLinked(ctx context.Context, orgID uuid.UUID, pr *storedPull, to, why string) {
+	for _, taskID := range pr.tasks {
+		if _, err := s.tasks.ReopenByCode(ctx, orgID, taskID, to, pr.provider, pr.authorID, why); err != nil {
+			s.logger.Warn().Err(err).Msg("reopening a task for its pull request failed")
 		}
 	}
 }

@@ -394,6 +394,31 @@ func TestGitHubFromConnectingToAFinishedTask(t *testing.T) {
 	if got, _ := taskService.GetTask(ctx, org.ID, task.ID); got.Status != "done" {
 		t.Errorf("a finished task is not reopened by a later commit: %s", got.Status)
 	}
+
+	// A new pull request for PHO-1 is more work on it: back in progress, and
+	// done again once that one is merged too. One naming the blocked task
+	// leaves it blocked.
+	again := func(state string, merged bool) map[string]any {
+		p := pull(state, merged)
+		p["number"], p["title"] = 8, "PHO-1 follow-up, and "+blocked.Key
+		p["html_url"] = "https://github.com/acme/photon-web/pull/8"
+		p["head"] = map[string]any{"ref": "pho-1-follow-up"}
+		p["requested_reviewers"] = []any{}
+		return p
+	}
+	_ = event("pull_request", "d7", map[string]any{"action": "opened", "pull_request": again("open", false), "repository": repo, "sender": map[string]any{"login": "alice-gh"}})
+	if got, _ := taskService.GetTask(ctx, org.ID, task.ID); got.Status != "in_progress" || got.CompletedAt != nil {
+		t.Errorf("a new pull request reopens a finished task: %s, completed %v", got.Status, got.CompletedAt)
+	}
+	if got, _ := taskService.GetTask(ctx, org.ID, blocked.ID); got.Status != "blocked" {
+		t.Errorf("a new pull request leaves a blocked task blocked: %s", got.Status)
+	}
+	mergedAgain := again("closed", true)
+	mergedAgain["merged_at"] = "2026-11-10T15:00:00Z"
+	_ = event("pull_request", "d8", map[string]any{"action": "closed", "pull_request": mergedAgain, "repository": repo, "sender": map[string]any{"login": "bob-gh"}})
+	if got, _ := taskService.GetTask(ctx, org.ID, task.ID); got.Status != "done" {
+		t.Errorf("merging the follow-up finishes it again: %s", got.Status)
+	}
 }
 
 func TestKeysAreFoundWhereverTheyAreWritten(t *testing.T) {
