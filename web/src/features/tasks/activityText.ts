@@ -61,6 +61,8 @@ export function activityLine(a: ActivityFacts, nameOf: (userId: string) => strin
         return raw;
     }
   };
+  // Its first line: made, under the title it was given then.
+  if (a.field === 'created') return { verb: 'created the task' };
   if (a.field === 'comment') return { verb: 'commented', to: a.newValue || undefined };
   if (a.field === 'position') return { verb: 'moved it on the board' };
   if (a.field === 'assigneeId' && !a.newValue) return { verb: 'unassigned it', from: value(a.oldValue) };

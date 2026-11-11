@@ -4,6 +4,9 @@ import { activityLine } from './activityText';
 const names = (id: string) => (id === 'u1' ? 'Asha' : undefined);
 
 describe('a line of task history', () => {
+  it('says the task was created, not that a field called created changed to its title', () => {
+    expect(activityLine({ field: 'created', newValue: 'MOM not generated' }, names)).toEqual({ verb: 'created the task' });
+  });
   it('says a comment was written, not that a field called comment changed', () => {
     expect(activityLine({ field: 'comment', newValue: 'Looks good' }, names)).toEqual({ verb: 'commented', to: 'Looks good' });
   });
