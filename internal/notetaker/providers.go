@@ -27,6 +27,18 @@ type Writer interface {
 	Write(ctx context.Context, system, prompt string) (string, error)
 }
 
+// ErrNoRoom is a model that used all the room it was given, thinking, before
+// it wrote anything: a reasoning model over a long meeting does this.
+var ErrNoRoom = errors.New("the model ran out of room while thinking, before it wrote the minutes")
+
+// ErrNoAnswer is a model that answered with nothing at all.
+var ErrNoAnswer = errors.New("the model answered with nothing")
+
+// roomier is a writer that can be asked again with more room to answer in.
+type roomier interface {
+	withMoreRoom() Writer
+}
+
 // The timeout is long because a reasoning model may think for minutes over a
 // long meeting before it answers.
 var httpClient = &http.Client{Timeout: 5 * time.Minute}
@@ -83,12 +95,26 @@ type Anthropic struct {
 	BaseURL string
 	APIKey  string
 	Model   string
+	// MaxTokens is how long the answer may be; 8192 when not set.
+	MaxTokens int
+}
+
+func (a Anthropic) maxTokens() int {
+	if a.MaxTokens > 0 {
+		return a.MaxTokens
+	}
+	return 8192
+}
+
+func (a Anthropic) withMoreRoom() Writer {
+	a.MaxTokens = a.maxTokens() * 2
+	return a
 }
 
 func (a Anthropic) Write(ctx context.Context, system, prompt string) (string, error) {
 	payload, _ := json.Marshal(map[string]any{
 		"model":      a.Model,
-		"max_tokens": 4096,
+		"max_tokens": a.maxTokens(),
 		"system":     system,
 		"messages":   []map[string]string{{"role": "user", "content": prompt}},
 	})
@@ -104,6 +130,7 @@ func (a Anthropic) Write(ctx context.Context, system, prompt string) (string, er
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
+		StopReason string `json:"stop_reason"`
 	}
 	if err := do(req, &out); err != nil {
 		return "", fmt.Errorf("writing the minutes: %w", err)
@@ -114,7 +141,20 @@ func (a Anthropic) Write(ctx context.Context, system, prompt string) (string, er
 			text.WriteString(c.Text)
 		}
 	}
-	return text.String(), nil
+	return answerOf(text.String(), out.StopReason == "max_tokens")
+}
+
+// answerOf is what a model said, or why it said nothing usable: an answer cut
+// off before its closing brace by the length limit is a model that ran out of
+// room, and is asked again with more.
+func answerOf(text string, cutOff bool) (string, error) {
+	if cutOff && !strings.Contains(text[strings.LastIndex(text, "</think>")+1:], "}") {
+		return text, ErrNoRoom
+	}
+	if strings.TrimSpace(text) == "" {
+		return "", ErrNoAnswer
+	}
+	return text, nil
 }
 
 // ── OpenAI and anything that speaks its API ─────────────────────────────────
@@ -157,15 +197,29 @@ func (o OpenAICompatible) Write(ctx context.Context, system, prompt string) (str
 			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
 		} `json:"choices"`
 	}
 	if err := do(req, &out); err != nil {
 		return "", fmt.Errorf("writing the minutes: %w", err)
 	}
 	if len(out.Choices) == 0 {
-		return "", fmt.Errorf("writing the minutes: the model returned nothing")
+		return "", ErrNoAnswer
 	}
-	return out.Choices[0].Message.Content, nil
+	// A reasoning model's thinking may come back beside the answer rather
+	// than in it, so an answer cut short can be empty here.
+	return answerOf(out.Choices[0].Message.Content, out.Choices[0].FinishReason == "length")
+}
+
+// withMoreRoom is the same model allowed twice as long an answer. A service
+// told no limit has used its own, and is now given a generous one.
+func (o OpenAICompatible) withMoreRoom() Writer {
+	if o.MaxTokens > 0 {
+		o.MaxTokens *= 2
+	} else {
+		o.MaxTokens = 16384
+	}
+	return o
 }
 
 // ── NVIDIA ──────────────────────────────────────────────────────────────────
@@ -203,6 +257,11 @@ func (n NVIDIA) Write(ctx context.Context, system, prompt string) (string, error
 		}
 	}
 	return "", err
+}
+
+func (n NVIDIA) withMoreRoom() Writer {
+	n.OpenAICompatible = n.OpenAICompatible.withMoreRoom().(OpenAICompatible)
+	return n
 }
 
 func isGone(err error) bool {
