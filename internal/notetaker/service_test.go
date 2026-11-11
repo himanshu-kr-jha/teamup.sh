@@ -368,6 +368,7 @@ func TestARetiredNVIDIAModelStillGetsTheMinutesWritten(t *testing.T) {
 }
 
 func TestFailedMinutesAreWrittenAgainFromTheTranscriptAndListed(t *testing.T) {
+	quick(t) // the model stays down through every attempt
 	w := newWorld(t)
 	stt := standIns(t)
 	broken := true
