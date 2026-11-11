@@ -29,6 +29,7 @@ async function fakeGitHub() {
   const app: { manifest?: any } = {};
   const collaborators: string[] = [];
   let nextUser = 'alice-code';
+  let personalCode = 'made';
   const read = (req: IncomingMessage) =>
     new Promise<string>((done) => {
       let body = '';
@@ -49,10 +50,18 @@ async function fakeGitHub() {
       if (req.method === 'PUT') return res.writeHead(201, { 'Content-Type': 'application/json' }).end(JSON.stringify({ id: 7 }));
       return res.writeHead(204).end();
     }
-    // The admin presses Create on GitHub's page.
+    // Whose name it is: an organization, or somebody's own account.
+    if (url.pathname === '/users/cognecto') return json({ id: 1, login: 'cognecto', type: 'Organization' });
+    if (url.pathname === '/users/solo-dev') return json({ id: 2, login: 'solo-dev', type: 'User' });
+    // The admin presses Create on GitHub's page. A personal account's page
+    // has been seen to come back without the state.
     if (/^\/organizations\/[^/]+\/settings\/apps\/new$/.test(url.pathname) && req.method === 'POST') {
       app.manifest = JSON.parse(new URLSearchParams(body).get('manifest') ?? '{}');
       return go(`${app.manifest.redirect_url}?code=made&state=${encodeURIComponent(url.searchParams.get('state') ?? '')}`);
+    }
+    if (url.pathname === '/settings/apps/new' && req.method === 'POST') {
+      app.manifest = JSON.parse(new URLSearchParams(body).get('manifest') ?? '{}');
+      return go(`${app.manifest.redirect_url}?code=${personalCode}`);
     }
     if (url.pathname === '/app-manifests/made/conversions') {
       return json({ id: 9001, slug: 'teamup-e2e', client_id: 'Iv1.e2e', client_secret: 'e2e-client-secret', webhook_secret: WEBHOOK_SECRET, pem: privateKey, owner: { login: 'cognecto' } });
@@ -82,11 +91,37 @@ async function fakeGitHub() {
   await new Promise<void>((done) => server.listen(PORT, '127.0.0.1', done));
   return {
     signInAs: (code: string) => (nextUser = code),
+    personalCodeIs: (code: string) => (personalCode = code),
     collaborators,
     hookUrl: () => app.manifest?.hook_attributes?.url as string,
     close: () => new Promise((done) => server.close(done)),
   };
 }
+
+// Reported: connecting a personal GitHub account made the app on GitHub, came
+// back to TeamUp with an error, and the next try said the name was taken.
+// A personal account goes to its own new-app page, and if GitHub's keys are
+// lost all the same, the card says what to do on GitHub before trying again.
+test('GitHub: a personal account goes to its own page, and a lost app says what to do', async ({ as }) => {
+  const github = await fakeGitHub();
+  try {
+    github.personalCodeIs('already-used');
+    const { page } = await as('owner');
+    await page.goto('/organization');
+    await page.getByRole('tab', { name: 'Integrations' }).click();
+    await page.getByLabel('GitHub organization or account').fill('solo-dev');
+    await page.getByRole('button', { name: 'Connect GitHub' }).click();
+    const notice = page.getByRole('alert').filter({ hasText: 'GitHub made the app, but TeamUp could not take its keys.' });
+    await expect(notice).toBeVisible({ timeout: 20_000 });
+    await expect(notice.getByRole('link', { name: 'Your GitHub Apps' })).toHaveAttribute('href', 'https://github.com/settings/apps');
+    // The address is tidied, but the notice stays, and Connect is offered again.
+    await expect(page).not.toHaveURL(/github=/);
+    await expect(page.getByRole('button', { name: 'Connect GitHub' })).toBeVisible();
+    await page.screenshot({ path: 'test-results/github-lost-app.png' });
+  } finally {
+    await github.close();
+  }
+});
 
 // Reported: work done on GitHub had to be copied onto tasks by hand, and
 // nobody heard here that their review was wanted.

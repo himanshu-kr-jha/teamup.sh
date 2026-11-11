@@ -218,28 +218,44 @@ type manifestState struct {
 	HookKey string    `json:"h"`
 }
 
-// GitHubManifest begins making TeamUp's GitHub App inside the admin's GitHub
-// organization. The browser posts the manifest to GitHub, where the admin
-// confirms; GitHub sends them back with a code that becomes the app's keys.
-// Nothing has to be copied by hand.
-func (s *Service) GitHubManifest(ctx context.Context, orgID, userID uuid.UUID, ghOrg string) (action string, manifest string, nonce string, err error) {
+// ErrManifestExpired is a way back from GitHub that cannot be matched to a
+// start in this browser. GitHub may have made the app all the same.
+var ErrManifestExpired = apperrors.New(apperrors.CodeBadRequest, "that link has expired or was not started here; start connecting GitHub again")
+
+// GitHubManifest begins making TeamUp's GitHub App on the admin's GitHub
+// organization or personal account. The browser posts the manifest to
+// GitHub, where the admin confirms; GitHub sends them back with a code that
+// becomes the app's keys. Nothing has to be copied by hand.
+//
+// keep is what the browser holds on to (as a cookie) until it is back: the
+// whole signed state, so the way back does not depend on GitHub returning it.
+func (s *Service) GitHubManifest(ctx context.Context, orgID, userID uuid.UUID, ghOrg string) (action string, manifest string, keep string, err error) {
 	if !s.Available() {
 		return "", "", "", apperrors.New(apperrors.CodeUnavailable, "set TEAMUP_AUTH_SECRET on the server before connecting GitHub")
 	}
 	ghOrg = strings.TrimSpace(strings.TrimPrefix(strings.TrimPrefix(ghOrg, "https://github.com/"), "@"))
 	ghOrg = strings.Trim(ghOrg, "/")
 	if ghOrg == "" || strings.ContainsAny(ghOrg, " /?#") {
-		return "", "", "", apperrors.New(apperrors.CodeBadRequest, "give the GitHub organization's name, as in github.com/<name>")
+		return "", "", "", apperrors.New(apperrors.CodeBadRequest, "give the GitHub organization or account name, as in github.com/<name>")
 	}
 	if existing, err := s.loadConnection(ctx, `org_id = $1 AND provider = 'github'`, orgID); err == nil && existing.Status == "active" {
 		return "", "", "", apperrors.New(apperrors.CodeConflict, "GitHub is connected already; disconnect it first to start again")
 	}
 
+	// A personal account has its own page for new apps; the organization
+	// page does not exist for it.
+	newAppPage := "/organizations/" + url.PathEscape(ghOrg) + "/settings/apps/new"
+	switch kind, err := s.gh.accountType(ctx, ghOrg); {
+	case isStatus(err, http.StatusNotFound):
+		return "", "", "", apperrors.New(apperrors.CodeBadRequest, "GitHub has no organization or account named "+ghOrg)
+	case err == nil && kind == "User":
+		newAppPage = "/settings/apps/new"
+	}
+
 	var orgName string
 	_ = s.db.QueryRow(ctx, `SELECT name FROM organizations WHERE id = $1`, orgID).Scan(&orgName)
-	nonce = randomKey()
 	hookKey := randomKey()
-	state, err := s.box.Token(manifestState{Org: orgID, User: userID, Nonce: nonce, HookKey: hookKey}, time.Hour)
+	state, err := s.box.Token(manifestState{Org: orgID, User: userID, Nonce: randomKey(), HookKey: hookKey}, time.Hour)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -264,20 +280,27 @@ func (s *Service) GitHubManifest(ctx context.Context, orgID, userID uuid.UUID, g
 		"default_events":      githubEvents,
 	}
 	raw, _ := json.Marshal(m)
-	action = s.cfg.GitHubWeb + "/organizations/" + url.PathEscape(ghOrg) + "/settings/apps/new?state=" + url.QueryEscape(state)
-	return action, string(raw), nonce, nil
+	action = s.cfg.GitHubWeb + newAppPage + "?state=" + url.QueryEscape(state)
+	return action, string(raw), state, nil
 }
 
 // GitHubCreated takes GitHub's code for the app just made, swaps it for the
 // app's keys, and stores them. Returns where to send the admin next: GitHub's
-// page for installing the app on the organization's repositories.
-func (s *Service) GitHubCreated(ctx context.Context, state, nonce, code string) (string, error) {
+// page for installing the app on the account's repositories.
+//
+// kept is what GitHubManifest gave the browser. GitHub does not always hand
+// the state back (a personal account's page has been seen to drop it), so the
+// browser's copy is what counts; a state that does come back must match it.
+func (s *Service) GitHubCreated(ctx context.Context, state, kept, code string) (string, error) {
 	if !s.Available() {
 		return "", secretbox.ErrNoSecret
 	}
 	var st manifestState
-	if err := s.box.ReadToken(state, &st); err != nil || nonce == "" || nonce != st.Nonce {
-		return "", apperrors.New(apperrors.CodeBadRequest, "that link has expired or was not started here; start connecting GitHub again")
+	if kept == "" || (state != "" && state != kept) || s.box.ReadToken(kept, &st) != nil {
+		return "", ErrManifestExpired
+	}
+	if code == "" {
+		return "", apperrors.New(apperrors.CodeBadRequest, "GitHub sent no code back")
 	}
 	var res struct {
 		ID            int64  `json:"id"`

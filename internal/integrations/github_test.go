@@ -98,6 +98,10 @@ func (g *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case r.URL.Path == "/users/acme":
+		reply(map[string]any{"id": 1, "login": "acme", "type": "Organization"})
+	case r.URL.Path == "/users/solo-dev":
+		reply(map[string]any{"id": 2, "login": "solo-dev", "type": "User"})
 	case strings.HasPrefix(r.URL.Path, "/app-manifests/") && r.Method == http.MethodPost:
 		der := x509.MarshalPKCS1PrivateKey(g.key)
 		reply(map[string]any{"id": 4242, "slug": "teamup-acme", "client_id": "Iv1.client", "client_secret": "client-secret",
@@ -201,6 +205,25 @@ func TestGitHubFromConnectingToAFinishedTask(t *testing.T) {
 	s.SetLogger(zerolog.New(zerolog.NewTestWriter(t)))
 
 	// The admin makes the app on GitHub and installs it.
+	// A personal account is sent to its own page for new apps, and a name
+	// GitHub does not know is refused before anything is made.
+	if personal, _, _, err := s.GitHubManifest(ctx, org.ID, org.OwnerID, "solo-dev"); err != nil ||
+		!strings.HasPrefix(personal, g.server.URL+"/settings/apps/new?state=") {
+		t.Fatalf("a personal account's new-app page: %s %v", personal, err)
+	}
+	if _, _, _, err := s.GitHubManifest(ctx, org.ID, org.OwnerID, "nobody-here"); err == nil {
+		t.Fatal("an unknown GitHub name is refused")
+	}
+	// Reported: GitHub made the app but TeamUp lost it, because the way back
+	// came without the state. The browser's copy is enough.
+	_, _, kept, err := s.GitHubManifest(ctx, org.ID, org.OwnerID, "solo-dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GitHubCreated(ctx, "", kept, "code"); err != nil {
+		t.Fatalf("the way back without the state is accepted from the browser that started it: %v", err)
+	}
+
 	action, manifest, nonce, err := s.GitHubManifest(ctx, org.ID, org.OwnerID, "https://github.com/acme")
 	if err != nil {
 		t.Fatal(err)
@@ -215,6 +238,12 @@ func TestGitHubFromConnectingToAFinishedTask(t *testing.T) {
 	state, _ := url.Parse(action)
 	if _, err := s.GitHubCreated(ctx, state.Query().Get("state"), "another browser", "code"); err == nil {
 		t.Fatal("the way back is refused in a browser that did not start it")
+	}
+	if _, err := s.GitHubCreated(ctx, state.Query().Get("state"), "", "code"); err == nil {
+		t.Fatal("the way back is refused without the browser's copy")
+	}
+	if _, err := s.GitHubCreated(ctx, "a different state", nonce, "code"); err == nil {
+		t.Fatal("a state that comes back must be the one this browser started")
 	}
 	next, err := s.GitHubCreated(ctx, state.Query().Get("state"), nonce, "code")
 	if err != nil {

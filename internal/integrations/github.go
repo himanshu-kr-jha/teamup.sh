@@ -165,6 +165,15 @@ func (g *github) do(ctx context.Context, auth, method, path string, body, out an
 	return nil
 }
 
+// accountType says whether a GitHub name is an "Organization" or a "User".
+func (g *github) accountType(ctx context.Context, name string) (string, error) {
+	var who ghUser
+	if err := g.do(ctx, "", http.MethodGet, "/users/"+url.PathEscape(name), nil, &who); err != nil {
+		return "", err
+	}
+	return who.Type, nil
+}
+
 // ── what GitHub sends and answers ─────────────────────────────────────────
 
 type ghUser struct {

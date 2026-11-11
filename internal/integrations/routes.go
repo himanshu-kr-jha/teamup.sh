@@ -124,22 +124,23 @@ func (h *handler) manifest(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
-	action, manifest, nonce, err := h.s.GitHubManifest(c.Request.Context(), orgID, userID, req.Organization)
+	action, manifest, keep, err := h.s.GitHubManifest(c.Request.Context(), orgID, userID, req.Organization)
 	if err != nil {
 		httpx.Error(c, err, "failed to start connecting github")
 		return
 	}
-	h.setCookie(c, manifestCookie, nonce, 3600)
+	h.setCookie(c, manifestCookie, keep, 3600)
 	c.JSON(http.StatusOK, gin.H{"action": action, "manifest": manifest})
 }
 
 func (h *handler) created(c *gin.Context) {
-	nonce, _ := c.Cookie(manifestCookie)
+	kept, _ := c.Cookie(manifestCookie)
 	h.setCookie(c, manifestCookie, "", -1)
-	next, err := h.s.GitHubCreated(c.Request.Context(), c.Query("state"), nonce, c.Query("code"))
+	next, err := h.s.GitHubCreated(c.Request.Context(), c.Query("state"), kept, c.Query("code"))
 	if err != nil {
-		h.s.logger.Warn().Err(err).Msg("making the github app failed")
-		h.back(c, "/organization", "github", "failed")
+		h.s.logger.Warn().Err(err).Bool("state_returned", c.Query("state") != "").Bool("cookie", kept != "").Msg("making the github app failed")
+		// GitHub has made the app by now, so its name is taken until it is deleted there.
+		h.back(c, "/organization", "github", "not-kept")
 		return
 	}
 	c.Redirect(http.StatusFound, next)

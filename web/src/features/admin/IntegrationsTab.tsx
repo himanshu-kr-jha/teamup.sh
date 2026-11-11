@@ -30,6 +30,7 @@ function postManifest(action: string, manifest: string) {
 const OUTCOMES: Record<string, { ok: boolean; text: string }> = {
   connected: { ok: true, text: 'GitHub is connected. Its repositories are listed under Projects.' },
   failed: { ok: false, text: 'GitHub could not be connected. Please try again.' },
+  'not-kept': { ok: false, text: 'GitHub made the app, but TeamUp could not take its keys. See the GitHub card.' },
 };
 
 const BITBUCKET_OUTCOMES: Record<string, { ok: boolean; text: string }> = {
@@ -53,6 +54,8 @@ export function IntegrationsTab({
   const queryClient = useQueryClient();
   const { data, isLoading } = useQuery({ queryKey: ['integrations'], queryFn: () => integrationsApi.connections() });
   const github = data?.data.find((c) => c.provider === 'github');
+  // Stays on the card after the address is tidied, since it asks for a step on GitHub.
+  const [githubLost] = useState(outcome === 'not-kept');
   const bitbucket = data?.data.find((c) => c.provider === 'bitbucket');
 
   useEffect(() => {
@@ -73,7 +76,7 @@ export function IntegrationsTab({
         <code className="rounded bg-muted px-1">PHO-12</code>, show on it and move it along, and reviewers are told here when
         their review is wanted. Each person then links their own account under Settings.
       </p>
-      {github && <GitHubCard connection={github} />}
+      {github && <GitHubCard connection={github} lost={githubLost} />}
       {bitbucket && <BitbucketCard connection={bitbucket} />}
     </div>
   );
@@ -93,7 +96,7 @@ export function BitbucketMark({ small }: { small?: boolean } = {}) {
   );
 }
 
-function GitHubCard({ connection }: { connection: CodeConnection }) {
+function GitHubCard({ connection, lost = false }: { connection: CodeConnection; lost?: boolean }) {
   const toast = useToast();
   const queryClient = useQueryClient();
   const [organization, setOrganization] = useState('');
@@ -161,10 +164,27 @@ function GitHubCard({ connection }: { connection: CodeConnection }) {
         ) : connection.status === 'none' ? (
           <>
             <ol className="list-decimal space-y-1 pl-5 text-muted-foreground">
-              <li>Name your GitHub organization below and press Connect.</li>
-              <li>GitHub shows the app TeamUp needs. Press Create, as an owner of the organization.</li>
+              <li>Name your GitHub organization, or your own GitHub account, below and press Connect.</li>
+              <li>GitHub shows the app TeamUp needs. Press Create, signed in as its owner.</li>
               <li>Choose the repositories TeamUp may see, and Install.</li>
             </ol>
+            {lost && (
+              <div role="alert" className="flex gap-2 rounded-md border border-amber-500/40 bg-amber-50 p-3 text-amber-950 dark:bg-amber-950/40 dark:text-amber-100">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+                <div className="space-y-1">
+                  <p className="font-medium">GitHub made the app, but TeamUp could not take its keys.</p>
+                  <p>
+                    Its name is taken until it is gone, so delete it first: on GitHub open Settings, then Developer settings, then GitHub Apps
+                    (under the organization&apos;s settings for an organization), choose the TeamUp app, and under Advanced press Delete GitHub App.
+                    Then connect again here.
+                  </p>
+                  <a className="inline-flex items-center gap-1 font-medium underline underline-offset-2" href="https://github.com/settings/apps" target="_blank" rel="noreferrer">
+                    Your GitHub Apps
+                    <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+                  </a>
+                </div>
+              </div>
+            )}
             <form
               className="flex flex-col gap-2 sm:flex-row sm:items-end"
               onSubmit={(e) => {
@@ -173,12 +193,12 @@ function GitHubCard({ connection }: { connection: CodeConnection }) {
               }}
             >
               <div className="min-w-0 flex-1 space-y-2">
-                <Label htmlFor="githubOrg">GitHub organization</Label>
+                <Label htmlFor="githubOrg">GitHub organization or account</Label>
                 <Input
                   id="githubOrg"
                   value={organization}
                   onChange={(e) => setOrganization(e.target.value)}
-                  placeholder="cognecto, as in github.com/cognecto"
+                  placeholder="as in github.com/cognecto"
                 />
               </div>
               <Button type="submit" disabled={!organization.trim() || busy !== null}>
