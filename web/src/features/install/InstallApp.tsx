@@ -139,24 +139,29 @@ export function InstallBanner() {
   return (
     <>
       {show && (
-        <div
-          role="region"
-          aria-label="Install TeamUp"
-          data-testid="install-banner"
-          className="fixed bottom-[calc(var(--toast-bottom)+1rem)] left-1/2 z-40 flex w-[calc(100%-2rem)] max-w-md -translate-x-1/2 animate-in fade-in slide-in-from-bottom-2 items-center gap-3 rounded-xl border bg-card py-2.5 pl-3 pr-2 text-card-foreground shadow-lg"
-        >
-          <img src="/icons/icon-192.png" alt="" className="h-9 w-9 shrink-0 rounded-lg" />
-          <div className="min-w-0 flex-1 leading-tight">
-            <p className="text-sm font-medium">Get the TeamUp app</p>
-            <p className="truncate text-xs text-muted-foreground">On your home screen</p>
+        // Centred by the wrapper, not by a transform: the entrance animation
+        // replaces an element's transform while it runs, so a banner centred by
+        // one came in from the right of the screen.
+        <div className="pointer-events-none fixed inset-x-4 bottom-[calc(var(--toast-bottom)+1rem)] z-40 flex justify-center">
+          <div
+            role="region"
+            aria-label="Install TeamUp"
+            data-testid="install-banner"
+            className="pointer-events-auto flex w-full max-w-md animate-in fade-in slide-in-from-bottom-2 items-center gap-3 rounded-xl border bg-card py-2.5 pl-3 pr-2 text-card-foreground shadow-lg"
+          >
+            <img src="/icons/icon-192.png" alt="" className="h-9 w-9 shrink-0 rounded-lg" />
+            <div className="min-w-0 flex-1 leading-tight">
+              <p className="text-sm font-medium">Get the TeamUp app</p>
+              <p className="truncate text-xs text-muted-foreground">On your home screen</p>
+            </div>
+            <Button size="sm" onClick={() => (way === 'ios' ? setSteps(true) : void run())} disabled={busy}>
+              {busy && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
+              Install
+            </Button>
+            <Button size="icon" variant="ghost" className="h-8 w-8 shrink-0" aria-label="Not now" onClick={putAway}>
+              <X className="h-4 w-4" />
+            </Button>
           </div>
-          <Button size="sm" onClick={() => (way === 'ios' ? setSteps(true) : void run())} disabled={busy}>
-            {busy && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" aria-hidden="true" />}
-            Install
-          </Button>
-          <Button size="icon" variant="ghost" className="h-8 w-8 shrink-0" aria-label="Not now" onClick={putAway}>
-            <X className="h-4 w-4" />
-          </Button>
         </div>
       )}
       <IOSDialog
