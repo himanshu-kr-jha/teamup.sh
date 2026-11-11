@@ -830,7 +830,7 @@ The note-taker is off until an administrator sets it up under **Organization, Me
 It needs a Sarvam API key (dashboard.sarvam.ai) and a model for the minutes: a Claude, OpenAI or NVIDIA (build.nvidia.com, Nemotron) key, or the address of a model you run that serves the OpenAI chat API, such as Nemotron on vLLM or NVIDIA NIM.
 Enter keys only on that page; it stores them as secrets and never shows them again.
 
-For NVIDIA, leave the model name empty to use `nvidia/nemotron-3-super-120b-a12b`.
+For NVIDIA, leave the model name empty to use `nvidia/nemotron-3.5-lightning-30b-a3b`.
 NVIDIA retires hosted models every few months, and a retired one answers 410.
 A model name NVIDIA no longer lists is refused when it is saved, with ones it does list; a model retired after that is replaced, when the minutes are written, by the first Nemotron model NVIDIA still lists.
 `curl -s https://integrate.api.nvidia.com/v1/models` lists what it offers today.
