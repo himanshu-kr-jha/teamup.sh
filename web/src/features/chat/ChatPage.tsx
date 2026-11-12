@@ -1877,6 +1877,11 @@ function MessageMenu({
   onReply?: () => void;
   onShowReads: () => void;
 }) {
+  // Choosing Edit puts you in the edit box. Opened while the menu is still up,
+  // the box cannot take the focus the menu holds, and the menu then hands it
+  // back to its own button, so what you type next goes nowhere. So the box
+  // opens once the menu has closed, in place of the menu's own focus return.
+  const editChosen = useRef(false);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -1889,7 +1894,15 @@ function MessageMenu({
           <MoreVertical className="h-4 w-4" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
+      <DropdownMenuContent
+        align="end"
+        onCloseAutoFocus={(e) => {
+          if (!editChosen.current) return;
+          editChosen.current = false;
+          e.preventDefault();
+          onEdit?.();
+        }}
+      >
         {onReply && (
           <DropdownMenuItem onSelect={onReply}>
             <MessagesSquare className="mr-2 h-4 w-4" />
@@ -1916,7 +1929,9 @@ function MessageMenu({
         ))}
         {onEdit && (
           <DropdownMenuItem
-            onSelect={onEdit}
+            onSelect={() => {
+              editChosen.current = true;
+            }}
             disabled={!canEdit}
             // Saying why it is unavailable is more use than an item that
             // simply does nothing.
