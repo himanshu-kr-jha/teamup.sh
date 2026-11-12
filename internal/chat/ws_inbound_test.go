@@ -751,15 +751,21 @@ func TestAChatTypingFrameReachesTheOtherMembers(t *testing.T) {
 	typist := h.dial(t, "typist", org.ID, org.OwnerID)
 	watcher := h.dial(t, "watcher", org.ID, watcherID)
 
+	// It claims to be somebody else, which is not believed.
 	typist.send(t, protocol.TypeChatTyping, protocol.ChatTypingPayload{
 		ChannelID: channelID.String(),
 		IsTyping:  true,
+		UserID:    watcherID.String(),
 	})
 
 	var typing protocol.ChatTypingPayload
 	decodePayload(t, watcher.await(t, protocol.TypeChatTyping, 5*time.Second), &typing)
 	if typing.ChannelID != channelID.String() || !typing.IsTyping {
 		t.Errorf("typing payload did not survive the round trip: %+v", typing)
+	}
+	// Whoever reads it has to know who is typing, and it is whoever is connected.
+	if typing.UserID != org.OwnerID.String() {
+		t.Errorf("it names the typist, %s, not %q", org.OwnerID, typing.UserID)
 	}
 }
 
