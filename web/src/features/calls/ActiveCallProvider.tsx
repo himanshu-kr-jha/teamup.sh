@@ -29,11 +29,11 @@ import { classifyJoinError, type JoinFailure } from './knock';
 import { BURST_WINDOW_MS, createJoinTracker, joinedMessage } from './joinPing';
 import {
   AlertTriangle,
-  GripVertical,
   History,
   Link2,
   Maximize2,
   Minimize2,
+  MoveDiagonal2,
   PhoneOff,
   Volume2,
   UserPlus,
@@ -57,6 +57,7 @@ import { useUIStore } from '@/shared/store';
 import { useWebSocket } from '@/features/websocket/WSProvider';
 import { cn } from '@/shared/utils/cn';
 import { CameraBackground } from './BackgroundPicker';
+import { RESIZE_STEP, fitCallWindow, keepSize, savedSize, viewport } from './callWindow';
 
 interface ActiveCall {
   callId: string;
@@ -118,8 +119,6 @@ const ANSWER_WINDOW_MS = 30_000;
 /** How long the caller hears it ring: as long as the other end rings (IncomingCallDialog). */
 const RINGBACK_FOR_MS = 45_000;
 
-const COMPACT_WIDTH = 320;
-const COMPACT_HEIGHT = 200;
 
 /**
  * A sound and a toast when somebody else comes in. Not for you, and not for
@@ -474,11 +473,22 @@ function CallFrame({
   );
 
   // Above the bottom navigation on a phone, where the corner would cover it.
-  const [position, setPosition] = useState(() => ({ x: 8, y: window.innerWidth < 1024 ? 72 : 24 }));
+  const [frame, setFrame] = useState(() =>
+    fitCallWindow(savedSize(), { x: 8, y: window.innerWidth < 1024 ? 72 : 24 }, viewport())
+  );
+  const { size, position } = frame;
   const [asking, setAsking] = useState(false);
   const [showingLog, setShowingLog] = useState(false);
   const [showingGuests, setShowingGuests] = useState(false);
-  const dragState = useRef<{ startX: number; startY: number; originX: number; originY: number } | null>(null);
+  // What a drag or a resize started from: where the pointer was, and the frame.
+  const gesture = useRef<{ kind: 'move' | 'resize'; startX: number; startY: number; from: typeof frame } | null>(null);
+
+  // Turning a phone, or narrowing a browser, must not leave the window off screen.
+  useEffect(() => {
+    const refit = () => setFrame((f) => fitCallWindow(f.size, f.position, viewport()));
+    window.addEventListener('resize', refit);
+    return () => window.removeEventListener('resize', refit);
+  }, []);
 
   // Leaving is always just leaving. Anybody still in the call carries on, and
   // the call itself is closed only by whoever turns out to be last out - there
@@ -533,38 +543,53 @@ function CallFrame({
     return () => clearTimeout(drop);
   }, [asking, hangUp, toast]);
 
-  // Dragging the minimised window. Pointer events cover mouse and touch, and
-  // capture keeps it following the pointer outside the window.
-  const startDrag = (e: React.PointerEvent) => {
-    if (expanded) return;
-    // Capturing the pointer sends every later event to the title bar, so a
-    // drag started on top of a button swallowed its click entirely - expand
-    // and leave did nothing.
-    if ((e.target as HTMLElement).closest('button')) return;
+  // Moving and resizing the minimised window. Pointer events cover mouse and
+  // finger alike, and capture keeps it following the pointer outside the window.
+  // It moves from anywhere on it that is not a button, which on a phone is
+  // what a finger expects; it is resized from the grip in its top left corner,
+  // the one away from the corner it is anchored to.
+  const startGesture = (kind: 'move' | 'resize') => (e: React.PointerEvent) => {
+    if (expanded || e.button > 0) return;
+    // Capturing the pointer sends every later event here, so a drag started on
+    // top of a button swallowed its click entirely - expand and leave did nothing.
+    if (kind === 'move' && (e.target as HTMLElement).closest('button')) return;
+    e.stopPropagation();
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    dragState.current = {
-      startX: e.clientX,
-      startY: e.clientY,
-      originX: position.x,
-      originY: position.y,
-    };
+    gesture.current = { kind, startX: e.clientX, startY: e.clientY, from: frame };
   };
 
-  const onDrag = (e: React.PointerEvent) => {
-    const state = dragState.current;
-    if (!state) return;
-    const width = Math.min(COMPACT_WIDTH, window.innerWidth - 16);
-    const height = COMPACT_HEIGHT;
-    setPosition({
-      // Kept on screen: a window dragged off the edge cannot be got back.
-      x: clamp(state.originX - (e.clientX - state.startX), 8, window.innerWidth - width),
-      y: clamp(state.originY - (e.clientY - state.startY), 8, window.innerHeight - height),
-    });
+  const onGesture = (e: React.PointerEvent) => {
+    const g = gesture.current;
+    if (!g) return;
+    const dx = e.clientX - g.startX;
+    const dy = e.clientY - g.startY;
+    setFrame(
+      g.kind === 'move'
+        ? fitCallWindow(g.from.size, { x: g.from.position.x - dx, y: g.from.position.y - dy }, viewport())
+        : fitCallWindow({ width: g.from.size.width - dx, height: g.from.size.height - dy }, g.from.position, viewport())
+    );
   };
 
-  const endDrag = (e: React.PointerEvent) => {
-    dragState.current = null;
+  const endGesture = (e: React.PointerEvent) => {
+    const g = gesture.current;
+    if (!g) return;
+    gesture.current = null;
     (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    if (g.kind === 'resize') keepSize(frame.size);
+  };
+
+  // The grip answers the arrow keys too, for whoever is not using a pointer.
+  const resizeByKey = (e: React.KeyboardEvent) => {
+    const step = { ArrowLeft: [1, 0], ArrowRight: [-1, 0], ArrowUp: [0, 1], ArrowDown: [0, -1] }[e.key];
+    if (!step) return;
+    e.preventDefault();
+    const next = fitCallWindow(
+      { width: size.width + step[0] * RESIZE_STEP, height: size.height + step[1] * RESIZE_STEP },
+      position,
+      viewport()
+    );
+    setFrame(next);
+    keepSize(next.size);
   };
 
   return (
@@ -577,7 +602,8 @@ function CallFrame({
           'z-50 overflow-hidden bg-background text-foreground shadow-2xl',
           expanded
             ? cn('fixed inset-0', sidebarOpen ? 'lg:left-64' : 'lg:left-16')
-            : 'fixed rounded-xl border border-border'
+            : // touch-none: a finger on it moves the window rather than scrolling the page.
+              'fixed touch-none select-none rounded-xl border border-border'
         )}
         style={
           expanded
@@ -585,22 +611,38 @@ function CallFrame({
             : {
                 right: position.x,
                 bottom: position.y,
-                width: `min(${COMPACT_WIDTH}px, calc(100vw - 16px))`,
-                height: COMPACT_HEIGHT,
+                width: size.width,
+                height: size.height,
               }
         }
+        data-testid={expanded ? undefined : 'call-window'}
+        onPointerDown={startGesture('move')}
+        onPointerMove={onGesture}
+        onPointerUp={endGesture}
+        onPointerCancel={endGesture}
       >
+        {!expanded && (
+          <button
+            type="button"
+            aria-label="Resize the call window"
+            title="Drag to resize"
+            className="absolute left-1 top-1.5 z-10 flex h-7 w-7 cursor-nwse-resize items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-8 [@media(pointer:coarse)]:w-8"
+            onPointerDown={startGesture('resize')}
+            onPointerMove={onGesture}
+            onPointerUp={endGesture}
+            onPointerCancel={endGesture}
+            onKeyDown={resizeByKey}
+          >
+            <MoveDiagonal2 className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        )}
         <div className="flex h-full flex-col">
           <div
             className={cn(
               'flex items-center gap-2 border-b border-border px-2 py-1.5',
-              !expanded && 'cursor-grab active:cursor-grabbing'
+              !expanded && 'cursor-grab pl-9 active:cursor-grabbing'
             )}
-            onPointerDown={startDrag}
-            onPointerMove={onDrag}
-            onPointerUp={endDrag}
           >
-            {!expanded && <GripVertical className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />}
             <span className="min-w-0 flex-1 truncate text-sm font-medium">
               {expanded && title ? `${title} \u00b7 ` : ''}
               {alone ? waitingLabel(reachable) : `${compactCount(remote.length + 1, expanded)}`}
@@ -711,10 +753,6 @@ function CallFrame({
 /** The corner window is short of room; the full view can say what it is. */
 function compactCount(people: number, expanded: boolean) {
   return expanded ? `In a call \u00b7 ${people}` : `${people} in call`;
-}
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(Math.max(value, min), Math.max(min, max));
 }
 
 /** The video itself, plus the controls when there is room for them. */
