@@ -65,6 +65,10 @@ func (d *devices) PushToUsers(context.Context, []uuid.UUID, protocol.Push) {
 	d.pushes++
 }
 
+func (d *devices) DeliverToUsers(ctx context.Context, ids []uuid.UUID, push protocol.Push) {
+	d.PushToUsers(ctx, ids, push)
+}
+
 func (d *devices) Notify(context.Context, uuid.UUID, uuid.UUID, string, string, string, map[string]any) error {
 	return nil
 }
