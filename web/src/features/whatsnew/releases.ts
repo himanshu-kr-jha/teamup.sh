@@ -26,6 +26,23 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-12-c',
+    date: '2026-11-12',
+    title: 'A call window you can resize',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'Make the minimised call bigger or smaller',
+        body: 'Drag the arrow in the top left corner of a minimised call to resize it; the people in it grow and shrink with it, and it keeps that size next time on that device.',
+      },
+      {
+        area: 'meetings',
+        title: 'Move it with a finger',
+        body: 'On a phone, put a finger anywhere on the minimised call and drag it where you want it. It stays on the screen, even when you turn the phone.',
+      },
+    ],
+  },
+  {
     id: '2026-11-12-b',
     date: '2026-11-12',
     title: 'Meeting chat in bubbles, and two fixes',

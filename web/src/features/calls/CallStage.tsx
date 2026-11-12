@@ -283,6 +283,11 @@ function TileGrid({
   );
 }
 
+// A small tile's picture and initials, in proportion to the tile (cqmin is a
+// share of its shorter side) between the old fixed size and the full one.
+const SMALL_PICTURE = 'h-[clamp(2rem,38cqmin,5rem)] w-[clamp(2rem,38cqmin,5rem)]';
+const SMALL_INITIALS = 'text-[clamp(0.75rem,13cqmin,1.5rem)]';
+
 /** One person, or one shared screen. */
 function ParticipantPanel({
   track,
@@ -351,7 +356,9 @@ function ParticipantPanel({
     <TrackRefContext.Provider value={track}>
       <div
         className={cn(
-          'group relative h-full w-full overflow-hidden rounded-lg bg-black/80',
+          // A size container, so a small tile's picture grows with the tile:
+          // the minimised call window can be made bigger.
+          'group relative h-full w-full overflow-hidden rounded-lg bg-black/80 [container-type:size]',
           // Whoever is talking is outlined, so a room of faces still tells you
           // where to look.
           speaking && !presenting ? 'ring-2 ring-green-500' : 'ring-1 ring-border/50'
@@ -369,18 +376,18 @@ function ParticipantPanel({
               <span
                 className={cn(
                   'flex items-center justify-center rounded-full bg-primary/20 font-semibold text-primary',
-                  compact ? 'h-8 w-8 text-xs' : 'h-20 w-20 text-2xl'
+                  compact ? cn(SMALL_PICTURE, SMALL_INITIALS) : 'h-20 w-20 text-2xl'
                 )}
               >
-                <NotebookPen className={compact ? 'h-4 w-4' : 'h-9 w-9'} aria-label="Notes" />
+                <NotebookPen className={compact ? 'h-1/2 w-1/2' : 'h-9 w-9'} aria-label="Notes" />
               </span>
             ) : (
               <PersonAvatar
                 // A member's identity is their id; a guest has none to look up.
                 userId={guest ? null : participant.identity}
                 name={name}
-                className={compact ? 'h-8 w-8' : 'h-20 w-20'}
-                fallbackClassName={cn('bg-primary/20 font-semibold text-primary', compact ? 'text-xs' : 'text-2xl')}
+                className={compact ? SMALL_PICTURE : 'h-20 w-20'}
+                fallbackClassName={cn('bg-primary/20 font-semibold text-primary', compact ? SMALL_INITIALS : 'text-2xl')}
               />
             )}
           </div>
