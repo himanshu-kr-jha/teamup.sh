@@ -293,3 +293,43 @@ func TestAnOutageOnlyAVisitorSawStaysOnRecord(t *testing.T) {
 		t.Errorf("up again, with the outage on record: %+v", files)
 	}
 }
+
+// Seen on GitHub's machines: file storage went down and came back within one
+// clock minute, and the page right after said there had been no outage. The
+// minute under way was taken from the check just made, which was fine, and the
+// failure already written into that minute was ignored.
+func TestAnOutageOverWithinTheSameMinuteIsStillOnRecord(t *testing.T) {
+	w := newWorld()
+	w.minutes(t, 5)
+	w.up["minio"] = false
+	w.svc.Report(context.Background())
+	w.up["minio"] = true
+	w.now = w.now.Add(20 * time.Second) // the same minute
+
+	files := row(t, w.svc.Report(context.Background()), "minio")
+	if files.Status != "operational" {
+		t.Errorf("up again now: %s", files.Status)
+	}
+	if len(files.Incidents) != 1 || files.Incidents[0].End == nil || files.Incidents[0].Minutes != 1 {
+		t.Fatalf("one finished outage of a minute: %+v", files.Incidents)
+	}
+	if files.Hours[len(files.Hours)-1].Status != "partial" {
+		t.Errorf("the hour shows it: %+v", files.Hours[len(files.Hours)-1])
+	}
+}
+
+// Down now with the minute recorded as fine (an earlier check in it passed) is
+// still down now: the check just made is the newest word.
+func TestDownNowIsDownEvenIfTheMinuteStartedFine(t *testing.T) {
+	w := newWorld()
+	w.minutes(t, 5)
+	w.now = w.now.Add(-30 * time.Second)
+	w.svc.RecordOnce(context.Background())
+	w.up["minio"] = false
+	w.now = w.now.Add(20 * time.Second)
+
+	files := row(t, w.svc.Report(context.Background()), "minio")
+	if files.Status != "outage" || len(files.Incidents) != 1 || files.Incidents[0].End != nil {
+		t.Fatalf("an ongoing outage: %+v", files)
+	}
+}

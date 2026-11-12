@@ -248,7 +248,11 @@ func history(key string, buckets map[int64]map[string]bool, first, last int64, u
 			up, seen = b[key]
 		}
 		if m == last {
-			up, seen = upNow, true
+			// The minute under way is down if it is down now, and also if a
+			// check earlier in it failed: an outage over within one minute is
+			// still an outage, and must not vanish from the record until the
+			// next minute begins.
+			up, seen = upNow && (!seen || up), true
 		}
 		if !seen {
 			// Nothing to go on: an incident does not carry across a gap.
@@ -270,8 +274,13 @@ func history(key string, buckets map[int64]map[string]bool, first, last int64, u
 	}
 	hours = append(hours, finish(*bar, recordedInBar))
 	if open != nil {
-		// Still down as of now.
-		incidents = append(incidents, *open)
+		if upNow {
+			// Down earlier in this minute, up again now: over, at the end of it.
+			closeOpen(last + 1)
+		} else {
+			// Still down as of now.
+			incidents = append(incidents, *open)
+		}
 	}
 
 	// Newest first.
