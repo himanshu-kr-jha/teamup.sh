@@ -26,6 +26,18 @@ async function swipe(page: Page, from: { x: number; y: number }, to: { x: number
   await cdp.detach();
 }
 
+/**
+ * Waits for the call to be over on the server. A page closed the moment Leave
+ * is clicked can leave its person in the call for a while, and the tests after
+ * this one would find them busy. The media server closes an empty room some
+ * twenty seconds after the last person has gone, which is what ends the call.
+ */
+async function allGone(api: Awaited<ReturnType<typeof apiAs>>, callId: string) {
+  await expect
+    .poll(async () => (await api.get(`/calls/${callId}`)).status, { message: 'the call to be over', timeout: 60_000 })
+    .toBe('ended');
+}
+
 test.describe('the minimised call window', () => {
   test('is made bigger and smaller from its corner, its people grow with it, and it keeps that size', async ({ as }) => {
     test.setTimeout(120_000);
@@ -88,7 +100,10 @@ test.describe('the minimised call window', () => {
     expect(Math.round(stored.width)).toBe(Math.round(kept.width));
 
     await olivia.page.getByRole('button', { name: 'Leave the call' }).click();
+    await expect(olivia.page.getByRole('button', { name: 'Leave the call' })).toHaveCount(0);
     await alice.page.getByRole('button', { name: 'Leave the call' }).click();
+    await expect(alice.page.getByRole('button', { name: 'Leave the call' })).toHaveCount(0);
+    await allGone(owner, call.id);
     await owner.dispose();
   });
 
@@ -127,6 +142,8 @@ test.describe('the minimised call window', () => {
     expect(wide.x + wide.width).toBeLessThanOrEqual(390 - 7.5);
 
     await alice.page.getByRole('button', { name: 'Leave the call' }).click();
+    await expect(alice.page.getByRole('button', { name: 'Leave the call' })).toHaveCount(0);
+    await allGone(owner, call.id);
     await owner.dispose();
   });
 });
