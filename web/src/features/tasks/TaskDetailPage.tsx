@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { LinkedText } from '@/shared/components/LinkedText';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ChevronLeft, Calendar, MessageSquare, MoreVertical, UserPlus, History, Paperclip } from 'lucide-react';
+import { ChevronLeft, Calendar, MessageSquare, MoreVertical, UserPlus, History, Paperclip, Plus } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Textarea } from '@/shared/components/ui/textarea';
@@ -22,6 +22,9 @@ import { MentionTextarea } from '@/features/chat/MentionTextarea';
 import { MessageText } from '@/features/chat/MentionUI';
 import { PersonAvatar } from '@/shared/components/UserAvatar';
 import { DevelopmentCard } from './DevelopmentCard';
+import { LabelBadge } from './LabelBadge';
+import { MAX_LABEL, colorFor, existingLabel } from './labels';
+import { ShowMoreButton, useShowMore } from '@/shared/components/ShowMore';
 import { PeoplePicker, addEach, addLabel } from '@/shared/components/PeoplePicker';
 import { useUpload } from '@/features/files/useUpload';
 import { StagedFiles, type StagedFile } from '@/features/files/StagedFiles';
@@ -46,7 +49,7 @@ interface Task {
   reporterId?: string;
   reporterName?: string;
   dueDate?: string;
-  labels: { name: string; color: string }[];
+  labels: { id: string; name: string; color: string }[];
   projectId?: string;
   projectName?: string;
   createdAt: string;
@@ -340,10 +343,8 @@ function TaskDetailView() {
                     {task.priority}
                   </Badge>
                   <Badge variant="outline">{task.taskType}</Badge>
-                  {task.labels.map(label => (
-                    <Badge key={label.name} variant="secondary" style={{ backgroundColor: label.color }}>
-                      {label.name}
-                    </Badge>
+                  {task.labels.map((label) => (
+                    <LabelBadge key={label.name} name={label.name} color={label.color} />
                   ))}
                 </div>
 
@@ -572,21 +573,34 @@ function TaskDetailView() {
 }
 
 
-// Labels and watchers had no UI at all; watchers had no server route either.
-function LabelsCard({ taskId, labels }: { taskId: string; labels: any[] }) {
+// Labels sort tasks into kinds that cut across projects and people, such as
+// "bug" or "frontend", and the board can be narrowed to one. A label is made by
+// typing its name here; one the organization already has is offered instead.
+function LabelsCard({ taskId, labels }: { taskId: string; labels: { id: string; name: string; color: string }[] }) {
   const toast = useToast();
   const queryClient = useQueryClient();
   const { data } = useQuery({ queryKey: ['labels'], queryFn: () => tasksApi.listLabels() });
-  const all = data?.data ?? [];
+  const all = (data?.data ?? []) as { id: string; name: string; color: string }[];
+  const [text, setText] = useState('');
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
 
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ['task', taskId] });
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: ['task', taskId] });
+    queryClient.invalidateQueries({ queryKey: ['tasks'] });
+    queryClient.invalidateQueries({ queryKey: ['task-activities', taskId] });
+  };
 
   const attach = async (labelId: string) => {
+    setBusy(true);
     try {
       await tasksApi.addLabel(taskId, labelId);
+      setText('');
       refresh();
     } catch (err) {
       toast.error(apiErrorMessage(err, 'Could not add that label.'));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -599,33 +613,121 @@ function LabelsCard({ taskId, labels }: { taskId: string; labels: any[] }) {
     }
   };
 
-  const available = all.filter((l: any) => !labels.some((x) => x.id === l.id));
+  const name = text.trim();
+  const known = name ? existingLabel(all, name) : undefined;
+  const onTask = (id: string) => labels.some((x) => x.id === id);
+
+  const addTyped = async () => {
+    if (!name || busy) return;
+    if (known) {
+      if (onTask(known.id)) setText('');
+      else await attach(known.id);
+      return;
+    }
+    if (name.length > MAX_LABEL) {
+      toast.error(`A label can be at most ${MAX_LABEL} characters.`);
+      return;
+    }
+    setBusy(true);
+    try {
+      const made = await tasksApi.createLabel({ name, color: colorFor(name) });
+      await queryClient.invalidateQueries({ queryKey: ['labels'] });
+      await tasksApi.addLabel(taskId, made.data.id);
+      setText('');
+      refresh();
+    } catch (err) {
+      toast.error(apiErrorMessage(err, 'Could not make that label.'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const suggestions = all
+    .filter((l) => !onTask(l.id) && l.name.toLowerCase().includes(name.toLowerCase()))
+    .slice(0, 8);
+  const offerNew = !!name && !known;
 
   return (
     <Card>
       <CardHeader><CardTitle>Labels</CardTitle></CardHeader>
       <CardContent className="space-y-3">
-        <div className="flex flex-wrap gap-1">
+        <div className="flex flex-wrap gap-1.5" aria-label="Labels on this task">
           {labels.length === 0 && <span className="text-sm text-muted-foreground">None yet.</span>}
-          {labels.map((l: any) => (
-            <Badge key={l.id} variant="secondary" className="gap-1" style={{ borderColor: l.color }}>
-              {l.name}
-              <button onClick={() => detach(l.id)} aria-label={`Remove ${l.name}`} className="opacity-60 hover:opacity-100">
+          {labels.map((l) => (
+            <LabelBadge key={l.id} name={l.name} color={l.color}>
+              <button
+                type="button"
+                onClick={() => detach(l.id)}
+                aria-label={`Remove ${l.name}`}
+                className="-mr-1 rounded-full px-1 leading-none text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
                 ×
               </button>
-            </Badge>
+            </LabelBadge>
           ))}
         </div>
-        {available.length > 0 && (
-          <Select value="" onValueChange={attach}>
-            <SelectTrigger><SelectValue placeholder="Add a label" /></SelectTrigger>
-            <SelectContent>
-              {available.map((l: any) => (
-                <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>
+        <div className="relative">
+          <Input
+            value={text}
+            disabled={busy}
+            placeholder={all.length ? 'Add a label, or type a new one' : 'Type a label, such as bug'}
+            aria-label="Add a label"
+            onFocus={() => setOpen(true)}
+            onBlur={() => window.setTimeout(() => setOpen(false), 150)}
+            onChange={(e) => {
+              setText(e.target.value);
+              setOpen(true);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                void addTyped();
+              } else if (e.key === 'Escape') {
+                setText('');
+                setOpen(false);
+              }
+            }}
+            className="h-9"
+          />
+          {open && (suggestions.length > 0 || offerNew) && (
+            <ul
+              aria-label="Labels to add"
+              className="absolute left-0 right-0 top-full z-20 mt-1 max-h-60 overflow-y-auto rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-md"
+            >
+              {suggestions.map((l) => (
+                <li key={l.id}>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => void attach(l.id)}
+                  >
+                    <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: l.color }} aria-hidden="true" />
+                    <span className="truncate">{l.name}</span>
+                  </button>
+                </li>
               ))}
-            </SelectContent>
-          </Select>
-        )}
+              {offerNew && (
+                <li>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => void addTyped()}
+                  >
+                    <Plus className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                    <span className="min-w-0 truncate">
+                      Make the label <span className="font-medium">&ldquo;{name}&rdquo;</span>
+                    </span>
+                  </button>
+                </li>
+              )}
+            </ul>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Labels sort tasks into kinds, such as bug or frontend. The board can show only the tasks with one.
+        </p>
       </CardContent>
     </Card>
   );
@@ -639,6 +741,8 @@ function CommentList({ taskId }: { taskId: string }) {
     queryFn: () => tasksApi.listComments(taskId),
   });
   const comments = data?.data ?? [];
+  // The newest few; the rest are a click away, above them.
+  const more = useShowMore<any>(comments, 5, 'end');
 
   if (isLoading) return <p className="py-4 text-sm text-muted-foreground">Loading comments…</p>;
   if (comments.length === 0) {
@@ -646,8 +750,10 @@ function CommentList({ taskId }: { taskId: string }) {
   }
 
   return (
-    <ul className="space-y-4">
-      {comments.map((comment: any) => (
+    <div className="space-y-2">
+      <ShowMoreButton state={more} noun={['comment', 'comments']} earlier />
+      <ul className="space-y-4">
+      {more.visible.map((comment: any) => (
         <li key={comment.id} className="flex gap-3">
           <PersonAvatar userId={comment.userId} name={comment.userName} fallbackClassName="bg-primary/10 font-medium text-primary" />
           <div className="min-w-0 flex-1">
@@ -670,7 +776,8 @@ function CommentList({ taskId }: { taskId: string }) {
           </div>
         </li>
       ))}
-    </ul>
+      </ul>
+    </div>
   );
 }
 
@@ -684,6 +791,8 @@ function ActivityList({ taskId }: { taskId: string }) {
     queryFn: () => tasksApi.getActivities(taskId),
   });
   const activities = data?.data ?? [];
+  // The latest few changes; the rest are a click away, below them.
+  const more = useShowMore<any>(activities, 5);
   // Whoever a task was handed to, by name: everybody in the organization.
   const { data: usersData } = useQuery({ queryKey: ['users'], queryFn: () => orgApi.listUsers() });
   const nameOf = (id: string) => (usersData?.data as { id: string; name: string }[] | undefined)?.find((u) => u.id === id)?.name;
@@ -694,8 +803,9 @@ function ActivityList({ taskId }: { taskId: string }) {
   }
 
   return (
-    <ul className="space-y-3">
-      {activities.map((a: any) => (
+    <div className="space-y-2">
+      <ul className="space-y-3">
+      {more.visible.map((a: any) => (
         <li key={a.id} className="flex items-start gap-3 text-sm">
           <History className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
           <div className="min-w-0 flex-1">
@@ -732,7 +842,9 @@ function ActivityList({ taskId }: { taskId: string }) {
           </div>
         </li>
       ))}
-    </ul>
+      </ul>
+      <ShowMoreButton state={more} noun={['change', 'changes']} />
+    </div>
   );
 }
 

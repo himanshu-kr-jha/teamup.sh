@@ -1786,3 +1786,39 @@ func TestTheTaskListCapDropsOldFinishedWorkBeforeOpenWork(t *testing.T) {
 		}
 	}
 }
+
+func TestTypingALabelAgainFindsTheOneAlreadyMade(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	first, err := svc.CreateLabel(ctx, org.ID, "  Front   end ", "#10b981")
+	if err != nil {
+		t.Fatalf("create label: %v", err)
+	}
+	if first.Name != "Front end" {
+		t.Errorf("the name is tidied: %q", first.Name)
+	}
+	again, err := svc.CreateLabel(ctx, org.ID, "front end", "#ef4444")
+	if err != nil {
+		t.Fatalf("create it again: %v", err)
+	}
+	if again.ID != first.ID || again.Color != "#10b981" || again.Name != "Front end" {
+		t.Errorf("the same label, as it was, not a second one or a new colour: %+v", again)
+	}
+
+	for _, bad := range []struct{ name, color string }{
+		{"   ", ""},
+		{strings.Repeat("x", MaxLabelName+1), ""},
+		{"ok", "red"},
+		{"ok", "#12345"},
+	} {
+		if _, err := svc.CreateLabel(ctx, org.ID, bad.name, bad.color); err == nil {
+			t.Errorf("name %q colour %q should be refused", bad.name, bad.color)
+		}
+	}
+	labels, _ := svc.ListLabels(ctx, org.ID)
+	if len(labels) != 1 {
+		t.Errorf("one label after all that, got %d", len(labels))
+	}
+}

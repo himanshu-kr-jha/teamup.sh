@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -1587,15 +1588,43 @@ func (s *Service) ListLabels(ctx context.Context, orgID uuid.UUID) ([]Label, err
 	return labels, rows.Err()
 }
 
+// MaxLabelName is the longest name a label may have, in characters.
+const MaxLabelName = 50
+
+var labelColor = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+
+// CreateLabel makes a label, or hands back the one the organization already has
+// by that name, whatever its case, unchanged: typing a name somebody else made
+// first must not recolour it for everybody.
 func (s *Service) CreateLabel(ctx context.Context, orgID uuid.UUID, name, color string) (*Label, error) {
+	name = strings.Join(strings.Fields(name), " ")
+	if name == "" {
+		return nil, apperrors.New(apperrors.CodeValidation, "a label needs a name")
+	}
+	if utf8.RuneCountInString(name) > MaxLabelName {
+		return nil, apperrors.New(apperrors.CodeValidation, fmt.Sprintf("a label can be at most %d characters", MaxLabelName))
+	}
 	if color == "" {
 		color = "#6366f1"
 	}
+	if !labelColor.MatchString(color) {
+		return nil, apperrors.New(apperrors.CodeValidation, "a label's colour is written like #6366f1")
+	}
 	var l Label
 	err := s.db.QueryRow(ctx, `
+		SELECT id, org_id, name, COALESCE(color, '#6366f1'), created_at FROM labels
+		WHERE org_id = $1 AND lower(name) = lower($2) ORDER BY created_at LIMIT 1
+	`, orgID, name).Scan(&l.ID, &l.OrgID, &l.Name, &l.Color, &l.CreatedAt)
+	if err == nil {
+		return &l, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("find label: %w", err)
+	}
+	err = s.db.QueryRow(ctx, `
 		INSERT INTO labels (id, org_id, name, color, created_at)
 		VALUES (gen_random_uuid(), $1, $2, $3, NOW())
-		ON CONFLICT (org_id, name) DO UPDATE SET color = EXCLUDED.color
+		ON CONFLICT (org_id, name) DO UPDATE SET name = labels.name
 		RETURNING id, org_id, name, COALESCE(color, '#6366f1'), created_at
 	`, orgID, name, color).Scan(&l.ID, &l.OrgID, &l.Name, &l.Color, &l.CreatedAt)
 	if err != nil {
