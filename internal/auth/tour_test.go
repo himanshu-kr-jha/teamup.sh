@@ -69,3 +69,70 @@ func TestTheWelcomeTourIsShownOnceAndCanBeShownAgain(t *testing.T) {
 		t.Fatalf("asked for again, it is shown again: %v", got)
 	}
 }
+
+// What's new opens by itself once after each update: the newest entry seen is
+// kept for the person, only ever moves forward, and takes only an entry's id.
+func TestWhatsNewRemembersTheNewestEntrySeen(t *testing.T) {
+	pool := testDB(t)
+	svc := testService(t, pool)
+	ctx := context.Background()
+	email := "news-" + uuid.New().String()[:8] + "@acme.test"
+	seedUser(t, pool, email, "their-password")
+	user, err := svc.GetUserByEmail(ctx, email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := signIn(t, svc, user)
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	RegisterRoutes(r.Group("/api/auth"), svc)
+
+	seen := func() any {
+		t.Helper()
+		w := getAs(r, http.MethodGet, "/api/auth/me", token)
+		var got struct {
+			User map[string]any `json:"user"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatal(err)
+		}
+		v, present := got.User["whatsNewSeen"]
+		if !present {
+			t.Fatal("whatsNewSeen is not in /me at all")
+		}
+		return v
+	}
+	post := func(id string) int {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/whats-new", strings.NewReader(`{"seen":"`+id+`"}`))
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w.Code
+	}
+
+	if got := seen(); got != nil {
+		t.Fatalf("nothing seen yet: %v", got)
+	}
+	if code := post("2026-11-12"); code != http.StatusOK {
+		t.Fatalf("seeing an entry: %d", code)
+	}
+	if got := seen(); got != "2026-11-12" {
+		t.Fatalf("kept: %v", got)
+	}
+	// An older page still open somewhere does not bring the newest back.
+	if code := post("2026-11-01"); code != http.StatusOK {
+		t.Fatalf("an older entry: %d", code)
+	}
+	if got := seen(); got != "2026-11-12" {
+		t.Errorf("never backwards: %v", got)
+	}
+	if code := post("2026-11-12-b"); code != http.StatusOK || seen() != "2026-11-12-b" {
+		t.Errorf("a second update the same day moves it on")
+	}
+	for _, bad := range []string{"", "yesterday", "2026-11-12; DROP TABLE users", "2026-11-12-TOOLONGSUFFIX"} {
+		if code := post(bad); code != http.StatusBadRequest {
+			t.Errorf("%q should be refused, got %d", bad, code)
+		}
+	}
+}

@@ -726,6 +726,11 @@ export const tourApi = {
   set: (done: boolean) => api.post<{ tourCompletedAt: string | null }>('/auth/tour', { done }),
 };
 
+export const whatsNewApi = {
+  /** Records the newest What's new entry seen; the server never moves it backwards. */
+  seen: (id: string) => api.post<{ whatsNewSeen: string }>('/auth/whats-new', { seen: id }),
+};
+
 export const notificationsApi = {
   unreadCount: () => api.get('/notifications/unread-count'),
   vapidKey: () => api.get('/notifications/vapid-key'),

@@ -15,6 +15,7 @@ import { cn } from "@/shared/utils/cn";
 import { OutageBanner } from "@/features/status/OutageBanner";
 import { TopProgress } from "@/shared/components/TopProgress";
 import { WelcomeTour } from "@/features/tour/WelcomeTour";
+import { WhatsNewAfterUpdate } from '@/features/whatsnew/WhatsNew';
 import { InstallBanner } from "@/features/install/InstallApp";
 
 export function Layout() {
@@ -73,6 +74,8 @@ export function Layout() {
         <UpdateOffer />
         {/* A look around for somebody signing in for the first time. */}
         <WelcomeTour />
+        {/* Once after each update, what changed. */}
+        <WhatsNewAfterUpdate />
         {/* On a phone, a suggestion to put TeamUp on the home screen. */}
         <InstallBanner />
       </div>

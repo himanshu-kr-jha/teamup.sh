@@ -21,6 +21,11 @@ export interface SessionOptions {
    * told it has seen the tour already, so it does not cover what a test is about.
    */
   tour?: boolean;
+  /**
+   * Let What's new open by itself as it would after an update. Every other
+   * session is told it has seen the newest already.
+   */
+  whatsNew?: boolean;
   /** A phone's browser, touch and all, rather than a narrow desktop window. */
   phone?: 'android' | 'iphone';
 }
@@ -98,7 +103,7 @@ export async function openSession(browser: Browser, who: PersonKey | Person, opt
     page.on('pageerror', (e) => problems.push(`[pageerror] ${e.message}`));
   };
   context.on('page', watch);
-  if (!options.tour) await hideWelcomeTour(context);
+  if (!options.tour || !options.whatsNew) await hideIntroductions(context, { tour: !options.tour, whatsNew: !options.whatsNew });
   const page = await context.newPage();
 
   if (!options.signedOut) await signIn(page, who);
@@ -106,19 +111,20 @@ export async function openSession(browser: Browser, who: PersonKey | Person, opt
 }
 
 /**
- * Tells a browser that its person has seen the welcome tour already, so it does
- * not cover what a test is about. Said in the answers that carry the person
- * rather than stored, so a test that wants the tour for the same person can
- * still have it.
+ * Tells a browser that its person has seen the welcome tour, or What's new,
+ * already, so neither covers what a test is about. Said in the answers that
+ * carry the person rather than stored, so a test that wants either for the same
+ * person can still have it.
  */
-export async function hideWelcomeTour(context: BrowserContext) {
+export async function hideIntroductions(context: BrowserContext, hide: { tour: boolean; whatsNew: boolean }) {
   await context.route(/\/api\/auth\/(me|login)$/, async (route) => {
     const response = await route.fetch();
     let body = await response.text();
     try {
       const json = JSON.parse(body);
-      if (json?.user && json.user.tourCompletedAt == null) {
-        json.user.tourCompletedAt = '2000-01-01T00:00:00Z';
+      if (json?.user) {
+        if (hide.tour && json.user.tourCompletedAt == null) json.user.tourCompletedAt = '2000-01-01T00:00:00Z';
+        if (hide.whatsNew) json.user.whatsNewSeen = '9999-12-31';
         body = JSON.stringify(json);
       }
     } catch {

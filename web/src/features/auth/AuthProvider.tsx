@@ -14,6 +14,8 @@ interface User {
   mustChangePassword?: boolean;
   /** When they finished or skipped the welcome tour; null until then, undefined until known. */
   tourCompletedAt?: string | null;
+  /** The newest What's new entry they have seen; null for none yet, undefined until known. */
+  whatsNewSeen?: string | null;
   /** What the person's roles let them do; see shared/permissions.ts. */
   permissions?: string[];
 }

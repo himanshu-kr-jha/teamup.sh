@@ -41,6 +41,7 @@ test.describe('the welcome tour', () => {
       ['Meeting notes', main.getByRole('link', { name: 'Meeting notes' })],
       ['Calendar', main.getByRole('link', { name: 'Calendar' })],
       ['Tasks', main.getByRole('link', { name: 'Tasks' })],
+      ['Projects', main.getByRole('link', { name: 'Projects' })],
       ['Your availability', sam.page.locator('[data-tour="availability"]')],
     ];
     for (const [i, [title, target]] of places.entries()) {

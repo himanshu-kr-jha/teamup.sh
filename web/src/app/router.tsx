@@ -16,6 +16,7 @@ import { GuestJoinPage } from '@/features/calls/GuestJoinPage';
 import { AttendancePage } from '@/features/calls/standing/AttendancePage';
 import { CalendarPage } from '@/features/calendar/CalendarPage';
 import { StatusPage } from '@/features/status/StatusPage';
+import { WhatsNewPage } from '@/features/whatsnew/WhatsNew';
 import { TaskDetailPage } from '@/features/tasks/TaskDetailPage';
 import { useAuthStore } from '@/shared/store/authStore';
 import { loginPathFor } from '@/features/auth/nextPath';
@@ -110,6 +111,7 @@ export const router = createBrowserRouter([
       { path: 'tasks/:taskId', element: <TaskDetailPage /> },
       { path: 'projects', element: <ProjectsPage /> },
       { path: 'settings', element: <SettingsPage /> },
+      { path: 'whats-new', element: <WhatsNewPage /> },
       { path: 'organization', element: <OnlyForAdministrators /> },
     ],
   },
