@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   CheckSquare,
   CircleDot,
+  FolderGit2,
   Loader2,
   MessageSquare,
   NotebookPen,
@@ -19,7 +20,8 @@ import {
 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { useAuthStore } from '@/shared/store/authStore';
-import { tourApi } from '@/shared/api/client';
+import { tourApi, whatsNewApi } from '@/shared/api/client';
+import { LATEST } from '@/features/whatsnew/releases';
 import { useBranding } from '@/features/branding/useBranding';
 import { usePushSubscription } from '@/features/notifications/usePushSubscription';
 import { cn } from '@/shared/utils/cn';
@@ -42,36 +44,43 @@ const PLACES: Extract<Step, { kind: 'place' }>[] = [
     kind: 'place',
     target: 'chat',
     title: 'Chat',
-    body: 'Channels for your teams and direct messages for one-to-ones. Send files, voice and video notes, and @mention people. The bell in a conversation chooses what it tells you about.',
+    body: 'Channels for your teams and direct messages for one-to-ones. Reply in threads, send files, voice and video notes, and @mention people; two ticks mean it was read. The bell in a conversation chooses what it tells you about.',
     Icon: MessageSquare,
   },
   {
     kind: 'place',
     target: 'calls',
     title: 'Calls and meetings',
-    body: 'Call anybody, or start a meeting. In a call the ✨ button blurs or changes your background and sets a colour, and a meeting can have guests from outside.',
+    body: 'Call anybody, or start a meeting, with guests from outside if you like. In a call, chat with everyone beside the video, and the ✨ button blurs or changes your background. Somebody already in a call is not rung; you are told they are busy.',
     Icon: Video,
   },
   {
     kind: 'place',
     target: 'meeting-notes',
     title: 'Meeting notes',
-    body: 'When a meeting is recorded, its minutes and transcript are written up and kept here.',
+    body: 'When your organization has the note-taker on, it joins once two people are in a meeting and writes up the minutes, with the actions and who owns them, from what was said and typed in the chat. They are kept here.',
     Icon: NotebookPen,
   },
   {
     kind: 'place',
     target: 'calendar',
     title: 'Calendar',
-    body: 'Your meetings and the time you block for focus. Schedule a meeting and see when people are free; a manager can look at their team’s calendars too.',
+    body: 'Your meetings, the time you block for focus, and tasks on the day they are due. Schedule a meeting and see when people are free, connect your Google Calendar, and a manager can look at their team’s calendars too.',
     Icon: CalendarDays,
   },
   {
     kind: 'place',
     target: 'tasks',
     title: 'Tasks',
-    body: 'Your work and your team’s: what is to do, in progress and done, with due dates, comments and the people involved.',
+    body: 'Your work and your team’s on a board, with due dates, comments, labels and the people involved. You hear, with a sound, when a task of yours changes, and Tasks shows how many have news.',
     Icon: CheckSquare,
+  },
+  {
+    kind: 'place',
+    target: 'projects',
+    title: 'Projects',
+    body: 'Group tasks into projects and link their GitHub or Bitbucket repositories. Each task gets a key such as TEA-2: put it in a branch or pull request and the task shows the work and moves along the board by itself.',
+    Icon: FolderGit2,
   },
   {
     kind: 'place',
@@ -114,7 +123,9 @@ export function WelcomeTour() {
     setOpen(false);
     const current = useAuthStore.getState().user;
     // Marked here at once, so it does not come back while the server is asked.
-    if (current) setUser({ ...current, tourCompletedAt: new Date().toISOString() });
+    // The tour shows the app as it is now, so What's new has nothing to add.
+    void whatsNewApi.seen(LATEST).catch(() => {});
+    if (current) setUser({ ...current, tourCompletedAt: new Date().toISOString(), whatsNewSeen: LATEST });
     try {
       const { data } = await tourApi.set(true);
       const latest = useAuthStore.getState().user;
@@ -300,7 +311,7 @@ function Tour({ name, onDone }: { name: string; onDone: () => void }) {
               Welcome to {org}, {first}!
             </h2>
             <p id="tour-body" className="mt-2 text-center text-sm text-muted-foreground">
-              You are all set. Say hello to your team in Chat, check today on your Calendar, or pick up a task. We are glad you are here.
+              You are all set. Say hello to your team in Chat, check today on your Calendar, or pick up a task. What’s new, under your picture, tells you about each update. We are glad you are here.
             </p>
             <div className="mt-6 flex justify-center">
               <Button onClick={onDone} data-autofocus className="min-w-[10rem]">

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -735,7 +736,7 @@ func GetAndClearPKCECookie(w http.ResponseWriter, r *http.Request) (string, erro
 const userColumns = `
 	SELECT u.id, u.org_id, u.email, u.name, COALESCE(u.avatar_url, ''),
 	       COALESCE(u.password_hash, ''), COALESCE(u.is_active, true),
-	       COALESCE(u.must_change_password, false), u.tour_completed_at,
+	       COALESCE(u.must_change_password, false), u.tour_completed_at, u.whats_new_seen,
 	       COALESCE(ARRAY_REMOVE(ARRAY_AGG(r.name), NULL), '{}') AS roles
 	FROM users u
 	LEFT JOIN user_roles ur ON ur.user_id = u.id
@@ -746,7 +747,7 @@ const userColumns = `
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
 	err := row.Scan(&u.ID, &u.OrgID, &u.Email, &u.Name, &u.AvatarURL,
-		&u.PasswordHash, &u.IsActive, &u.MustChangePassword, &u.TourCompletedAt, &u.Roles)
+		&u.PasswordHash, &u.IsActive, &u.MustChangePassword, &u.TourCompletedAt, &u.WhatsNewSeen, &u.Roles)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, apperrors.ErrNotFound
@@ -754,6 +755,32 @@ func scanUser(row pgx.Row) (*User, error) {
 		return nil, err
 	}
 	return &u, nil
+}
+
+// whatsNewID is what a "What's new" entry is called: a date, perhaps with a
+// suffix for a second update the same day.
+var whatsNewID = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}(-[a-z0-9]{1,10})?$`)
+
+// SetWhatsNewSeen records the newest "What's new" entry this person has seen.
+// It never goes backwards: an old page still open somewhere cannot make the
+// newest entry show again.
+func (s *Service) SetWhatsNewSeen(ctx context.Context, userID uuid.UUID, id string) (string, error) {
+	if !whatsNewID.MatchString(id) {
+		return "", apperrors.New(apperrors.CodeValidation, "not a What's new entry")
+	}
+	var seen string
+	err := s.db.QueryRow(ctx, `
+		UPDATE users SET whats_new_seen = CASE
+			WHEN whats_new_seen IS NULL OR whats_new_seen < $2 THEN $2 ELSE whats_new_seen END
+		WHERE id = $1 AND deleted_at IS NULL
+		RETURNING whats_new_seen`, userID, id).Scan(&seen)
+	if err == pgx.ErrNoRows {
+		return "", apperrors.ErrNotFound
+	}
+	if err != nil {
+		return "", fmt.Errorf("set what's new: %w", err)
+	}
+	return seen, nil
 }
 
 // SetTourCompleted marks the welcome tour done for this person now, or clears it

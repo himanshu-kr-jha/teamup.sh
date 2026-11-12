@@ -52,6 +52,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 		protected.GET("/sessions", h.ListSessions)
 		protected.POST("/password", h.ChangePassword)
 		protected.POST("/tour", h.SetTour)
+		protected.POST("/whats-new", h.SetWhatsNew)
 		protected.DELETE("/sessions/:sessionId", h.RevokeSession)
 	}
 }
@@ -337,6 +338,28 @@ func (h *Handler) SetTour(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"tourCompletedAt": at})
 }
 
+// SetWhatsNew records the newest "What's new" entry the caller has seen.
+func (h *Handler) SetWhatsNew(c *gin.Context) {
+	userID, err := uuid.Parse(GetUserFromContext(c).UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+	var req struct {
+		Seen string `json:"seen"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	seen, err := h.service.SetWhatsNewSeen(c.Request.Context(), userID, req.Seen)
+	if err != nil {
+		httpx.Error(c, err, "failed to save what you have seen")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"whatsNewSeen": seen})
+}
+
 func (h *Handler) LinkAccount(c *gin.Context) {
 	providerName := c.Param("provider")
 	provider, ok := h.service.GetProvider(providerName)
@@ -523,4 +546,7 @@ type User struct {
 	// TourCompletedAt is when they finished or skipped the tour shown at their
 	// first sign-in; nil while it is still to be shown.
 	TourCompletedAt *time.Time `json:"tourCompletedAt"`
+	// WhatsNewSeen is the newest "What's new" entry they have seen; nil
+	// until they have seen one.
+	WhatsNewSeen *string `json:"whatsNewSeen"`
 }

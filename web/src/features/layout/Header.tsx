@@ -71,6 +71,7 @@ export function Header() {
             {mayAdminister && (
               <DropdownMenuItem onSelect={() => navigate('/organization')}>Organization</DropdownMenuItem>
             )}
+            <DropdownMenuItem onSelect={() => navigate('/whats-new')}>What&rsquo;s new</DropdownMenuItem>
             <DropdownMenuItem onSelect={() => navigate('/status')}>Service status</DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={logout} className="text-destructive focus:text-destructive">
