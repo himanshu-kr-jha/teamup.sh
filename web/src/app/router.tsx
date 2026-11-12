@@ -17,6 +17,7 @@ import { AttendancePage } from '@/features/calls/standing/AttendancePage';
 import { CalendarPage } from '@/features/calendar/CalendarPage';
 import { StatusPage } from '@/features/status/StatusPage';
 import { WhatsNewPage } from '@/features/whatsnew/WhatsNew';
+import { SharePage } from '@/features/share/SharePage';
 import { TaskDetailPage } from '@/features/tasks/TaskDetailPage';
 import { useAuthStore } from '@/shared/store/authStore';
 import { loginPathFor } from '@/features/auth/nextPath';
@@ -112,6 +113,7 @@ export const router = createBrowserRouter([
       { path: 'projects', element: <ProjectsPage /> },
       { path: 'settings', element: <SettingsPage /> },
       { path: 'whats-new', element: <WhatsNewPage /> },
+      { path: 'share', element: <SharePage /> },
       { path: 'organization', element: <OnlyForAdministrators /> },
     ],
   },

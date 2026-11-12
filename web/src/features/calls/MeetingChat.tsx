@@ -15,7 +15,8 @@ import { MessageSquareText, SendHorizontal, X } from 'lucide-react';
 import type { MeetingChatMessage } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { Button } from '@/shared/components/ui/button';
-import { LinkedText } from '@/shared/components/LinkedText';
+import { RichText } from '@/shared/richText/RichText';
+import { useFormatting } from '@/shared/richText/composer';
 import { useToast } from '@/shared/hooks/useToast';
 import { cn, formatDate, formatTime } from '@/shared/utils/cn';
 import { MAX_CHAT_MESSAGE, chatFromPacket, mergeChat, startsGroup, unreadCount } from './meetingChat';
@@ -346,13 +347,8 @@ function Composer({ onSend }: { onSend: (text: string) => Promise<void> }) {
     box.current?.focus();
   }, []);
 
-  // As tall as what is written, up to a few lines.
-  useLayoutEffect(() => {
-    const el = box.current;
-    if (!el) return;
-    el.style.height = 'auto';
-    el.style.height = `${Math.min(el.scrollHeight, 120)}px`;
-  }, [text]);
+  // As tall as what is written, up to a few lines; formatted text pasted in keeps its formatting.
+  const formatting = useFormatting(box, text, setText, { maxHeight: 120 });
 
   const trimmed = text.trim();
   const tooLong = trimmed.length > MAX_CHAT_MESSAGE;
@@ -384,7 +380,9 @@ function Composer({ onSend }: { onSend: (text: string) => Promise<void> }) {
           rows={1}
           value={text}
           onChange={(e) => setText(e.target.value)}
+          onPaste={formatting.onPaste}
           onKeyDown={(e) => {
+            if (formatting.onFormatKey(e)) return;
             if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
               void submit();
@@ -446,9 +444,7 @@ function ChatBubble({
           head && (mine ? 'rounded-tr-md' : 'rounded-tl-md')
         )}
       >
-        <p className="whitespace-pre-wrap break-anywhere">
-          <LinkedText text={m.content} onPrimary={mine} />
-        </p>
+        <RichText text={m.content} onPrimary={mine} />
         <time
           dateTime={m.createdAt}
           title={formatDate(m.createdAt)}

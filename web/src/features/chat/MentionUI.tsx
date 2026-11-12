@@ -6,7 +6,7 @@ import { UserAvatar } from '@/shared/components/UserAvatar';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { cn } from '@/shared/utils/cn';
 import { splitMentions, usernameOf, type Mentionable } from './mentions';
-import { LinkedText } from '@/shared/components/LinkedText';
+import { RichText } from '@/shared/richText/RichText';
 
 /** Everybody in the organization, as mentions need them. The same query the rest of the app reads. */
 export function useMentionables(): Array<Mentionable & { avatarUrl?: string }> {
@@ -21,8 +21,8 @@ export function useMentionables(): Array<Mentionable & { avatarUrl?: string }> {
 }
 
 /**
- * A message's text, with web addresses as links and the people it names shown
- * as @Name. Naming you stands out more than naming anybody else. Addresses are
+ * A message's text, formatted, with web addresses as links and the people it
+ * names shown as @Name. Naming you stands out more than naming anybody else. Addresses are
  * found first, so an @ inside one, as in medium.com/@name, stays in the link.
  */
 export function MessageText({ content, isOwn }: { content: string; isOwn: boolean }) {
@@ -62,11 +62,7 @@ export function MessageText({ content, isOwn }: { content: string; isOwn: boolea
         <span key={i}>{part.text}</span>
       )
     );
-  return (
-    <p className="whitespace-pre-wrap break-anywhere">
-      <LinkedText text={content} onPrimary={isOwn} renderText={withMentions} />
-    </p>
-  );
+  return <RichText text={content} onPrimary={isOwn} renderText={withMentions} />;
 }
 
 type Piece = { text: string } | { text: string; key: string } | { text: string; person: Mentionable };

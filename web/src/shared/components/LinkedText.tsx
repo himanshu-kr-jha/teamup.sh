@@ -18,6 +18,23 @@ export function LinkedText({
   renderText?: (text: string) => ReactNode;
 }) {
   const pieces = useMemo(() => splitLinks(text), [text]);
+  return (
+    <>
+      {pieces.map((piece, i) =>
+        piece.href ? (
+          <TextLink key={i} href={piece.href} onPrimary={onPrimary}>
+            {piece.text}
+          </TextLink>
+        ) : (
+          <Fragment key={i}>{renderText(piece.text)}</Fragment>
+        )
+      )}
+    </>
+  );
+}
+
+/** A link in some text: another site in a new tab, TeamUp's own pages in place. */
+export function TextLink({ href, onPrimary = false, children }: { href: string; onPrimary?: boolean; children: ReactNode }) {
   const className = cn(
     'underline underline-offset-2',
     onPrimary
@@ -27,21 +44,14 @@ export function LinkedText({
   // Whatever the text sits in, such as a message with its own menu, must not
   // also act on a click on its link.
   const stop = (e: React.MouseEvent) => e.stopPropagation();
-  return (
-    <>
-      {pieces.map((piece, i) => {
-        if (!piece.href) return <Fragment key={i}>{renderText(piece.text)}</Fragment>;
-        const path = inAppPath(piece.href);
-        return path ? (
-          <Link key={i} to={path} className={className} onClick={stop}>
-            {piece.text}
-          </Link>
-        ) : (
-          <a key={i} href={piece.href} target="_blank" rel="noopener noreferrer nofollow" className={className} onClick={stop}>
-            {piece.text}
-          </a>
-        );
-      })}
-    </>
+  const path = inAppPath(href);
+  return path ? (
+    <Link to={path} className={className} onClick={stop}>
+      {children}
+    </Link>
+  ) : (
+    <a href={href} target="_blank" rel="noopener noreferrer nofollow" className={className} onClick={stop}>
+      {children}
+    </a>
   );
 }

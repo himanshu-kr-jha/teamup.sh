@@ -97,6 +97,44 @@ func TestListChannelsIsEmptyForAFreshOrganization(t *testing.T) {
 	}
 }
 
+// Sharing into TeamUp from another app offers the conversations in use first,
+// which needs to know when each last had a message.
+func TestListChannelsSaysWhenEachLastHadAMessage(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+
+	quiet, busy := "quiet", "busy"
+	if _, err := svc.CreateChannel(ctx, org.ID, org.OwnerID, &quiet, "group", nil, nil); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	ch, err := svc.CreateChannel(ctx, org.ID, org.OwnerID, &busy, "group", nil, nil)
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	before := time.Now().Add(-time.Minute)
+	if _, err := svc.SendMessage(ctx, org.ID, ch.ID, org.OwnerID, "hello", nil, nil, false); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	channels, err := svc.ListChannels(ctx, org.ID, org.OwnerID)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	for _, c := range channels {
+		switch *c.Name {
+		case quiet:
+			if c.LastMessageAt != nil {
+				t.Errorf("a conversation with no messages has a last message at %v", c.LastMessageAt)
+			}
+		case busy:
+			if c.LastMessageAt == nil || c.LastMessageAt.Before(before) {
+				t.Errorf("last message at %v, want just now", c.LastMessageAt)
+			}
+		}
+	}
+}
+
 func TestGetChannelDoesNotCrossOrganizations(t *testing.T) {
 	svc, pool := newService(t)
 	ctx := context.Background()

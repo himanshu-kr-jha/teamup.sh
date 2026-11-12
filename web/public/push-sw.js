@@ -12,7 +12,7 @@
  * caching rules that come with the generated one.
  */
 
-/* global self, clients */
+/* global clients */
 
 self.addEventListener('push', (event) => {
   if (!event.data) return;
@@ -101,6 +101,53 @@ self.addEventListener('notificationclick', (event) => {
         }
       }
       if (clients.openWindow) await clients.openWindow(target);
+    })()
+  );
+});
+
+/*
+ * Sharing into TeamUp from another app.
+ *
+ * The manifest's share_target makes TeamUp one of the apps a phone's share
+ * sheet offers. What is shared arrives as a form POSTed to /share, files and
+ * all, which only the worker can receive: it keeps them in a cache the page
+ * reads (src/features/share/inbox.ts) and sends the window on to /share, where
+ * the person chooses whom to send them to. The names here and there must match.
+ */
+const SHARE_INBOX = 'teamup-share-inbox';
+
+self.addEventListener('fetch', (event) => {
+  const url = new URL(event.request.url);
+  if (event.request.method !== 'POST' || url.origin !== self.location.origin || url.pathname !== '/share') return;
+
+  event.respondWith(
+    (async () => {
+      try {
+        const form = await event.request.formData();
+        // Whatever came last time and was never sent is replaced, not added to.
+        await caches.delete(SHARE_INBOX);
+        const inbox = await caches.open(SHARE_INBOX);
+        const files = [];
+        for (const file of form.getAll('files')) {
+          if (!(file instanceof File) || file.size === 0) continue;
+          const key = `/share-inbox/file/${files.length}`;
+          files.push({ key, name: file.name || 'file', type: file.type || 'application/octet-stream', size: file.size });
+          await inbox.put(key, new Response(file, { headers: { 'Content-Type': file.type || 'application/octet-stream' } }));
+        }
+        const text = (name) => {
+          const v = form.get(name);
+          return typeof v === 'string' ? v : '';
+        };
+        await inbox.put(
+          '/share-inbox/meta',
+          new Response(JSON.stringify({ title: text('title'), text: text('text'), url: text('url'), files, at: Date.now() }), {
+            headers: { 'Content-Type': 'application/json' },
+          })
+        );
+      } catch {
+        // The page says nothing arrived, which is true; there is no one else to tell.
+      }
+      return Response.redirect('/share', 303);
     })()
   );
 });

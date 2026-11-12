@@ -76,6 +76,20 @@ export default defineConfig({
           { src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png', purpose: 'any' },
           { src: '/icons/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
+        // Puts TeamUp in a phone's share sheet, once the app is installed. The
+        // worker receives the POST (public/push-sw.js) and /share asks whom to
+        // send it to.
+        share_target: {
+          action: '/share',
+          method: 'POST',
+          enctype: 'multipart/form-data',
+          params: {
+            title: 'title',
+            text: 'text',
+            url: 'url',
+            files: [{ name: 'files', accept: ['*/*', 'image/*', 'video/*', 'audio/*', 'application/pdf', 'text/*'] }],
+          },
+        },
         shortcuts: [
           { name: 'Messages', url: '/chat', description: 'Open chat' },
           { name: 'Tasks', url: '/tasks', description: 'Open tasks' },

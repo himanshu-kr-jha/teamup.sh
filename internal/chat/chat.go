@@ -200,6 +200,9 @@ type Channel struct {
 	// CounterpartID is the other person in a direct message, so their
 	// availability can be shown beside the conversation.
 	CounterpartID *uuid.UUID `json:"counterpartId,omitempty"`
+	// LastMessageAt is when the latest message in its timeline was sent, so a
+	// list can put the conversations in use first. Nil before the first one.
+	LastMessageAt *time.Time `json:"lastMessageAt,omitempty"`
 	CreatedAt     time.Time  `json:"createdAt"`
 	UpdatedAt     time.Time  `json:"updatedAt"`
 }
@@ -787,7 +790,9 @@ func (s *Service) ListChannels(ctx context.Context, orgID, userID uuid.UUID) ([]
 		       (SELECT other.user_id FROM channel_members other
 		          WHERE other.channel_id = c.id AND other.user_id <> $2
 		          LIMIT 1),
-		       CASE WHEN cm.user_id IS NULL THEN NULL ELSE COALESCE(cm.notify_level, 'all') END
+		       CASE WHEN cm.user_id IS NULL THEN NULL ELSE COALESCE(cm.notify_level, 'all') END,
+		       (SELECT MAX(last.created_at) FROM messages last
+		          WHERE last.channel_id = c.id AND last.deleted_at IS NULL)
 		FROM channels c
 		LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.user_id = $2
 		WHERE c.org_id = $1 AND c.deleted_at IS NULL AND COALESCE(c.is_archived, false) = false
@@ -810,7 +815,7 @@ func (s *Service) ListChannels(ctx context.Context, orgID, userID uuid.UUID) ([]
 		if err := rows.Scan(&c.ID, &c.OrgID, &c.TeamID, &c.Name, &c.Type, &c.Description,
 			&c.CreatedBy, &c.IsArchived, &c.IsPrivate, &c.MaxMembers,
 			&c.CreatedAt, &c.UpdatedAt, &c.MemberCount, &c.UnreadCount,
-			&counterpart, &counterpartID, &c.NotifyLevel); err != nil {
+			&counterpart, &counterpartID, &c.NotifyLevel, &c.LastMessageAt); err != nil {
 			return nil, fmt.Errorf("scan channel: %w", err)
 		}
 		if c.Type == "dm" {
@@ -2019,8 +2024,9 @@ func (s *Service) pushToChannel(ctx context.Context, channelID, senderID uuid.UU
 		return
 	}
 
-	// A file on its own is a message with nothing to quote.
-	body := strings.TrimSpace(msg.Content)
+	// A file on its own is a message with nothing to quote. A notification
+	// shows only text, so formatting marks are taken off.
+	body := plainText(msg.Content)
 	if body == "" {
 		body = "Sent a file"
 	}

@@ -2,11 +2,14 @@ import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { format } from 'date-fns';
-import { AlertTriangle, ChevronLeft, Copy, Loader2, NotebookPen, RefreshCw } from 'lucide-react';
+import { AlertTriangle, ChevronLeft, Copy, Loader2, NotebookPen, RefreshCw, Send, Share2 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { notetakerApi, type MeetingMinutes } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
+import { canShare, copyFormatted, shareText } from '@/shared/richText/share';
+import { RichText } from '@/shared/richText/RichText';
+import { ForwardDialog } from '@/features/chat/ForwardDialog';
 
 const WAITING: Partial<Record<MeetingMinutes['status'], string>> = {
   taking: 'Notes are still being taken: the call has not ended.',
@@ -29,13 +32,23 @@ function Transcript({ lines }: { lines: MeetingMinutes['transcript'] }) {
   );
 }
 
-/** Minutes as text, for pasting into an email or a document. */
-function asText(m: NonNullable<MeetingMinutes['minutes']>): string {
-  const lines = [`Minutes: ${m.title}`, format(new Date(m.date), 'EEEE d MMMM yyyy, HH:mm'), '', `Attendees: ${m.attendees.join(', ')}`, '', 'Summary', m.summary];
-  if (m.decisions.length) lines.push('', 'Decisions', ...m.decisions.map((d) => `- ${d}`));
-  if (m.actionItems.length) lines.push('', 'Action items', ...m.actionItems.map((a) => `- ${a.owner}: ${a.task}${a.due ? ` (by ${a.due})` : ''}`));
-  if (m.openQuestions.length) lines.push('', 'Open questions', ...m.openQuestions.map((q) => `- ${q}`));
-  return lines.join('\n');
+/**
+ * Minutes written out with the marks a message uses, so they read the same
+ * in a TeamUp conversation, in WhatsApp or Slack, and, copied as HTML, in a
+ * document or an email. Ends with the way back to the full minutes.
+ */
+export function minutesText(m: NonNullable<MeetingMinutes['minutes']>, link?: string): string {
+  const parts = [
+    `*Minutes: ${m.title}*\n${format(new Date(m.date), 'EEEE d MMMM yyyy, HH:mm')}`,
+    `*Attendees:* ${m.attendees.join(', ')}`,
+    `*Summary*\n${m.summary.trim()}`,
+  ];
+  if (m.decisions.length) parts.push(['*Decisions*', ...m.decisions.map((d) => `- ${d}`)].join('\n'));
+  if (m.actionItems.length)
+    parts.push(['*Action items*', ...m.actionItems.map((a) => `- *${a.owner}:* ${a.task}${a.due ? ` _(by ${a.due})_` : ''}`)].join('\n'));
+  if (m.openQuestions.length) parts.push(['*Open questions*', ...m.openQuestions.map((q) => `- ${q}`)].join('\n'));
+  if (link) parts.push(`Full minutes and transcript: ${link}`);
+  return parts.join('\n\n');
 }
 
 /** The minutes of one call, for whoever was in it. */
@@ -45,6 +58,8 @@ export function MinutesPage() {
   const queryClient = useQueryClient();
   const [showTranscript, setShowTranscript] = useState(false);
   const [retrying, setRetrying] = useState(false);
+  const [sending, setSending] = useState(false);
+  const link = `${window.location.origin}/calls/${callId}/minutes`;
   const { data, error, isPending } = useQuery({
     queryKey: ['minutes', callId],
     queryFn: async () => (await notetakerApi.minutes(callId)).data,
@@ -131,7 +146,7 @@ export function MinutesPage() {
 
             <section>
               <h2 className="mb-2 font-semibold">Summary</h2>
-              <p className="whitespace-pre-wrap leading-relaxed">{m.summary}</p>
+              <RichText text={m.summary} className="leading-relaxed" />
             </section>
 
             {m.decisions.length > 0 && (
@@ -172,13 +187,17 @@ export function MinutesPage() {
             )}
 
             <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" onClick={() => setSending(true)}>
+                <Send className="mr-2 h-4 w-4" />
+                Send to a conversation
+              </Button>
               <Button
                 variant="outline"
                 size="sm"
                 onClick={async () => {
                   try {
-                    await navigator.clipboard.writeText(asText(m));
-                    toast.success('Copied the minutes.');
+                    await copyFormatted(minutesText(m, link));
+                    toast.success('Copied. Paste into a document, an email or another app.');
                   } catch {
                     toast.error('Could not copy. Select the text instead.');
                   }
@@ -187,12 +206,27 @@ export function MinutesPage() {
                 <Copy className="mr-2 h-4 w-4" />
                 Copy
               </Button>
+              {canShare() && (
+                <Button variant="outline" size="sm" onClick={() => void shareText(minutesText(m, link), `Minutes: ${m.title}`)}>
+                  <Share2 className="mr-2 h-4 w-4" />
+                  Share
+                </Button>
+              )}
               <Button variant="ghost" size="sm" onClick={() => setShowTranscript((v) => !v)} aria-expanded={showTranscript}>
                 {showTranscript ? 'Hide the transcript' : 'Show the transcript'}
               </Button>
             </div>
 
             {showTranscript && <Transcript lines={data.transcript} />}
+            <ForwardDialog
+              message={sending ? { id: callId, content: minutesText(m, link) } : null}
+              onClose={() => setSending(false)}
+              asNew={{
+                title: 'Send the minutes',
+                description: 'They arrive as a message from you, formatted, with a link back to these minutes.',
+                done: 'Sent the minutes.',
+              }}
+            />
           </article>
         )}
       </div>
