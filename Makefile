@@ -1,4 +1,4 @@
-.PHONY: build build-frontend test lint docker helm migrate-up migrate-down migrate-version migrate-create run dev help test-services test-services-down test-go test-web e2e check deploy deploy-check
+.PHONY: lint-go build build-frontend test lint docker helm migrate-up migrate-down migrate-version migrate-create run dev help test-services test-services-down test-go test-web e2e check deploy deploy-check
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -18,6 +18,7 @@ help:
 	@echo "  build           Build Go binary (embeds frontend)"
 	@echo "  build-frontend  Build React frontend"
 	@echo "  test-services   Start the test containers and migrate the test database"
+	@echo "  lint-go         golangci-lint on what this branch adds, as GitHub runs it"
 	@echo "  test-go         Go tests against the test containers"
 	@echo "  test-web        Lint, typecheck and unit-test the web app"
 	@echo "  e2e             Rebuild, then run every browser test against the real stack"
@@ -210,6 +211,13 @@ test-services:
 test-services-down:
 	@scripts/test-services.sh down
 
+# The same linter, version and rule GitHub runs on a pull request: only what
+# this branch adds against main counts, so old findings do not block it.
+GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.6.2
+lint-go:
+	@git fetch --quiet origin main 2>/dev/null || true
+	@$(TEST_ENV) $(GOLANGCI_LINT) run --new-from-rev=origin/main ./...
+
 test-go:
 	@$(TEST_ENV) gofmt -l cmd internal pkg | (! grep .) || { echo "gofmt wants these formatted"; exit 1; }
 	@$(TEST_ENV) go vet ./...
@@ -224,7 +232,7 @@ e2e:
 	@$(TEST_ENV) $(MAKE) --no-print-directory build
 	@web/e2e/run-meetings.sh $(ARGS)
 
-check: test-services test-web test-go e2e
+check: test-services test-web lint-go test-go e2e
 	@echo "All checks passed."
 
 deploy:

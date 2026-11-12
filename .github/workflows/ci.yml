@@ -378,3 +378,59 @@ jobs:
 
       - name: helm lint
         run: helm lint helm/teamup
+
+  # ── Browser tests ───────────────────────────────────────────────────────
+  # Every Playwright spec against the real stack, exactly as `make e2e` runs
+  # them locally: Postgres, Redis, MinIO, LiveKit and Mailpit in throwaway
+  # containers (scripts/test-services.sh), then the real binary, rebuilt with
+  # the test ports, driven by Chromium. Self-contained, so it starts at once
+  # rather than after the frontend job. About 20 minutes; one at a time per
+  # branch, a newer push cancelling the run it replaces.
+  e2e:
+    name: Browser tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    concurrency:
+      group: e2e-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: web
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium
+        working-directory: web
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Start the test services
+        run: scripts/test-services.sh up
+
+      - name: Run the browser tests
+        run: make e2e
+
+      - name: Keep what a failure left behind
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-test-results
+          path: |
+            web/test-results
+            web/playwright-report
+          retention-days: 7
+          if-no-files-found: ignore

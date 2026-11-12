@@ -1059,7 +1059,7 @@ func (d *slowDevices) DeliverToUsers(ctx context.Context, ids []uuid.UUID, paylo
 	default:
 	}
 	time.Sleep(d.delay)
-	d.rungDevices.PushToUsers(ctx, ids, payload)
+	d.PushToUsers(ctx, ids, payload)
 }
 
 // Reported as a flaky browser test, and true of a real phone: a ring that went
