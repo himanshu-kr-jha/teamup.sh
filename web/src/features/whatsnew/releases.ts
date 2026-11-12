@@ -28,7 +28,7 @@ export const RELEASES: Release[] = [
   {
     id: '2026-11-12-e',
     date: '2026-11-12',
-    title: 'Formatted messages you can share',
+    title: 'Formatted messages, shared in and out',
     changes: [
       {
         area: 'chat',
@@ -51,6 +51,11 @@ export const RELEASES: Release[] = [
         title: 'Share the minutes',
         body: 'On a meeting’s minutes, Send to a conversation posts them in TeamUp as a formatted message, Copy takes them to a document or another app, and Share opens your phone’s share sheet.',
         link: '/meeting-notes',
+      },
+      {
+        area: 'app',
+        title: 'Share into TeamUp from other apps',
+        body: 'With TeamUp installed on your phone, Share in another app offers TeamUp. Choose one or more conversations, or somebody for a new chat, and it goes there with its photos and files.',
       },
     ],
   },

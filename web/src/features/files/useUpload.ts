@@ -108,6 +108,29 @@ const MAX_ROUNDS = 6;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /**
+ * Uploads one file to the parent it belongs to, in one go or in parts as its
+ * size calls for. Throws, with words a person can read, if it cannot.
+ */
+export async function uploadFile(
+  category: string,
+  refId: string,
+  file: File,
+  onProgress: (pct: number) => void = () => {}
+): Promise<UploadedFile> {
+  const limits = await uploadLimits();
+  if (file.size > limits.maxUploadBytes) {
+    throw new Error(
+      `${file.name} is ${humanSize(file.size)}. The largest file this server accepts is ${humanSize(limits.maxUploadBytes)}.`
+    );
+  }
+  const contentType = file.type || 'application/octet-stream';
+  if (file.size > limits.multipartThresholdBytes) {
+    return uploadInParts(category, refId, file, contentType, onProgress);
+  }
+  return uploadInOnePut(category, refId, file, contentType, onProgress);
+}
+
+/**
  * Uploading is three steps: ask for somewhere to put the bytes, send them, and
  * tell the server it happened.
  *
@@ -126,19 +149,7 @@ export function useUpload(category: string, refId: string) {
     setError('');
     setProgress(0);
     try {
-      const limits = await uploadLimits();
-      if (file.size > limits.maxUploadBytes) {
-        setError(
-          `${file.name} is ${humanSize(file.size)}. The largest file this server accepts is ${humanSize(limits.maxUploadBytes)}.`
-        );
-        return null;
-      }
-
-      const contentType = file.type || 'application/octet-stream';
-      if (file.size > limits.multipartThresholdBytes) {
-        return await uploadInParts(category, refId, file, contentType, setProgress);
-      }
-      return await uploadInOnePut(category, refId, file, contentType, setProgress);
+      return await uploadFile(category, refId, file, setProgress);
     } catch (err) {
       setError(apiErrorMessage(err, 'Could not upload that file.'));
       return null;
