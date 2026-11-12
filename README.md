@@ -8,7 +8,7 @@ A self-hosted alternative to Slack and Microsoft Teams. One Go binary with the
 web app compiled into it. You run it, you own the data, there is no seat pricing.
 
 [![CI](https://github.com/himanshu-kr-jha/teamup.sh/actions/workflows/ci.yml/badge.svg)](https://github.com/himanshu-kr-jha/teamup.sh/actions/workflows/ci.yml)
-[![Go](https://img.shields.io/badge/Go-1.25-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black)](https://react.dev)
 [![Licence](https://img.shields.io/badge/licence-MIT-green.svg)](LICENSE)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#contributing)
@@ -42,7 +42,7 @@ owner account. There are no default credentials.
 <summary><b>What <code>setup.sh</code> actually does</b></summary>
 
 ```
-▸ Checking prerequisites          Go 1.25+, Node 20+, Docker with Compose v2
+▸ Checking prerequisites          Go 1.26+, Node 20+, Docker with Compose v2
 ▸ Checking ports                  8080, 5432, 6379, 9000, 9001, 7880
                                   — moves any that are taken, and rewrites
                                     the connection strings to match
@@ -67,7 +67,7 @@ it cannot be regenerated without signing everybody out.
 | | Version | Why |
 | --- | --- | --- |
 | **Docker** | with Compose v2 | Runs PostgreSQL, Redis, MinIO and LiveKit |
-| **Go** | 1.25+ | Builds the server |
+| **Go** | 1.26+ | Builds the server |
 | **Node.js** | 20+ | Builds the web app (pnpm preferred, npm works) |
 
 Docker is the only one you install by hand — the four backing services all run

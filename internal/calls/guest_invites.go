@@ -132,8 +132,72 @@ func (s *Service) InviteGuests(ctx context.Context, orgID, callID, userID uuid.U
 		callID, list, timeZone, userID); err != nil {
 		return nil, fmt.Errorf("save invitations: %w", err)
 	}
-	s.emailGuests(ctx, orgID, callID, list, "invited")
+	due, err := s.markEmailed(ctx, callID, userID, list)
+	if err != nil {
+		return nil, err
+	}
+	s.emailGuests(ctx, orgID, callID, due, "invited")
 	return s.GuestLinkFor(ctx, orgID, callID, userID, admin)
+}
+
+const (
+	// resendAfter is how long an invitation waits before asking again emails it again.
+	resendAfter = 10 * time.Minute
+	// maxInviteEmailsPerHour is the most invitation emails one person sends in an hour.
+	maxInviteEmailsPerHour = 200
+)
+
+// markEmailed picks out the invitations that are due an email, in the order
+// given, and records that they are getting one. An invitation emailed in the
+// last few minutes is not emailed again, and nobody sends more than so many an
+// hour: the organization's mail is not a way to send anybody anything.
+func (s *Service) markEmailed(ctx context.Context, callID, userID uuid.UUID, list []string) ([]string, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT email FROM call_guest_invites
+		WHERE call_id = $1 AND email = ANY($2)
+		  AND (last_emailed_at IS NULL OR last_emailed_at < NOW() - $3::interval)`,
+		callID, list, resendAfter.String())
+	if err != nil {
+		return nil, fmt.Errorf("read invitations: %w", err)
+	}
+	dueSet := map[string]bool{}
+	for rows.Next() {
+		var e string
+		if err := rows.Scan(&e); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		dueSet[e] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	var due []string
+	for _, e := range list {
+		if dueSet[e] {
+			due = append(due, e)
+		}
+	}
+	if len(due) == 0 {
+		return nil, nil
+	}
+	var sent int
+	if err := s.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM call_guest_invites
+		WHERE invited_by = $1 AND last_emailed_at > NOW() - interval '1 hour'`, userID).Scan(&sent); err != nil {
+		return nil, fmt.Errorf("count invitations: %w", err)
+	}
+	if sent+len(due) > maxInviteEmailsPerHour {
+		return nil, apperrors.New(apperrors.CodeRateLimited,
+			fmt.Sprintf("you have sent %d invitations in the last hour; try again later", sent))
+	}
+	if _, err := s.db.Exec(ctx, `
+		UPDATE call_guest_invites SET last_emailed_at = NOW(), invited_by = $3
+		WHERE call_id = $1 AND email = ANY($2)`, callID, due, userID); err != nil {
+		return nil, fmt.Errorf("record invitations: %w", err)
+	}
+	return due, nil
 }
 
 // RemoveGuestInvite takes somebody off a meeting's email invitations. It does

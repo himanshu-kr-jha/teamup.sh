@@ -26,6 +26,33 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-13',
+    date: '2026-11-13',
+    title: 'A safer TeamUp',
+    changes: [
+      {
+        area: 'app',
+        title: 'Harder to break into',
+        body: 'After ten wrong passwords, signing in to that account waits 15 minutes. Changing your password signs you out everywhere at once, including anything still open.',
+      },
+      {
+        area: 'chat',
+        title: 'Deleted means deleted',
+        body: 'Deleting a message deletes the files sent with it too, so they no longer turn up in the conversation’s files or in a search.',
+      },
+      {
+        area: 'chat',
+        title: 'Announcements are for administrators',
+        body: 'Only people who administer channels can make an announcement channel, since everybody is in it and hears each post. In a direct message, neither person can remove the other or delete what they wrote.',
+      },
+      {
+        area: 'app',
+        title: 'Files open safely',
+        body: 'Pictures, sound, video and PDFs open in place as before. Any other file downloads instead of opening in the browser.',
+      },
+    ],
+  },
+  {
     id: '2026-11-12-e',
     date: '2026-11-12',
     title: 'Formatted messages, shared in and out',

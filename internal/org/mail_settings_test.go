@@ -151,6 +151,18 @@ func TestAnAdministratorSetsUpMailAndThePasswordNeverComesBack(t *testing.T) {
 		t.Errorf("a blank password keeps the saved one, got %+v", stored)
 	}
 
+	// Pointed at another server, the saved password is not kept for it.
+	send(t, r, http.MethodPut, "/api/org/mail", map[string]any{
+		"host": "smtp.attacker.example", "port": 587, "user": "team@example.com", "password": "", "from": "team@example.com",
+	})
+	stored = mail.Settings{}
+	if err := w.svc.GetConfigInto(context.Background(), w.org, "smtp", &stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored.Pass != "" {
+		t.Error("the saved password went with the new host")
+	}
+
 	if bad := send(t, r, http.MethodPut, "/api/org/mail", map[string]any{"host": "smtp.gmail.com", "from": "not an address"}); bad.Code != http.StatusBadRequest {
 		t.Errorf("a from that is not an address is refused, got %d", bad.Code)
 	}

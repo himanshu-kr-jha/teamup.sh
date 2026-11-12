@@ -52,6 +52,8 @@ export TEAMUP_GITHUB_WEB_URL="http://127.0.0.1:$E2E_GITHUB_PORT" TEAMUP_GITHUB_A
 # Bitbucket, faked by meetings.y-bitbucket.spec.ts on this port.
 export E2E_BITBUCKET_PORT="${E2E_BITBUCKET_PORT:-18093}"
 export TEAMUP_BITBUCKET_WEB_URL="http://127.0.0.1:$E2E_BITBUCKET_PORT" TEAMUP_BITBUCKET_API_URL="http://127.0.0.1:$E2E_BITBUCKET_PORT"
+# Phones, faked by meetings.y-push.spec.ts on this machine: the only push service it may deliver to.
+export TEAMUP_PUSH_SERVICE_HOSTS=127.0.0.1
 export TEAMUP_SETUP_OIDC_PROVIDER=google TEAMUP_SETUP_GOOGLE_CLIENT_ID=e2e.apps.googleusercontent.com TEAMUP_SETUP_GOOGLE_CLIENT_SECRET=unused
 
 cd "$ROOT"

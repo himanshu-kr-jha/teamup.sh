@@ -8,6 +8,7 @@ import { FormDialog } from '@/shared/components/FormDialog';
 import { channelsApi, orgApi } from '@/shared/api/client';
 import { PeoplePicker, addEach } from '@/shared/components/PeoplePicker';
 import { useAuth } from '@/features/auth/AuthProvider';
+import { PERMS, can } from '@/shared/permissions';
 
 interface Props {
   open: boolean;
@@ -92,7 +93,8 @@ export function CreateChannelDialog({ open, onOpenChange, onCreated }: Props) {
           <SelectContent>
             <SelectItem value="group">Private — only invited members</SelectItem>
             <SelectItem value="public">Public — anyone in the organization</SelectItem>
-            <SelectItem value="announcement">Announcements</SelectItem>
+            {/* Everybody is in an announcement channel and hears each post, so only those who administer channels make one. */}
+            {can(user, PERMS.channelsAll) && <SelectItem value="announcement">Announcements</SelectItem>}
           </SelectContent>
         </Select>
       </div>

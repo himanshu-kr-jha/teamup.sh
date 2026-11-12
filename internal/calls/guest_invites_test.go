@@ -3,9 +3,12 @@ package calls
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/google/uuid"
@@ -201,5 +204,65 @@ func TestWithNoMailTheInvitationIsStillKeptToSendByHand(t *testing.T) {
 	}
 	if link.MailConfigured || len(link.Invites) != 1 || link.Invites[0].EmailedAt != nil || len(mailer.sent) != 0 {
 		t.Errorf("listed, not emailed: %+v", link)
+	}
+}
+
+// Asking again re-sends an invitation, but not over and over: the
+// organization's mail is not a way to send the same people anything at will.
+func TestInvitingTheSameListAgainAndAgainDoesNotFloodThem(t *testing.T) {
+	e := newLK(t)
+	org := e.person(t, "Olga Organizer", "member")
+	mailer := &sentMail{configured: true}
+	e.svc.SetGuestMailer(mailer, "https://teamup.example/")
+	call := e.call(t, org)
+	ctx := context.Background()
+	list := []string{"a@client.test", "b@client.test"}
+	for i := 0; i < 5; i++ {
+		if _, err := e.svc.InviteGuests(ctx, e.org.ID, call.ID, org, false, list, ""); err != nil {
+			t.Fatalf("invite %d: %v", i, err)
+		}
+	}
+	if len(mailer.sent) != 2 {
+		t.Errorf("asked five times in a row, emailed %d times instead of once each", len(mailer.sent))
+	}
+	// Once the last one is a while old, asking again does send it again.
+	if _, err := e.pool.Exec(ctx, `UPDATE call_guest_invites SET last_emailed_at = NOW() - interval '1 hour' WHERE call_id = $1`, call.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.InviteGuests(ctx, e.org.ID, call.ID, org, false, list[:1], ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(mailer.sent) != 3 {
+		t.Errorf("a re-send after a while: %d emails", len(mailer.sent))
+	}
+}
+
+// Guesses at a passcode are limited per address. Sent all at once they must be
+// limited just the same, not each counted against a total none has added to yet.
+func TestPasscodeGuessesSentAllAtOnceAreStillLimited(t *testing.T) {
+	e := newLK(t)
+	org := e.person(t, "Olga Organizer", "member")
+	call := e.call(t, org)
+	ctx := context.Background()
+	link, err := e.svc.SetGuestLink(ctx, e.org.ID, call.ID, org, false, GuestLinkChange{Enabled: true, Passcode: ptr("482913")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const tries = 40
+	var wrong atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < tries; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := e.svc.JoinAsGuest(ctx, token(link.Path), "Mallory", fmt.Sprintf("%06d", i), "", "198.51.100.7")
+			if errors.Is(err, ErrWrongPasscode) {
+				wrong.Add(1)
+			}
+		}(i)
+	}
+	wg.Wait()
+	if got := wrong.Load(); got > attemptsPerAddress {
+		t.Errorf("%d guesses were checked from one address; the limit is %d", got, attemptsPerAddress)
 	}
 }

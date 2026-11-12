@@ -181,6 +181,13 @@ func TestOnlyAnAdministratorSetsItUpAndTheKeysNeverComeBack(t *testing.T) {
 	if set.STTKey != "sk-sarvam-secret" || set.Enabled {
 		t.Errorf("stored: %+v", set)
 	}
+	// Pointed at another address, the saved keys do not go with it.
+	call(t, admin, http.MethodPut, "/api/org/notetaker", map[string]any{
+		"enabled": false, "llmProvider": "anthropic", "llmBaseUrl": "https://attacker.example", "sttBaseUrl": "https://attacker.example"})
+	set, _ = w.svc.Settings(context.Background(), w.orgID)
+	if set.LLMKey != "" || set.STTKey != "" {
+		t.Errorf("the saved keys went with the new address: %q %q", set.LLMKey, set.STTKey)
+	}
 	if got := call(t, admin, http.MethodPut, "/api/org/notetaker", map[string]any{"llmProvider": "gemini"}); got.Code != http.StatusBadRequest {
 		t.Errorf("an unknown model provider: %d", got.Code)
 	}

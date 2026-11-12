@@ -245,6 +245,9 @@ type Config struct {
 	VAPIDPublicKey  string `env:"TEAMUP_VAPID_PUBLIC_KEY"`
 	VAPIDPrivateKey string `env:"TEAMUP_VAPID_PRIVATE_KEY"`
 	VAPIDSubject    string `env:"TEAMUP_VAPID_SUBJECT" envDefault:"mailto:admin@teamup.local"`
+	// PushServiceHosts replaces the browsers' push services as the only places
+	// a push may be delivered to; tests point it at their fake.
+	PushServiceHosts []string `env:"TEAMUP_PUSH_SERVICE_HOSTS" envSeparator:","`
 
 	// Auto-setup (for CI/CD). Anything left unset falls back to the ordinary
 	// runtime configuration above — see setupDataFromConfig.
@@ -338,9 +341,10 @@ func (c *Config) FilesConfig() files.Config {
 // NotificationsConfig returns the notifications service configuration
 func (c *Config) NotificationsConfig() notifications.Config {
 	return notifications.Config{
-		VAPIDPublicKey:  c.VAPIDPublicKey,
-		VAPIDPrivateKey: c.VAPIDPrivateKey,
-		VAPIDSubject:    c.VAPIDSubject,
+		VAPIDPublicKey:   c.VAPIDPublicKey,
+		VAPIDPrivateKey:  c.VAPIDPrivateKey,
+		VAPIDSubject:     c.VAPIDSubject,
+		PushServiceHosts: c.PushServiceHosts,
 	}
 }
 
@@ -596,6 +600,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// open, or somebody with the app closed is simply unreachable.
 	callsService.SetNotifier(notificationsService)
 	callsService.SetBroadcaster(wsHub)
+	// A password changed or reset ends every session, and the sockets with them.
+	authService.OnSessionsEnded(func(userID string) { wsHub.DisconnectUser(userID) })
+	orgService.OnSessionsEnded(func(_ context.Context, _, userID uuid.UUID) { wsHub.DisconnectUser(userID.String()) })
 	// Somebody deactivated keeps nothing open.
 	orgService.OnDeactivated(func(ctx context.Context, orgID, userID uuid.UUID) {
 		wsHub.DisconnectUser(userID.String())
@@ -657,7 +664,19 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 
 	router := gin.New()
+	// Only nginx in front, on the private network, says who the client is,
+	// and it says so in X-Real-IP. Trusting every proxy let anybody write the
+	// address recorded on their session with an X-Forwarded-For of their own.
+	if err := router.SetTrustedProxies([]string{"127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "::1/128", "fc00::/7"}); err != nil {
+		return fmt.Errorf("trusted proxies: %w", err)
+	}
+	router.RemoteIPHeaders = []string{"X-Real-IP"}
 	router.Use(gin.Recovery())
+	router.Use(limitBodies())
+	// The policy is worked out once, from the page it protects; a missing page
+	// is reported below, where the frontend is read for serving.
+	page, _ := webFS.ReadFile("web/dist/index.html")
+	router.Use(securityHeaders(contentSecurityPolicy(page, cfg.MinIOEndpoint, cfg.MinIOSecure, cfg.LiveKitURL, cfg.GitHubWebURL)))
 	router.Use(observability.GinLogger(logger))
 	router.Use(observability.GinMetrics())
 
@@ -778,6 +797,8 @@ func runServer(cmd *cobra.Command, args []string) error {
 			// LiveKit checks the Host it was reached on; passing the tunnel's
 			// host through makes it reject the handshake.
 			r.Host = target.Host
+			// The call server needs its own token, not the person's session.
+			r.Header.Del("Cookie")
 		}
 		proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
 			logger.Warn().Err(err).Msg("could not reach LiveKit")

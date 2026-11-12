@@ -107,19 +107,30 @@ func (h *Handler) LoginWithPassword(c *gin.Context) {
 		return
 	}
 
-	user, err := h.service.GetUserByEmail(c.Request.Context(), req.Email)
+	ctx := c.Request.Context()
+	if h.service.tooManyFailures(ctx, req.Email) {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "too many wrong passwords for this account; try again in 15 minutes"})
+		return
+	}
+	user, err := h.service.GetUserByEmail(ctx, req.Email)
 	if err != nil {
-		h.logger.Error().Err(err).Str("email", req.Email).Msg("User lookup failed")
+		// As long as a wrong password takes, so the answer's timing does not
+		// say whether there is an account at this address.
+		spendCompareTime(req.Password)
+		h.service.recordFailure(ctx, req.Email)
+		h.logger.Info().Msg("sign-in refused: no such account")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
 
 	// Verify password
 	if err := h.service.VerifyPassword(user, req.Password); err != nil {
-		h.logger.Error().Err(err).Str("email", req.Email).Msg("Password verification failed")
+		h.service.recordFailure(ctx, req.Email)
+		h.logger.Info().Str("user_id", user.ID.String()).Msg("sign-in refused: wrong password")
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid credentials"})
 		return
 	}
+	h.service.clearFailures(ctx, req.Email)
 
 	// Generate token pair
 	sessionID := uuid.New().String()
@@ -460,6 +471,8 @@ func (h *Handler) ChangePassword(c *gin.Context) {
 	// Changing the password revoked every session, including this one, so the
 	// browser must not be left holding credentials that no longer work.
 	h.service.ClearAuthCookies(c.Writer)
+	// Its live connections go too, rather than carrying on until their tokens run out.
+	h.service.sessionsEnded(userCtx.UserID)
 	c.JSON(http.StatusOK, gin.H{"message": "password changed, please sign in again"})
 }
 

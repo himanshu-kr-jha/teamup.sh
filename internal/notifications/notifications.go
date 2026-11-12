@@ -7,6 +7,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,6 +26,45 @@ type Config struct {
 	VAPIDPublicKey  string
 	VAPIDPrivateKey string
 	VAPIDSubject    string
+	// PushServiceHosts are the push services a subscription may point at.
+	// Empty means the browsers' own (DefaultPushServiceHosts). A host named
+	// here explicitly may be reached over plain HTTP, as a test's fake is.
+	PushServiceHosts []string
+}
+
+// DefaultPushServiceHosts are where browsers' push services live: Chrome and
+// Edge on Android, Firefox, Safari, and Edge on Windows. A leading dot takes
+// in every host under it.
+var DefaultPushServiceHosts = []string{
+	"fcm.googleapis.com", "android.googleapis.com",
+	".push.services.mozilla.com",
+	"web.push.apple.com",
+	".notify.windows.com",
+}
+
+// pushEndpointAllowed says whether the server may deliver to endpoint. The
+// address comes from the browser, so anybody could otherwise have the server
+// send a POST, with every message, to whatever they name: the database, the
+// file store, or the cloud's metadata service inside the network.
+func (c Config) pushEndpointAllowed(endpoint string) bool {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Host == "" || u.User != nil {
+		return false
+	}
+	host := strings.ToLower(u.Hostname())
+	hosts, explicit := c.PushServiceHosts, true
+	if len(hosts) == 0 {
+		hosts, explicit = DefaultPushServiceHosts, false
+	}
+	for _, h := range hosts {
+		h = strings.ToLower(strings.TrimSpace(h))
+		match := host == h || (strings.HasPrefix(h, ".") && strings.HasSuffix(host, h))
+		if !match {
+			continue
+		}
+		return u.Scheme == "https" || (explicit && u.Scheme == "http")
+	}
+	return false
 }
 
 // Broadcaster delivers a live notification over the existing WebSocket.
@@ -141,6 +182,9 @@ func (s *Service) SaveSubscription(ctx context.Context, userID, orgID string, su
 	if err != nil {
 		return apperrors.New(apperrors.CodeBadRequest, "invalid organization")
 	}
+	if !s.cfg.pushEndpointAllowed(sub.Endpoint) {
+		return apperrors.New(apperrors.CodeValidation, "that is not a browser push service")
+	}
 	_, err = s.db.Exec(ctx, `
 		INSERT INTO push_subscriptions (id, org_id, user_id, endpoint, p256dh, auth, user_agent, device_name, last_used_at, created_at)
 		VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, NULLIF($6, ''), NULLIF($7, ''), NOW(), NOW())
@@ -226,6 +270,11 @@ var pushClient = &http.Client{
 }
 
 func (s *Service) sendToSubscription(ctx context.Context, sub PushSubscription, payload PushPayload) {
+	// One saved before push services were checked is not sent to either.
+	if !s.cfg.pushEndpointAllowed(sub.Endpoint) {
+		s.logger.Warn().Str("endpoint", sub.Endpoint).Msg("push subscription is not a browser push service; skipped")
+		return
+	}
 	pushSub := &webpush.Subscription{
 		Endpoint: sub.Endpoint,
 		Keys: webpush.Keys{

@@ -451,7 +451,9 @@ func (h *Handler) UpdateMailSettings(c *gin.Context) {
 	}
 	next := mail.Settings{Host: strings.TrimSpace(req.Host), Port: req.Port, User: strings.TrimSpace(req.User),
 		Pass: req.Password, From: strings.TrimSpace(req.From)}
-	if next.Pass == "" {
+	// The saved password is only kept for the same server and account: changed
+	// to another host, it would be handed to that host at the next email.
+	if next.Pass == "" && next.Host == saved.Host && next.User == saved.User {
 		next.Pass = saved.Pass
 	}
 	if next.User == "" {
@@ -531,9 +533,15 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 	}
 
 	caller := auth.GetUserFromContext(c)
-	if caller.UserID != userID.String() && !caller.Can(auth.PermMembers) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "you may only edit your own profile"})
-		return
+	if caller.UserID != userID.String() {
+		if !caller.Can(auth.PermMembers) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "you may only edit your own profile"})
+			return
+		}
+		if err := h.service.MayActOn(c.Request.Context(), orgID, userID, caller.Held()); err != nil {
+			httpx.Error(c, err, "failed to update user")
+			return
+		}
 	}
 
 	var req struct {
@@ -566,6 +574,10 @@ func (h *Handler) DeleteUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "you cannot deactivate your own account"})
 		return
 	}
+	if err := h.service.MayActOn(c.Request.Context(), orgID, userID, caller.Held()); err != nil {
+		httpx.Error(c, err, "failed to deactivate user")
+		return
+	}
 	if err := h.service.DeactivateUser(c.Request.Context(), orgID, userID); err != nil {
 		httpx.Error(c, err, "failed to deactivate user")
 		return
@@ -589,6 +601,10 @@ func (h *Handler) ResetPassword(c *gin.Context) {
 	// let a borrowed administrator session skip that.
 	if caller.UserID == userID.String() {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "change your own password from Settings"})
+		return
+	}
+	if err := h.service.MayActOn(c.Request.Context(), orgID, userID, caller.Held()); err != nil {
+		httpx.Error(c, err, "failed to reset password")
 		return
 	}
 	temporaryPassword, err := h.service.ResetMemberPassword(c.Request.Context(), orgID, userID, caller.IsOwner())

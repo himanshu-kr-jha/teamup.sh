@@ -946,6 +946,13 @@ func WSHandler(hub *Hub, authService AuthServiceInterface, allowedOrigins []stri
 			c.JSON(401, gin.H{"error": "invalid token"})
 			return
 		}
+		// Somebody on a password an administrator set does nothing until they
+		// choose their own; the HTTP API refuses them, and so does this, or
+		// whoever set the password could post in their name over the socket.
+		if claims.MustChangePassword {
+			c.JSON(403, gin.H{"error": "set your own password before continuing", "mustChangePassword": true})
+			return
+		}
 
 		// The handshake authenticates with a cookie the browser attaches by
 		// itself, so without an Origin check any site could open a socket as

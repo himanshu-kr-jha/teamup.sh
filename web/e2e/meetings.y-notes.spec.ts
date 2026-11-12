@@ -73,9 +73,17 @@ test.describe('meeting notes', () => {
     await olivia.page.getByLabel('API key', { exact: true }).fill('sk-ant-test');
     await olivia.page.getByRole('button', { name: 'Save' }).click();
     // Pointed at the stand-in through the API, as the page offers no address for Sarvam or Claude.
+    // A saved key does not follow a changed address by itself, so the keys go with it.
     const owner = await apiAs('owner');
     await owner.ctx.put('/api/org/notetaker', {
-      data: { enabled: false, sttBaseUrl: standInUrl, llmProvider: 'anthropic', llmBaseUrl: standInUrl },
+      data: {
+        enabled: false,
+        sttKey: 'sk-sarvam-test',
+        sttBaseUrl: standInUrl,
+        llmProvider: 'anthropic',
+        llmKey: 'sk-ant-test',
+        llmBaseUrl: standInUrl,
+      },
     });
     await olivia.page.reload();
     await olivia.page.getByRole('tab', { name: 'Meeting notes' }).click();

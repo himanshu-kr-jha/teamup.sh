@@ -147,15 +147,21 @@ func (s *Service) putSettings(c *gin.Context) {
 		httpx.Error(c, err, "failed to read the note-taker settings")
 		return
 	}
+	// A saved key stays with the service it was given for. Somebody who can
+	// change the settings but never saw the key must not be able to send it to
+	// an address of their own by changing only where it goes.
+	sttKey := keepFor(req.STTKey, saved.STTKey, strings.TrimSpace(req.STTBaseURL) == saved.STTBaseURL)
+	llmKey := keepFor(req.LLMKey, saved.LLMKey,
+		strings.TrimSpace(req.LLMBaseURL) == saved.LLMBaseURL && strings.TrimSpace(req.LLMProvider) == saved.LLMProvider)
 	next := Settings{
 		Enabled:     req.Enabled,
 		STTProvider: "sarvam",
-		STTKey:      keep(req.STTKey, saved.STTKey),
+		STTKey:      sttKey,
 		STTModel:    strings.TrimSpace(req.STTModel),
 		STTLanguage: strings.TrimSpace(req.STTLanguage),
 		STTBaseURL:  strings.TrimSpace(req.STTBaseURL),
 		LLMProvider: strings.TrimSpace(req.LLMProvider),
-		LLMKey:      keep(req.LLMKey, saved.LLMKey),
+		LLMKey:      llmKey,
 		LLMModel:    strings.TrimSpace(req.LLMModel),
 		LLMBaseURL:  strings.TrimSpace(req.LLMBaseURL),
 	}
@@ -172,6 +178,15 @@ func (s *Service) putSettings(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, viewOf(next))
+}
+
+// keepFor is keep, except that a saved key is only kept for the same service:
+// pointed somewhere else, it has to be given again.
+func keepFor(given, saved string, sameService bool) string {
+	if strings.TrimSpace(given) == "" && !sameService {
+		return ""
+	}
+	return keep(given, saved)
 }
 
 func keep(given, saved string) string {

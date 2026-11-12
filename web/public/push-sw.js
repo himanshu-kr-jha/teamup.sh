@@ -74,11 +74,25 @@ self.addEventListener('push', (event) => {
   );
 });
 
+// Where a notification may take somebody: a page of this app, or a pull
+// request or commit on GitHub or Bitbucket. Anything else opens the app.
+function safeTarget(url) {
+  if (!url) return '/';
+  try {
+    const u = new URL(url, self.location.origin);
+    if (u.origin === self.location.origin) return u.pathname + u.search + u.hash;
+    if (u.protocol === 'https:' && (u.hostname === 'github.com' || u.hostname === 'bitbucket.org')) return u.href;
+  } catch {
+    // Not an address at all.
+  }
+  return '/';
+}
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
 
   const data = event.notification.data || {};
-  const target = data.url || '/';
+  const target = safeTarget(data.url);
 
   event.waitUntil(
     (async () => {

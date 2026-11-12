@@ -392,8 +392,19 @@ func (s *Service) JoinAsGuest(ctx context.Context, token, name, passcode, rejoin
 // checkPasscode compares the passcode, counting wrong ones by address and for
 // the link, and refusing once there have been too many.
 func (s *Service) checkPasscode(ctx context.Context, link *guestLinkRow, passcode, ip string) error {
+	// Counting, comparing and recording a wrong guess happen as one, a link at
+	// a time: otherwise guesses sent all at once each find the count still
+	// under the limit, and the limit stops none of them.
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("check passcode: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "guest-passcode:"+link.callID.String()); err != nil {
+		return fmt.Errorf("check passcode: %w", err)
+	}
 	var mine, all int
-	if err := s.db.QueryRow(ctx, `
+	if err := tx.QueryRow(ctx, `
 		SELECT COUNT(*) FILTER (WHERE ip = $2), COUNT(*)
 		FROM call_guest_attempts WHERE call_id = $1 AND at > $3`,
 		link.callID, ip, s.clock().Add(-attemptWindow)).Scan(&mine, &all); err != nil {
@@ -403,7 +414,10 @@ func (s *Service) checkPasscode(ctx context.Context, link *guestLinkRow, passcod
 		return ErrTooManyTries
 	}
 	if subtle.ConstantTimeCompare([]byte(strings.TrimSpace(passcode)), []byte(*link.passcode)) != 1 {
-		if _, err := s.db.Exec(ctx, `INSERT INTO call_guest_attempts (call_id, ip, at) VALUES ($1, $2, $3)`, link.callID, ip, s.clock()); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO call_guest_attempts (call_id, ip, at) VALUES ($1, $2, $3)`, link.callID, ip, s.clock()); err != nil {
+			return fmt.Errorf("record attempt: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
 			return fmt.Errorf("record attempt: %w", err)
 		}
 		return ErrWrongPasscode

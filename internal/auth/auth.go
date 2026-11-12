@@ -69,11 +69,14 @@ type Config struct {
 func (s *Service) cookieSecure() bool { return !s.cfg.InsecureCookies }
 
 type Service struct {
-	db        *pgxpool.Pool
-	redis     *redis.Client
-	cfg       Config
-	providers map[string]Provider
-	verifier  *oidc.IDTokenVerifier
+	db    *pgxpool.Pool
+	redis *redis.Client
+	fails failures
+	// sessionsEndedHooks run once all of somebody's sessions are ended.
+	sessionsEndedHooks []func(userID string)
+	cfg                Config
+	providers          map[string]Provider
+	verifier           *oidc.IDTokenVerifier
 }
 
 type Provider interface {

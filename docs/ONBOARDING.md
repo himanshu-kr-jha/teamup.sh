@@ -33,7 +33,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | Git | any recent | `git --version` | |
 | Docker | with Compose v2 | `docker compose version` | Postgres, Redis, MinIO, LiveKit and Mailpit run as containers |
-| Go | 1.25 or newer | `go version` | The server |
+| Go | 1.26 or newer | `go version` | The server |
 | Node.js | 20 or newer | `node --version` | The web app |
 | pnpm | 9 | `pnpm --version` | Owns `web/pnpm-lock.yaml`; `npm install -g pnpm@9` |
 
