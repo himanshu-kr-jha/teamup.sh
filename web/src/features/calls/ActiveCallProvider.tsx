@@ -19,6 +19,7 @@ import {
 import { ConnectionState, RoomEvent } from 'livekit-client';
 import { useQuery } from '@tanstack/react-query';
 import { CallStage } from './CallStage';
+import { MeetingChatButton, MeetingChatProvider, StageWithChat, UnreadChatMark, type ChatTransport } from './MeetingChat';
 import { NotesBanner } from './notetaker';
 import { CallControls, CompactCallControls, ShareUnavailableNote } from './CallControls';
 import { GuestAccess } from './GuestAccess';
@@ -464,6 +465,13 @@ function CallFrame({
   // Everybody may be in a standing meeting's room, and most of them may not read its
   // log, so nobody is offered a button whose only answer is a refusal.
   const canReadLog = details?.canReadLog === true;
+  const chatTransport = useMemo<ChatTransport>(
+    () => ({
+      load: async () => (await callsApi.chat(callId)).data.messages,
+      send: async (content) => (await callsApi.sendChat(callId, content)).data,
+    }),
+    [callId]
+  );
 
   // Above the bottom navigation on a phone, where the corner would cover it.
   const [position, setPosition] = useState(() => ({ x: 8, y: window.innerWidth < 1024 ? 72 : 24 }));
@@ -560,7 +568,7 @@ function CallFrame({
   };
 
   return (
-    <>
+    <MeetingChatProvider transport={chatTransport}>
       <div
         // text-foreground because LiveKit's theme sets white text on everything
         // inside it, which on a light page made this bar's words and its minimise
@@ -641,11 +649,12 @@ function CallFrame({
             <Button
               variant="ghost"
               size="icon"
-              className="h-7 w-7"
+              className="relative h-7 w-7"
               aria-label={expanded ? 'Minimise the call' : 'Expand the call'}
               onClick={() => navigate(expanded ? '/chat' : `/calls/${callId}`)}
             >
               {expanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+              {!expanded && <UnreadChatMark />}
             </Button>
             <Button
               variant="destructive"
@@ -695,7 +704,7 @@ function CallFrame({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </>
+    </MeetingChatProvider>
   );
 }
 
@@ -741,14 +750,22 @@ function CallTiles({ callId, compact }: { callId: string; compact: boolean }) {
       {!compact && <NotesBanner />}
 
       <div className="min-h-0 flex-1">
-        <CallStage callId={callId} compact={compact} />
+        {compact ? (
+          <CallStage callId={callId} compact />
+        ) : (
+          <StageWithChat>
+            <CallStage callId={callId} compact={false} />
+          </StageWithChat>
+        )}
       </div>
 
       {/* The controls need room; the corner window keeps only leave, which
           lives in its title bar. */}
       {!compact && (
         <div ref={controls} className="flex shrink-0 flex-col items-center gap-1 border-t border-border p-2 sm:p-3">
-          <CallControls />
+          <CallControls>
+            <MeetingChatButton />
+          </CallControls>
           <ShareUnavailableNote />
         </div>
       )}

@@ -464,6 +464,13 @@ func (s *Service) compose(ctx context.Context, orgID, callID uuid.UUID, set Sett
 	for _, g := range guests {
 		names = append(names, g+" (guest)")
 	}
+	// What was written in the meeting's chat belongs in the minutes as much as
+	// what was said: links, figures and decisions are often typed, not spoken.
+	chat, err := s.chatLines(ctx, callID)
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("notetaker: could not read the meeting chat")
+	}
+	segments = withChat(segments, chat)
 	w := set.writer()
 	if nv, ok := w.(NVIDIA); ok {
 		// Which model was asked, and how it went: the first thing to know when
@@ -555,6 +562,48 @@ func (s *Service) guestNames(ctx context.Context, callID uuid.UUID) ([]string, e
 		return nil, err
 	}
 	return pgx.CollectRows(rows, pgx.RowTo[string])
+}
+
+// chatLines is the meeting's chat as lines of the transcript, each marked as
+// written in the chat so the minutes can tell typing from talking.
+func (s *Service) chatLines(ctx context.Context, callID uuid.UUID) ([]Segment, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT sender_name || CASE WHEN sender_guest_id IS NOT NULL THEN ' (guest)' ELSE '' END || ' (in the chat)',
+		       created_at, content
+		FROM call_messages WHERE call_id = $1 ORDER BY created_at, id`, callID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Segment
+	for rows.Next() {
+		var seg Segment
+		if err := rows.Scan(&seg.Speaker, &seg.StartedAt, &seg.Text); err != nil {
+			return nil, err
+		}
+		out = append(out, seg)
+	}
+	return out, rows.Err()
+}
+
+// withChat puts the chat among what was said, in order of time. Both are in
+// order already; at the same moment, speech comes first.
+func withChat(spoken, chat []Segment) []Segment {
+	if len(chat) == 0 {
+		return spoken
+	}
+	out := make([]Segment, 0, len(spoken)+len(chat))
+	i, j := 0, 0
+	for i < len(spoken) || j < len(chat) {
+		if j == len(chat) || (i < len(spoken) && !chat[j].StartedAt.Before(spoken[i].StartedAt)) {
+			out = append(out, spoken[i])
+			i++
+		} else {
+			out = append(out, chat[j])
+			j++
+		}
+	}
+	return out
 }
 
 func (s *Service) segments(ctx context.Context, callID uuid.UUID) ([]Segment, error) {

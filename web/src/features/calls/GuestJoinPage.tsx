@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import {
@@ -28,8 +28,14 @@ import { cn } from "@/shared/utils/cn";
 import { BlockedAudioPrompt, liveKitURL } from "./ActiveCallProvider";
 import { CallStage } from "./CallStage";
 import { CallControls, ShareUnavailableNote } from "./CallControls";
+import {
+  MeetingChatButton,
+  MeetingChatProvider,
+  StageWithChat,
+  type ChatTransport,
+} from "./MeetingChat";
 import { NotesBanner, isNotetaker } from "./notetaker";
-import { CameraBackground } from './BackgroundPicker';
+import { CameraBackground } from "./BackgroundPicker";
 
 const NAME_KEY = "teamup.guestName";
 
@@ -68,7 +74,15 @@ function saveJoin(token: string, saved: Saved | null) {
   }
 }
 
-type Joined = { token: string; title: string; mic: boolean; camera: boolean };
+type Joined = {
+  token: string;
+  title: string;
+  mic: boolean;
+  camera: boolean;
+  /** The guest link's token and this guest's key: how the meeting's chat knows them. */
+  link: string;
+  key: string;
+};
 type Left = { reason: "left" | "removed" | "ended" | "lost" };
 
 /**
@@ -218,7 +232,14 @@ function JoinForm({
         // Private mode: they type it again next time.
       }
       saveJoin(token, { key: res.data.rejoinKey, name: res.data.name });
-      onJoined({ token: res.data.token, title: meeting.title, mic, camera });
+      onJoined({
+        token: res.data.token,
+        title: meeting.title,
+        mic,
+        camera,
+        link: token,
+        key: res.data.rejoinKey,
+      });
     } catch (err) {
       if (
         saved &&
@@ -423,6 +444,15 @@ function GuestRoom({
   onLeft: (reason: Left["reason"]) => void;
 }) {
   const [problem, setProblem] = useState("");
+  const chatTransport = useMemo<ChatTransport>(
+    () => ({
+      load: async () =>
+        (await guestApi.chat(joined.link, joined.key)).data.messages,
+      send: async (content) =>
+        (await guestApi.sendChat(joined.link, joined.key, content)).data,
+    }),
+    [joined.link, joined.key],
+  );
   return (
     <LiveKitRoom
       token={joined.token}
@@ -440,30 +470,36 @@ function GuestRoom({
       onError={(err) => setProblem(err.message)}
       className="flex h-viewport flex-col bg-background text-foreground"
     >
-      <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
-        <span className="min-w-0 flex-1 truncate text-sm font-medium">
-          {joined.title}
-          <GuestCount />
-        </span>
-        <span className="hidden rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground sm:inline">
-          You are a guest
-        </span>
-        <LeaveButton />
-      </div>
-      <BlockedAudioPrompt compact={false} />
-      <NotesBanner asGuest />
-      {problem && (
-        <p className="border-b border-border bg-destructive/10 p-2 text-center text-sm text-destructive">
-          {problem}
-        </p>
-      )}
-      <div className="min-h-0 flex-1">
-        <CallStage callId="" compact={false} asGuest />
-      </div>
-      <div className="flex shrink-0 flex-col items-center gap-1 border-t border-border p-2 sm:p-3">
-        <CallControls />
-        <ShareUnavailableNote />
-      </div>
+      <MeetingChatProvider transport={chatTransport}>
+        <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
+          <span className="min-w-0 flex-1 truncate text-sm font-medium">
+            {joined.title}
+            <GuestCount />
+          </span>
+          <span className="hidden rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground sm:inline">
+            You are a guest
+          </span>
+          <LeaveButton />
+        </div>
+        <BlockedAudioPrompt compact={false} />
+        <NotesBanner asGuest />
+        {problem && (
+          <p className="border-b border-border bg-destructive/10 p-2 text-center text-sm text-destructive">
+            {problem}
+          </p>
+        )}
+        <div className="min-h-0 flex-1">
+          <StageWithChat>
+            <CallStage callId="" compact={false} asGuest />
+          </StageWithChat>
+        </div>
+        <div className="flex shrink-0 flex-col items-center gap-1 border-t border-border p-2 sm:p-3">
+          <CallControls>
+            <MeetingChatButton />
+          </CallControls>
+          <ShareUnavailableNote />
+        </div>
+      </MeetingChatProvider>
       <RoomAudioRenderer />
       <CameraBackground />
     </LiveKitRoom>

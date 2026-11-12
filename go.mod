@@ -20,6 +20,7 @@ require (
 	github.com/redis/go-redis/v9 v9.7.3
 	github.com/rs/zerolog v1.32.0
 	github.com/spf13/cobra v1.8.0
+	github.com/twitchtv/twirp v8.1.3+incompatible
 	golang.org/x/crypto v0.37.0
 	golang.org/x/oauth2 v0.25.0
 	google.golang.org/protobuf v1.36.6
@@ -115,7 +116,6 @@ require (
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/stoewer/go-strcase v1.3.0 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
-	github.com/twitchtv/twirp v8.1.3+incompatible // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.2.11 // indirect
 	github.com/wlynxg/anet v0.0.5 // indirect

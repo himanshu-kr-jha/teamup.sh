@@ -30,6 +30,28 @@ type fakeMedia struct {
 	closed   []string
 	removed  []string
 	recorded []*livekit.RoomCompositeEgressRequest
+	// present is who is in each room, as room/identity; sent is what was
+	// delivered to a room.
+	present map[string]bool
+	sent    []sentData
+}
+
+type sentData struct {
+	room, topic string
+	data        []byte
+}
+
+func (f *fakeMedia) SendData(_ context.Context, room, topic string, data []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sent = append(f.sent, sentData{room, topic, data})
+	return nil
+}
+
+func (f *fakeMedia) InRoom(_ context.Context, room, identity string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.present[room+"/"+identity], nil
 }
 
 func (f *fakeMedia) CloseRoom(_ context.Context, room string) error {

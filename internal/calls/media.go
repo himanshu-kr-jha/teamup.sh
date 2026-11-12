@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/livekit/protocol/livekit"
+	"github.com/twitchtv/twirp"
 )
 
 // errNoMedia is asking LiveKit for something on an instance with no LiveKit.
@@ -28,6 +29,11 @@ type mediaServer interface {
 	RemoveParticipant(ctx context.Context, room, identity string) error
 	// StartRecording starts composing a room into a file and names the job.
 	StartRecording(ctx context.Context, req *livekit.RoomCompositeEgressRequest) (string, error)
+	// SendData delivers a packet from the server to everybody in a room, on a
+	// topic. A room that does not exist is not an error.
+	SendData(ctx context.Context, room, topic string, data []byte) error
+	// InRoom says whether somebody is connected to a room now.
+	InRoom(ctx context.Context, room, identity string) (bool, error)
 }
 
 // liveKit is the real server.
@@ -67,6 +73,44 @@ func (l liveKit) StartRecording(ctx context.Context, req *livekit.RoomCompositeE
 		return "", err
 	}
 	return info.EgressId, nil
+}
+
+func (l liveKit) SendData(ctx context.Context, room, topic string, data []byte) error {
+	if l.s.roomService == nil {
+		return errNoMedia
+	}
+	_, err := l.s.roomService.SendData(ctx, &livekit.SendDataRequest{
+		Room: room, Data: data, Kind: livekit.DataPacket_RELIABLE, Topic: &topic,
+	})
+	if twirpNotFound(err) {
+		return nil
+	}
+	return err
+}
+
+func (l liveKit) InRoom(ctx context.Context, room, identity string) (bool, error) {
+	if l.s.roomService == nil {
+		return false, errNoMedia
+	}
+	res, err := l.s.roomService.ListParticipants(ctx, &livekit.ListParticipantsRequest{Room: room})
+	if twirpNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	for _, p := range res.GetParticipants() {
+		if p.GetIdentity() == identity && p.GetState() != livekit.ParticipantInfo_DISCONNECTED {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// twirpNotFound is LiveKit saying the room is not there.
+func twirpNotFound(err error) bool {
+	var te twirp.Error
+	return errors.As(err, &te) && te.Code() == twirp.NotFound
 }
 
 // mediaOf is the server to ask.
