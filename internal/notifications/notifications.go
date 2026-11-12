@@ -443,7 +443,23 @@ func (s *Service) PushToUsers(ctx context.Context, userIDs []uuid.UUID, push pro
 	if !s.HasVAPIDKeys() || len(userIDs) == 0 {
 		return
 	}
-	payload := PushPayload{
+	payload := payloadOf(push)
+	pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
+	go func() {
+		defer cancel()
+		s.pushToUsers(pushCtx, userIDs, payload)
+	}()
+}
+
+// DeliverToUsers is PushToUsers waited on: it returns once every device has
+// been sent the push, for a caller that must not send the next thing before
+// this one has arrived (a call's ringing, then its "Call ended").
+func (s *Service) DeliverToUsers(ctx context.Context, userIDs []uuid.UUID, push protocol.Push) {
+	s.deliverToUsers(ctx, userIDs, payloadOf(push))
+}
+
+func payloadOf(push protocol.Push) PushPayload {
+	return PushPayload{
 		Title:              push.Title,
 		Body:               push.Body,
 		Tag:                push.Tag,
@@ -453,11 +469,6 @@ func (s *Service) PushToUsers(ctx context.Context, userIDs []uuid.UUID, push pro
 		TTL:                push.TTL,
 		Urgency:            push.Urgency,
 	}
-	pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 60*time.Second)
-	go func() {
-		defer cancel()
-		s.pushToUsers(pushCtx, userIDs, payload)
-	}()
 }
 
 // pushFanOut bounds how many pushes are in flight at once. High enough that a

@@ -77,6 +77,10 @@ type Service struct {
 	ringStop chan struct{}
 	ringOnce sync.Once
 	ringers  sync.WaitGroup
+	// lanes holds, for each call still ringing, what keeps its rings and the
+	// word that it is over in order; see ringLane.
+	lanesMu sync.Mutex
+	lanes   map[uuid.UUID]*ringLane
 	// guestMail emails invitations to people from outside; baseURL starts
 	// the links in them.
 	guestMail GuestMailer
@@ -131,6 +135,7 @@ func NewService(db *pgxpool.Pool, cfg Config) *Service {
 		ringEvery: 5 * time.Second,
 		ringFor:   45 * time.Second,
 		ringStop:  make(chan struct{}),
+		lanes:     map[uuid.UUID]*ringLane{},
 	}
 
 	// Initialize LiveKit room service client
@@ -497,6 +502,11 @@ func (s *Service) AnnounceCallOver(ctx context.Context, call *CallModel, reason,
 		if id, err := uuid.Parse(userID); err == nil {
 			ids = append(ids, id)
 		}
+	}
+	// The call itself is over, not one person turning it down: after any ring
+	// already on its way, and with no more to follow.
+	if lane := s.laneOf(call.ID); lane != nil && reason == "ended" {
+		lane.end()
 	}
 	s.stopRinging(ctx, call.ID, ids)
 
@@ -1023,6 +1033,9 @@ func (s *Service) SetChatRecorder(c ChatRecorder) { s.chat = c }
 // Notifier reaches somebody's devices, including ones with nothing open.
 type Notifier interface {
 	PushToUsers(ctx context.Context, userIDs []uuid.UUID, payload protocol.Push)
+	// DeliverToUsers is PushToUsers waited on: it returns once every device
+	// has been sent the push, so what is sent next arrives after it.
+	DeliverToUsers(ctx context.Context, userIDs []uuid.UUID, payload protocol.Push)
 	Notify(ctx context.Context, orgID, userID uuid.UUID, kind, title, body string, data map[string]any) error
 }
 
@@ -1072,20 +1085,91 @@ func (s *Service) ringDevices(ctx context.Context, call *Call, callerName string
 			"callId": call.ID.String(),
 		},
 	}
-	s.notifier.PushToUsers(ctx, invitees, ring)
-	if s.ringEvery <= 0 {
-		return
-	}
 	select {
 	case <-s.ringStop:
 		return
 	default:
 	}
+	lane := s.openLane(call.ID)
 	s.ringers.Add(1)
 	go func() {
 		defer s.ringers.Done()
-		s.keepRinging(context.WithoutCancel(ctx), call.ID, invitees, ring)
+		defer s.closeLane(call.ID, lane)
+		ctx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		defer cancel()
+		go func() {
+			select {
+			case <-s.ringStop:
+				cancel()
+			case <-ctx.Done():
+			}
+		}()
+		if !lane.ring(ctx, s.notifier, invitees, ring) || s.ringEvery <= 0 {
+			return
+		}
+		s.keepRinging(ctx, call.ID, lane, invitees, ring)
 	}()
+}
+
+// ringDelivery bounds how long one ring may take to reach every device, which
+// is also the longest the word that the call is over waits behind it.
+const ringDelivery = 10 * time.Second
+
+// ringLane keeps a call's rings and the word that it is over in order.
+//
+// A push takes a moment to reach a phone. Sent side by side, a ring that went
+// out just as the caller hung up can land after "Call ended", and the phone
+// starts ringing again for a call nobody is on. So a ring is delivered in full
+// before anything else is sent for the call, and once the call is over no ring
+// goes out at all.
+type ringLane struct {
+	mu   sync.Mutex
+	over bool
+}
+
+// ring delivers one ring unless the call is already over, and says whether it did.
+func (l *ringLane) ring(ctx context.Context, n Notifier, to []uuid.UUID, ring protocol.Push) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.over {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, ringDelivery)
+	defer cancel()
+	n.DeliverToUsers(ctx, to, ring)
+	return true
+}
+
+// end marks the call over, once any ring on its way has arrived.
+func (l *ringLane) end() {
+	l.mu.Lock()
+	l.over = true
+	l.mu.Unlock()
+}
+
+func (s *Service) openLane(callID uuid.UUID) *ringLane {
+	s.lanesMu.Lock()
+	defer s.lanesMu.Unlock()
+	if l, ok := s.lanes[callID]; ok {
+		return l
+	}
+	l := &ringLane{}
+	s.lanes[callID] = l
+	return l
+}
+
+func (s *Service) closeLane(callID uuid.UUID, l *ringLane) {
+	s.lanesMu.Lock()
+	defer s.lanesMu.Unlock()
+	if s.lanes[callID] == l {
+		delete(s.lanes, callID)
+	}
+}
+
+func (s *Service) laneOf(callID uuid.UUID) *ringLane {
+	s.lanesMu.Lock()
+	defer s.lanesMu.Unlock()
+	return s.lanes[callID]
 }
 
 // keepRinging rings again, every ringEvery, whoever is still being called.
@@ -1099,7 +1183,7 @@ func (s *Service) ringDevices(ctx context.Context, call *Call, callerName string
 // Somebody who has picked up or turned it down on one device is still being
 // rung on the others, so they are told to stop there too: answered on the
 // laptop, the phone falls silent.
-func (s *Service) keepRinging(ctx context.Context, callID uuid.UUID, invitees []uuid.UUID, ring protocol.Push) {
+func (s *Service) keepRinging(ctx context.Context, callID uuid.UUID, lane *ringLane, invitees []uuid.UUID, ring protocol.Push) {
 	ringing := invitees
 	tick := time.NewTicker(s.ringEvery)
 	defer tick.Stop()
@@ -1130,7 +1214,9 @@ func (s *Service) keepRinging(ctx context.Context, callID uuid.UUID, invitees []
 		if len(ringing) == 0 {
 			return
 		}
-		s.notifier.PushToUsers(ctx, ringing, ring)
+		if !lane.ring(ctx, s.notifier, ringing, ring) {
+			return
+		}
 	}
 }
 

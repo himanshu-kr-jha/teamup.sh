@@ -88,15 +88,24 @@ type pushLog struct {
 	pushed map[uuid.UUID]int
 }
 
-func (p *pushLog) PushToUsers(ctx context.Context, ids []uuid.UUID, push protocol.Push) {
+func (p *pushLog) DeliverToUsers(ctx context.Context, ids []uuid.UUID, push protocol.Push) {
+	p.count(ids)
+	p.Service.DeliverToUsers(ctx, ids, push)
+}
+
+func (p *pushLog) count(ids []uuid.UUID) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
 	if p.pushed == nil {
 		p.pushed = map[uuid.UUID]int{}
 	}
 	for _, id := range ids {
 		p.pushed[id]++
 	}
-	p.mu.Unlock()
+}
+
+func (p *pushLog) PushToUsers(ctx context.Context, ids []uuid.UUID, push protocol.Push) {
+	p.count(ids)
 	p.Service.PushToUsers(ctx, ids, push)
 }
 

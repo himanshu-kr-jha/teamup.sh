@@ -20,7 +20,7 @@ test.describe('calls that did not happen', () => {
     const caller = await as('pat');
     await caller.page.goto(`/chat/${toAlice.id}`);
     await caller.page.getByRole('button', { name: 'Call', exact: true }).click();
-    await expect(caller.page.getByText(`${PEOPLE.alice.name} is in another call or meeting.`)).toBeVisible({ timeout: 20_000 });
+    await expect(caller.page.getByText(`${PEOPLE.alice.name} is in another call or meeting.`, { exact: true })).toBeVisible({ timeout: 20_000 });
     const busy = caller.page.locator('[data-testid="call-event"][data-kind="busy"]').last();
     await expect(busy, 'the caller is back in the conversation, which says so').toContainText('Busy, in another call or meeting', {
       timeout: 20_000,

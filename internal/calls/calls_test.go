@@ -895,6 +895,10 @@ type rungDevices struct {
 	to       [][]uuid.UUID
 }
 
+func (r *rungDevices) DeliverToUsers(ctx context.Context, ids []uuid.UUID, payload protocol.Push) {
+	r.PushToUsers(ctx, ids, payload)
+}
+
 func (r *rungDevices) PushToUsers(_ context.Context, ids []uuid.UUID, payload protocol.Push) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -937,10 +941,10 @@ func TestACallRingsTheDeviceAndStopsWhenItIsOver(t *testing.T) {
 	svc.ringEvery = 0 // the ringing again is the test below
 	svc.Ring(ctx, call, org.OwnerID.String(), "QA Alice", []uuid.UUID{callee})
 
-	if len(rung.payloads) != 1 {
-		t.Fatalf("the phone should have rung, got %+v", rung.payloads)
-	}
+	waitFor(t, "the phone to ring", func() bool { return len(rung.sent("call.incoming")) == 1 })
+	rung.mu.Lock()
 	ringing := rung.payloads[0]
+	rung.mu.Unlock()
 	if ringing.Title != "QA Alice" {
 		t.Errorf("it should say who is calling, got %q", ringing.Title)
 	}
@@ -960,6 +964,8 @@ func TestACallRingsTheDeviceAndStopsWhenItIsOver(t *testing.T) {
 	}
 	svc.AnnounceCallOver(ctx, loaded, "no_answer", "", []string{callee.String()})
 
+	rung.mu.Lock()
+	defer rung.mu.Unlock()
 	if len(rung.payloads) != 2 {
 		t.Fatalf("the ringing should have been called off, got %+v", rung.payloads)
 	}
@@ -993,6 +999,7 @@ func TestACallKeepsRingingUntilItIsAnsweredAndThenStopsEverywhere(t *testing.T) 
 	}
 	svc.Ring(ctx, call, org.OwnerID.String(), "QA Alice", []uuid.UUID{answers, away})
 
+	waitFor(t, "the phone to ring", func() bool { return len(rung.sent("call.incoming")) >= 1 })
 	rung.mu.Lock()
 	first := rung.payloads[0]
 	rung.mu.Unlock()
@@ -1034,6 +1041,72 @@ func TestACallKeepsRingingUntilItIsAnsweredAndThenStopsEverywhere(t *testing.T) 
 	time.Sleep(100 * time.Millisecond)
 	if after := len(rung.sent("call.incoming")); after != over {
 		t.Errorf("a call that is over went on ringing: %d more", after-over)
+	}
+}
+
+// slowDevices takes a while to deliver a ring, as a real phone's push service
+// does, and writes down the order things reached the phone in.
+type slowDevices struct {
+	rungDevices
+	delay time.Duration
+	// started is told when a ring has begun its way to the phone.
+	started chan struct{}
+}
+
+func (d *slowDevices) DeliverToUsers(ctx context.Context, ids []uuid.UUID, payload protocol.Push) {
+	select {
+	case d.started <- struct{}{}:
+	default:
+	}
+	time.Sleep(d.delay)
+	d.rungDevices.PushToUsers(ctx, ids, payload)
+}
+
+// Reported as a flaky browser test, and true of a real phone: a ring that went
+// out just as the caller hung up arrived after "Call ended", and the phone
+// started ringing again for a call nobody was on.
+func TestARingOnItsWayWhenTheCallEndsArrivesBeforeCallEndedAndNoneFollow(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	callee := testsupport.SeedUser(t, pool, org, "pocket@example.test", "member")
+
+	phone := &slowDevices{delay: 150 * time.Millisecond, started: make(chan struct{}, 1)}
+	svc.SetNotifier(phone)
+	svc.ringEvery, svc.ringFor = 20*time.Millisecond, 5*time.Second
+
+	call, err := svc.CreateCall(ctx, org.ID, org.OwnerID, nil, "audio", nil, []string{callee.String()})
+	if err != nil {
+		t.Fatalf("create call: %v", err)
+	}
+	svc.Ring(ctx, call, org.OwnerID.String(), "QA Alice", []uuid.UUID{callee})
+	waitFor(t, "the first ring to arrive", func() bool { return len(phone.sent("call.incoming")) >= 1 })
+
+	// The caller hangs up while the next ring is on its way.
+	select {
+	case <-phone.started: // the first ring's, already arrived
+	default:
+	}
+	<-phone.started
+	if err := svc.MarkCallEnded(ctx, org.ID, call.ID); err != nil {
+		t.Fatalf("end call: %v", err)
+	}
+	loaded, err := svc.GetCall(ctx, org.ID, call.ID)
+	if err != nil {
+		t.Fatalf("get call: %v", err)
+	}
+	svc.AnnounceCallOver(ctx, loaded, "ended", "", []string{callee.String()})
+	time.Sleep(300 * time.Millisecond)
+
+	phone.mu.Lock()
+	defer phone.mu.Unlock()
+	last := phone.payloads[len(phone.payloads)-1]
+	if last.Data["kind"] != "call.cancelled" {
+		kinds := make([]any, len(phone.payloads))
+		for i, p := range phone.payloads {
+			kinds[i] = p.Data["kind"]
+		}
+		t.Fatalf("the phone has to be left told the call is over, got %v", kinds)
 	}
 }
 

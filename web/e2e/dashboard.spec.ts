@@ -643,6 +643,9 @@ test.describe('8. audit items that never met a real browser', () => {
     await bubble.getByRole('button', { name: 'Message actions' }).click();
     await alice.page.getByRole('menuitem', { name: 'Edit' }).click();
     const edit = alice.page.getByLabel('Edit message');
+    // Picking Edit puts you in the box, not back on the menu's button.
+    await expect(alice.page.getByRole('menu')).toHaveCount(0);
+    await expect(edit).toBeFocused();
     await edit.fill(fixed);
     await edit.press('Enter');
     await expect(alice.page.getByText(fixed)).toBeVisible();
@@ -660,6 +663,8 @@ test.describe('8. audit items that never met a real browser', () => {
     await bubble2.getByRole('button', { name: 'Message actions' }).click();
     await alice.page.getByRole('menuitem', { name: 'Edit' }).click();
     const edit2 = alice.page.getByLabel('Edit message');
+    await expect(alice.page.getByRole('menu')).toHaveCount(0);
+    await expect(edit2).toBeFocused();
     await edit2.fill(again);
     await edit2.press('Enter');
     await expect(pat.page.getByText(again)).toBeVisible();

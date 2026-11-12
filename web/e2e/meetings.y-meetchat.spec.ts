@@ -96,7 +96,13 @@ test.describe('meeting chat', () => {
     await chat(ally.page).getByRole('button', { name: 'Close the chat' }).click();
     await ally.page.getByRole('button', { name: 'Minimise the call' }).click();
     await say(olivia.page, 'One more thing');
-    await expect(ally.page.getByTestId('meeting-chat-unread-compact')).toHaveText('1', { timeout: 15_000 });
+    await say(olivia.page, 'And a second one');
+    // Each message is its own bubble with its own time, even in a run from one person.
+    const own = chat(olivia.page).getByTestId('meeting-chat-message');
+    await expect(own.last()).toContainText('And a second one');
+    await expect(own.last().locator('time')).toHaveCount(1);
+    await expect(own.nth(-2).locator('time')).toHaveCount(1);
+    await expect(ally.page.getByTestId('meeting-chat-unread-compact')).toHaveText('2', { timeout: 15_000 });
 
     // Afterwards, the chat stays with the call for the people who were in it.
     await guest.page.getByRole('button', { name: 'Leave' }).click();
@@ -106,7 +112,7 @@ test.describe('meeting chat', () => {
       .poll(async () => ((await alice.get(`/calls/${id}/chat`)).messages as Array<{ content: string }>).map((m) => m.content), {
         timeout: 20_000,
       })
-      .toEqual(['Agenda: https://example.test/agenda', 'Thanks, reading it now', 'Hello from Pat', 'One more thing']);
+      .toEqual(['Agenda: https://example.test/agenda', 'Thanks, reading it now', 'Hello from Pat', 'One more thing', 'And a second one']);
 
     await Promise.all([owner.dispose(), alice.dispose()]);
   });

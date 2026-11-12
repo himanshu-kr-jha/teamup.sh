@@ -26,6 +26,29 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-12-b',
+    date: '2026-11-12',
+    title: 'Meeting chat in bubbles, and two fixes',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'Every message in its own bubble',
+        body: 'Messages in a meeting’s chat each sit in their own bubble with the time they were sent, so several in a row from one person are easy to tell apart. Yours are on the right.',
+        link: '/calls',
+      },
+      {
+        area: 'meetings',
+        title: 'A phone stops ringing for good',
+        body: 'When a caller hangs up just as your phone was about to ring again, it no longer starts ringing a moment later for a call that is over.',
+      },
+      {
+        area: 'chat',
+        title: 'Edit puts you straight in the box',
+        body: 'Choosing Edit on one of your messages puts the cursor in the edit box, so you can start typing at once.',
+      },
+    ],
+  },
+  {
     id: '2026-11-12',
     date: '2026-11-12',
     title: 'Chat inside meetings, and tidier tasks',
