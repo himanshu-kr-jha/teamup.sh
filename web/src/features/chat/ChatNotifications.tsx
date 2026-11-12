@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { plainText } from '@/shared/richText/format';
 import { useQueryClient } from '@tanstack/react-query';
 import { useWebSocket } from '@/features/websocket/WSProvider';
 import { useAuth } from '@/features/auth/AuthProvider';
@@ -105,7 +106,7 @@ export function ChatNotifications() {
       if (watchingThisConversation || !interrupt) return;
 
       const body = incoming.content?.trim()
-        ? incoming.content
+        ? plainText(incoming.content)
         : incoming.attachments?.length
           ? 'Sent a file'
           : 'Sent a message';

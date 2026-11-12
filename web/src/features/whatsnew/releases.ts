@@ -26,6 +26,35 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-12-e',
+    date: '2026-11-12',
+    title: 'Formatted messages you can share',
+    changes: [
+      {
+        area: 'chat',
+        title: 'Format what you write',
+        body: 'Shift+Enter starts a new line. Write *bold*, _italic_, ~struck~ or `code`, start lines with - or 1. for a list or > for a quote, or use the T button by the message box. Ctrl+B and Ctrl+I work too.',
+        link: '/chat',
+      },
+      {
+        area: 'chat',
+        title: 'Pasting keeps the formatting',
+        body: 'Text pasted from Google Docs, Word, an email or a web page keeps its bold, italics, lists and links.',
+      },
+      {
+        area: 'chat',
+        title: 'Copy or share a message',
+        body: 'Copy text in a message’s menu copies it with its formatting, ready for a document, an email, WhatsApp or Slack. On a phone, Share to another app opens the share sheet.',
+      },
+      {
+        area: 'meetings',
+        title: 'Share the minutes',
+        body: 'On a meeting’s minutes, Send to a conversation posts them in TeamUp as a formatted message, Copy takes them to a document or another app, and Share opens your phone’s share sheet.',
+        link: '/meeting-notes',
+      },
+    ],
+  },
+  {
     id: '2026-11-12-d',
     date: '2026-11-12',
     title: 'See who is typing',

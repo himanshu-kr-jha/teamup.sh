@@ -2019,8 +2019,9 @@ func (s *Service) pushToChannel(ctx context.Context, channelID, senderID uuid.UU
 		return
 	}
 
-	// A file on its own is a message with nothing to quote.
-	body := strings.TrimSpace(msg.Content)
+	// A file on its own is a message with nothing to quote. A notification
+	// shows only text, so formatting marks are taken off.
+	body := plainText(msg.Content)
 	if body == "" {
 		body = "Sent a file"
 	}

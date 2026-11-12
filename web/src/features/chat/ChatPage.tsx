@@ -3,11 +3,12 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   Hash, Send, Paperclip, Smile, Settings, ChevronLeft, MessageSquare, User,
   Megaphone, MoreVertical, Pencil, Trash2, Eye, Ban, Check, CheckCheck, PhoneMissed, PhoneOff, PhoneForwarded,
-  MessagesSquare, X, Download, Phone, Forward, Mic, Video,
+  MessagesSquare, X, Download, Phone, Forward, Mic, Video, Type, Copy, Share2,
 } from 'lucide-react';
+import { FormatBar, FormattedTextarea, useFormatting } from '@/shared/richText/composer';
+import { canShare, copyFormatted, shareText } from '@/shared/richText/share';
 import { Button } from '@/shared/components/ui/button';
 import { NotifyMenu } from './NotifyMenu';
-import { Input } from '@/shared/components/ui/input';
 import { PersonAvatar } from '@/shared/components/UserAvatar';
 import { cn, formatRelativeTime } from '@/shared/utils/cn';
 import {
@@ -299,7 +300,9 @@ export function ChatPage() {
   const typists = useTypingIn(channelId, user?.id);
   const toast = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const composerRef = useRef<HTMLInputElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const formatting = useFormatting(composerRef, message, setMessage);
+  const [showFormatting, setShowFormatting] = useState(false);
 
   // Opening a conversation, or closing a thread back to it, leaves the cursor
   // in the message box, so nobody has to click it before they can type. Not on
@@ -1219,6 +1222,7 @@ export function ChatPage() {
 
           <form onSubmit={handleSend} className="relative p-4 border-t border-border">
             <TypingLine names={typists.map((id) => nameOf(id) ?? 'Somebody')} />
+            {showFormatting && !recordingVoice && <FormatBar onFormat={formatting.apply} className="mb-1.5 ml-12" />}
             <div className="flex items-end gap-2">
               <input
                 ref={fileInputRef}
@@ -1269,8 +1273,10 @@ export function ChatPage() {
                     onHover={setMentionIndex}
                   />
                 )}
-                <Input
+                <textarea
                   ref={composerRef}
+                  rows={1}
+                  onPaste={formatting.onPaste}
                   value={message}
                   onChange={(e) => {
                     setMessage(e.target.value);
@@ -1293,8 +1299,9 @@ export function ChatPage() {
                   }
                   aria-label="Message"
                   disabled={!channelId}
-                  className="pr-10"
+                  className="flex min-h-10 w-full resize-none rounded-md border border-input bg-background px-3 py-2 pr-[4.5rem] text-sm leading-6 ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                   onKeyDown={(e) => {
+                    if (formatting.onFormatKey(e)) return;
                     if (mentionChoices.length > 0) {
                       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
                         e.preventDefault();
@@ -1314,13 +1321,27 @@ export function ChatPage() {
                         return;
                       }
                     }
-                    if (e.key === 'Enter' && !e.shiftKey) {
+                    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                       e.preventDefault();
                       handleSend(e);
                     }
                   }}
                 />
-                <div className="absolute bottom-1 right-1 flex items-center gap-1">
+                <div className="absolute bottom-1 right-1 flex items-center gap-0.5">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    type="button"
+                    aria-label="Formatting"
+                    title="Formatting"
+                    aria-pressed={showFormatting}
+                    disabled={!channelId}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => setShowFormatting((v) => !v)}
+                    className={cn('h-8 w-8', showFormatting && 'bg-accent text-foreground')}
+                  >
+                    <Type className="h-4 w-4" />
+                  </Button>
                   {/* This did nothing at all. It puts an emoji in what you are
                       writing — reacting to somebody else's message is the
                       picker on the message itself. */}
@@ -1360,7 +1381,8 @@ export function ChatPage() {
                     type="button"
                     variant="ghost"
                     size="icon"
-                    className="shrink-0"
+                    // On a phone, while there is something to send, the box has their room.
+                    className={cn('shrink-0', message.trim() && 'max-sm:hidden')}
                     disabled={!channelId || progress !== null}
                     onClick={() => setRecordingVoice(true)}
                     aria-label="Record a voice message"
@@ -1372,7 +1394,8 @@ export function ChatPage() {
                     type="button"
                     variant="ghost"
                     size="icon"
-                    className="shrink-0"
+                    // On a phone, while there is something to send, the box has their room.
+                    className={cn('shrink-0', message.trim() && 'max-sm:hidden')}
                     disabled={!channelId || progress !== null}
                     onClick={() => setRecordingVideo(true)}
                     aria-label="Record a video message"
@@ -1627,6 +1650,7 @@ function MessageBubble({
                 onDelete={remove}
                 onReply={onOpenThread}
                 onShowReads={() => setShowingReads(true)}
+                content={message.content}
                 attachments={message.attachments}
                 onForward={forward && !message.pending ? () => forward(message) : undefined}
               />
@@ -1643,6 +1667,7 @@ function MessageBubble({
                 !grouped && !deleted && (isOwn ? 'rounded-tr-sm' : 'rounded-tl-sm'),
                 message.pending && 'opacity-60'
               )}
+              data-testid="message"
             >
               {deleted ? (
                 <span className="flex items-center gap-1.5">
@@ -1651,14 +1676,15 @@ function MessageBubble({
                 </span>
               ) : editing ? (
                 <div className="space-y-2">
-                  <Input
+                  <FormattedTextarea
                     value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
+                    onValueChange={setDraft}
                     aria-label="Edit message"
-                    className="h-8 bg-background text-foreground"
+                    className="min-w-[min(16rem,60vw)] bg-background py-1 text-foreground"
                     autoFocus
+                    onFocus={(e) => e.currentTarget.setSelectionRange(e.currentTarget.value.length, e.currentTarget.value.length)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
+                      if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                         e.preventDefault();
                         void saveEdit();
                       }
@@ -1712,6 +1738,7 @@ function MessageBubble({
                 canDelete={false}
                 onReply={onOpenThread}
                 onShowReads={() => setShowingReads(true)}
+                content={message.content}
                 attachments={message.attachments}
                 onForward={forward && !message.pending ? () => forward(message) : undefined}
               />
@@ -1873,7 +1900,10 @@ function MessageMenu({
   onShowReads,
   attachments,
   onForward,
+  content,
 }: {
+  /** The words, to copy or share with other apps. */
+  content?: string;
   /** Passes it on to other conversations. */
   onForward?: () => void;
   /** Files on the message, each of which can be saved from here. */
@@ -1891,6 +1921,7 @@ function MessageMenu({
   // back to its own button, so what you type next goes nowhere. So the box
   // opens once the menu has closed, in place of the menu's own focus return.
   const editChosen = useRef(false);
+  const toast = useToast();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -1922,6 +1953,27 @@ function MessageMenu({
           <DropdownMenuItem onSelect={onForward}>
             <Forward className="mr-2 h-4 w-4" />
             Forward
+          </DropdownMenuItem>
+        )}
+        {content?.trim() && (
+          <DropdownMenuItem
+            onSelect={async () => {
+              try {
+                await copyFormatted(content);
+                toast.success('Copied, with its formatting.');
+              } catch {
+                toast.error('Could not copy. Select the text instead.');
+              }
+            }}
+          >
+            <Copy className="mr-2 h-4 w-4" />
+            Copy text
+          </DropdownMenuItem>
+        )}
+        {content?.trim() && canShare() && (
+          <DropdownMenuItem onSelect={() => void shareText(content)}>
+            <Share2 className="mr-2 h-4 w-4" />
+            Share to another app
           </DropdownMenuItem>
         )}
         <DropdownMenuItem onSelect={onShowReads}>
@@ -2000,7 +2052,7 @@ function ThreadPanel({
   const [draft, setDraft] = useState('');
   const endRef = useRef<HTMLDivElement>(null);
   // A thread is opened to answer in it.
-  const replyRef = useRef<HTMLInputElement>(null);
+  const replyRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
     if (!typesOnOpen()) return;
     return focusWhenFree(() => replyRef.current);
@@ -2116,14 +2168,15 @@ function ThreadPanel({
 
       <form onSubmit={submit} className="shrink-0 border-t border-border p-4">
         <div className="flex items-end gap-2">
-          <Input
+          <FormattedTextarea
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onValueChange={setDraft}
             placeholder="Reply…"
             aria-label="Reply in thread"
             ref={replyRef}
+            className="min-h-10 py-2"
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
                 e.preventDefault();
                 submit(e);
               }

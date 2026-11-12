@@ -2,6 +2,7 @@ import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { expect, test } from './support/fixtures';
 import { apiAs, createCall, idOf, joinCall, leaveCall } from './support/meetings';
+import { readState } from './support/people';
 
 // The meeting note-taker in a real call on the real LiveKit: it joins visibly,
 // sends what people say to speech to text, and when the call ends writes the
@@ -143,6 +144,40 @@ test.describe('meeting notes', () => {
     // The transcript she opened before stays open.
     await expect(page.getByRole('button', { name: 'Hide the transcript' })).toBeVisible();
     await expect(page.getByRole('region', { name: 'Transcript' })).toContainText('We will ship the release on Friday.');
+
+    // Asked for: minutes that can be shared, in TeamUp and with other apps.
+    // Copied, they carry HTML for a document or an email and *marks* for chat apps.
+    await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
+    await page.getByRole('button', { name: 'Copy', exact: true }).click();
+    await expect(page.getByText('Copied. Paste into a document')).toBeVisible();
+    const copied = await page.evaluate(async () => {
+      const [item] = await navigator.clipboard.read();
+      return {
+        html: await (await item.getType('text/html')).text(),
+        text: await (await item.getType('text/plain')).text(),
+      };
+    });
+    expect(copied.html).toContain('<strong>Decisions</strong>');
+    expect(copied.html).toContain('<li>Ship on Friday</li>');
+    expect(copied.text).toContain(`*Minutes: ${title}*`);
+    expect(copied.text).toContain('- Ship on Friday');
+    expect(copied.text).toContain(`/calls/${call.id}/minutes`);
+
+    // Sent to a conversation, they arrive there as a formatted message.
+    await page.getByRole('button', { name: 'Send to a conversation' }).click();
+    const sendTo = page.getByRole('dialog', { name: 'Send the minutes' });
+    await sendTo.getByLabel('Find a conversation').fill('e2e-room');
+    await sendTo.getByRole('option', { name: 'e2e-room' }).click();
+    await sendTo.getByRole('button', { name: 'Send', exact: true }).click();
+    await expect(page.getByText('Sent the minutes.')).toBeVisible();
+    const pat = await as('pat');
+    await pat.page.goto(`/chat/${readState().channelId}`);
+    const posted = pat.page.getByTestId('message').filter({ hasText: `Minutes: ${title}` }).last();
+    await expect(posted.locator('strong', { hasText: `Minutes: ${title}` })).toBeVisible();
+    await expect(posted.locator('li', { hasText: 'Ship on Friday' })).toBeVisible();
+    await posted.screenshot({ path: 'test-results/minutes-in-chat.png' });
+    await page.screenshot({ path: 'test-results/minutes-share.png' });
+    await pat.page.close();
 
     // Back on the list, with the summary, and found by searching for it.
     await page.getByRole('link', { name: 'Meeting notes' }).first().click();

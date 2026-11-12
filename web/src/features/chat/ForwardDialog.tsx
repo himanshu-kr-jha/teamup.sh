@@ -1,7 +1,7 @@
 import { createContext, useContext, useMemo, useState } from 'react';
 import { PERMS, can } from '@/shared/permissions';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Check, Forward, Hash, Loader2, Megaphone, Paperclip, Search, User } from 'lucide-react';
+import { Check, Forward, Hash, Loader2, Megaphone, Paperclip, Search, Send, User } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
@@ -17,6 +17,7 @@ import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { cn } from '@/shared/utils/cn';
+import { plainText } from '@/shared/richText/format';
 
 /** As much of a message as forwarding needs. */
 export interface ForwardableMessage {
@@ -42,9 +43,16 @@ export const MAX_FORWARD_TARGETS = 10;
 export function ForwardDialog({
   message,
   onClose,
+  asNew,
 }: {
   message: ForwardableMessage | null;
   onClose: () => void;
+  /**
+   * Posts the text as a new message from you, rather than forwarding a
+   * message: for something that is not a message yet, such as the minutes
+   * of a meeting.
+   */
+  asNew?: { title: string; description: string; done: string };
 }) {
   const toast = useToast();
   const queryClient = useQueryClient();
@@ -80,13 +88,20 @@ export function ForwardDialog({
     if (!message || chosen.length === 0) return;
     setSending(true);
     try {
-      await messagesApi.forward(message.id, chosen);
-      toast.success(chosen.length === 1 ? 'Forwarded.' : `Forwarded to ${chosen.length} conversations.`);
+      if (asNew) {
+        await Promise.all(
+          chosen.map((id, i) => channelsApi.sendMessage(id, { content: message.content, tempId: `temp-${Date.now()}-${i}` }))
+        );
+        toast.success(chosen.length === 1 ? asNew.done : `${asNew.done.replace(/\.$/, '')} to ${chosen.length} conversations.`);
+      } else {
+        await messagesApi.forward(message.id, chosen);
+        toast.success(chosen.length === 1 ? 'Forwarded.' : `Forwarded to ${chosen.length} conversations.`);
+      }
       void queryClient.invalidateQueries({ queryKey: ['channels'] });
       for (const id of chosen) void queryClient.invalidateQueries({ queryKey: ['messages', id] });
       close();
     } catch (err) {
-      toast.error(apiErrorMessage(err, 'Could not forward that message.'));
+      toast.error(apiErrorMessage(err, asNew ? 'Could not send it.' : 'Could not forward that message.'));
     } finally {
       setSending(false);
     }
@@ -98,13 +113,13 @@ export function ForwardDialog({
     <Dialog open={!!message} onOpenChange={(open) => !open && close()}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle>Forward message</DialogTitle>
-          <DialogDescription>It arrives marked Forwarded, from you, with its files.</DialogDescription>
+          <DialogTitle>{asNew?.title ?? 'Forward message'}</DialogTitle>
+          <DialogDescription>{asNew?.description ?? 'It arrives marked Forwarded, from you, with its files.'}</DialogDescription>
         </DialogHeader>
 
         {message && (
           <div className="rounded-md border border-border bg-muted/40 px-3 py-2 text-sm" data-testid="forward-preview">
-            {message.content && <p className="line-clamp-3 whitespace-pre-wrap break-anywhere">{message.content}</p>}
+            {message.content && <p className="line-clamp-3 whitespace-pre-wrap break-anywhere">{plainText(message.content)}</p>}
             {files > 0 && (
               <p className={cn('flex items-center gap-1 text-xs text-muted-foreground', message.content && 'mt-1')}>
                 <Paperclip className="h-3 w-3" aria-hidden="true" />
@@ -181,8 +196,14 @@ export function ForwardDialog({
             Cancel
           </Button>
           <Button onClick={send} disabled={chosen.length === 0 || sending}>
-            {sending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Forward className="mr-2 h-4 w-4" />}
-            Forward
+            {sending ? (
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            ) : asNew ? (
+              <Send className="mr-2 h-4 w-4" />
+            ) : (
+              <Forward className="mr-2 h-4 w-4" />
+            )}
+            {asNew ? 'Send' : 'Forward'}
           </Button>
         </DialogFooter>
       </DialogContent>

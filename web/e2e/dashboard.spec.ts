@@ -513,14 +513,15 @@ test.describe('8. audit items that never met a real browser', () => {
     await composer.press('Enter');
     await expect(page.getByText('Could not send that message.').or(page.getByText(/boom|try again/i)).first()).toBeVisible();
     await expect(composer).toHaveValue(text);
-    await expect(page.getByText(text)).toHaveCount(0);
+    // Back in the box only; the box's own text is not a message.
+    await expect(page.getByTestId('message').filter({ hasText: text })).toHaveCount(0);
 
     await page.unroute(`**/api/channels/${channelId}/messages`);
     await composer.press('Enter');
     await expect(composer).toHaveValue('');
-    await expect(page.getByText(text)).toBeVisible();
+    await expect(page.getByTestId('message').filter({ hasText: text })).toBeVisible();
     await page.reload();
-    await expect(page.getByText(text)).toBeVisible();
+    await expect(page.getByTestId('message').filter({ hasText: text })).toBeVisible();
   });
 
   test('35: a hidden tab does not mark messages read; showing it does', async ({ as }) => {
