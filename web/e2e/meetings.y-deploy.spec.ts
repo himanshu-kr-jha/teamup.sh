@@ -12,8 +12,11 @@ async function openBrowser(browser: Browser, swap: SwapServer, who: 'alice', opt
   const page = await context.newPage();
   if (options.fakeClock) await page.clock.install();
   // Its pages go through the service worker, which the test cannot answer for, so
-  // the welcome tour is marked seen where it is kept rather than in what is said.
-  sql(`UPDATE users SET tour_completed_at = COALESCE(tour_completed_at, NOW()) WHERE email = '${PEOPLE[who].email}'`);
+  // the welcome tour and What's new are marked seen where they are kept rather
+  // than in what is said.
+  sql(
+    `UPDATE users SET tour_completed_at = COALESCE(tour_completed_at, NOW()), whats_new_seen = '9999-12-31' WHERE email = '${PEOPLE[who].email}'`
+  );
   await signIn(page, who);
   await page.evaluate(() => navigator.serviceWorker.ready);
   // A page is controlled from its next load.
