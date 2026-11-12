@@ -7,6 +7,7 @@ import { PersonAvatar } from '@/shared/components/UserAvatar';
 import { useToast } from '@/shared/hooks/useToast';
 import { cn, formatRelativeTime } from '@/shared/utils/cn';
 import { liveTaskQuery } from './liveQuery';
+import { ShowMoreButton, useShowMore } from '@/shared/components/ShowMore';
 
 /** The branch name that links work to this task: pho-12-fix-sign-in. */
 export function branchFor(key: string, title: string): string {
@@ -76,6 +77,9 @@ export function DevelopmentCard({ taskId, taskKey, title, projectId }: { taskId:
 
   const prs = data?.pullRequests ?? [];
   const commits = data?.commits ?? [];
+  // The latest few of each; the rest are a click away.
+  const morePrs = useShowMore(prs, 3);
+  const moreCommits = useShowMore(commits, 5);
   if (!hasRepos && prs.length === 0 && commits.length === 0) return null;
 
   return (
@@ -106,8 +110,9 @@ export function DevelopmentCard({ taskId, taskKey, title, projectId }: { taskId:
         )}
 
         {prs.length > 0 && (
+          <div className="space-y-1">
           <ul className="space-y-3" aria-label="Pull requests">
-            {prs.map((pr) => {
+            {morePrs.visible.map((pr) => {
               const state = PR_STATE[pr.state];
               const Icon = state.icon;
               return (
@@ -161,13 +166,15 @@ export function DevelopmentCard({ taskId, taskKey, title, projectId }: { taskId:
               );
             })}
           </ul>
+          <ShowMoreButton state={morePrs} noun={['pull request', 'pull requests']} />
+          </div>
         )}
 
         {commits.length > 0 && (
           <div className="space-y-1">
             <p className="text-xs font-medium text-muted-foreground">Commits</p>
             <ul className="space-y-1.5" aria-label="Commits">
-              {commits.slice(0, 10).map((c) => (
+              {moreCommits.visible.map((c) => (
                 <li key={c.sha} className="flex items-start gap-2 text-xs">
                   <GitCommitHorizontal className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
                   <div className="min-w-0 flex-1">
@@ -185,7 +192,7 @@ export function DevelopmentCard({ taskId, taskKey, title, projectId }: { taskId:
                 </li>
               ))}
             </ul>
-            {commits.length > 10 && <p className="text-xs text-muted-foreground">and {commits.length - 10} more.</p>}
+            <ShowMoreButton state={moreCommits} noun={['commit', 'commits']} />
           </div>
         )}
       </CardContent>

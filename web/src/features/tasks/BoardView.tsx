@@ -4,6 +4,7 @@ import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, DropdownMenuSeparator } from '@/shared/components/ui/dropdown-menu';
 import { Badge } from '@/shared/components/ui/badge';
+import { LabelBadge } from './LabelBadge';
 import { cn } from '@/shared/utils/cn';
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
@@ -31,7 +32,7 @@ interface Task {
   assigneeName?: string;
   assigneeAvatar?: string;
   dueDate?: string;
-  labels: { name: string; color: string }[];
+  labels: { id?: string; name: string; color: string }[];
   projectId?: string;
   projectName?: string;
   createdAt: string;
@@ -86,6 +87,12 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
   // the wide screen's way of narrowing a board that shows every column at once.
   const [phoneColumn, setPhoneColumn] = useState('todo');
   const [searchOpen, setSearchOpen] = useState(false);
+  // One label, by name, or all: labels sort tasks into kinds across projects.
+  const [labelFilter, setLabelFilter] = useState('all');
+  const { data: labelsData } = useQuery({ queryKey: ['labels'], queryFn: () => tasksApi.listLabels() });
+  const allLabels = ((labelsData?.data ?? []) as { id: string; name: string; color: string }[])
+    .slice()
+    .sort((a, b) => a.name.localeCompare(b.name));
 
   const { data: managedData } = useQuery({
     queryKey: ['managed-teams'],
@@ -132,6 +139,7 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
   const filteredTasks = tasks.filter((task) => {
     if (searchQuery && !task.title.toLowerCase().includes(searchQuery.toLowerCase())) return false;
     if (statusFilter !== 'all' && task.status !== statusFilter) return false;
+    if (labelFilter !== 'all' && !task.labels.some((l) => l.name === labelFilter)) return false;
     return true;
   });
 
@@ -162,6 +170,25 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
       </Select>
     </>
   );
+
+  // Only once the organization has labels: an empty choice is a puzzle.
+  const labelSelect = (phone: boolean) =>
+    allLabels.length > 0 && (
+      <Select value={labelFilter} onValueChange={setLabelFilter}>
+        <SelectTrigger className={phone ? 'h-9 min-w-0 flex-1' : 'h-9 w-40'} aria-label="Filter by label"><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="all">All labels</SelectItem>
+          {allLabels.map((l) => (
+            <SelectItem key={l.id} value={l.name}>
+              <span className="flex items-center gap-2">
+                <span className="h-2 w-2 shrink-0 rounded-full" style={{ backgroundColor: l.color }} aria-hidden="true" />
+                {l.name}
+              </span>
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    );
 
   const mineFilter = (phone: boolean) => (
     <Select value={mineAs} onValueChange={(v) => setMineAs(v as typeof mineAs)}>
@@ -249,6 +276,7 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
               ))}
             </DropdownMenuContent>
           </DropdownMenu>
+          {labelSelect(false)}
           {scope === 'team' && teamFilters(false)}
           {scope === 'mine' && mineFilter(false)}
         </div>
@@ -257,7 +285,8 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
       {/* Phone: search appears only when asked for, and the team filters only
           when the chosen scope has any. Neither costs a row otherwise. */}
       {searchOpen && (
-        <div className="shrink-0 border-b border-border px-3 py-2 md:hidden">
+        <div className="flex shrink-0 flex-col gap-2 border-b border-border px-3 py-2 md:hidden">
+          {labelSelect(true)}
           <Input
             autoFocus
             placeholder="Search tasks..."
@@ -428,9 +457,7 @@ function TaskCard({ task, onUpdate }: { task: Task; onUpdate: (data: { id: strin
           <Badge variant="outline" className="text-xs">{task.taskType}</Badge>
         )}
         {task.labels.map((label) => (
-          <Badge key={label.name} variant="secondary" className="text-xs" style={{ backgroundColor: label.color }}>
-            {label.name}
-          </Badge>
+          <LabelBadge key={label.name} name={label.name} color={label.color} className="max-w-[10rem]" />
         ))}
       </div>
 
