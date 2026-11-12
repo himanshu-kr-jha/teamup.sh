@@ -310,7 +310,7 @@ function ChatPanel({ chat }: { chat: ChatState }) {
       </p>
       <ol
         ref={list}
-        className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-3 py-2"
+        className="min-h-0 flex-1 space-y-1 overflow-y-auto px-3 py-3"
         aria-live="polite"
         onScroll={(e) => {
           const el = e.currentTarget;
@@ -320,28 +320,9 @@ function ChatPanel({ chat }: { chat: ChatState }) {
         {messages.length === 0 && (
           <li className="py-8 text-center text-sm text-muted-foreground">{loaded ? 'No messages yet.' : 'Loading…'}</li>
         )}
-        {messages.map((m, i) => {
-          const mine = m.senderId === me;
-          const head = startsGroup(messages[i - 1], m);
-          return (
-            <li key={m.id} className={cn('min-w-0', head && i > 0 && 'pt-3')} data-testid="meeting-chat-message">
-              {head && (
-                <div className="flex items-baseline gap-2">
-                  <span className="min-w-0 truncate text-xs font-semibold">
-                    {mine ? 'You' : m.senderName}
-                    {m.guest && !mine && <span className="font-normal text-muted-foreground"> (guest)</span>}
-                  </span>
-                  <time dateTime={m.createdAt} title={formatDate(m.createdAt)} className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
-                    {formatTime(m.createdAt)}
-                  </time>
-                </div>
-              )}
-              <p className="whitespace-pre-wrap break-anywhere text-sm">
-                <LinkedText text={m.content} />
-              </p>
-            </li>
-          );
-        })}
+        {messages.map((m, i) => (
+          <ChatBubble key={m.id} message={m} prev={messages[i - 1]} mine={m.senderId === me} testId="meeting-chat-message" />
+        ))}
       </ol>
       <div ref={composer} className="shrink-0">
         <Composer
@@ -433,27 +414,59 @@ function Composer({ onSend }: { onSend: (text: string) => Promise<void> }) {
   );
 }
 
+/**
+ * One message as its own bubble, with the time it was written, so two messages
+ * from the same person still read as two. Your own sit on the right; the name
+ * shows once at the start of each run of messages from one person.
+ */
+function ChatBubble({
+  message: m,
+  prev,
+  mine,
+  testId,
+}: {
+  message: MeetingChatMessage;
+  prev: MeetingChatMessage | undefined;
+  mine: boolean;
+  testId?: string;
+}) {
+  const head = startsGroup(prev, m);
+  return (
+    <li className={cn('flex min-w-0 flex-col', mine ? 'items-end' : 'items-start', head && prev && 'pt-2')} data-testid={testId}>
+      {head && (
+        <span className="mb-0.5 max-w-full truncate px-1 text-xs font-semibold">
+          {mine ? 'You' : m.senderName}
+          {m.guest && !mine && <span className="font-normal text-muted-foreground"> (guest)</span>}
+        </span>
+      )}
+      <div
+        className={cn(
+          'max-w-[85%] rounded-2xl px-3 py-1.5 text-sm',
+          mine ? 'bg-primary text-primary-foreground' : 'bg-muted text-foreground',
+          head && (mine ? 'rounded-tr-md' : 'rounded-tl-md')
+        )}
+      >
+        <p className="whitespace-pre-wrap break-anywhere">
+          <LinkedText text={m.content} onPrimary={mine} />
+        </p>
+        <time
+          dateTime={m.createdAt}
+          title={formatDate(m.createdAt)}
+          className={cn('mt-0.5 block text-right text-[10px] leading-none tabular-nums', mine ? 'text-primary-foreground/75' : 'text-muted-foreground')}
+        >
+          {formatTime(m.createdAt)}
+        </time>
+      </div>
+    </li>
+  );
+}
+
 /** The chat of a call that is over, read back where its log is. */
 export function ChatTranscript({ messages }: { messages: MeetingChatMessage[] }) {
   return (
-    <ol className="max-h-72 space-y-0.5 overflow-y-auto rounded-md border border-border px-3 py-2">
+    <ol className="max-h-72 space-y-1 overflow-y-auto rounded-md border border-border px-3 py-2">
       {messages.map((m, i) => (
-        <li key={m.id} className={cn('min-w-0', startsGroup(messages[i - 1], m) && i > 0 && 'pt-2')}>
-          {startsGroup(messages[i - 1], m) && (
-            <div className="flex items-baseline gap-2">
-              <span className="min-w-0 truncate text-xs font-semibold">
-                {m.senderName}
-                {m.guest && <span className="font-normal text-muted-foreground"> (guest)</span>}
-              </span>
-              <time dateTime={m.createdAt} title={formatDate(m.createdAt)} className="shrink-0 text-[11px] tabular-nums text-muted-foreground">
-                {formatTime(m.createdAt)}
-              </time>
-            </div>
-          )}
-          <p className="whitespace-pre-wrap break-anywhere text-sm">
-            <LinkedText text={m.content} />
-          </p>
-        </li>
+        <ChatBubble key={m.id} message={m} prev={messages[i - 1]} mine={false} />
       ))}
     </ol>
   );
