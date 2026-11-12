@@ -189,6 +189,9 @@ type ChatReactionPayload struct {
 type ChatTypingPayload struct {
 	ChannelID string `json:"channelId"`
 	IsTyping  bool   `json:"isTyping"`
+	// Who is typing. Set by the server on the way out, never taken from the
+	// client, so nobody can be shown typing as somebody else.
+	UserID string `json:"userId,omitempty"`
 }
 
 type ChatReadPayload struct {

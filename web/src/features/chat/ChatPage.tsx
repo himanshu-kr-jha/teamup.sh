@@ -25,6 +25,7 @@ import {
   DialogTitle,
 } from '@/shared/components/ui/dialog';
 import { useWebSocket } from '@/features/websocket/WSProvider';
+import { typingText, useTypingAnnouncer, useTypingIn } from './typing';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { callsApi, channelsApi, filesApi } from '@/shared/api/client';
 import { useUpload, type UploadedFile } from '@/features/files/useUpload';
@@ -294,6 +295,8 @@ export function ChatPage() {
   // the organization, including people who are not connected, so it can name
   // whoever reacted — and reactionSummary counts anyone it cannot.
   const nameOf = (id: string) => personOf(id)?.name;
+  const typing = useTypingAnnouncer(channelId);
+  const typists = useTypingIn(channelId, user?.id);
   const toast = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composerRef = useRef<HTMLInputElement>(null);
@@ -820,6 +823,7 @@ export function ChatPage() {
     });
     setMessage('');
     setStaged([]);
+    typing.stopped();
   };
 
   /**
@@ -1213,7 +1217,8 @@ export function ChatPage() {
             />
           )}
 
-          <form onSubmit={handleSend} className="p-4 border-t border-border">
+          <form onSubmit={handleSend} className="relative p-4 border-t border-border">
+            <TypingLine names={typists.map((id) => nameOf(id) ?? 'Somebody')} />
             <div className="flex items-end gap-2">
               <input
                 ref={fileInputRef}
@@ -1270,9 +1275,13 @@ export function ChatPage() {
                   onChange={(e) => {
                     setMessage(e.target.value);
                     followCaret(e.target.value, e.target.selectionStart ?? e.target.value.length);
+                    typing.typed(e.target.value);
                   }}
                   onSelect={(e) => followCaret(e.currentTarget.value, e.currentTarget.selectionStart ?? 0)}
-                  onBlur={() => setMention(null)}
+                  onBlur={() => {
+                    setMention(null);
+                    typing.stopped();
+                  }}
                   aria-autocomplete="list"
                   aria-expanded={mentionChoices.length > 0}
                   placeholder={
@@ -2163,5 +2172,35 @@ function ReadByDialog({ messageId, onClose }: { messageId: string | null; onClos
         </ul>
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * Who is typing, in the space under the message box, which is there anyway so
+ * nothing moves when it appears.
+ */
+function TypingLine({ names }: { names: string[] }) {
+  const text = typingText(names);
+  return (
+    <div
+      className="pointer-events-none absolute bottom-0.5 left-[4.25rem] right-4 flex h-3.5 items-center gap-1.5 text-[11px] leading-[14px] text-muted-foreground"
+      aria-live="polite"
+      data-testid="typing-indicator"
+    >
+      {text && (
+        <>
+          <span className="flex shrink-0 items-end gap-0.5" aria-hidden="true">
+            {[0, 150, 300].map((delay) => (
+              <span
+                key={delay}
+                className="h-1 w-1 animate-bounce rounded-full bg-muted-foreground motion-reduce:animate-none"
+                style={{ animationDelay: `${delay}ms` }}
+              />
+            ))}
+          </span>
+          <span className="truncate">{text}</span>
+        </>
+      )}
+    </div>
   );
 }

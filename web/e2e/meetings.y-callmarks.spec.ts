@@ -61,4 +61,76 @@ test.describe('calls that did not happen', () => {
 
     await Promise.all([owner.dispose(), pat.dispose()]);
   });
+
+  // Seen on GitHub: declined, the caller ended up on the calls list instead of
+  // the conversation. Two things follow a decline, in either order: being told
+  // it was missed moves them to the conversation, and the room closing steps
+  // them off the call page. Each order is forced here by holding one back.
+  for (const late of ['media', 'app'] as const) {
+    test(`a declined caller ends up in the conversation when the ${late === 'media' ? "room's closing" : 'word that it was missed'} arrives second`, async ({ as }) => {
+      const pat = await apiAs('pat');
+      const toSam = await pat.post('/channels/direct', { userId: idOf('sam') });
+      const sam = await as('sam');
+      await sam.page.goto('/tasks');
+      const caller = await as('pat');
+
+      let holding = false;
+      const port = late === 'media' ? new URL(process.env.E2E_LIVEKIT_URL ?? 'http://localhost:55464').port : null;
+      await caller.page.routeWebSocket(port ? new RegExp(`:${port}/`) : /\/ws$/, (ws) => {
+        const server = ws.connectToServer();
+        server.onMessage((m) => {
+          if (holding) setTimeout(() => ws.send(m), 3_000);
+          else ws.send(m);
+        });
+      });
+
+      await caller.page.goto(`/chat/${toSam.id}`);
+      await caller.page.getByRole('button', { name: 'Call', exact: true }).click();
+      await expect(sam.page.getByText('Incoming call')).toBeVisible({ timeout: 20_000 });
+      await expect(caller.page.getByRole('button', { name: 'Leave the call' })).toBeVisible({ timeout: 20_000 });
+      holding = true;
+      await sam.page.getByRole('button', { name: 'Decline' }).click();
+
+      await expect(caller.page).toHaveURL(new RegExp(`/chat/${toSam.id}$`), { timeout: 20_000 });
+      // After whatever was held back has arrived, still there.
+      await caller.page.waitForTimeout(5_000);
+      await expect(caller.page).toHaveURL(new RegExp(`/chat/${toSam.id}$`));
+      await expect(caller.page.locator('[data-testid="call-event"][data-kind="declined"]').last()).toContainText('Call declined');
+      await pat.dispose();
+    });
+  }
+
+  // What GitHub's traces showed: Sam turned the call down before Pat's own
+  // page had even opened it. The word that it was missed came while Pat was
+  // still in the conversation, was not for a call that page knew of, and was
+  // dropped; Pat then sat in a call that was already over until it gave up.
+  test('a call turned down before the caller has opened it puts the caller back in the conversation', async ({ as }) => {
+    const pat = await apiAs('pat');
+    const toSam = await pat.post('/channels/direct', { userId: idOf('sam') });
+    const sam = await as('sam');
+    await sam.page.goto('/tasks');
+    const caller = await as('pat');
+    // The call is made at once, and Sam rung; the caller hears so three seconds late.
+    await caller.page.route(/\/api\/calls$/, async (route) => {
+      if (route.request().method() !== 'POST') return route.continue();
+      const response = await route.fetch();
+      await new Promise((r) => setTimeout(r, 3_000));
+      await route.fulfill({ response });
+    });
+
+    await caller.page.goto(`/chat/${toSam.id}`);
+    await caller.page.getByRole('button', { name: 'Call', exact: true }).click();
+    await expect(sam.page.getByText('Incoming call')).toBeVisible({ timeout: 20_000 });
+    await sam.page.getByRole('button', { name: 'Decline' }).click();
+
+    await expect(caller.page.locator('[data-testid="call-event"][data-kind="declined"]').last()).toContainText('Call declined', {
+      timeout: 20_000,
+    });
+    await expect(caller.page).toHaveURL(new RegExp(`/chat/${toSam.id}$`));
+    // And it stays there, rather than going on to the call that is over.
+    await caller.page.waitForTimeout(5_000);
+    await expect(caller.page).toHaveURL(new RegExp(`/chat/${toSam.id}$`));
+    await expect(caller.page.getByRole('button', { name: 'Leave the call' })).toHaveCount(0);
+    await pat.dispose();
+  });
 });

@@ -247,11 +247,24 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
   // The call this tab last set out to be in. It outlives the call, because the room can
   // close on the caller just before the frame saying nobody answered arrives.
   const latestCallIdRef = useRef<string | null>(null);
+  // Calls said to be missed before this tab knew it was waiting on them: turned
+  // down, or found busy, before the caller's own page had opened the call. On
+  // a slow connection the person called can decline before the call page has
+  // even appeared, and that word, dropped as being about some other call, left
+  // the caller to join a call already over and sit in it until it gave up.
+  const missedEarlyRef = useRef(new Map<string, string>());
 
   const join = useCallback(
     async (callId: string) => {
       setFailure(null);
       latestCallIdRef.current = callId;
+      const missedIn = missedEarlyRef.current.get(callId);
+      if (missedIn) {
+        // Over before it opened here: back to the conversation, which says why.
+        missedEarlyRef.current.delete(callId);
+        navigate(`/chat/${missedIn}`, { replace: true });
+        return;
+      }
       if (activeCall?.callId === callId) return;
       setJoining(true);
       try {
@@ -263,7 +276,7 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
         setJoining(false);
       }
     },
-    [activeCall?.callId]
+    [activeCall?.callId, navigate]
   );
 
   const enter = useCallback((callId: string, token: string) => {
@@ -276,14 +289,17 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
     setActiveCall((current) => {
       // Standing on the call's own page after leaving would rejoin it
       // immediately, because that page's whole job is to join whatever the
-      // URL names. Step off it.
-      if (current && location.pathname === `/calls/${current.callId}`) {
+      // URL names. Step off it. Where you are now, not where you were when
+      // this was made: the room closing can be reported by a handler holding
+      // an older copy, and a caller already moved to the conversation (a
+      // declined call) was then sent on from it to the calls list.
+      if (current && window.location.pathname === `/calls/${current.callId}`) {
         navigate('/calls', { replace: true });
       }
       return null;
     });
     setFailure(null);
-  }, [location.pathname, navigate]);
+  }, [navigate]);
 
   // "Busy" can come from either of two frames, depending on which arrives
   // first; it is said once per person per call.
@@ -339,7 +355,15 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
       // to pull them off another call, off joining one, or off whatever they moved on to.
       if (activeCallIdRef.current && activeCallIdRef.current !== payload.callId) return;
       const waitingOnIt = latestCallIdRef.current === payload.callId || window.location.pathname === `/calls/${payload.callId}`;
-      if (!waitingOnIt) return;
+      if (!waitingOnIt) {
+        // Perhaps a call this tab is only now opening; kept for when it does.
+        const early = missedEarlyRef.current;
+        early.set(payload.callId, payload.channelId);
+        if (early.size > 20) early.delete(early.keys().next().value as string);
+        // Busy is decided as the call is made, so it is always about one just placed.
+        if (payload.reason === 'busy') sayBusy(payload.callId, payload.name);
+        return;
+      }
       // Busy is known before the call has even opened here, so it is said now.
       if (payload.reason === 'busy') sayBusy(payload.callId, payload.name);
       navigate(`/chat/${payload.channelId}`);

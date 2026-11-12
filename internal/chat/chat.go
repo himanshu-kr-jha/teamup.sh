@@ -379,7 +379,10 @@ func (s *Service) HandleTyping(ctx context.Context, conn websocket.WSConnection,
 	}
 
 	if s.broadcaster != nil {
-		s.broadcaster.BroadcastToChannel(payload.ChannelID, protocol.NewMessage(protocol.TypeChatTyping, payload), conn.UserID())
+		// The rest of the conversation has to know who, to say so; and it is
+		// the connection's own person, whatever the frame claimed.
+		out := protocol.ChatTypingPayload{ChannelID: channelID.String(), IsTyping: payload.IsTyping, UserID: userID.String()}
+		s.broadcaster.BroadcastToChannel(out.ChannelID, protocol.NewMessage(protocol.TypeChatTyping, out), conn.UserID())
 	}
 }
 

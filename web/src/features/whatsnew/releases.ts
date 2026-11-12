@@ -26,6 +26,19 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-12-d',
+    date: '2026-11-12',
+    title: 'See who is typing',
+    changes: [
+      {
+        area: 'chat',
+        title: 'Who is typing',
+        body: 'While somebody writes in a conversation you have open, a line under the message box says so, such as “Alice is typing…”. It goes when they send, clear what they wrote, or stop for a few seconds.',
+        link: '/chat',
+      },
+    ],
+  },
+  {
     id: '2026-11-12-c',
     date: '2026-11-12',
     title: 'A call window you can resize',
