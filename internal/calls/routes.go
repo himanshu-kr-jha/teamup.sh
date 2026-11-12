@@ -36,6 +36,8 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.DELETE("/calls/:id/record", h.StopRecording)
 
 	rg.GET("/calls/:id/log", h.GetCallLog)
+	rg.GET("/calls/:id/chat", h.listChat)
+	rg.POST("/calls/:id/chat", h.sendChat)
 	rg.POST("/calls/:id/knock", h.Knock)
 	rg.GET("/calls/:id/requests", h.ListKnockRequests)
 	rg.POST("/calls/:id/requests/:rid/admit", h.AdmitKnock)

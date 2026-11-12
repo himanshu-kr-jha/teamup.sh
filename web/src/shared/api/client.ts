@@ -496,9 +496,28 @@ export const guestApi = {
       `/guest/${encodeURIComponent(token)}/join`,
       data
     ),
+  /** The meeting's chat, for a guest in it. The rejoin key is who they are. */
+  chat: (token: string, key: string) =>
+    api.get<{ messages: MeetingChatMessage[] }>(`/guest/${encodeURIComponent(token)}/chat`, { headers: { 'X-Guest-Key': key } }),
+  sendChat: (token: string, key: string, content: string) =>
+    api.post<MeetingChatMessage>(`/guest/${encodeURIComponent(token)}/chat`, { content }, { headers: { 'X-Guest-Key': key } }),
 };
 
+/** One message in a meeting's own chat. senderId is the sender's identity in the room. */
+export interface MeetingChatMessage {
+  id: string;
+  callId: string;
+  senderId: string;
+  senderName: string;
+  guest: boolean;
+  content: string;
+  createdAt: string;
+}
+
 export const callsApi = {
+  /** The meeting's chat: while it is on for whoever may join, afterwards for whoever may read its log. */
+  chat: (id: string) => api.get<{ messages: MeetingChatMessage[] }>(`/calls/${id}/chat`),
+  sendChat: (id: string, content: string) => api.post<MeetingChatMessage>(`/calls/${id}/chat`, { content }),
   guestLink: (id: string) => api.get<GuestLink>(`/calls/${id}/guest-link`),
   /** passcode: a new one, '' for none, or left out to keep it. */
   setGuestLink: (id: string, data: { enabled: boolean; passcode?: string; newLink?: boolean }) =>

@@ -68,6 +68,8 @@ func RegisterGuestRoutes(rg *gin.RouterGroup, service *Service) {
 	h := NewHandler(service)
 	rg.GET("/guest/:token", h.guestMeeting)
 	rg.POST("/guest/:token/join", h.joinAsGuest)
+	rg.GET("/guest/:token/chat", h.listGuestChat)
+	rg.POST("/guest/:token/chat", h.sendGuestChat)
 }
 
 func (h *Handler) getGuestLink(c *gin.Context) {

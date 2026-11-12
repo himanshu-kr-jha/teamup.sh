@@ -6,6 +6,7 @@ import { callsApi } from '@/shared/api/client';
 import { apiErrorMessage, isClientError } from '@/shared/api/errors';
 import { formatDate, formatTime } from '@/shared/utils/cn';
 import { describeEvent, formatMinutes, orderEvents, peopleFromSessions } from './callLog';
+import { ChatTranscript } from './MeetingChat';
 
 /**
  * Who asked to join, who let them in, who came, when they left, who shared. The
@@ -28,6 +29,16 @@ export function CallLogDialog({
     queryKey: ['call-log', callId],
     queryFn: () => callsApi.log(callId).then((res) => res.data),
     enabled: open,
+    staleTime: 5_000,
+    retry: false,
+    refetchInterval: open && live ? 10_000 : false,
+  });
+
+  // What was written in the meeting's chat stays with the call.
+  const { data: chat } = useQuery({
+    queryKey: ['call-chat', callId],
+    queryFn: () => callsApi.chat(callId).then((res) => res.data.messages),
+    enabled: open && !!data,
     staleTime: 5_000,
     retry: false,
     refetchInterval: open && live ? 10_000 : false,
@@ -114,6 +125,13 @@ export function CallLogDialog({
                 </ol>
               )}
             </section>
+
+            {!!chat?.length && (
+              <section>
+                <h3 className="mb-1 text-sm font-medium">Chat</h3>
+                <ChatTranscript messages={chat} />
+              </section>
+            )}
           </div>
         )}
       </DialogContent>

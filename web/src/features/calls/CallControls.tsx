@@ -1,4 +1,4 @@
-import { useState, type ComponentType } from 'react';
+import { useState, type ComponentType, type ReactNode } from 'react';
 import { MediaDeviceMenu, useTrackToggle } from '@livekit/components-react';
 import { Track } from 'livekit-client';
 import { Mic, MicOff, MonitorOff, MonitorUp, Video, VideoOff } from 'lucide-react';
@@ -75,7 +75,7 @@ function WithDeviceMenu({ source, kind, label }: { source: ToggleSource; kind: M
 }
 
 /** The full set, under the call. Anybody in a call can share (decision 20). */
-export function CallControls() {
+export function CallControls({ children }: { children?: ReactNode }) {
   const [shareable] = useState(canShareScreen);
   return (
     <div className="flex flex-wrap items-center justify-center gap-2" role="group" aria-label="Call controls">
@@ -83,6 +83,7 @@ export function CallControls() {
       <WithDeviceMenu source={Track.Source.Camera} kind="videoinput" label="Choose a camera" />
       <BackgroundPicker />
       {shareable && <Toggle source={Track.Source.ScreenShare} />}
+      {children}
     </div>
   );
 }
