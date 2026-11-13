@@ -38,7 +38,7 @@ services:
   minio:
     # The same image as docker-compose.prod.yml, which says why it is not
     # minio/minio. It has no shell, so it has no healthcheck of its own either.
-    image: cgr.dev/chainguard/minio@sha256:cee9a8e35885e93f14b3cb32960e5017aff74e2adfb52ba87c65003b0163886b
+    image: cgr.dev/chainguard/minio@sha256:96b6cf3e14084d3427ec46de10c2873af61b945ad9272eec266cfc8df551cba5
     container_name: teamup-minio
     command: server /data --console-address ":9001"
     ports:
