@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -1774,8 +1775,81 @@ func (s *Service) attachReadCounts(ctx context.Context, channelID uuid.UUID, mes
 	if len(messages) == 0 {
 		return messages, nil
 	}
-	// A reply is read as far as its thread has been read, and anything else as
-	// far as the conversation has (see readMarker).
+	// A message in the conversation is read by everybody whose marker for the
+	// conversation has reached it. Joining each message on the page to every
+	// member made a row per message per member, 100,000 for a page of
+	// everybody's channel in an organization of 2,000, every time anybody opened
+	// it: under load that was a fifth of the database's time. The markers are
+	// one row a member, so they are read once and counted here.
+	counts, err := s.conversationReadCounts(ctx, channelID, messages)
+	if err != nil {
+		return nil, err
+	}
+	var replies []uuid.UUID
+	for _, m := range messages {
+		if m.ReplyTo != nil {
+			replies = append(replies, m.ID)
+		}
+	}
+	if len(replies) > 0 {
+		if err := s.replyReadCounts(ctx, channelID, replies, counts); err != nil {
+			return nil, err
+		}
+	}
+	for i := range messages {
+		messages[i].ReadCount = counts[messages[i].ID]
+	}
+	return messages, nil
+}
+
+// conversationReadCounts counts, for each message that is not a reply, the
+// other members whose conversation marker is at or past it.
+func (s *Service) conversationReadCounts(ctx context.Context, channelID uuid.UUID, messages []Message) (map[uuid.UUID]int, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT user_id, last_read_at FROM channel_members
+		WHERE channel_id = $1 AND last_read_at IS NOT NULL
+	`, channelID)
+	if err != nil {
+		return nil, fmt.Errorf("read markers: %w", err)
+	}
+	defer rows.Close()
+	marker := map[uuid.UUID]time.Time{}
+	var reached []time.Time
+	for rows.Next() {
+		var id uuid.UUID
+		var at time.Time
+		if err := rows.Scan(&id, &at); err != nil {
+			return nil, fmt.Errorf("scan read marker: %w", err)
+		}
+		marker[id] = at
+		reached = append(reached, at)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	slices.SortFunc(reached, func(a, b time.Time) int { return a.Compare(b) })
+
+	counts := make(map[uuid.UUID]int, len(messages))
+	for _, m := range messages {
+		if m.ReplyTo != nil {
+			continue
+		}
+		// Everybody from the first marker not before the message.
+		first, _ := slices.BinarySearchFunc(reached, m.CreatedAt, func(a, t time.Time) int { return a.Compare(t) })
+		n := len(reached) - first
+		// The author has obviously read it and is not counted.
+		if at, ok := marker[m.UserID]; ok && !at.Before(m.CreatedAt) {
+			n--
+		}
+		counts[m.ID] = n
+	}
+	return counts, nil
+}
+
+// replyReadCounts adds the counts for replies, which are read as far as their
+// thread has been (see readMarker). Replies are few on a page, so the join is
+// small.
+func (s *Service) replyReadCounts(ctx context.Context, channelID uuid.UUID, ids []uuid.UUID, counts map[uuid.UUID]int) error {
 	rows, err := s.db.Query(ctx, `
 		SELECT m.id, COUNT(cm.user_id)
 		FROM messages m
@@ -1787,28 +1861,20 @@ func (s *Service) attachReadCounts(ctx context.Context, channelID uuid.UUID, mes
 		WHERE m.channel_id = $1 AND m.id = ANY($2)
 		  AND `+readMarker+` >= m.created_at
 		GROUP BY m.id
-	`, channelID, messageIDs(messages))
+	`, channelID, ids)
 	if err != nil {
-		return nil, fmt.Errorf("count reads: %w", err)
+		return fmt.Errorf("count reads: %w", err)
 	}
 	defer rows.Close()
-
-	counts := map[uuid.UUID]int{}
 	for rows.Next() {
 		var id uuid.UUID
 		var n int
 		if err := rows.Scan(&id, &n); err != nil {
-			return nil, fmt.Errorf("scan read count: %w", err)
+			return fmt.Errorf("scan read count: %w", err)
 		}
 		counts[id] = n
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for i := range messages {
-		messages[i].ReadCount = counts[messages[i].ID]
-	}
-	return messages, nil
+	return rows.Err()
 }
 
 func messageIDs(messages []Message) []uuid.UUID {
@@ -2376,20 +2442,32 @@ var searchFuzzyPredicate = `(m.content %> $2 AND word_similarity($2, m.content) 
 	fmt.Sprint(searchSimilarityFloor) + `)`
 
 // searchMessagesSQL is the search itself.
+//
+// The conversations the caller may read are settled first, and only their
+// messages are matched. Matching the whole organization's messages and then
+// dropping what the caller cannot see read every message with a common word in
+// it: 16,000 rows to keep 400, measured under load at more than half of the
+// database's time while search was one request in twenty-five.
 var searchMessagesSQL = `
+		WITH visible AS (
+		  SELECT c.id, c.name
+		  FROM channels c
+		  WHERE c.org_id = $1
+		    AND c.deleted_at IS NULL
+		    AND ($4::uuid IS NULL OR c.id = $4)
+		    AND (c.type = 'public'
+		         OR EXISTS (SELECT 1 FROM channel_members cm WHERE cm.channel_id = c.id AND cm.user_id = $3))
+		)
 		SELECT m.id, m.channel_id, COALESCE(c.name, ''), m.user_id, u.name, m.content,
 		       ts_headline('english', m.content, websearch_to_tsquery('english', $2),
 		                   'StartSel=' || chr(2) || ', StopSel=' || chr(3) || ', MaxFragments=2, MaxWords=18, MinWords=5'),
 		       m.created_at,
 		       (m.content_search @@ websearch_to_tsquery('english', $2)) AS exact
-		FROM messages m
-		JOIN channels c ON c.id = m.channel_id
+		FROM visible c
+		JOIN messages m ON m.channel_id = c.id
 		JOIN users u ON u.id = m.user_id
-		LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.user_id = $3
 		WHERE m.org_id = $1
 		  AND m.deleted_at IS NULL
-		  AND c.deleted_at IS NULL
-		  AND (cm.user_id IS NOT NULL OR c.type = 'public')
 		  AND (
 		        m.content_search @@ websearch_to_tsquery('english', $2)
 		        OR m.content ILIKE $8 ESCAPE '\'

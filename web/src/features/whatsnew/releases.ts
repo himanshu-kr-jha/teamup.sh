@@ -26,6 +26,18 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-13-b',
+    date: '2026-11-13',
+    title: 'Faster when everybody is busy',
+    changes: [
+      {
+        area: 'chat',
+        title: 'Conversations open quicker',
+        body: 'Opening a conversation, and searching your messages, ask far less of the server, so both stay quick at the busiest time of day, even in a channel with the whole company in it.',
+      },
+    ],
+  },
+  {
     id: '2026-11-13',
     date: '2026-11-13',
     title: 'A safer TeamUp',

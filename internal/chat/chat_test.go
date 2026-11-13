@@ -1299,6 +1299,66 @@ func TestAReadMarkerIsPerChannel(t *testing.T) {
 
 // ── Read receipts, editing and deleting ───────────────────────────────────
 
+// The counts on a page are worked out from each member's read marker, once
+// per page rather than once per message per member, and have to come out the
+// same: everybody who has read as far as a message, never its author.
+func TestReadCountsFollowEachMembersMarker(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	ahead := testsupport.SeedUser(t, pool, org, "ahead@example.test", "member")
+	behind := testsupport.SeedUser(t, pool, org, "behind@example.test", "member")
+	testsupport.SeedUser(t, pool, org, "never@example.test", "member")
+
+	name := "markers"
+	ch, err := svc.CreateChannel(ctx, org.ID, org.OwnerID, &name, "public", nil, nil)
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	send := func(from uuid.UUID, text string) *Message {
+		t.Helper()
+		m, err := svc.SendMessage(ctx, org.ID, ch.ID, from, text, nil, nil, false)
+		if err != nil {
+			t.Fatalf("send: %v", err)
+		}
+		return m
+	}
+	first := send(org.OwnerID, "first")
+	second := send(org.OwnerID, "second")
+	third := send(ahead, "third, from somebody else")
+
+	if err := svc.MarkRead(ctx, ch.ID, behind, first.ID); err != nil {
+		t.Fatalf("mark read: %v", err)
+	}
+	if err := svc.MarkRead(ctx, ch.ID, ahead, third.ID); err != nil {
+		t.Fatalf("mark read: %v", err)
+	}
+
+	history, err := svc.GetMessages(ctx, ch.ID, 50, nil, nil)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	got := map[uuid.UUID]int{}
+	for _, m := range history {
+		got[m.ID] = m.ReadCount
+	}
+	// The owner wrote the first two, so they never count there: the first is
+	// read by both readers, the second only by the one who read ahead.
+	if got[first.ID] != 2 || got[second.ID] != 1 {
+		t.Errorf("read by %d and %d, want 2 and 1", got[first.ID], got[second.ID])
+	}
+	// Every count, the third's included, agrees with the list of who read it.
+	for _, id := range []uuid.UUID{first.ID, second.ID, third.ID} {
+		r, err := svc.ReadBy(ctx, org.ID, id)
+		if err != nil {
+			t.Fatalf("read by: %v", err)
+		}
+		if len(r) != got[id] {
+			t.Errorf("message %s: count %d disagrees with the %d people listed as having read it", id, got[id], len(r))
+		}
+	}
+}
+
 func TestAMessageSaysHowManyPeopleHaveReadIt(t *testing.T) {
 	svc, pool := newService(t)
 	ctx := context.Background()

@@ -309,7 +309,10 @@ services:
       resources:
         limits:
           cpus: '0.25'
-          memory: 128M
+          # Each open live connection holds buffers here. A load test with 1,000
+          # people connected took nginx to 123 MB, and at the limit the kernel
+          # kills it, which takes the whole site down at once.
+          memory: 256M
           # worker_processes is auto: one per core of the host, not of the CPU limit.
           pids: 128
         reservations:
