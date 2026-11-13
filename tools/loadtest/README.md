@@ -54,7 +54,7 @@ You need two machines in the same region: the server under test, set up with `sc
 
    Watch `docker stats` on the server while it runs.
    `-actions=false -sockets 5` only holds connections open, for testing how many live connections fit.
-`-upload 0.03 -download 0.06` adds file sharing: three actions in a hundred upload a file (mostly pictures, some documents, one in twenty 10 to 15 MB) through the same signed links the app uses, and six open a file somebody shared.
+   `-upload 0.03 -download 0.06` adds file sharing: three actions in a hundred upload a file (mostly pictures, some documents, one in twenty 10 to 15 MB) through the same signed links the app uses, and six open a file somebody shared.
 
 ## Meetings
 
