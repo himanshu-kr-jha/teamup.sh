@@ -6,7 +6,7 @@
 #
 # Node runs on the build machine's architecture: the output is the same files
 # whichever image they end up in.
-FROM --platform=$BUILDPLATFORM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS web
+FROM --platform=$BUILDPLATFORM node:25-alpine@sha256:bdf2cca6fe3dabd014ea60163eca3f0f7015fbd5c7ee1b0e9ccb4ced6eb02ef4 AS web
 
 # The exact version web/package.json names in packageManager, so the image
 # resolves the lockfile the same way CI and every developer do.
