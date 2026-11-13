@@ -54,5 +54,13 @@ You need two machines in the same region: the server under test, set up with `sc
 
    Watch `docker stats` on the server while it runs.
    `-actions=false -sockets 5` only holds connections open, for testing how many live connections fit.
+`-upload 0.03 -download 0.06` adds file sharing: three actions in a hundred upload a file (mostly pictures, some documents, one in twenty 10 to 15 MB) through the same signed links the app uses, and six open a file somebody shared.
+
+## Meetings
+
+`calls.sh ROOMS PEOPLE DURATION [QUALITY]` creates each meeting as a TeamUp call, then fills it with LiveKit's own load tester, [`lk load-test`](https://github.com/livekit/livekit-cli), at the given video quality.
+Each meeting has PEOPLE sending camera and microphone and PEOPLE watching a 3x3 gallery.
+It needs the test server's LiveKit key and secret in the environment, and the server's firewall open on TCP 7881 and UDP 7882.
+Run it beside `loadtest` to see chat, files and meetings together, and watch the server's network as well as its CPU: video is mostly bandwidth.
 
 The summary gives, for each kind of request, how many per second and the p50, p95 and p99 times, the error codes, and how long a message took to reach the other members.

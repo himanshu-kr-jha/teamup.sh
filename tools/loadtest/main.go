@@ -60,6 +60,8 @@ var (
 	jsonOut   = flag.String("json", "", "also write the summary as JSON to this file")
 	label     = flag.String("label", "", "name of this step, carried into the JSON")
 	sendShare = flag.Float64("send", 0.15, "share of actions that send a message")
+	upShare   = flag.Float64("upload", 0, "share of actions that share a file (0.03 is a busy office)")
+	downShare = flag.Float64("download", 0, "share of actions that open a file somebody shared")
 )
 
 // stats collects the time each kind of request took.
@@ -347,6 +349,13 @@ func (u *user) channel() string {
 }
 
 func (u *user) act(ctx context.Context, st *stats) {
+	if f := u.rng.Float64(); f < *upShare {
+		u.shareFile(ctx, st)
+		return
+	} else if f < *upShare+*downShare {
+		u.openFile(ctx, st)
+		return
+	}
 	r := u.rng.Float64()
 	ch := u.channel()
 	switch {
@@ -491,10 +500,166 @@ func report(signIn, run *stats, window, signedIn time.Duration, open int64) {
 		fmt.Printf("%-20s %7d %7.1f %8.1f %8.1f %8.1f %8.0f %6d\n", l.Name, l.Count, l.PerSec, l.P50, l.P95, l.P99, l.Max, l.Errors)
 	}
 	fmt.Printf("codes %v, error %.2f%%\n", s.Total.Codes, s.ErrorPercent)
+	if up, down := bytesUp.Load(), bytesDown.Load(); up+down > 0 {
+		fmt.Printf("files: %.0f MB up, %.0f MB down (%.1f / %.1f MB/s over the whole run)\n",
+			float64(up)/1e6, float64(down)/1e6, float64(up)/1e6/window.Seconds(), float64(down)/1e6/window.Seconds())
+	}
 	fmt.Printf("sockets open=%d failed=%d dropped=%d; message delivery n=%d p50=%.0fms p95=%.0fms p99=%.0fms\n",
 		s.SocketsOpen, s.SocketsFail, s.SocketsDrop, s.Deliveries, s.DeliverP50, s.DeliverP95, s.DeliverP99)
 	if *jsonOut != "" {
 		b, _ := json.MarshalIndent(s, "", "  ")
 		_ = os.WriteFile(*jsonOut, b, 0o644)
 	}
+}
+
+// --- files ---
+
+// payload is what uploads send: random, so nothing on the way compresses it.
+var payload = func() []byte {
+	b := make([]byte, 16<<20)
+	r := rand.New(rand.NewPCG(1, 2))
+	for i := range b {
+		b[i] = byte(r.Uint32())
+	}
+	return b
+}()
+
+// shared is every file uploaded so far, by conversation, for others to open.
+var shared = struct {
+	sync.Mutex
+	by map[string][]sharedFile
+}{by: map[string][]sharedFile{}}
+
+type sharedFile struct{ key, name string }
+
+var bytesUp, bytesDown atomic.Int64
+
+// fileSize is the mix people send: mostly pictures and screenshots, some
+// documents, now and then something large.
+func (u *user) fileSize() (int, string, string) {
+	switch r := u.rng.Float64(); {
+	case r < 0.70:
+		return 150<<10 + u.rng.IntN(250<<10), "screenshot.png", "image/png"
+	case r < 0.95:
+		return 1<<20 + u.rng.IntN(3<<20), "notes.pdf", "application/pdf"
+	default:
+		return 10<<20 + u.rng.IntN(5<<20), "recording.mp4", "video/mp4"
+	}
+}
+
+// shareFile does what the app does: asks for a signed address, sends the bytes
+// straight to storage through nginx, records the file and sends it in a message.
+func (u *user) shareFile(ctx context.Context, st *stats) {
+	ch := u.channel()
+	if ch == "" {
+		return
+	}
+	size, name, ctype := u.fileSize()
+	t0 := time.Now()
+	var link struct {
+		UploadURL string            `json:"uploadUrl"`
+		ObjectKey string            `json:"objectKey"`
+		Headers   map[string]string `json:"headers"`
+	}
+	code, err := u.do(ctx, st, "upload link", http.MethodPost, "/api/files/upload-url", map[string]any{
+		"category": "chat", "refId": ch, "filename": name, "contentType": ctype, "size": size}, &link)
+	if err != nil || code != http.StatusOK || link.UploadURL == "" {
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, link.UploadURL, bytes.NewReader(payload[:size]))
+	if err != nil {
+		return
+	}
+	for k, v := range link.Headers {
+		req.Header.Set(k, v)
+	}
+	if req.Header.Get("Content-Type") == "" {
+		req.Header.Set("Content-Type", ctype)
+	}
+	if *xff {
+		req.Header.Set("X-Forwarded-For", u.addr)
+	}
+	req.ContentLength = int64(size)
+	if !u.raw(st, "upload bytes", req, nil) {
+		return
+	}
+	bytesUp.Add(int64(size))
+	var att struct {
+		ID string `json:"id"`
+	}
+	code, err = u.do(ctx, st, "record file", http.MethodPost, "/api/files/record", map[string]any{
+		"category": "chat", "refId": ch, "objectKey": link.ObjectKey, "filename": name, "contentType": ctype, "size": size}, &att)
+	if err != nil || code >= 300 || att.ID == "" {
+		return
+	}
+	_, _ = u.do(ctx, st, "send with file", http.MethodPost, "/api/channels/"+ch+"/messages",
+		map[string]any{"content": "", "attachmentIds": []string{att.ID}}, nil)
+	if measuring.Load() {
+		st.add("share file (whole)", time.Since(t0), http.StatusOK, nil)
+	}
+	shared.Lock()
+	list := append(shared.by[ch], sharedFile{link.ObjectKey, name})
+	if len(list) > 200 {
+		list = list[len(list)-200:]
+	}
+	shared.by[ch] = list
+	shared.Unlock()
+}
+
+// openFile downloads a file somebody shared in one of this user's conversations.
+func (u *user) openFile(ctx context.Context, st *stats) {
+	ch := u.channel()
+	shared.Lock()
+	list := shared.by[ch]
+	var f sharedFile
+	if len(list) > 0 {
+		f = list[u.rng.IntN(len(list))]
+	}
+	shared.Unlock()
+	if f.key == "" {
+		return
+	}
+	var link struct {
+		DownloadURL string `json:"downloadUrl"`
+	}
+	q := "objectKey=" + url.QueryEscape(f.key) + "&filename=" + url.QueryEscape(f.name)
+	code, err := u.do(ctx, st, "download link", http.MethodGet, "/api/files/download-url?"+q, nil, &link)
+	if err != nil || code != http.StatusOK || link.DownloadURL == "" {
+		return
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, link.DownloadURL, nil)
+	if err != nil {
+		return
+	}
+	if *xff {
+		req.Header.Set("X-Forwarded-For", u.addr)
+	}
+	var n int64
+	if u.raw(st, "download bytes", req, &n) {
+		bytesDown.Add(n)
+	}
+}
+
+// raw sends a request to a signed storage address and times it, body and all.
+func (u *user) raw(st *stats, name string, req *http.Request, read *int64) bool {
+	t0 := time.Now()
+	res, err := u.client.Do(req)
+	if err != nil {
+		if req.Context().Err() == nil && measuring.Load() {
+			st.add(name, 0, 0, err)
+		}
+		return false
+	}
+	n, _ := io.Copy(io.Discard, res.Body)
+	_ = res.Body.Close()
+	if read != nil {
+		*read = n
+	}
+	if measuring.Load() {
+		st.add(name, time.Since(t0), res.StatusCode, nil)
+	}
+	if res.StatusCode >= 300 && os.Getenv("LOADTEST_DEBUG") != "" {
+		fmt.Fprintln(os.Stderr, name, res.Status)
+	}
+	return res.StatusCode < 300
 }

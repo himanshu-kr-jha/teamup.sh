@@ -251,7 +251,9 @@ EOF
 sed -i "s#/opt/teamup#$DIR#" backup.sh
 chmod +x backup.sh
 mkdir -p backups
-( sudo crontab -l 2>/dev/null | grep -v "$DIR/backup.sh"; echo "0 3 * * * $DIR/backup.sh >> $DIR/backups/backup.log 2>&1" ) | sudo crontab -
+# A new server has no crontab, and grep finds nothing to keep: both exit 1,
+# which under pipefail stopped the setup here and left backups unscheduled.
+{ sudo crontab -l 2>/dev/null | grep -v "$DIR/backup.sh" || true; echo "0 3 * * * $DIR/backup.sh >> $DIR/backups/backup.log 2>&1"; } | sudo crontab -
 sudo certbot renew --dry-run >/dev/null 2>&1 && echo "certificate renewal: works" || echo "certificate renewal: the dry run failed; check with sudo certbot renew --dry-run"
 REMOTE_SCRIPT
 )
