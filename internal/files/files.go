@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -333,7 +334,26 @@ func humanBytes(n int64) string {
 func (s *Service) buildObjectKey(req UploadRequest) string {
 	safeName := sanitizeFilename(req.Filename)
 	timestamp := time.Now().UTC().Format("20060102T150405Z")
-	return fmt.Sprintf("org-%s/%s/%s/%s-%s", req.OrgID, req.Category, req.RefID, timestamp, safeName)
+	// The random part keeps two uploads of image.png in the same second apart.
+	// Without it the second landed on the first, and anybody could have put
+	// their own bytes under a name somebody else was about to send.
+	return fmt.Sprintf("org-%s/%s/%s/%s-%s-%s", req.OrgID, req.Category, req.RefID, timestamp, uuid.NewString()[:12], safeName)
+}
+
+// inlineTypes are the only kinds of file shown in place, by the extension of
+// the name they were stored under. None of them can run script on the page.
+var inlineTypes = map[string]string{
+	".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif",
+	".webp": "image/webp", ".avif": "image/avif", ".bmp": "image/bmp",
+	".mp4": "video/mp4", ".m4v": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime", ".ogv": "video/ogg",
+	".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".ogg": "audio/ogg", ".oga": "audio/ogg", ".wav": "audio/wav",
+	".opus": "audio/ogg", ".aac": "audio/aac", ".flac": "audio/flac",
+	".pdf": "application/pdf",
+}
+
+// inlineType is what a stored file may be shown in place as, or "" if it may not.
+func inlineType(objectKey string) string {
+	return inlineTypes[strings.ToLower(path.Ext(objectKey))]
 }
 
 func (s *Service) GenerateDownloadURL(ctx context.Context, orgID, userID, objectKey, filename string, inline bool) (string, error) {
@@ -343,12 +363,38 @@ func (s *Service) GenerateDownloadURL(ctx context.Context, orgID, userID, object
 	if err := s.validateObjectAccess(ctx, orgID, userID, objectKey); err != nil {
 		return "", err
 	}
+	// A file that was deleted, or whose message was, is gone for everybody,
+	// even somebody who kept its key from before.
+	var gone bool
+	if s.db == nil {
+		return "", apperrors.New(apperrors.CodeUnavailable, "the database is not configured")
+	}
+	if err := s.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM attachments a LEFT JOIN messages m ON m.id = a.message_id
+			WHERE a.object_key = $1 AND (a.deleted_at IS NOT NULL OR m.deleted_at IS NOT NULL))
+	`, objectKey).Scan(&gone); err != nil {
+		return "", fmt.Errorf("check file: %w", err)
+	}
+	if gone {
+		return "", apperrors.New(apperrors.CodeNotFound, "that file was deleted")
+	}
 
 	reqParams := make(url.Values)
-	if inline {
-		reqParams.Set("response-content-disposition", fmt.Sprintf(`inline; filename="%s"`, filename))
+	if filename == "" {
+		filename = path.Base(objectKey)
+	}
+	// What a file is served as is decided here, never by whoever uploaded it:
+	// storage keeps the Content-Type the uploader sent, and files are served
+	// from the app's own address, so a page or an SVG shown in place would run
+	// with the session of whoever opened the link. Only kinds that cannot
+	// carry script are shown in place; everything else is a download.
+	if shown := inlineType(objectKey); inline && shown != "" {
+		reqParams.Set("response-content-type", shown)
+		reqParams.Set("response-content-disposition", mime.FormatMediaType("inline", map[string]string{"filename": filename}))
 	} else {
-		reqParams.Set("response-content-disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+		reqParams.Set("response-content-type", "application/octet-stream")
+		reqParams.Set("response-content-disposition", mime.FormatMediaType("attachment", map[string]string{"filename": filename}))
 	}
 
 	presigned, err := s.presigner.PresignedGetObject(ctx, s.bucketName, objectKey, 1*time.Hour, reqParams)
@@ -661,6 +707,7 @@ func (s *Service) ListAttachments(ctx context.Context, orgID uuid.UUID, category
 		       filename, content_type, size_bytes, created_at
 		FROM attachments
 		WHERE org_id = $1 AND category = $2 AND ref_id = $3 AND deleted_at IS NULL
+		  AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.id = attachments.message_id AND m.deleted_at IS NOT NULL)
 		ORDER BY created_at
 	`, orgID, category, refID)
 	if err != nil {

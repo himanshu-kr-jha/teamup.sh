@@ -65,7 +65,7 @@ test.describe('the welcome tour', () => {
     await expect(sam.page.getByTestId('welcome-tour')).toHaveCount(0);
 
     // Kept by the server: not shown again, here or anywhere else.
-    expect(sql(`SELECT tour_completed_at IS NOT NULL FROM users WHERE email = 'sam@e2e.test'`)).toBe('t');
+    await expect.poll(() => sql(`SELECT tour_completed_at IS NOT NULL FROM users WHERE email = 'sam@e2e.test'`)).toBe('t');
     await sam.page.reload();
     await sam.page.waitForTimeout(1500);
     await expect(sam.page.getByTestId('welcome-tour')).toHaveCount(0);
@@ -93,7 +93,8 @@ test.describe('the welcome tour', () => {
 
     await alice.page.keyboard.press('Escape');
     await expect(tour).toHaveCount(0);
-    expect(sql(`SELECT tour_completed_at IS NOT NULL FROM users WHERE email = 'alice@e2e.test'`)).toBe('t');
+    // Leaving saves in the background; wait for it to land.
+    await expect.poll(() => sql(`SELECT tour_completed_at IS NOT NULL FROM users WHERE email = 'alice@e2e.test'`)).toBe('t');
 
     await alice.page.goto('/settings');
     await alice.page.getByRole('button', { name: 'Show the tour again' }).click();

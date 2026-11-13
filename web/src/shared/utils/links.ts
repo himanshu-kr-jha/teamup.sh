@@ -65,6 +65,9 @@ export function inAppPath(href: string, origin: string = window.location.origin)
   try {
     const u = new URL(href);
     if (u.origin !== origin) return null;
+    // A path that begins // is another site to the router (a backslash
+    // becomes one: /\\evil.example), so it is no page of ours.
+    if (u.pathname.startsWith('//')) return null;
     return u.pathname + u.search + u.hash;
   } catch {
     return null;

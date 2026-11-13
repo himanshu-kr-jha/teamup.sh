@@ -73,9 +73,17 @@ test.describe('meeting notes', () => {
     await olivia.page.getByLabel('API key', { exact: true }).fill('sk-ant-test');
     await olivia.page.getByRole('button', { name: 'Save' }).click();
     // Pointed at the stand-in through the API, as the page offers no address for Sarvam or Claude.
+    // A saved key does not follow a changed address by itself, so the keys go with it.
     const owner = await apiAs('owner');
     await owner.ctx.put('/api/org/notetaker', {
-      data: { enabled: false, sttBaseUrl: standInUrl, llmProvider: 'anthropic', llmBaseUrl: standInUrl },
+      data: {
+        enabled: false,
+        sttKey: 'sk-sarvam-test',
+        sttBaseUrl: standInUrl,
+        llmProvider: 'anthropic',
+        llmKey: 'sk-ant-test',
+        llmBaseUrl: standInUrl,
+      },
     });
     await olivia.page.reload();
     await olivia.page.getByRole('tab', { name: 'Meeting notes' }).click();
@@ -169,7 +177,7 @@ test.describe('meeting notes', () => {
     await sendTo.getByLabel('Find a conversation').fill('e2e-room');
     await sendTo.getByRole('option', { name: 'e2e-room' }).click();
     await sendTo.getByRole('button', { name: 'Send', exact: true }).click();
-    await expect(page.getByText('Sent the minutes.')).toBeVisible();
+    await expect(page.getByText('Sent the minutes.', { exact: true })).toBeVisible();
     const pat = await as('pat');
     await pat.page.goto(`/chat/${readState().channelId}`);
     const posted = pat.page.getByTestId('message').filter({ hasText: `Minutes: ${title}` }).last();

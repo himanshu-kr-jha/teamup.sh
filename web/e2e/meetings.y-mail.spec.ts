@@ -114,13 +114,13 @@ test.describe('welcome email', () => {
     // Nothing listens on this port.
     await fillMail(olivia.page, 55499);
     await olivia.page.getByRole('button', { name: 'Send test email' }).click();
-    await expect(olivia.page.getByRole('status').filter({ hasText: /did not take it: could not reach 127\.0\.0\.1:55499/ })).toBeVisible();
+    await expect(olivia.page.getByRole('status').filter({ hasText: /did not take it: could not connect to the mail server/ })).toBeVisible();
 
     const email = `unlucky-${Date.now()}@e2e.test`;
     await addMember(olivia.page, 'Una Unlucky', email);
     const dialog = olivia.page.getByRole('dialog');
     await expect(dialog.getByText(`Pass these on to ${email}`)).toBeVisible();
-    await expect(dialog.getByRole('status')).toContainText('The email could not be sent: could not reach 127.0.0.1:55499');
+    await expect(dialog.getByRole('status')).toContainText('The email could not be sent: could not connect to the mail server');
     expect((await dialog.getByLabel('Temporary password').inputValue()).length).toBeGreaterThanOrEqual(16);
     expect(await inbox(email)).toHaveLength(0);
   });

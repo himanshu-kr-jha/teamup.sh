@@ -35,5 +35,8 @@ describe('links in messages', () => {
   it('opens a link to TeamUp itself in place', () => {
     expect(inAppPath('https://teamup.example/calls/abc?x=1#y', 'https://teamup.example')).toBe('/calls/abc?x=1#y');
     expect(inAppPath('https://elsewhere.example/calls/abc', 'https://teamup.example')).toBeNull();
+    // A path the router would read as another site is not one of ours.
+    expect(inAppPath('https://teamup.example//evil.example/x', 'https://teamup.example')).toBeNull();
+    expect(inAppPath('https://teamup.example/\\evil.example/x', 'https://teamup.example')).toBeNull();
   });
 });

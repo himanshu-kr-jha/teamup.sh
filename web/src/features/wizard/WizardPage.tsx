@@ -21,6 +21,20 @@ const stepPath = (step: number) => `/wizard/step/${step}`;
 // The four screens in between map onto the backend's step1..step4, which is
 // the off-by-one that made "Next" on the welcome screen POST an empty
 // organization to /api/wizard/step1 and fail with a validation error.
+// Setup asks for a code the server prints in its log, so only whoever runs the
+// server can set it up. It arrives in the link (?setup=) or is typed on the
+// welcome screen, and goes with every step.
+const SETUP_CODE_KEY = 'wizardSetupCode';
+function initialSetupCode(): string {
+  const fromLink = new URLSearchParams(window.location.search).get('setup');
+  if (fromLink) return fromLink.trim();
+  try {
+    return sessionStorage.getItem(SETUP_CODE_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
 const stepEndpoint: Record<number, string> = {
   2: '/wizard/step1', // Organization
   3: '/wizard/step2', // Admin user
@@ -131,6 +145,31 @@ export function WizardPage({ initialStep }: { initialStep?: number }) {
       return initialFormData;
     }
   });
+  const [setupCode, setSetupCode] = useState(initialSetupCode);
+  const withCode = { headers: { 'X-Setup-Token': setupCode.trim() } };
+
+  // Keep the code for the rest of setup, and take it out of the address bar.
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(SETUP_CODE_KEY, setupCode.trim());
+    } catch {
+      // Without storage it is simply asked for again after a reload.
+    }
+    const url = new URL(window.location.href);
+    if (url.searchParams.has('setup')) {
+      url.searchParams.delete('setup');
+      window.history.replaceState(window.history.state, '', url.pathname + url.search + url.hash);
+    }
+  }, [setupCode]);
+
+  // A wrong or missing code sends them back to where it is entered.
+  const codeRefused = (err: any) => {
+    if (!err.response?.data?.setupToken) return false;
+    setError('Enter the setup code the server printed in its log.');
+    navigate(stepPath(1));
+    return true;
+  };
+
   const [testResults, setTestResults] = useState<Record<string, { status: 'idle' | 'testing' | 'success' | 'error'; message: string }>>({});
 
   // Sync currentStep with URL (for browser back/forward)
@@ -166,15 +205,20 @@ export function WizardPage({ initialStep }: { initialStep?: number }) {
     setLoading(true);
     setError('');
     try {
+      if (currentStep === 1 && !setupCode.trim()) {
+        setError('Enter the setup code the server printed in its log.');
+        return;
+      }
       const endpoint = stepEndpoint[currentStep];
       if (endpoint) {
-        await api.post(endpoint, formData);
+        await api.post(endpoint, formData, withCode);
       }
       if (currentStep < TOTAL_STEPS) {
         navigate(stepPath(currentStep + 1));
       }
     } catch (err: any) {
       console.error('Wizard step failed:', err);
+      if (codeRefused(err)) return;
       setError(err.response?.data?.error || 'Failed to save step. Please try again.');
     } finally {
       setLoading(false);
@@ -186,13 +230,14 @@ export function WizardPage({ initialStep }: { initialStep?: number }) {
     setLoading(true);
     setError('');
     try {
-      await api.post('/wizard/step5', {});
+      await api.post('/wizard/step5', {}, withCode);
       sessionStorage.removeItem('wizardFormData');
       // Full reload so the router re-runs its setup check against the now
       // provisioned instance instead of using the cached "not set up" answer.
       window.location.assign('/');
     } catch (err: any) {
       console.error('Wizard finalization failed:', err);
+      if (codeRefused(err)) return;
       // The server keeps step state in a session that expires after 30 minutes.
       // If it lapsed, the summary screen would otherwise become a dead end with
       // a button that can only ever fail, so send the user back to the first
@@ -218,7 +263,7 @@ export function WizardPage({ initialStep }: { initialStep?: number }) {
   const testService = async (service: 'minio' | 'livekit' | 'smtp') => {
     setTestResults(prev => ({ ...prev, [service]: { status: 'testing', message: 'Testing connection...' } }));
     try {
-      await api.post('/wizard/test-service', { service, ...formData });
+      await api.post('/wizard/test-service', { service, ...formData }, withCode);
       setTestResults(prev => ({ ...prev, [service]: { status: 'success', message: 'Connection successful!' } }));
     } catch (err: any) {
       setTestResults(prev => ({ ...prev, [service]: { status: 'error', message: err.response?.data?.error || 'Connection failed' } }));
@@ -253,6 +298,21 @@ export function WizardPage({ initialStep }: { initialStep?: number }) {
                 </li>
               ))}
             </ul>
+            <div className="text-left max-w-md mx-auto space-y-2">
+              <Label htmlFor="setupCode">Setup code</Label>
+              <Input
+                id="setupCode"
+                value={setupCode}
+                onChange={(e) => setSetupCode(e.target.value)}
+                autoComplete="off"
+                spellCheck={false}
+                placeholder="From the server's log"
+              />
+              <p className="text-sm text-muted-foreground">
+                So that only whoever runs this server can set it up, it printed a code in its log when it started.
+                Look for <code>setup_code</code>, for example with <code>docker compose logs teamup</code>.
+              </p>
+            </div>
           </div>
         );
       case 2:

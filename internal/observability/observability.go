@@ -6,6 +6,7 @@ import (
 	"os"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -195,6 +196,11 @@ func GinLogger(logger zerolog.Logger) gin.HandlerFunc {
 
 		c.Next()
 
+		// A guest link's token and a webhook's key are credentials carried in
+		// the path; those routes are logged as registered, without them.
+		if route := c.FullPath(); strings.Contains(route, ":token") || strings.Contains(route, ":hookKey") {
+			path = route
+		}
 		status := c.Writer.Status()
 		latency := time.Since(start)
 

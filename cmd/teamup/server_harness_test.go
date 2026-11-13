@@ -205,6 +205,8 @@ func startServer(t *testing.T, opts serverOptions) *testServer {
 		"TEAMUP_LIVEKIT_API_KEY":    "devkey",
 		"TEAMUP_LIVEKIT_API_SECRET": "devsecret",
 		"TEAMUP_BASE_URL":           "http://127.0.0.1:" + port,
+		// The test call server's secret is the example one.
+		"TEAMUP_TEST_ONLY_WEAK_LIVEKIT_SECRET": "true",
 	}
 	if opts.autoSetup {
 		env["TEAMUP_AUTO_SETUP"] = "true"

@@ -30,7 +30,8 @@ type Service struct {
 	logger   zerolog.Logger
 	enroller ChannelEnroller
 	// Told when somebody is deactivated.
-	onDeactivated []func(ctx context.Context, orgID, userID uuid.UUID)
+	onDeactivated   []func(ctx context.Context, orgID, userID uuid.UUID)
+	onSessionsEnded []func(ctx context.Context, orgID, userID uuid.UUID)
 }
 
 type Organization struct {
@@ -286,6 +287,12 @@ func (s *Service) DeactivateUser(ctx context.Context, orgID, userID uuid.UUID) e
 	return nil
 }
 
+// OnSessionsEnded adds something to run once somebody's sessions have all
+// been ended without them being deactivated, as a password reset does.
+func (s *Service) OnSessionsEnded(notify func(ctx context.Context, orgID, userID uuid.UUID)) {
+	s.onSessionsEnded = append(s.onSessionsEnded, notify)
+}
+
 // OnDeactivated adds something to run once somebody has been deactivated. It cannot
 // undo the deactivation, so it reports its own failures.
 func (s *Service) OnDeactivated(notify func(ctx context.Context, orgID, userID uuid.UUID)) {
@@ -371,6 +378,58 @@ func (s *Service) roleWithin(ctx context.Context, orgID, roleID uuid.UUID, held 
 	for _, p := range perms {
 		if !auth.Grants(held, p) {
 			return apperrors.New(apperrors.CodeForbidden, "that role can do more than you can")
+		}
+	}
+	return nil
+}
+
+// heldBy is every permission somebody holds through their roles, as they are now.
+func (s *Service) heldBy(ctx context.Context, userID uuid.UUID) ([]string, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT r.permissions FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+		WHERE ur.user_id = $1`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("read permissions: %w", err)
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var raw []byte
+		if err := rows.Scan(&raw); err != nil {
+			return nil, err
+		}
+		var perms []string
+		_ = json.Unmarshal(raw, &perms)
+		for _, p := range perms {
+			if !slices.Contains(out, p) {
+				out = append(out, p)
+			}
+		}
+	}
+	return out, rows.Err()
+}
+
+// MayActOn refuses to let somebody deactivate, reset or edit a member who can
+// do something they cannot: managing members is not a way past the rule that
+// nobody gets more power than they hold. Signing in as an administrator after
+// resetting their password, or deactivating the owner, would be exactly that.
+// Somebody in another organization is not found.
+func (s *Service) MayActOn(ctx context.Context, orgID, targetID uuid.UUID, held []string) error {
+	var targetOrg uuid.UUID
+	err := s.db.QueryRow(ctx, `SELECT org_id FROM users WHERE id = $1 AND deleted_at IS NULL`, targetID).Scan(&targetOrg)
+	if err == pgx.ErrNoRows || (err == nil && targetOrg != orgID) {
+		return apperrors.ErrNotFound
+	}
+	if err != nil {
+		return fmt.Errorf("read member: %w", err)
+	}
+	theirs, err := s.heldBy(ctx, targetID)
+	if err != nil {
+		return err
+	}
+	for _, p := range theirs {
+		if !auth.Grants(held, p) {
+			return apperrors.New(apperrors.CodeForbidden, "they can do more than you can, so only somebody who can do as much may change their account")
 		}
 	}
 	return nil
@@ -1318,6 +1377,10 @@ func (s *Service) ResetMemberPassword(ctx context.Context, orgID, userID uuid.UU
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return "", err
+	}
+	// What they had open is ended too, not only what they could open next.
+	for _, notify := range s.onSessionsEnded {
+		notify(ctx, orgID, userID)
 	}
 	return password, nil
 }

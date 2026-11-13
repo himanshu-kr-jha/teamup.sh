@@ -213,7 +213,7 @@ test-services-down:
 
 # The same linter, version and rule GitHub runs on a pull request: only what
 # this branch adds against main counts, so old findings do not block it.
-GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.6.2
+GOLANGCI_LINT := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0
 lint-go:
 	@git fetch --quiet origin main 2>/dev/null || true
 	@$(TEST_ENV) $(GOLANGCI_LINT) run --new-from-rev=origin/main ./...

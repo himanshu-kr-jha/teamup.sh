@@ -74,11 +74,25 @@ self.addEventListener('push', (event) => {
   );
 });
 
+// Where a notification may take somebody: a page of this app, or a pull
+// request or commit on GitHub or Bitbucket. Anything else opens the app.
+function safeTarget(url) {
+  if (!url) return '/';
+  try {
+    const u = new URL(url, self.location.origin);
+    if (u.origin === self.location.origin) return u.pathname + u.search + u.hash;
+    if (u.protocol === 'https:' && (u.hostname === 'github.com' || u.hostname === 'bitbucket.org')) return u.href;
+  } catch {
+    // Not an address at all.
+  }
+  return '/';
+}
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
 
   const data = event.notification.data || {};
-  const target = data.url || '/';
+  const target = safeTarget(data.url);
 
   event.waitUntil(
     (async () => {
@@ -115,10 +129,32 @@ self.addEventListener('notificationclick', (event) => {
  * the person chooses whom to send them to. The names here and there must match.
  */
 const SHARE_INBOX = 'teamup-share-inbox';
+/** What one share may keep. More than this is left out, and the page says so. */
+const SHARE_MAX_FILES = 10;
+const SHARE_MAX_BYTES = 100 * 1024 * 1024;
+
+// A phone's share sheet posts with no referrer. A page elsewhere on the web can
+// post a form to /share too, and would come with its own address: that is not
+// somebody sharing, it is a site planting files and words for them to send.
+function postedFromElsewhere(request) {
+  const from = request.referrer;
+  if (!from || from === 'about:client') return false;
+  try {
+    return new URL(from).origin !== self.location.origin;
+  } catch {
+    return true;
+  }
+}
 
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== 'POST' || url.origin !== self.location.origin || url.pathname !== '/share') return;
+
+  if (postedFromElsewhere(event.request)) {
+    // Nothing is read or kept; the page shows whatever was waiting before.
+    event.respondWith(Response.redirect('/share', 303));
+    return;
+  }
 
   event.respondWith(
     (async () => {
@@ -128,8 +164,15 @@ self.addEventListener('fetch', (event) => {
         await caches.delete(SHARE_INBOX);
         const inbox = await caches.open(SHARE_INBOX);
         const files = [];
+        let bytes = 0;
+        let leftOut = 0;
         for (const file of form.getAll('files')) {
           if (!(file instanceof File) || file.size === 0) continue;
+          if (files.length >= SHARE_MAX_FILES || bytes + file.size > SHARE_MAX_BYTES) {
+            leftOut++;
+            continue;
+          }
+          bytes += file.size;
           const key = `/share-inbox/file/${files.length}`;
           files.push({ key, name: file.name || 'file', type: file.type || 'application/octet-stream', size: file.size });
           await inbox.put(key, new Response(file, { headers: { 'Content-Type': file.type || 'application/octet-stream' } }));
@@ -140,9 +183,10 @@ self.addEventListener('fetch', (event) => {
         };
         await inbox.put(
           '/share-inbox/meta',
-          new Response(JSON.stringify({ title: text('title'), text: text('text'), url: text('url'), files, at: Date.now() }), {
-            headers: { 'Content-Type': 'application/json' },
-          })
+          new Response(
+            JSON.stringify({ title: text('title'), text: text('text'), url: text('url'), files, leftOut, at: Date.now() }),
+            { headers: { 'Content-Type': 'application/json' } }
+          )
         );
       } catch {
         // The page says nothing arrived, which is true; there is no one else to tell.

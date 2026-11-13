@@ -19,6 +19,8 @@ import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
 import { AttachmentChip } from '@/features/files/AttachmentChip';
 import { formatRelativeTime } from '@/shared/utils/cn';
+import { useAuth } from '@/features/auth/AuthProvider';
+import { PERMS, can } from '@/shared/permissions';
 
 /**
  * The settings button in the channel header did nothing at all, so there was no
@@ -55,6 +57,13 @@ export function ChannelSettingsDialog({
   });
 
   const members = membersData?.data ?? [];
+  const { user } = useAuth();
+  // What the server lets this person do: a channel's owners and admins manage
+  // its members, and so does whoever administers every channel. A direct
+  // message is the two people in it, and neither manages the other.
+  const mine = members.find((m: any) => m.userId === user?.id);
+  const managesMembers =
+    can(user, PERMS.channelsAll) || (channel?.type !== 'dm' && (mine?.role === 'owner' || mine?.role === 'admin'));
   const media = mediaData?.data ?? [];
   const orgUsers = usersData?.data ?? [];
   const candidates = orgUsers.filter((u: any) => !members.some((m: any) => m.userId === u.id));
@@ -96,10 +105,12 @@ export function ChannelSettingsDialog({
             </TabsList>
 
             <TabsContent value="members" className="space-y-3">
-              <Button size="sm" variant="outline" className="w-full" onClick={() => setAdding(true)}>
-                <UserPlus className="mr-2 h-4 w-4" />
-                Add members
-              </Button>
+              {managesMembers && (
+                <Button size="sm" variant="outline" className="w-full" onClick={() => setAdding(true)}>
+                  <UserPlus className="mr-2 h-4 w-4" />
+                  Add members
+                </Button>
+              )}
               {membersLoading && <p className="text-sm text-muted-foreground">Loading members…</p>}
               {!membersLoading && members.length === 0 && (
                 <p className="text-sm text-muted-foreground">Nobody is in this channel yet.</p>
@@ -113,13 +124,16 @@ export function ChannelSettingsDialog({
                       <p className="truncate text-xs text-muted-foreground">{m.email}</p>
                     </div>
                     {m.role !== 'member' && <Badge variant="secondary">{m.role}</Badge>}
-                    <button
-                      onClick={() => remove(m.userId)}
-                      aria-label={`Remove ${m.name}`}
-                      className="shrink-0 text-muted-foreground hover:text-foreground"
-                    >
-                      ×
-                    </button>
+                    {/* Anybody may leave a channel; only those who manage it remove others. */}
+                    {(m.userId === user?.id ? channel?.type !== 'dm' : managesMembers) && (
+                      <button
+                        onClick={() => remove(m.userId)}
+                        aria-label={`Remove ${m.name}`}
+                        className="shrink-0 text-muted-foreground hover:text-foreground"
+                      >
+                        ×
+                      </button>
+                    )}
                   </li>
                 ))}
               </ul>

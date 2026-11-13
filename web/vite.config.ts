@@ -13,13 +13,13 @@ import type { Plugin } from 'vite';
  * time instead of being committed. The model next to it is in public/mediapipe/.
  */
 const mediapipeVersion: string = JSON.parse(
-  fs.readFileSync(path.resolve(__dirname, 'node_modules/@mediapipe/tasks-vision/package.json'), 'utf8')
+  fs.readFileSync(path.resolve(import.meta.dirname, 'node_modules/@mediapipe/tasks-vision/package.json'), 'utf8')
 ).version;
 /** Named by version, so the server can let browsers keep it for good. */
 const MEDIAPIPE_WASM = `/mediapipe/tasks-vision-${mediapipeVersion}/wasm`;
 
 function mediapipeRuntime(): Plugin {
-  const from = path.resolve(__dirname, 'node_modules/@mediapipe/tasks-vision/wasm');
+  const from = path.resolve(import.meta.dirname, 'node_modules/@mediapipe/tasks-vision/wasm');
   let outDir = '';
   let building = false;
   return {
@@ -133,12 +133,15 @@ export default defineConfig({
     }),
   ],
   resolve: {
-    alias: { '@': path.resolve(__dirname, './src') },
+    alias: { '@': path.resolve(import.meta.dirname, './src') },
   },
   build: {
     outDir: '../cmd/teamup/web/dist',
     emptyOutDir: true,
-    sourcemap: true,
+    // No source maps in what ships. The server hands out any file in dist, so
+    // even "hidden" maps (no reference in the bundle) could be fetched by name,
+    // and they give away the whole source with its comments.
+    sourcemap: false,
     rollupOptions: {
       output: {
         manualChunks: {

@@ -31,7 +31,10 @@ function wsOrigin() {
 }
 
 export function WSProvider({ children }: { children: ReactNode }) {
-  const { isAuthenticated } = useAuthStore();
+  const { isAuthenticated, user } = useAuthStore();
+  // Somebody on a password an administrator set is refused a live connection
+  // until they choose their own, so none is opened for them before that.
+  const live = isAuthenticated && !user?.mustChangePassword;
   const wsRef = useRef<WebSocket | null>(null);
   const [state, setState] = useState<WSState>('connecting');
   const [retryCount, setRetryCount] = useState(0);
@@ -48,7 +51,7 @@ export function WSProvider({ children }: { children: ReactNode }) {
   const connectRef = useRef<() => void>(() => {});
 
   const connect = useCallback(() => {
-    if (!isAuthenticated) return;
+    if (!live) return;
     // A scheduled retry and a nudge from `online` or a tab becoming visible
     // can arrive together; opening two sockets would have the server reap one
     // and this code treat that as another drop.
@@ -144,7 +147,7 @@ export function WSProvider({ children }: { children: ReactNode }) {
     };
 
     ws.onerror = () => { /* handled by onclose */ };
-  }, [isAuthenticated]);
+  }, [live]);
 
   connectRef.current = connect;
 
@@ -155,7 +158,7 @@ export function WSProvider({ children }: { children: ReactNode }) {
    * thirty-second backoff before it even tries.
    */
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!live) return;
     const nudge = () => {
       if (document.visibilityState !== 'visible' || !navigator.onLine) return;
       if (wsRef.current) return;
@@ -170,7 +173,7 @@ export function WSProvider({ children }: { children: ReactNode }) {
       window.removeEventListener('online', nudge);
       document.removeEventListener('visibilitychange', nudge);
     };
-  }, [isAuthenticated]);
+  }, [live]);
 
   const send = useCallback((msg: Omit<Message, 'id' | 'timestamp' | 'version'>) => {
     const fullMsg: Message = {
@@ -199,7 +202,7 @@ export function WSProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (isAuthenticated) {
+    if (live) {
       connect();
     } else {
       // Deliberate: without a session there is nothing to reconnect to, and
@@ -219,7 +222,7 @@ export function WSProvider({ children }: { children: ReactNode }) {
       wsRef.current?.close(1000, 'unmount');
       wsRef.current = null;
     };
-  }, [connect, isAuthenticated]);
+  }, [connect, live]);
 
   return (
     <WSContext.Provider value={{ state, retryCount, send, on }}>

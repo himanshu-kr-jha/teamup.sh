@@ -58,7 +58,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.GET("/status", h.GetStatus)
 
 	guarded := rg.Group("")
-	guarded.Use(limitBody(), SetupGuardMiddleware(service))
+	guarded.Use(limitBody(), SetupGuardMiddleware(service), requireSetupToken(service))
 	{
 		guarded.POST("/step1", h.Step1Organization)
 		guarded.POST("/step2", h.Step2Admin)
@@ -222,6 +222,7 @@ func (h *Handler) Step5Complete(c *gin.Context) {
 	}
 
 	h.clearState(c, id)
+	h.service.forgetSetupToken(c.Request.Context())
 	c.JSON(http.StatusOK, gin.H{"message": "setup complete", "redirect": "/"})
 }
 

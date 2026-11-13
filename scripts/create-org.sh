@@ -126,16 +126,23 @@ for name, body in steps.items():
 PY
 chmod 755 /tmp/teamup-setup && chmod 644 /tmp/teamup-setup/*.json
 NETWORK="$(sudo docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' "$(dc ps -q teamup)")"
-sudo docker run --rm --network "$NETWORK" -v /tmp/teamup-setup:/w:ro curlimages/curl:8.11.1 sh -c '
+# Setup asks for the code the server made at start, which it keeps in Redis.
+for i in $(seq 1 30); do
+  SETUP_CODE="$(dc exec -T redis sh -c 'redis-cli --no-auth-warning GET wizard:setup-token' 2>/dev/null | tr -d '\r')"
+  [ -n "$SETUP_CODE" ] && break
+  sleep 2
+done
+[ -n "$SETUP_CODE" ] || { echo "could not read the setup code from Redis"; exit 1; }
+sudo docker run --rm --network "$NETWORK" -e SETUP_CODE="$SETUP_CODE" -v /tmp/teamup-setup:/w:ro curlimages/curl:8.11.1 sh -c '
   set -e
   cd /tmp
   for i in $(seq 1 60); do curl -fs -o /dev/null http://teamup:8080/api/wizard/status && break; sleep 2; done
   for s in step1 step2 step3 step4; do
-    code=$(curl -s -o answer -w "%{http_code}" -b jar -c jar -H "Content-Type: application/json" --data @/w/$s.json http://teamup:8080/api/wizard/$s)
+    code=$(curl -s -o answer -w "%{http_code}" -b jar -c jar -H "X-Setup-Token: $SETUP_CODE" -H "Content-Type: application/json" --data @/w/$s.json http://teamup:8080/api/wizard/$s)
     [ "$code" = 200 ] || { echo "setup $s answered $code: $(cat answer)"; exit 1; }
     echo "  $s done"
   done
-  code=$(curl -s -o answer -w "%{http_code}" -b jar -c jar -X POST http://teamup:8080/api/wizard/step5)
+  code=$(curl -s -o answer -w "%{http_code}" -b jar -c jar -H "X-Setup-Token: $SETUP_CODE" -X POST http://teamup:8080/api/wizard/step5)
   [ "$code" = 200 ] || { echo "setup step5 answered $code: $(cat answer)"; exit 1; }
   echo "  finished"
 '

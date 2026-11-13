@@ -49,7 +49,7 @@ func (r *recordingBroadcaster) count(userID string) int {
 func newService(t *testing.T) (*Service, *pgxpool.Pool) {
 	t.Helper()
 	pool := testsupport.DB(t)
-	return NewService(pool, nil, Config{}), pool
+	return NewService(pool, nil, Config{PushServiceHosts: []string{"127.0.0.1", "push.example.test"}}), pool
 }
 
 func TestNotificationIsStoredAndCounted(t *testing.T) {
@@ -437,7 +437,7 @@ func TestADeadSubscriptionIsForgotten(t *testing.T) {
 func TestALongTitleIsShortenedRatherThanLosingTheNotification(t *testing.T) {
 	pool := testsupport.DB(t)
 	org := testsupport.SeedOrg(t, pool)
-	svc := NewService(pool, nil, Config{})
+	svc := NewService(pool, nil, Config{PushServiceHosts: []string{"127.0.0.1", "push.example.test"}})
 	ctx := context.Background()
 	long := strings.Repeat("é", 400)
 

@@ -132,7 +132,8 @@ cat <<SUMMARY
 
   Open ${APP_URL} — the first visit runs the setup wizard,
   which creates your organisation and owner account. There are no default
-  credentials.
+  credentials. The wizard asks for a setup code: the server prints it below
+  as setup_code when it starts, so only whoever runs it can set it up.
 
   Stop with Ctrl-C, then ./stop.sh to shut the containers down too.
 

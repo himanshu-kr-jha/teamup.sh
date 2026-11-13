@@ -303,7 +303,10 @@ func (h *handler) taskCode(c *gin.Context) {
 // hook takes an event from GitHub. Answered at once; GitHub retries anything
 // that is not a 2xx, and a retry of one already acted on is ignored.
 func (h *handler) hook(c *gin.Context) {
-	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 25<<20))
+	if !h.worthReading(c, "github", "X-Hub-Signature-256") {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxHookBody))
 	if err != nil {
 		c.Status(http.StatusBadRequest)
 		return
@@ -398,7 +401,10 @@ func (h *handler) bitbucketDone(c *gin.Context) {
 }
 
 func (h *handler) bitbucketHook(c *gin.Context) {
-	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 25<<20))
+	if !h.worthReading(c, "bitbucket", "X-Hub-Signature") {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxHookBody))
 	if err != nil {
 		c.Status(http.StatusBadRequest)
 		return
@@ -609,4 +615,32 @@ func (h *handler) accessLog(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"entries": list})
+}
+
+// maxHookBody is the most GitHub sends in one event.
+const maxHookBody = 25 << 20
+
+// worthReading turns away an event before its body is read when it cannot be
+// one: no signature, more than an event can be, or a hook nobody set up.
+// Otherwise anybody could make the server hold 25 MB per request in memory
+// before finding out the request was never going to be accepted.
+func (h *handler) worthReading(c *gin.Context, provider, signatureHeader string) bool {
+	if c.GetHeader(signatureHeader) == "" {
+		c.Status(http.StatusUnauthorized)
+		return false
+	}
+	if c.Request.ContentLength > maxHookBody {
+		c.Status(http.StatusRequestEntityTooLarge)
+		return false
+	}
+	known, err := h.s.hookKnown(c.Request.Context(), provider, c.Param("hookKey"))
+	if err != nil {
+		c.Status(http.StatusInternalServerError)
+		return false
+	}
+	if !known {
+		c.Status(http.StatusNotFound)
+		return false
+	}
+	return true
 }

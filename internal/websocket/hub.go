@@ -77,6 +77,11 @@ type Connection struct {
 	// lastSeen is when this connection last said anything, as Unix nanoseconds.
 	// Atomic because the reader writes it and the reaper reads it.
 	lastSeen atomic.Int64
+
+	// frames and typingAt limit what this connection sends; see limits.go.
+	// Only the read loop touches them.
+	frames   frameBucket
+	typingAt map[string]time.Time
 }
 
 // staleAfter is how long a connection may go without saying anything before it
@@ -775,9 +780,22 @@ func (c *Connection) ReadLoop() {
 			// including a frame this server cannot parse.
 			c.touch()
 
+			now := time.Now()
+			if !c.frames.take(now) {
+				if c.frames.floods() {
+					c.logger.Warn().Str("conn", c.ID).Str("user", c.userID).Msg("closing a socket that kept sending past its limit")
+					_ = c.WS.Close(websocket.StatusPolicyViolation, "too many messages")
+					return
+				}
+				continue
+			}
+
 			var msg protocol.Message
 			if err := json.Unmarshal(data, &msg); err != nil {
 				c.logger.Warn().Err(err).Str("conn", c.ID).Msg("Invalid WS message")
+				continue
+			}
+			if msg.Type == protocol.TypeChatTyping && c.typingTooSoon(&msg, now) {
 				continue
 			}
 
@@ -923,7 +941,8 @@ func WSHandler(hub *Hub, authService AuthServiceInterface, allowedOrigins []stri
 		// read it to put in the query string — which is why the socket never
 		// connected from the app at all, taking presence, live messages and
 		// call ringing down with it. Prefer the cookie the browser already
-		// sends; the query parameter stays for non-browser clients.
+		// sends; other clients send a bearer header. A token in the query
+		// string is not accepted: addresses end up in logs.
 		token := ""
 		if cookie, err := c.Request.Cookie("at"); err == nil {
 			token = cookie.Value
@@ -932,9 +951,6 @@ func WSHandler(hub *Hub, authService AuthServiceInterface, allowedOrigins []stri
 			if header := c.GetHeader("Authorization"); strings.HasPrefix(header, "Bearer ") {
 				token = strings.TrimPrefix(header, "Bearer ")
 			}
-		}
-		if token == "" {
-			token = c.Query("token")
 		}
 		if token == "" {
 			c.JSON(401, gin.H{"error": "missing token"})
@@ -946,11 +962,23 @@ func WSHandler(hub *Hub, authService AuthServiceInterface, allowedOrigins []stri
 			c.JSON(401, gin.H{"error": "invalid token"})
 			return
 		}
+		// Somebody on a password an administrator set does nothing until they
+		// choose their own; the HTTP API refuses them, and so does this, or
+		// whoever set the password could post in their name over the socket.
+		if claims.MustChangePassword {
+			c.JSON(403, gin.H{"error": "set your own password before continuing", "mustChangePassword": true})
+			return
+		}
 
 		// The handshake authenticates with a cookie the browser attaches by
 		// itself, so without an Origin check any site could open a socket as
 		// whoever is logged in. Accept checks same-origin by default; skipping
 		// it left SameSite on the cookie as the only thing in the way.
+		if hub.socketsOf(claims.UserID) >= maxSocketsPerUser {
+			c.JSON(429, gin.H{"error": "too many open connections; close some tabs"})
+			return
+		}
+
 		wsConn, err := websocket.Accept(c.Writer, c.Request, &websocket.AcceptOptions{
 			OriginPatterns: allowedOrigins,
 		})
@@ -958,6 +986,7 @@ func WSHandler(hub *Hub, authService AuthServiceInterface, allowedOrigins []stri
 			hub.logger.Error().Err(err).Msg("WS upgrade failed")
 			return
 		}
+		wsConn.SetReadLimit(maxFrameBytes)
 
 		ctx, cancel := context.WithCancel(c.Request.Context())
 		conn := &Connection{
@@ -978,11 +1007,13 @@ func WSHandler(hub *Hub, authService AuthServiceInterface, allowedOrigins []stri
 		// expired session would keep receiving messages.
 		if !claims.ExpiresAt.IsZero() {
 			if remaining := time.Until(claims.ExpiresAt); remaining > 0 {
-				time.AfterFunc(remaining, func() {
+				expiry := time.AfterFunc(remaining, func() {
 					conn.logger.Debug().Str("user", conn.UserID()).Msg("closing socket: access token expired")
 					conn.cancel()
 					_ = wsConn.Close(websocket.StatusPolicyViolation, "token expired")
 				})
+				// A socket closed sooner must not stay referenced until then.
+				defer expiry.Stop()
 			} else {
 				_ = wsConn.Close(websocket.StatusPolicyViolation, "token expired")
 				cancel()

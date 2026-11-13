@@ -9,12 +9,19 @@
 # have no authentication worth exposing, and they talk over the compose network.
 #
 # Image versions are pinned so that a rebuilt VM runs what was tested. Bump them
-# deliberately; see "Upgrades" in docs/DEPLOYMENT.md.
+# deliberately; see "Upgrades" in docs/DEPLOYMENT.md. Each is pinned by digest as
+# well as tag, so a tag moved upstream cannot change what runs; Dependabot
+# proposes the new digest when the tag moves.
+#
+# Every service has no-new-privileges, so nothing inside can gain privileges
+# through a setuid binary, and a process limit, so a fork or thread leak in one
+# container cannot exhaust the host's process table for the rest.
 
 services:
   postgres:
-    image: postgres:16.13-alpine
+    image: postgres:16.13-alpine@sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
     environment:
       POSTGRES_USER: teamup
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
@@ -34,18 +41,40 @@ services:
         limits:
           cpus: '1'
           memory: 2G
+          # One process per connection, and four app processes of 25 fill the
+          # default max_connections of 100, plus PostgreSQL's own workers.
+          pids: 256
         reservations:
           cpus: '0.5'
           memory: 512M
 
   redis:
-    image: redis:7.4.12-alpine
+    image: redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
     restart: unless-stopped
-    command: redis-server --requirepass ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    security_opt: ["no-new-privileges:true"]
+    # The password is in a config file rather than on the command line, where
+    # any process on the host could read it from `ps`. Everything else stays
+    # at Redis's defaults, persistence included.
+    #
+    # maxmemory sits below the container's 1G limit so Redis refuses a write
+    # with an error before the kernel kills it, leaving room for the fork that
+    # writes a snapshot. noeviction because nothing kept here is a cache:
+    # dropping a presence entry or a rate-limit counter silently is worse than
+    # failing the write that would have needed the room.
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf", "--maxmemory", "768mb", "--maxmemory-policy", "noeviction"]
+    configs:
+      - source: redis-conf
+        target: /usr/local/etc/redis/redis.conf
+    environment:
+      # redis-cli reads the password from here, so the healthcheck does not
+      # need it on its command line either.
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
     volumes:
       - redis-data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      # redis-cli exits 0 even when the server answers NOAUTH, so a wrong
+      # password would otherwise pass. Only PONG means Redis took the password.
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -54,6 +83,7 @@ services:
         limits:
           cpus: '0.5'
           memory: 1G
+          pids: 64
         reservations:
           cpus: '0.25'
           memory: 256M
@@ -66,6 +96,7 @@ services:
     # no healthcheck of its own; the app's readiness probe covers object storage.
     image: cgr.dev/chainguard/minio@sha256:cee9a8e35885e93f14b3cb32960e5017aff74e2adfb52ba87c65003b0163886b
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
     command: server /data
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?set MINIO_ACCESS_KEY in .env}
@@ -77,13 +108,15 @@ services:
         limits:
           cpus: '1'
           memory: 2G
+          pids: 256
         reservations:
           cpus: '0.5'
           memory: 512M
 
   livekit:
-    image: livekit/livekit-server:v1.13.11
+    image: livekit/livekit-server:v1.13.11@sha256:25cd902de7cacbd5f1f779f6a6ac1eae20ba8f56b0935934ce6b0ab80d1e3d20
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
     environment:
       # One UDP port for all media, not a range. Publishing LiveKit's usual
       # 50000-60000 through Docker starts one docker-proxy process per port.
@@ -121,6 +154,8 @@ services:
         limits:
           cpus: '2'
           memory: 4G
+          # Go threads count against this too.
+          pids: 512
         reservations:
           cpus: '1'
           memory: 1G
@@ -132,6 +167,13 @@ services:
     image: ${TEAMUP_IMAGE:-teamup:local}
     restart: "no"
     command: ["migrate", "up"]
+    # The image is distroless and runs as nonroot, and the binary needs no
+    # capability and writes nowhere but a temporary directory.
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: [/tmp]
+    pids_limit: 64
     environment:
       TEAMUP_DATABASE_URL: postgres://teamup:${POSTGRES_PASSWORD}@postgres:5432/teamup?sslmode=disable
       TEAMUP_ENV: production
@@ -149,6 +191,11 @@ services:
       args:
         VERSION: ${TEAMUP_VERSION:-dev}
     restart: unless-stopped
+    # As for migrate above.
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs: [/tmp]
     environment:
       TEAMUP_DATABASE_URL: postgres://teamup:${POSTGRES_PASSWORD}@postgres:5432/teamup?sslmode=disable
       TEAMUP_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
@@ -190,6 +237,9 @@ services:
       TEAMUP_PORT: "8080"
       TEAMUP_ENV: production
       TEAMUP_LOG_LEVEL: info
+      # Addresses on private networks the server may reach on an administrator's
+      # say-so (a self-hosted model server or mail relay). Empty: public only.
+      TEAMUP_OUTBOUND_ALLOW: ${TEAMUP_OUTBOUND_ALLOW:-}
       TEAMUP_BASE_URL: https://${TEAMUP_DOMAIN}
       # Encrypts the token-signing key where it is stored, so a database
       # backup does not carry the ability to mint access tokens. Keep it: the
@@ -217,6 +267,8 @@ services:
         limits:
           cpus: '1'
           memory: 2G
+          # Go threads count against this too.
+          pids: 512
         reservations:
           cpus: '0.5'
           memory: 512M
@@ -231,8 +283,9 @@ services:
 
   # Reverse proxy (nginx)
   nginx:
-    image: nginx:1.31.8-alpine
+    image: nginx:1.31.8-alpine@sha256:713fc2ebfd92e8217db451477182ee91944b123d2b1ee9fd5a8c6e91ca6c3a11
     restart: unless-stopped
+    security_opt: ["no-new-privileges:true"]
     ports:
       - "80:80"
       - "443:443"
@@ -257,6 +310,8 @@ services:
         limits:
           cpus: '0.25'
           memory: 128M
+          # worker_processes is auto: one per core of the host, not of the CPU limit.
+          pids: 128
         reservations:
           cpus: '0.1'
           memory: 64M
@@ -265,3 +320,11 @@ volumes:
   postgres-data:
   redis-data:
   minio-data:
+
+# Put into the container by Compose from .env when it creates it, so the
+# password still lives in .env alone. A password made as docs/DEPLOYMENT.md
+# says (hex) needs no quoting here; one with spaces or quotes would.
+configs:
+  redis-conf:
+    content: |
+      requirepass ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}

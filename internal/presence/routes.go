@@ -61,6 +61,10 @@ func (h *Handler) UpdatePresence(c *gin.Context) {
 		return
 	}
 
+	if err := validCustomStatus(req.CustomStatus, req.CustomStatusEmoji); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	if err := h.service.UpdateStatus(userID, orgID, req.Status, req.CustomStatus, req.CustomStatusEmoji); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update presence"})
 		return

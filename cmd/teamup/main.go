@@ -37,6 +37,7 @@ import (
 	"github.com/teamup/teamup/internal/observability"
 	"github.com/teamup/teamup/internal/org"
 	"github.com/teamup/teamup/internal/presence"
+	"github.com/teamup/teamup/internal/ratelimit"
 	"github.com/teamup/teamup/internal/status"
 	"github.com/teamup/teamup/internal/tasks"
 	"github.com/teamup/teamup/internal/websocket"
@@ -206,6 +207,10 @@ type Config struct {
 	// plain HTTP. Needed only to reach TeamUp from another machine on a local
 	// network by address; anything on the open internet must leave this alone.
 	InsecureCookies bool `env:"TEAMUP_INSECURE_COOKIES" envDefault:"false"`
+	// WeakLiveKitSecretForTests lets the test harness run as production
+	// against the test call server, whose secret is the example one. Never
+	// set it anywhere real.
+	WeakLiveKitSecretForTests bool `env:"TEAMUP_TEST_ONLY_WEAK_LIVEKIT_SECRET" envDefault:"false"`
 
 	// OIDC Providers (configured via wizard)
 	GoogleClientID     string `env:"TEAMUP_GOOGLE_CLIENT_ID"`
@@ -245,6 +250,9 @@ type Config struct {
 	VAPIDPublicKey  string `env:"TEAMUP_VAPID_PUBLIC_KEY"`
 	VAPIDPrivateKey string `env:"TEAMUP_VAPID_PRIVATE_KEY"`
 	VAPIDSubject    string `env:"TEAMUP_VAPID_SUBJECT" envDefault:"mailto:admin@teamup.local"`
+	// PushServiceHosts replaces the browsers' push services as the only places
+	// a push may be delivered to; tests point it at their fake.
+	PushServiceHosts []string `env:"TEAMUP_PUSH_SERVICE_HOSTS" envSeparator:","`
 
 	// Auto-setup (for CI/CD). Anything left unset falls back to the ordinary
 	// runtime configuration above — see setupDataFromConfig.
@@ -338,9 +346,10 @@ func (c *Config) FilesConfig() files.Config {
 // NotificationsConfig returns the notifications service configuration
 func (c *Config) NotificationsConfig() notifications.Config {
 	return notifications.Config{
-		VAPIDPublicKey:  c.VAPIDPublicKey,
-		VAPIDPrivateKey: c.VAPIDPrivateKey,
-		VAPIDSubject:    c.VAPIDSubject,
+		VAPIDPublicKey:   c.VAPIDPublicKey,
+		VAPIDPrivateKey:  c.VAPIDPrivateKey,
+		VAPIDSubject:     c.VAPIDSubject,
+		PushServiceHosts: c.PushServiceHosts,
 	}
 }
 
@@ -596,6 +605,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// open, or somebody with the app closed is simply unreachable.
 	callsService.SetNotifier(notificationsService)
 	callsService.SetBroadcaster(wsHub)
+	// A password changed or reset ends every session, and the sockets with them.
+	authService.OnSessionsEnded(func(userID string) { wsHub.DisconnectUser(userID) })
+	orgService.OnSessionsEnded(func(_ context.Context, _, userID uuid.UUID) { wsHub.DisconnectUser(userID.String()) })
 	// Somebody deactivated keeps nothing open.
 	orgService.OnDeactivated(func(ctx context.Context, orgID, userID uuid.UUID) {
 		wsHub.DisconnectUser(userID.String())
@@ -644,6 +656,19 @@ func runServer(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Until setup is done, it asks for a code only whoever runs the server can
+	// see, so the first stranger to open /wizard cannot make themselves owner.
+	{
+		tokenCtx, cancelToken := context.WithTimeout(context.Background(), 10*time.Second)
+		if complete, err := wizardService.IsSetupComplete(tokenCtx); err == nil && !complete {
+			if code, err := wizardService.SetupToken(tokenCtx); err == nil {
+				logger.Warn().Str("setup_code", code).
+					Msg("TeamUp is not set up yet. Open /wizard and enter this setup code, or open /wizard?setup=<code>")
+			}
+		}
+		cancelToken()
+	}
+
 	// The setup wizard generates and stores a VAPID keypair with the
 	// organization. Prefer it over the environment, otherwise an instance
 	// provisioned through the wizard has no working push keys at all.
@@ -657,9 +682,26 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}
 
 	router := gin.New()
+	// Only nginx in front, on the private network, says who the client is,
+	// and it says so in X-Real-IP. Trusting every proxy let anybody write the
+	// address recorded on their session with an X-Forwarded-For of their own.
+	if err := router.SetTrustedProxies([]string{"127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "::1/128", "fc00::/7"}); err != nil {
+		return fmt.Errorf("trusted proxies: %w", err)
+	}
+	router.RemoteIPHeaders = []string{"X-Real-IP"}
 	router.Use(gin.Recovery())
+	router.Use(limitBodies())
+	// The policy is worked out once, from the page it protects; a missing page
+	// is reported below, where the frontend is read for serving.
+	page, _ := webFS.ReadFile("web/dist/index.html")
+	router.Use(securityHeaders(contentSecurityPolicy(page, cfg.MinIOEndpoint, cfg.MinIOSecure, cfg.LiveKitURL, cfg.GitHubWebURL)))
 	router.Use(observability.GinLogger(logger))
 	router.Use(observability.GinMetrics())
+	// Limits per address apply to everything; limits per person once the
+	// person is known, on every signed-in route wherever it is registered.
+	limiter := ratelimit.New(redisClient, logger)
+	router.Use(limiter.Handler(publicLimits...))
+	authService.AfterSignedIn(limiter.Handler(memberLimits...))
 
 	// Health endpoints (no auth). /healthz and /readyz are the canonical paths;
 	// the /healthz/* forms are kept because nginx.conf and the production
@@ -778,6 +820,8 @@ func runServer(cmd *cobra.Command, args []string) error {
 			// LiveKit checks the Host it was reached on; passing the tunnel's
 			// host through makes it reject the handshake.
 			r.Host = target.Host
+			// The call server needs its own token, not the person's session.
+			r.Header.Del("Cookie")
 		}
 		proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
 			logger.Warn().Err(err).Msg("could not reach LiveKit")
@@ -792,6 +836,10 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// client-side route, and 404ing it made the setup wizard unreachable by
 	// direct link or page refresh. The wizard's server endpoints all live
 	// under /api/wizard/.
+	if err := checkLimitRoutes(router, publicLimits, memberLimits); err != nil {
+		return err
+	}
+
 	router.NoRoute(func(c *gin.Context) {
 		path := c.Request.URL.Path
 		if strings.HasPrefix(path, "/api/") ||

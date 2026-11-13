@@ -784,3 +784,58 @@ func TestTheMigrationFlattensRepliesWrittenBeforeThreadsExisted(t *testing.T) {
 		t.Errorf("the timeline should hold the root and the cut-loose reply, got %d: %+v", len(timeline), timeline)
 	}
 }
+
+// An announcement channel takes in the whole organization and tells everybody
+// each time it is posted to: a member making one could message everybody as
+// though officially.
+func TestOnlyAChannelAdministratorMakesAnAnnouncementChannel(t *testing.T) {
+	svc, pool := newService(t)
+	org := testsupport.SeedOrg(t, pool)
+	member := testsupport.SeedUser(t, pool, org, "m-"+uuid.NewString()[:8]+"@example.test", "member")
+	r := asMember(t, svc, org.ID.String(), member.String())
+	req := httptest.NewRequest(http.MethodPost, "/api/channels", strings.NewReader(`{"type":"announcement","name":"IT Security"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("a member making an announcement channel: got %d %s", w.Code, w.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/channels", strings.NewReader(`{"type":"public","name":"lunch"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("a member making a public channel: got %d %s", w.Code, w.Body.String())
+	}
+}
+
+// Both people in a direct message are stored as its owners. That must not let
+// either delete what the other wrote, put them out, or close the conversation.
+func TestNeitherPersonInADirectMessageModeratesTheOther(t *testing.T) {
+	svc, pool := newService(t)
+	ctx := context.Background()
+	org := testsupport.SeedOrg(t, pool)
+	other := testsupport.SeedUser(t, pool, org, "dm-"+uuid.NewString()[:8]+"@example.test", "member")
+	dm, err := svc.OpenDirectMessage(ctx, org.ID, org.OwnerID, other)
+	if err != nil {
+		t.Fatalf("open dm: %v", err)
+	}
+	theirs, err := svc.SendMessage(ctx, org.ID, dm.ID, other, "mine, not yours", nil, nil, false)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if err := svc.DeleteMessage(ctx, theirs.ID, org.OwnerID); err == nil {
+		t.Error("deleted the other person's message")
+	}
+	r := asMember(t, svc, org.ID.String(), org.OwnerID.String())
+	for _, c := range []struct{ method, path string }{
+		{http.MethodDelete, "/api/channels/" + dm.ID.String() + "/members/" + other.String()},
+		{http.MethodDelete, "/api/channels/" + dm.ID.String()},
+	} {
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, httptest.NewRequest(c.method, c.path, nil))
+		if w.Code != http.StatusForbidden {
+			t.Errorf("%s %s: got %d", c.method, c.path, w.Code)
+		}
+	}
+}

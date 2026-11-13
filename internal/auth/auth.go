@@ -2,8 +2,7 @@ package auth
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
+	"crypto/ecdh"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -26,6 +25,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/oauth2"
 
+	"github.com/teamup/teamup/internal/observability"
 	"github.com/teamup/teamup/internal/websocket"
 	apperrors "github.com/teamup/teamup/pkg/errors"
 )
@@ -69,11 +69,16 @@ type Config struct {
 func (s *Service) cookieSecure() bool { return !s.cfg.InsecureCookies }
 
 type Service struct {
-	db        *pgxpool.Pool
-	redis     *redis.Client
-	cfg       Config
-	providers map[string]Provider
-	verifier  *oidc.IDTokenVerifier
+	db    *pgxpool.Pool
+	redis *redis.Client
+	fails failures
+	// sessionsEndedHooks run once all of somebody's sessions are ended.
+	sessionsEndedHooks []func(userID string)
+	// afterSignIn run on every signed-in request, before its handler.
+	afterSignIn []gin.HandlerFunc
+	cfg         Config
+	providers   map[string]Provider
+	verifier    *oidc.IDTokenVerifier
 }
 
 type Provider interface {
@@ -287,7 +292,7 @@ func (s *Service) RefreshAccessToken(ctx context.Context, refreshToken, ua, ip s
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	var (
 		id         uuid.UUID
@@ -317,6 +322,14 @@ func (s *Service) RefreshAccessToken(ctx context.Context, refreshToken, ua, ip s
 	}
 
 	if revokedAt != nil {
+		if replacedBy != nil && time.Since(*revokedAt) > refreshRotationGrace {
+			// Rotated away longer ago than any burst from one client lasts, so
+			// this is a copy of the token: somebody else has this session and
+			// there is no telling which side is the thief. Ending every session
+			// the person has throws both out, and the real owner signs in again.
+			_ = tx.Rollback(ctx)
+			return nil, s.endSessionsAfterReuse(ctx, userID, ip)
+		}
 		accessToken, err := s.accessTokenForReplacement(ctx, tx, user, replacedBy, *revokedAt)
 		if err != nil {
 			return nil, err
@@ -365,6 +378,22 @@ func (s *Service) RefreshAccessToken(ctx context.Context, refreshToken, ua, ip s
 	}, nil
 }
 
+// endSessionsAfterReuse revokes everything the person is signed in with and
+// closes their live connections. It always answers unauthorized, and logs no
+// token: the log is for spotting the theft, not for repeating it.
+func (s *Service) endSessionsAfterReuse(ctx context.Context, userID uuid.UUID, ip string) error {
+	logger := observability.Logger(ctx)
+	if err := s.revokeAllUserTokens(ctx, userID); err != nil {
+		logger.Error().Err(err).Str("user_id", userID.String()).
+			Msg("a spent refresh token was replayed and the sessions could not be revoked")
+		return err
+	}
+	s.sessionsEnded(userID.String())
+	logger.Warn().Str("user_id", userID.String()).Str("ip", ip).
+		Msg("a spent refresh token was replayed; every session of this account was ended")
+	return apperrors.ErrUnauthorized
+}
+
 // accessTokenForReplacement serves the caller that lost a rotation race: it
 // hands back an access token on the session that replaced the one it
 // presented. Anything else — a token revoked by signing out, one rotated away
@@ -392,11 +421,8 @@ func (s *Service) accessTokenForReplacement(ctx context.Context, tx pgx.Tx, user
 // ValidateAccessToken validates a JWT access token
 func (s *Service) ValidateAccessToken(ctx context.Context, tokenString string) (*websocket.Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodRSA); !ok {
-			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-		}
 		return s.cfg.PublicKey, nil
-	})
+	}, s.parserOptions()...)
 
 	if err != nil {
 		return nil, err
@@ -426,8 +452,24 @@ func (s *Service) ValidateAccessToken(ctx context.Context, tokenString string) (
 		AuthProvider:       claims.AuthProvider,
 		IDToken:            claims.IDToken,
 		MustChangePassword: claims.MustChangePassword,
-		ExpiresAt:          claims.RegisteredClaims.ExpiresAt.Time,
+		ExpiresAt:          claims.ExpiresAt.Time,
 	}, nil
+}
+
+// parserOptions accept only what GenerateAccessToken mints: RS256, from this
+// issuer, for this audience. Any other RSA variant, or a token minted under
+// the same key for some other purpose, is refused. Every token minted so far
+// already names the configured issuer and audience, so checking them signs
+// nobody out; an empty setting is not checked because it was never written.
+func (s *Service) parserOptions() []jwt.ParserOption {
+	opts := []jwt.ParserOption{jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()})}
+	if s.cfg.Issuer != "" {
+		opts = append(opts, jwt.WithIssuer(s.cfg.Issuer))
+	}
+	if s.cfg.Audience != "" {
+		opts = append(opts, jwt.WithAudience(s.cfg.Audience))
+	}
+	return opts
 }
 
 // RevokeSession revokes a specific session
@@ -564,6 +606,10 @@ func (s *Service) AuthMiddleware() gin.HandlerFunc {
 				}
 			}
 			if claims == nil {
+				// Debug only, as an expired session is routine. The reason is the
+				// validation error, which never contains the token itself.
+				logger := observability.Logger(c.Request.Context())
+				logger.Debug().Err(err).Str("path", c.FullPath()).Msg("signed-in request refused")
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 				return
 			}
@@ -601,8 +647,19 @@ func (s *Service) AuthMiddleware() gin.HandlerFunc {
 			return
 		}
 
+		for _, h := range s.afterSignIn {
+			if h(c); c.IsAborted() {
+				return
+			}
+		}
 		c.Next()
 	}
+}
+
+// AfterSignedIn adds a check every signed-in request passes once its person
+// is known, wherever the route is registered: the limits per person.
+func (s *Service) AfterSignedIn(h gin.HandlerFunc) {
+	s.afterSignIn = append(s.afterSignIn, h)
 }
 
 // isPasswordChangePath lists what remains reachable while a password change is
@@ -936,19 +993,15 @@ func (s *Service) deleteLinkedIdentity(ctx context.Context, userID uuid.UUID, pr
 
 // GenerateVAPIDKeys generates a new VAPID key pair for Web Push
 func GenerateVAPIDKeys() (publicKey, privateKey string, err error) {
-	// Generate ECDSA P-256 key pair
-	privKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	// A P-256 key through crypto/ecdh, whose encodings are the ones Web Push
+	// wants: the public key as an uncompressed point, the private key as its
+	// fixed 32 bytes (the old big.Int encoding dropped leading zero bytes).
+	privKey, err := ecdh.P256().GenerateKey(rand.Reader)
 	if err != nil {
 		return "", "", err
 	}
-
-	// Encode public key (uncompressed format)
-	publicKeyBytes := elliptic.Marshal(privKey.Curve, privKey.PublicKey.X, privKey.PublicKey.Y)
-	publicKey = base64.RawURLEncoding.EncodeToString(publicKeyBytes)
-
-	// Encode private key
-	privateKeyBytes := privKey.D.Bytes()
-	privateKey = base64.RawURLEncoding.EncodeToString(privateKeyBytes)
+	publicKey = base64.RawURLEncoding.EncodeToString(privKey.PublicKey().Bytes())
+	privateKey = base64.RawURLEncoding.EncodeToString(privKey.Bytes())
 
 	return publicKey, privateKey, nil
 }
@@ -973,9 +1026,17 @@ func (s *Service) ChangePassword(ctx context.Context, userID uuid.UUID, currentP
 	if err != nil {
 		return err
 	}
+	// The same counter as signing in, keyed on the same account, so a stolen
+	// session cannot guess the password here without the limit sign-in has.
+	if s.tooManyFailures(ctx, user.Email) {
+		return apperrors.New(apperrors.CodeRateLimited,
+			"too many wrong passwords for this account; try again in 15 minutes")
+	}
 	if err := s.VerifyPassword(user, currentPassword); err != nil {
+		s.recordFailure(ctx, user.Email)
 		return apperrors.New(apperrors.CodeUnauthorized, "your current password is not correct")
 	}
+	s.clearFailures(ctx, user.Email)
 
 	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
 	if err != nil {

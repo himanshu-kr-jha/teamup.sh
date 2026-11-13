@@ -73,7 +73,7 @@ func tracedService(t *testing.T) (*Service, *pgxpool.Pool, *sqlCounter) {
 	}
 	t.Cleanup(traced.Close)
 
-	svc := NewService(traced, nil, Config{})
+	svc := NewService(traced, nil, Config{PushServiceHosts: []string{"127.0.0.1", "push.example.test"}})
 	public, private, err := auth.GenerateVAPIDKeys()
 	if err != nil {
 		t.Fatalf("generate VAPID keys: %v", err)

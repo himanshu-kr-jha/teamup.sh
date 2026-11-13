@@ -41,6 +41,8 @@ type Service struct {
 	// client; tests substitute a fake, because whether setup provisions the
 	// bucket is otherwise only observable by having an object store.
 	newStore objectStoreFactory
+	// tokens holds the code setup asks for; see setup_token.go.
+	tokens setupTokens
 }
 
 // objectStore is the part of the MinIO API setup uses. *minio.Client satisfies
@@ -118,6 +120,7 @@ func NewService(db *pgxpool.Pool, redisClient *redis.Client, cfg *auth.Config, l
 		cfg:      cfg,
 		sessions: newRedisStore(redisClient),
 		logger:   logger,
+		tokens:   setupTokens{redis: redisClient},
 	}
 }
 

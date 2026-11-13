@@ -285,7 +285,12 @@ func (s *Service) SetOffline(userID, orgID string) error {
 	})
 }
 
+// UpdateStatus stores a chosen status. A custom status over the limits is
+// refused with ErrCustomStatus, whichever way it arrived.
 func (s *Service) UpdateStatus(userID, orgID string, status, customStatus, customEmoji string) error {
+	if err := validCustomStatus(customStatus, customEmoji); err != nil {
+		return err
+	}
 	return s.writeEntry(context.Background(), presenceKey(orgID, userID), map[string]interface{}{
 		"status":              status,
 		"custom_status":       customStatus,

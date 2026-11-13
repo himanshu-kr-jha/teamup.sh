@@ -9,6 +9,7 @@ package mail
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"mime"
 	"net"
@@ -20,6 +21,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
+
+	"github.com/teamup/teamup/internal/safedial"
 )
 
 // ConfigReader reads a stored organization setting. An interface so this
@@ -90,6 +93,50 @@ func NewService(config ConfigReader, baseURL string, logger zerolog.Logger) *Ser
 // normal state rather than a failure. Callers report it rather than retry.
 var ErrNotConfigured = fmt.Errorf("no mail server is configured")
 
+// The kinds of failure an administrator is told about. Send's errors carry the
+// mail server's own words for the log; Problem turns them into one of these for
+// the browser, because the host and port are typed by the administrator and a
+// detailed answer ("connection refused" against "i/o timeout", a server banner)
+// would make the settings page a port scanner.
+var (
+	ErrUnreachable  = errors.New("could not connect to the mail server")
+	ErrSignIn       = errors.New("the mail server refused the sign-in")
+	ErrNoEncryption = errors.New("the mail server offers no encrypted connection on that port, so the password was not sent; try port 587 or 465")
+	errRefused      = errors.New("the mail server did not take the message")
+)
+
+// failure is an error of one of the kinds above, keeping the detail for the log.
+type failure struct {
+	kind, err error
+}
+
+func (f *failure) Error() string   { return f.err.Error() }
+func (f *failure) Unwrap() []error { return []error{f.kind, f.err} }
+
+func failed(kind error, format string, args ...any) error {
+	return &failure{kind: kind, err: fmt.Errorf(format, args...)}
+}
+
+// Problem is what to tell the administrator about an error from Send or
+// SendTest: a short, fixed sentence that says what to look at without saying
+// anything the server answered. Log the error itself for the detail.
+func Problem(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, ErrNotConfigured):
+		return ErrNotConfigured.Error()
+	case errors.Is(err, ErrUnreachable):
+		return ErrUnreachable.Error()
+	case errors.Is(err, ErrSignIn):
+		return ErrSignIn.Error()
+	case errors.Is(err, ErrNoEncryption):
+		return ErrNoEncryption.Error()
+	default:
+		return errRefused.Error()
+	}
+}
+
 // Message is one email.
 type Message struct {
 	To      string
@@ -110,7 +157,8 @@ func (s *Service) Send(ctx context.Context, orgID uuid.UUID, msg Message) error 
 }
 
 // SendTest posts a short message with the organization's saved settings, so an
-// administrator finds out now, and with the server's own words, whether mail works.
+// administrator finds out now whether mail works. Show them Problem(err), not
+// the error itself, which holds the server's own words for the log.
 func (s *Service) SendTest(ctx context.Context, orgID uuid.UUID, to string) error {
 	var settings Settings
 	if err := s.config.GetConfigInto(ctx, orgID, "smtp", &settings); err != nil || !settings.configured() {
@@ -148,31 +196,38 @@ func send(settings Settings, msg Message) error {
 	}
 	addr := dialAddress(settings.Host, port)
 
-	dialer := &net.Dialer{Timeout: 15 * time.Second}
-	var conn net.Conn
-	encrypted := implicitTLS(port)
-	if encrypted {
-		conn, err = tls.DialWithDialer(dialer, "tcp", addr, tlsConfig(settings.Host))
-	} else {
-		conn, err = dialer.Dial("tcp", addr)
-	}
+	// The checked dialer refuses loopback, private and metadata addresses
+	// unless TEAMUP_OUTBOUND_ALLOW lists them, so the host an administrator
+	// types cannot reach the database, Redis or cloud metadata next to TeamUp.
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	conn, err := (&safedial.Dialer{Timeout: 15 * time.Second}).DialContext(ctx, "tcp", addr)
 	if err != nil {
-		return fmt.Errorf("could not reach %s: %w", addr, err)
+		return failed(ErrUnreachable, "could not reach %s: %w", addr, err)
 	}
 	defer conn.Close()
 	// A server that stops responding must not hold the request open.
 	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
 
+	encrypted := implicitTLS(port)
+	if encrypted {
+		tlsConn := tls.Client(conn, tlsConfig(settings.Host))
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			return failed(ErrUnreachable, "could not reach %s over TLS: %w", addr, err)
+		}
+		conn = tlsConn
+	}
+
 	client, err := smtp.NewClient(conn, settings.Host)
 	if err != nil {
-		return fmt.Errorf("smtp handshake: %w", err)
+		return failed(ErrUnreachable, "smtp handshake: %w", err)
 	}
 	defer client.Close()
 
 	if !encrypted {
 		if ok, _ := client.Extension("STARTTLS"); ok {
 			if err := client.StartTLS(tlsConfig(settings.Host)); err != nil {
-				return fmt.Errorf("starttls: %w", err)
+				return failed(ErrUnreachable, "starttls: %w", err)
 			}
 			encrypted = true
 		}
@@ -180,10 +235,10 @@ func send(settings Settings, msg Message) error {
 	if settings.User != "" {
 		// Never send the password in the clear across a network.
 		if !encrypted && !isLocal(settings.Host) {
-			return fmt.Errorf("%s offers no encrypted connection on port %d, so the password was not sent; try port 587 or 465", settings.Host, port)
+			return failed(ErrNoEncryption, "%s offers no encrypted connection on port %d, so the password was not sent; try port 587 or 465", settings.Host, port)
 		}
 		if err := client.Auth(smtp.PlainAuth("", settings.User, settings.Pass, settings.Host)); err != nil {
-			return fmt.Errorf("smtp auth: %w", err)
+			return failed(ErrSignIn, "smtp auth: %w", err)
 		}
 	}
 

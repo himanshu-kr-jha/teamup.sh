@@ -162,6 +162,9 @@ func (s *Service) SetBroadcaster(b Broadcaster) {
 // a midnight rather than wait for one.
 func (s *Service) SetClock(now func() time.Time) { s.clock = now }
 
+// memberTokenTTL is how long a member's call token can be used to join.
+const memberTokenTTL = 15 * time.Minute
+
 // GenerateToken creates a LiveKit access token
 func (s *Service) GenerateToken(ctx context.Context, roomName, userID, userName string, canPublish, canSubscribe bool) (string, error) {
 	if s.cfg.LiveKitAPIKey == "" || s.cfg.LiveKitAPISecret == "" {
@@ -171,6 +174,10 @@ func (s *Service) GenerateToken(ctx context.Context, roomName, userID, userName 
 	at := auth.NewAccessToken(s.cfg.LiveKitAPIKey, s.cfg.LiveKitAPISecret)
 	at.SetIdentity(userID)
 	at.SetName(userName)
+	// Long enough to join with. Once in, LiveKit keeps the connection's own
+	// token fresh, so a call goes on for hours; a token copied out of a page
+	// is useless soon after, instead of for the library's default six hours.
+	at.SetValidFor(memberTokenTTL)
 	at.SetVideoGrant(&auth.VideoGrant{
 		RoomJoin:       true,
 		Room:           roomName,
@@ -184,7 +191,7 @@ func (s *Service) GenerateToken(ctx context.Context, roomName, userID, userName 
 
 // CreateCall creates a new call room using LiveKit
 func (s *Service) CreateCall(ctx context.Context, orgID, createdBy uuid.UUID, title *string, callType string, channelID *uuid.UUID, invitees []string) (*Call, error) {
-	roomName := "call-" + uuid.New().String()[:8]
+	roomName := "call-" + uuid.NewString()
 
 	liveKitRoomSID, err := s.createRoom(ctx, roomName)
 	if err != nil {

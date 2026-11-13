@@ -1,8 +1,7 @@
 import { createContext, useContext, useEffect, useState, useCallback, ReactNode } from 'react';
 import { useAuthStore } from '@/shared/store/authStore';
-import { onlineManager, useQueryClient } from '@tanstack/react-query';
 import { api } from '@/shared/api/client';
-import { endLocalSession, isSignedOut } from './session';
+import { isSignedOut, signOutLocally } from './session';
 
 interface User {
   id: string;
@@ -29,14 +28,10 @@ interface AuthContextType {
   refreshUser: () => Promise<void>;
 }
 
-/** The service worker's cache of API reads, named in vite.config.ts. */
-const OFFLINE_API_CACHE = 'api-get';
-
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const { user, isAuthenticated, setUser, logout: logoutStore } = useAuthStore();
-  const queryClient = useQueryClient();
+  const { user, isAuthenticated, setUser } = useAuthStore();
   const [isLoading, setIsLoading] = useState(true);
 
   const refreshUser = useCallback(async () => {
@@ -47,7 +42,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (err) {
       // Anything but a real 401 keeps the persisted user: a failed request at
       // load is not a sign-out, and clearing them closed the websocket for good.
-      if (isSignedOut(err)) setUser(null);
+      // A real one leaves nothing of theirs behind, as signing out does. Only
+      // for somebody who was signed in, though: a guest on a meeting link gets
+      // a 401 here too, and clearing their page's data started it over.
+      if (isSignedOut(err) && useAuthStore.getState().isAuthenticated) await signOutLocally();
     } finally {
       setIsLoading(false);
     }
@@ -62,18 +60,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = async () => {
-    // Clearing the cache below makes every mounted query fetch again, and the
-    // session is gone by then. Those would all come back 401 on the way out.
-    onlineManager.setOnline(false);
     try {
       await api.post('/auth/logout');
     } finally {
-      await endLocalSession({
-        clearStore: logoutStore,
-        clearQueries: () => queryClient.clear(),
-        clearOfflineCache: async () => window.caches?.delete(OFFLINE_API_CACHE),
-        goToLogin: () => window.location.assign('/login'),
-      });
+      await signOutLocally('/login');
     }
   };
 

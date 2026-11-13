@@ -33,7 +33,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | Git | any recent | `git --version` | |
 | Docker | with Compose v2 | `docker compose version` | Postgres, Redis, MinIO, LiveKit and Mailpit run as containers |
-| Go | 1.25 or newer | `go version` | The server |
+| Go | 1.26 or newer | `go version` | The server |
 | Node.js | 20 or newer | `node --version` | The web app |
 | pnpm | 9 | `pnpm --version` | Owns `web/pnpm-lock.yaml`; `npm install -g pnpm@9` |
 
@@ -54,6 +54,7 @@ cd teamup.sh
 
 Open the address it prints, usually http://localhost:8080.
 The first page is the setup wizard: it creates your organization and your owner account.
+It asks for a setup code, which the server prints in its output as `setup_code` when it starts.
 There are no default passwords.
 
 | Command | What it does |

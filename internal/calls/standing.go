@@ -412,7 +412,7 @@ func (s *Service) JoinStandingMeeting(ctx context.Context, orgID, id, userID uui
 		ON CONFLICT (standing_meeting_id, occurrence_date) WHERE standing_meeting_id IS NOT NULL
 		DO UPDATE SET status = 'active', ended_at = NULL, duration_seconds = NULL, updated_at = NOW()
 		RETURNING id, room_name
-	`, orgID, "standing-"+uuid.NewString()[:8], m.Name, now, creator, start, end, id, date).Scan(&out.CallID, &out.RoomName)
+	`, orgID, "standing-"+uuid.NewString(), m.Name, now, creator, start, end, id, date).Scan(&out.CallID, &out.RoomName)
 	if err != nil {
 		return nil, fmt.Errorf("find or make occurrence: %w", err)
 	}

@@ -382,9 +382,10 @@ func (h *Handler) sendWelcome(ctx context.Context, orgID uuid.UUID, member *User
 			h.logger.Info().Msg("no mail server configured; the new member's password was not posted")
 			return MailNotConfigured
 		}
-		// The error is the server's, and never holds the password.
+		// The detail goes to the log only. The administrator typed the host and
+		// port, so the server's own words would let them probe what answers there.
 		h.logger.Warn().Err(err).Msg("could not post the new member's password")
-		return err.Error()
+		return mail.Problem(err)
 	}
 	return ""
 }
@@ -451,7 +452,9 @@ func (h *Handler) UpdateMailSettings(c *gin.Context) {
 	}
 	next := mail.Settings{Host: strings.TrimSpace(req.Host), Port: req.Port, User: strings.TrimSpace(req.User),
 		Pass: req.Password, From: strings.TrimSpace(req.From)}
-	if next.Pass == "" {
+	// The saved password is only kept for the same server and account: changed
+	// to another host, it would be handed to that host at the next email.
+	if next.Pass == "" && next.Host == saved.Host && next.User == saved.User {
 		next.Pass = saved.Pass
 	}
 	if next.User == "" {
@@ -470,7 +473,10 @@ func (h *Handler) UpdateMailSettings(c *gin.Context) {
 
 // TestMailSettings sends a test message to whoever asked, with the saved settings.
 // The mail server refusing is the answer to the question, not a failure of this
-// request, so it comes back as sent false with the server's words.
+// request, so it comes back as sent false with a fixed sentence saying what kind
+// of failure it was. The server's own words are logged rather than returned,
+// because the host and port are the administrator's to choose, and a detailed
+// answer would make this a tool for probing the network.
 func (h *Handler) TestMailSettings(c *gin.Context) {
 	orgID, ok := callerOrg(c)
 	if !ok {
@@ -495,7 +501,8 @@ func (h *Handler) TestMailSettings(c *gin.Context) {
 			c.JSON(http.StatusConflict, gin.H{"error": "Save the mail server's settings first."})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"sent": false, "sentTo": caller.Email, "problem": err.Error()})
+		h.logger.Warn().Err(err).Msg("the test email was not sent")
+		c.JSON(http.StatusOK, gin.H{"sent": false, "sentTo": caller.Email, "problem": mail.Problem(err)})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"sent": true, "sentTo": caller.Email})
@@ -531,9 +538,15 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 	}
 
 	caller := auth.GetUserFromContext(c)
-	if caller.UserID != userID.String() && !caller.Can(auth.PermMembers) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "you may only edit your own profile"})
-		return
+	if caller.UserID != userID.String() {
+		if !caller.Can(auth.PermMembers) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "you may only edit your own profile"})
+			return
+		}
+		if err := h.service.MayActOn(c.Request.Context(), orgID, userID, caller.Held()); err != nil {
+			httpx.Error(c, err, "failed to update user")
+			return
+		}
 	}
 
 	var req struct {
@@ -542,6 +555,10 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.AvatarURL != nil && !validAvatarURL(*req.AvatarURL) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "a picture address must be an https:// link, or the picture uploaded here"})
 		return
 	}
 	u, err := h.service.UpdateUser(c.Request.Context(), orgID, userID, req.Name, req.AvatarURL)
@@ -564,6 +581,10 @@ func (h *Handler) DeleteUser(c *gin.Context) {
 	caller := auth.GetUserFromContext(c)
 	if caller.UserID == userID.String() {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "you cannot deactivate your own account"})
+		return
+	}
+	if err := h.service.MayActOn(c.Request.Context(), orgID, userID, caller.Held()); err != nil {
+		httpx.Error(c, err, "failed to deactivate user")
 		return
 	}
 	if err := h.service.DeactivateUser(c.Request.Context(), orgID, userID); err != nil {
@@ -589,6 +610,10 @@ func (h *Handler) ResetPassword(c *gin.Context) {
 	// let a borrowed administrator session skip that.
 	if caller.UserID == userID.String() {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "change your own password from Settings"})
+		return
+	}
+	if err := h.service.MayActOn(c.Request.Context(), orgID, userID, caller.Held()); err != nil {
+		httpx.Error(c, err, "failed to reset password")
 		return
 	}
 	temporaryPassword, err := h.service.ResetMemberPassword(c.Request.Context(), orgID, userID, caller.IsOwner())

@@ -905,3 +905,29 @@ func TestAReactionIsNotAnnouncedOutsideItsOwnChannel(t *testing.T) {
 	elsewhere.expectNothing(t, protocol.TypeChatReaction, time.Second)
 	stranger.expectNothing(t, protocol.TypeChatReaction, time.Second)
 }
+
+// Somebody still on a password an administrator set may do nothing until they
+// choose their own, which the API enforces; the live connection must too, or
+// whoever set that password could sign in as them and post in their name.
+func TestALiveConnectionWaitsForAPasswordOfTheirOwn(t *testing.T) {
+	h := newWSHarness(t)
+	org := testsupport.SeedOrg(t, h.pool)
+	token := uuid.NewString()
+	h.auth.mu.Lock()
+	h.auth.claims[token] = websocket.Claims{UserID: org.OwnerID.String(), OrgID: org.ID.String(), MustChangePassword: true}
+	h.auth.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	url := "ws" + strings.TrimPrefix(h.server.URL, "http") + "/ws"
+	conn, resp, err := nhooyr.Dial(ctx, url, &nhooyr.DialOptions{
+		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + token}},
+	})
+	if err == nil {
+		_ = conn.Close(nhooyr.StatusNormalClosure, "")
+		t.Fatal("a connection was opened before they set their own password")
+	}
+	if resp == nil || resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("want 403, got %v", resp)
+	}
+}

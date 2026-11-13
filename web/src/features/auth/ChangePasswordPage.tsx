@@ -1,9 +1,8 @@
 import { useState, FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
 import { AlertCircle, KeyRound, Loader2 } from 'lucide-react';
 import { authApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
-import { useAuthStore } from '@/shared/store/authStore';
+import { signOutLocally } from './session';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
@@ -21,8 +20,6 @@ import {
  * this page deliberately has no navigation away from it.
  */
 export function ChangePasswordPage() {
-  const navigate = useNavigate();
-  const logoutStore = useAuthStore((s) => s.logout);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -45,9 +42,9 @@ export function ChangePasswordPage() {
     try {
       await authApi.changePassword({ currentPassword, newPassword });
       // Changing it revokes every session, this one included, so there is
-      // nothing to keep — sign in again with the new password.
-      logoutStore();
-      navigate('/login', { replace: true });
+      // nothing to keep: sign in again with the new password, and leave nothing
+      // of this session behind on the way, as signing out does.
+      await signOutLocally('/login');
     } catch (err) {
       setError(apiErrorMessage(err, 'Could not change your password.'));
     } finally {

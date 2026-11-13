@@ -79,7 +79,7 @@ test('a message keeps its lines and formatting, typed, pasted or copied out', as
   await sent.hover();
   await sent.locator('..').getByRole('button', { name: 'Message actions' }).click();
   await pat.page.getByRole('menuitem', { name: 'Copy text' }).click();
-  await expect(pat.page.getByText('Copied, with its formatting.')).toBeVisible();
+  await expect(pat.page.getByText('Copied, with its formatting.', { exact: true })).toBeVisible();
   const copied = await pat.page.evaluate(async () => {
     const [item] = await navigator.clipboard.read();
     return { html: await (await item.getType('text/html')).text(), text: await (await item.getType('text/plain')).text() };

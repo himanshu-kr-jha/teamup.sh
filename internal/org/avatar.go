@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -181,4 +182,31 @@ func parseAvatar(dataURL string) ([]byte, string, string) {
 		return nil, "", "The picture must be a PNG, JPEG or WebP image."
 	}
 	return raw, kind, ""
+}
+
+// maxAvatarURL is long enough for any real image link, and short enough that
+// a profile cannot carry a payload sent to everybody who sees the name.
+const maxAvatarURL = 2048
+
+// validAvatarURL says whether an address may stand as somebody's picture. It is
+// drawn as an <img src> for the whole organization, so it is either empty (no
+// picture), the address SetAvatar gives out, or a plain https link elsewhere.
+// Anything else is refused: javascript: and data: schemes, plain http (mixed
+// content, and a tracker on every page view), and a protocol-relative "//host"
+// path that would leave the site.
+func validAvatarURL(raw string) bool {
+	if raw == "" {
+		return true
+	}
+	if len(raw) > maxAvatarURL || strings.TrimSpace(raw) != raw || strings.ContainsAny(raw, "\\\x00\r\n\t ") {
+		return false
+	}
+	if strings.HasPrefix(raw, "/") {
+		u, err := url.Parse(raw)
+		return err == nil && u.Scheme == "" && u.Host == "" && u.User == nil &&
+			strings.HasPrefix(u.Path, "/api/users/") && !strings.Contains(u.Path, "..") &&
+			!strings.HasPrefix(raw, "//")
+	}
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Host != "" && u.User == nil && u.Opaque == ""
 }

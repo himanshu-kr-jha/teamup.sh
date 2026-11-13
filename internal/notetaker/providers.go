@@ -18,6 +18,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/rs/zerolog/log"
+
+	"github.com/teamup/teamup/internal/safedial"
 )
 
 // Transcriber turns a short clip, under 30 seconds, into text.
@@ -45,6 +49,14 @@ var ErrUnavailable = errors.New("the service is not available")
 // nothing more for streamIdle.
 var ErrStalled = errors.New("the model stopped sending its answer")
 
+// ErrTooLong is a model whose answer went on past maxAnswer. Real minutes are
+// a few kilobytes; an answer this long is a service that is broken or hostile,
+// and reading it all would hold that much memory for nothing.
+var ErrTooLong = errors.New("the model's answer was far longer than any minutes, so it was not read to the end")
+
+// maxAnswer is how much of a streamed answer is kept before giving up on it.
+const maxAnswer = 1 << 20
+
 // streamIdle is how long a model may send nothing before it is given up on.
 // A reasoning model sends its thinking as it goes, so silence this long is a
 // model that has stopped, not one that is still thinking.
@@ -54,7 +66,12 @@ var streamIdle = 5 * time.Minute
 // for however long it takes (within the caller's context), and streamIdle is
 // what stops one that has gone quiet. A fixed five minutes is what cut off
 // TEA-2's minutes while the model was still thinking.
-var streamClient = &http.Client{}
+//
+// Both clients dial through safedial, because the addresses they go to are
+// typed by an administrator: without it a settings page could point TeamUp at
+// cloud metadata or the database beside it. Neither follows redirects, for the
+// same reason; a redirect comes back as the 3xx refusal it is.
+var streamClient = safedial.NewClient(0)
 
 // roomier is a writer that can be asked again with more room to answer in.
 type roomier interface {
@@ -63,7 +80,7 @@ type roomier interface {
 
 // The timeout is long because a reasoning model may think for minutes over a
 // long meeting before it answers.
-var httpClient = &http.Client{Timeout: 5 * time.Minute}
+var httpClient = safedial.NewClient(5 * time.Minute)
 
 // ── Sarvam ──────────────────────────────────────────────────────────────────
 
@@ -302,6 +319,9 @@ func (o OpenAICompatible) Write(ctx context.Context, system, prompt string) (str
 				finish = *c.FinishReason
 			}
 		}
+		if content.Len() > maxAnswer {
+			return content.String()[:maxAnswer], ErrTooLong
+		}
 	}
 	if err := lines.Err(); err != nil {
 		if stalled.Load() {
@@ -440,15 +460,17 @@ func ListModels(ctx context.Context, baseURL, key string) ([]string, error) {
 	return ids, nil
 }
 
-// httpError is a service's refusal, with what it said and without the key.
+// httpError is a service's refusal: who refused, and with which status. What
+// the service said is logged, not kept here, because this error reaches the
+// administrator's browser and the meeting's page; a body echoed there would let
+// an address typed into the settings read back whatever answers on it.
 type httpError struct {
 	Host   string
 	Status int
-	Body   string
 }
 
 func (e *httpError) Error() string {
-	return fmt.Sprintf("%s answered %d: %s", e.Host, e.Status, e.Body)
+	return fmt.Sprintf("%s answered %d", e.Host, e.Status)
 }
 
 // Is makes a busy or failing service (429, 5xx) an ErrUnavailable, worth
@@ -457,20 +479,24 @@ func (e *httpError) Is(target error) bool {
 	return target == ErrUnavailable && (e.Status == http.StatusTooManyRequests || e.Status >= 500)
 }
 
-// refusal reads a service's non-2xx answer into an httpError.
+// refusal turns a service's non-2xx answer into an httpError, and logs the
+// start of what it said for whoever runs the server to read.
 func refusal(host string, resp *http.Response) error {
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	msg := strings.TrimSpace(string(raw))
-	if len(msg) > 300 {
-		msg = msg[:300]
-	}
-	return &httpError{Host: host, Status: resp.StatusCode, Body: msg}
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 300))
+	log.Warn().Str("host", host).Int("status", resp.StatusCode).
+		Str("body", strings.TrimSpace(string(raw))).Msg("notetaker: a service refused the request")
+	return &httpError{Host: host, Status: resp.StatusCode}
 }
 
 // unreachable says why a service could not be heard from: it took too long,
 // or it could not be reached at all. Either may pass, so both are
 // ErrUnavailable.
 func unreachable(host string, err error) error {
+	// An address the dialer refused will be refused again, so it is not
+	// ErrUnavailable and is not retried.
+	if errors.Is(err, safedial.ErrBlocked) {
+		return fmt.Errorf("could not reach %s: %w", host, safedial.ErrBlocked)
+	}
 	var ne net.Error
 	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()) {
 		return fmt.Errorf("%s took too long to answer: %w", host, ErrUnavailable)

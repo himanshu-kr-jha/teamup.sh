@@ -33,6 +33,7 @@ psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d postgres -v ON_ERROR_STOP=1 -q
 # For specs that need to look at or move rows the UI cannot (psql is already required above).
 export E2E_DATABASE_URL="postgres://$PG_USER:$PG_PASSWORD@$PG_HOST:$PG_PORT/$DB_NAME?sslmode=disable"
 export E2E_PORT="$PORT"
+export TEAMUP_OUTBOUND_ALLOW="127.0.0.1,::1,localhost"
 export TEAMUP_PORT="$PORT" TEAMUP_BASE_URL="http://localhost:$PORT" TEAMUP_ENV=development TEAMUP_LOG_LEVEL=${E2E_LOG_LEVEL:-info}
 export TEAMUP_DATABASE_URL="postgres://$PG_USER:$PG_PASSWORD@$PG_HOST:$PG_PORT/$DB_NAME?sslmode=disable"
 export TEAMUP_REDIS_URL="$REDIS_URL"
@@ -52,6 +53,8 @@ export TEAMUP_GITHUB_WEB_URL="http://127.0.0.1:$E2E_GITHUB_PORT" TEAMUP_GITHUB_A
 # Bitbucket, faked by meetings.y-bitbucket.spec.ts on this port.
 export E2E_BITBUCKET_PORT="${E2E_BITBUCKET_PORT:-18093}"
 export TEAMUP_BITBUCKET_WEB_URL="http://127.0.0.1:$E2E_BITBUCKET_PORT" TEAMUP_BITBUCKET_API_URL="http://127.0.0.1:$E2E_BITBUCKET_PORT"
+# Phones, faked by meetings.y-push.spec.ts on this machine: the only push service it may deliver to.
+export TEAMUP_PUSH_SERVICE_HOSTS=127.0.0.1
 export TEAMUP_SETUP_OIDC_PROVIDER=google TEAMUP_SETUP_GOOGLE_CLIENT_ID=e2e.apps.googleusercontent.com TEAMUP_SETUP_GOOGLE_CLIENT_SECRET=unused
 
 cd "$ROOT"

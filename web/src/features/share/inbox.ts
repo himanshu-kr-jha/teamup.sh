@@ -11,13 +11,20 @@ export interface Shared {
   /** The words to send, put together from the title, text and link that came. */
   text: string;
   files: File[];
+  /** Files the worker did not keep, being over what one share may carry. */
+  leftOut: number;
 }
+
+/** What one share may keep; public/push-sw.js holds to the same. */
+export const SHARE_MAX_FILES = 10;
+export const SHARE_MAX_BYTES = 100 * 1024 * 1024;
 
 interface Meta {
   title?: string;
   text?: string;
   url?: string;
   files?: Array<{ key: string; name: string; type: string }>;
+  leftOut?: number;
 }
 
 /**
@@ -48,7 +55,7 @@ export async function readInbox(): Promise<Shared | null> {
       const r = await inbox.match(f.key);
       if (r) files.push(new File([await r.blob()], f.name, { type: f.type }));
     }
-    return { text: composeShared(m), files };
+    return { text: composeShared(m), files, leftOut: m.leftOut ?? 0 };
   } catch {
     return null;
   }

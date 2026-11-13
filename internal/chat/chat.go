@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"fmt"
 
@@ -456,8 +457,23 @@ func (s *Service) threadRootFor(ctx context.Context, channelID, parentID uuid.UU
 	return root, nil
 }
 
+// MaxMessageLength is the most a message may say, in characters: far more than
+// anybody writes, and far less than enough to fill every member's screen,
+// notifications and storage with one paste.
+const MaxMessageLength = 40000
+
+func checkLength(content string) error {
+	if utf8.RuneCountInString(content) > MaxMessageLength {
+		return apperrors.New(apperrors.CodeValidation, fmt.Sprintf("a message can be at most %d characters", MaxMessageLength))
+	}
+	return nil
+}
+
 func (s *Service) createMessage(ctx context.Context, msg *Message) error {
 	msg.Content = sentinelStripper.Replace(msg.Content)
+	if err := checkLength(msg.Content); err != nil {
+		return err
+	}
 	// Settled before the insert rather than fixed up afterwards, so a reply
 	// with an impossible parent is never written at all.
 	if msg.ReplyTo != nil {
@@ -543,8 +559,16 @@ func (s *Service) updateMessage(ctx context.Context, id uuid.UUID, content strin
 
 // deleteMessage is a soft delete so replies keep their parent and history
 // stays contiguous.
+//
+// Its files go with it: whoever deleted a message they sent a file in meant
+// the file too, and a link to it must stop working for the people who saw it.
 func (s *Service) deleteMessage(ctx context.Context, id uuid.UUID, deletedAt *time.Time) error {
-	tag, err := s.db.Exec(ctx,
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("delete message: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	tag, err := tx.Exec(ctx,
 		`UPDATE messages SET deleted_at = $2 WHERE id = $1 AND deleted_at IS NULL`, id, deletedAt)
 	if err != nil {
 		return fmt.Errorf("delete message: %w", err)
@@ -552,7 +576,11 @@ func (s *Service) deleteMessage(ctx context.Context, id uuid.UUID, deletedAt *ti
 	if tag.RowsAffected() == 0 {
 		return apperrors.ErrNotFound
 	}
-	return nil
+	if _, err := tx.Exec(ctx,
+		`UPDATE attachments SET deleted_at = COALESCE($2, NOW()) WHERE message_id = $1 AND deleted_at IS NULL`, id, deletedAt); err != nil {
+		return fmt.Errorf("delete message files: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 // messageChannel resolves which channel a message belongs to, so an edit or a
@@ -588,8 +616,11 @@ func (s *Service) IsChannelAdmin(ctx context.Context, channelID, userID uuid.UUI
 	var ok bool
 	err := s.db.QueryRow(ctx, `
 		SELECT EXISTS (
-			SELECT 1 FROM channel_members
-			WHERE channel_id = $1 AND user_id = $2 AND role IN ('owner', 'admin'))
+			SELECT 1 FROM channel_members cm JOIN channels c ON c.id = cm.channel_id
+			WHERE cm.channel_id = $1 AND cm.user_id = $2 AND cm.role IN ('owner', 'admin')
+			  -- Both people in a direct message are stored as its owners; that
+			  -- makes neither the other's moderator.
+			  AND c.type <> 'dm')
 	`, channelID, userID).Scan(&ok)
 	if err != nil {
 		s.logger.Error().Err(err).Msg("channel admin check failed")
@@ -606,7 +637,8 @@ func (s *Service) isChannelAdmin(ctx context.Context, messageID, userID uuid.UUI
 		SELECT EXISTS (
 			SELECT 1 FROM messages m
 			JOIN channel_members cm ON cm.channel_id = m.channel_id
-			WHERE m.id = $1 AND cm.user_id = $2 AND cm.role IN ('owner', 'admin'))
+			JOIN channels c ON c.id = m.channel_id
+			WHERE m.id = $1 AND cm.user_id = $2 AND cm.role IN ('owner', 'admin') AND c.type <> 'dm')
 	`, messageID, userID).Scan(&ok)
 	if err != nil {
 		s.logger.Error().Err(err).Msg("channel admin check failed")
@@ -1661,9 +1693,11 @@ func (s *Service) attachFiles(ctx context.Context, messages []Message) ([]Messag
 
 	rows, err := s.db.Query(ctx, `
 		SELECT message_id, id, filename, content_type, size_bytes, object_key, thumbnail_key
-		FROM attachments
-		WHERE message_id = ANY($1) AND deleted_at IS NULL
-		ORDER BY created_at
+		FROM attachments a
+		WHERE a.message_id = ANY($1) AND a.deleted_at IS NULL
+		  -- A message deleted before its files went with it still hides them.
+		  AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.id = a.message_id AND m.deleted_at IS NOT NULL)
+		ORDER BY a.created_at
 	`, ids)
 	if err != nil {
 		return nil, fmt.Errorf("load message attachments: %w", err)
@@ -2065,6 +2099,9 @@ func (s *Service) pushToChannel(ctx context.Context, channelID, senderID uuid.UU
 const EditWindow = 5 * time.Minute
 
 func (s *Service) EditMessage(ctx context.Context, messageID, userID uuid.UUID, content string) error {
+	if err := checkLength(content); err != nil {
+		return err
+	}
 	var owner, channelID uuid.UUID
 	var createdAt time.Time
 	var deletedAt *time.Time
@@ -2206,6 +2243,19 @@ type FileResult struct {
 	CreatedAt    time.Time  `json:"createdAt"`
 }
 
+// maxSearchOffset is how far into the results a search may page. Postgres
+// sorts and then skips every row before the offset, so an unbounded one is an
+// expensive query anybody signed in can ask for; nobody reads past the first
+// few hundred results of a search box.
+const maxSearchOffset = 10_000
+
+// containsPattern is a LIKE pattern that finds text anywhere, with text's own
+// "%", "_" and backslash matching only themselves. Unescaped, a search for "%"
+// matched every message and file. The queries name backslash as the ESCAPE.
+func containsPattern(text string) string {
+	return "%" + strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(text) + "%"
+}
+
 // SearchFiles finds shared files by name, in channels the caller can read.
 // Names are short, so trigram similarity does the work on its own: an exact
 // substring first, then anything close enough to be what was meant.
@@ -2220,6 +2270,9 @@ func (s *Service) SearchFiles(ctx context.Context, orgID, userID uuid.UUID, q Se
 	if q.Offset < 0 {
 		q.Offset = 0
 	}
+	if q.Offset > maxSearchOffset {
+		return []FileResult{}, nil
+	}
 
 	rows, err := s.db.Query(ctx, `
 		SELECT a.id, a.filename, a.content_type, a.size_bytes, a.object_key,
@@ -2232,15 +2285,16 @@ func (s *Service) SearchFiles(ctx context.Context, orgID, userID uuid.UUID, q Se
 		WHERE a.org_id = $1
 		  AND a.category = 'chat'
 		  AND a.deleted_at IS NULL
+		  AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.id = a.message_id AND m.deleted_at IS NOT NULL)
 		  AND c.deleted_at IS NULL
 		  AND (cm.user_id IS NOT NULL OR c.type = 'public')
-		  AND (a.filename ILIKE '%' || $2 || '%' OR word_similarity($2, a.filename) >= 0.4)
+		  AND (a.filename ILIKE $7 ESCAPE '\' OR word_similarity($2, a.filename) >= 0.4)
 		  AND ($4::uuid IS NULL OR c.id = $4)
-		ORDER BY (a.filename ILIKE '%' || $2 || '%') DESC,
+		ORDER BY (a.filename ILIKE $7 ESCAPE '\') DESC,
 		         word_similarity($2, a.filename) DESC,
 		         a.created_at DESC
 		LIMIT $5 OFFSET $6
-	`, orgID, text, userID, q.ChannelID, q.Limit, q.Offset)
+	`, orgID, text, userID, q.ChannelID, q.Limit, q.Offset, containsPattern(text))
 	if err != nil {
 		return nil, fmt.Errorf("search files: %w", err)
 	}
@@ -2338,7 +2392,7 @@ var searchMessagesSQL = `
 		  AND (cm.user_id IS NOT NULL OR c.type = 'public')
 		  AND (
 		        m.content_search @@ websearch_to_tsquery('english', $2)
-		        OR m.content ILIKE '%' || $2 || '%'
+		        OR m.content ILIKE $8 ESCAPE '\'
 		        OR ` + searchFuzzyPredicate + `
 		      )
 		  AND ($4::uuid IS NULL OR m.channel_id = $4)
@@ -2366,6 +2420,9 @@ func (s *Service) SearchMessages(ctx context.Context, orgID, userID uuid.UUID, q
 	if q.Offset < 0 {
 		q.Offset = 0
 	}
+	if q.Offset > maxSearchOffset {
+		return []SearchResult{}, nil
+	}
 
 	// Whole-word matching first, then trigram similarity for everything it
 	// misses — a typo, a partial word, a name spelled slightly differently.
@@ -2386,7 +2443,7 @@ func (s *Service) SearchMessages(ctx context.Context, orgID, userID uuid.UUID, q
 	}
 
 	rows, err := tx.Query(ctx, searchMessagesSQL,
-		orgID, text, userID, q.ChannelID, q.UserID, q.Limit, q.Offset)
+		orgID, text, userID, q.ChannelID, q.UserID, q.Limit, q.Offset, containsPattern(text))
 	if err != nil {
 		return nil, fmt.Errorf("search messages: %w", err)
 	}

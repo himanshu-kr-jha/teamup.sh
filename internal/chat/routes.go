@@ -242,6 +242,13 @@ func (h *Handler) CreateChannel(c *gin.Context) {
 		return
 	}
 
+	// An announcement channel takes in everybody and tells them each time it is
+	// posted to, so making one is for whoever administers the channels.
+	if req.Type == "announcement" && !auth.GetUserFromContext(c).Can(auth.PermChannelsAll) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "only somebody who administers channels can make an announcement channel"})
+		return
+	}
+
 	var teamID *uuid.UUID
 	if req.TeamID != nil && *req.TeamID != "" {
 		id, err := uuid.Parse(*req.TeamID)
