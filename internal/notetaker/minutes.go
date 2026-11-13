@@ -87,7 +87,7 @@ func (u *UnusableAnswer) Error() string { return u.Err.Error() }
 func (u *UnusableAnswer) Unwrap() error { return u.Err }
 
 // retryPause is how long to wait before asking a service that was busy, slow
-// or out of reach again.
+// or out of reach again, plus up to half as much at random.
 var retryPause = 30 * time.Second
 
 // Write asks the model for the minutes and reads its answer, asking again
@@ -118,9 +118,9 @@ func Write(ctx context.Context, w Writer, title string, date time.Time, attendee
 		case errors.Is(err, ErrUnavailable), errors.Is(err, ErrStalled):
 			last = err
 			if i+1 < attempts {
-				select {
-				case <-time.After(retryPause):
-				case <-ctx.Done():
+				// With some randomness, so meetings turned away together do not
+				// all come back in the same second and be turned away again.
+				if !sleep(ctx, jitter(retryPause)) {
 					return Minutes{}, err
 				}
 			}

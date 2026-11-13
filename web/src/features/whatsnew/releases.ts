@@ -40,6 +40,11 @@ export const RELEASES: Release[] = [
         title: 'Big offices fit',
         body: 'Everybody in an office shares one internet address, and TeamUp used to turn away the 101st person in a meeting or the app from the same office. An office of a thousand now fits.',
       },
+      {
+        area: 'meetings',
+        title: 'Minutes keep up with busy days',
+        body: 'When speech to text or the AI writing the minutes is busy, TeamUp waits its turn and asks again instead of losing what was said, so many meetings at once all get their minutes. The note-taker also listens to the meeting without taking its video, which leaves more room for everybody else.',
+      },
     ],
   },
   {
