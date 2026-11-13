@@ -1,3 +1,4 @@
+import type { Page } from '@playwright/test';
 import { expect, openTasks, test } from './support/fixtures';
 import { apiAs, idOf } from './support/meetings';
 import { readState } from './support/people';
@@ -87,6 +88,13 @@ test.describe('thread ticks', () => {
 
 // Asked for: news about a task is heard, marked on Tasks and on the task, and
 // a task due shows on the calendar.
+/** The page telling the server the task has been read, once it has finished. */
+function readOf(page: Page, taskId: string) {
+  return page.waitForResponse(
+    (r) => r.request().method() === 'PATCH' && r.url().endsWith(`/notifications/tasks/${taskId}/read`) && r.ok(),
+  );
+}
+
 test.describe('task news', () => {
   const made: string[] = [];
   test.afterAll(async () => {
@@ -111,8 +119,10 @@ test.describe('task news', () => {
     });
     await openTasks(alice.page, '?tab=board');
     // Being handed it was news too; opening it reads that.
+    let marked = readOf(alice.page, task.id);
     await alice.page.getByRole('link', { name: title }).click();
     await expect(alice.page.getByRole('heading', { name: title })).toBeVisible();
+    await marked; // leaving straight away would cancel it
     await openTasks(alice.page, '?tab=board');
     const card = alice.page.locator('div.rounded-lg', { has: alice.page.getByRole('link', { name: title }) }).first();
     await expect(card.getByTestId('task-unread-dot')).toHaveCount(0);
@@ -138,8 +148,10 @@ test.describe('task news', () => {
     await alice.page.screenshot({ path: 'test-results/task-news-calendar-month.png' });
 
     // Opening it reads it.
+    marked = readOf(alice.page, task.id);
     await chip.click();
     await expect(alice.page.getByRole('heading', { name: title })).toBeVisible();
+    await marked;
     await openTasks(alice.page, '?tab=board');
     await expect(card.getByTestId('task-unread-dot'), 'read once opened').toHaveCount(0, { timeout: 10_000 });
   });
