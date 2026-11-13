@@ -42,6 +42,11 @@ export const RELEASES: Release[] = [
       },
       {
         area: 'meetings',
+        title: 'Big meetings stay smooth',
+        body: 'In a meeting, each person now receives only the cameras on their screen, at the size they are shown, and quality follows their connection. A meeting of 50 with every camera on needs about 3 Mbit/s each instead of most of a home connection, and a shared screen still comes through sharp.',
+      },
+      {
+        area: 'meetings',
         title: 'Minutes keep up with busy days',
         body: 'When speech to text or the AI writing the minutes is busy, TeamUp waits its turn and asks again instead of losing what was said, so many meetings at once all get their minutes. The note-taker also listens to the meeting without taking its video, which leaves more room for everybody else.',
       },

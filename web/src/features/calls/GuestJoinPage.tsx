@@ -36,6 +36,7 @@ import {
 } from "./MeetingChat";
 import { NotesBanner, isNotetaker } from "./notetaker";
 import { CameraBackground } from "./BackgroundPicker";
+import { ROOM_OPTIONS } from './roomOptions';
 
 const NAME_KEY = "teamup.guestName";
 
@@ -458,6 +459,7 @@ function GuestRoom({
       token={joined.token}
       serverUrl={liveKitURL()}
       connect
+      options={ROOM_OPTIONS}
       audio={joined.mic}
       video={joined.camera}
       data-lk-theme="default"

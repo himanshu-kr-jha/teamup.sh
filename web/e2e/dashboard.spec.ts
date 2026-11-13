@@ -215,7 +215,11 @@ test.describe('5a and 4. finishing work, completing a scrum, and what is frozen'
     await openTasks(alice.page, '?tab=board');
     const card = alice.page.locator('div.rounded-lg', { has: alice.page.getByRole('link', { name: TASKS.aliceReport }) }).last();
     await card.getByRole('button', { name: 'Task actions' }).click();
+    // Wait for the server to take it: going straight to another page aborts the
+    // request when the machine is slow, and the task was never done.
+    const saved = alice.page.waitForResponse((r) => r.request().method() === 'PATCH' && /\/api\/tasks\/[^/]+$/.test(new URL(r.url()).pathname));
     await alice.page.getByRole('menuitem', { name: 'Mark Done' }).click();
+    expect((await saved).ok()).toBe(true);
 
     await openTasks(alice.page);
     await expect(alice.page.getByRole('heading', { name: /^Completed/ })).toBeVisible();
