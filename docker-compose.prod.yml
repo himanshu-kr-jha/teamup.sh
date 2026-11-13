@@ -94,7 +94,7 @@ services:
     # on a new machine. Chainguard still builds it. It publishes only `latest`
     # for free, so this is pinned by digest. The image has no shell, so it has
     # no healthcheck of its own; the app's readiness probe covers object storage.
-    image: cgr.dev/chainguard/minio@sha256:cee9a8e35885e93f14b3cb32960e5017aff74e2adfb52ba87c65003b0163886b
+    image: cgr.dev/chainguard/minio@sha256:96b6cf3e14084d3427ec46de10c2873af61b945ad9272eec266cfc8df551cba5
     restart: unless-stopped
     security_opt: ["no-new-privileges:true"]
     command: server /data
