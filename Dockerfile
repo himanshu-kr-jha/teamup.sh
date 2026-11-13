@@ -25,7 +25,7 @@ RUN pnpm build
 # GOARCH. Building `--platform linux/arm64` the ordinary way would run this
 # stage under QEMU, which is slow, and the hardcoded `GOARCH=amd64` it used to
 # carry would then have put an amd64 binary inside an arm64 image.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine@sha256:30b1e546a9c7fa3b747c2bdba3a0c7bdf3a02ebb4c5b8405d2f948d7e8aac4ec AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.11-alpine@sha256:ae52b5bc6ed045a9ed26ab03dc19327a802a9cc9aa8b27ed57f5c6b60579b0bb AS builder
 
 # Supplied by buildx, one value per requested platform.
 ARG TARGETARCH

@@ -177,7 +177,7 @@ test.describe('meeting notes', () => {
     await sendTo.getByLabel('Find a conversation').fill('e2e-room');
     await sendTo.getByRole('option', { name: 'e2e-room' }).click();
     await sendTo.getByRole('button', { name: 'Send', exact: true }).click();
-    await expect(page.getByText('Sent the minutes.')).toBeVisible();
+    await expect(page.getByText('Sent the minutes.', { exact: true })).toBeVisible();
     const pat = await as('pat');
     await pat.page.goto(`/chat/${readState().channelId}`);
     const posted = pat.page.getByTestId('message').filter({ hasText: `Minutes: ${title}` }).last();
