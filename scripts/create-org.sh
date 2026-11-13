@@ -128,7 +128,7 @@ chmod 755 /tmp/teamup-setup && chmod 644 /tmp/teamup-setup/*.json
 NETWORK="$(sudo docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}' "$(dc ps -q teamup)")"
 # Setup asks for the code the server made at start, which it keeps in Redis.
 for i in $(seq 1 30); do
-  SETUP_CODE="$(dc exec -T redis sh -c 'redis-cli --no-auth-warning GET wizard:setup-token' 2>/dev/null | tr -d '\r')"
+  SETUP_CODE="$(dc exec -T redis sh -c 'redis-cli --no-auth-warning GET wizard:setup-token' </dev/null 2>/dev/null | tr -d '\r')"
   [ -n "$SETUP_CODE" ] && break
   sleep 2
 done

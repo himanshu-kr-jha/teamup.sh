@@ -19,6 +19,7 @@ import {
 import { ConnectionState, RoomEvent } from 'livekit-client';
 import { useQuery } from '@tanstack/react-query';
 import { CallStage } from './CallStage';
+import { ROOM_OPTIONS } from './roomOptions';
 import { MeetingChatButton, MeetingChatProvider, StageWithChat, UnreadChatMark, type ChatTransport } from './MeetingChat';
 import { NotesBanner } from './notetaker';
 import { CallControls, CompactCallControls, ShareUnavailableNote } from './CallControls';
@@ -431,6 +432,7 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
           token={activeCall.token}
           serverUrl={liveKitURL()}
           connect
+          options={ROOM_OPTIONS}
           // Joining a meeting or a video call with the camera and microphone
           // off: you turn them on when you are ready, rather than finding out
           // you were already on. A call is a conversation, so its microphone is

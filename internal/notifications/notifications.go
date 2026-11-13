@@ -260,9 +260,14 @@ var pushClient = &http.Client{
 			Timeout:   5 * time.Second,
 			KeepAlive: 30 * time.Second,
 		}).DialContext,
-		ForceAttemptHTTP2:     true,
-		MaxIdleConns:          128,
-		MaxIdleConnsPerHost:   pushFanOut,
+		ForceAttemptHTTP2:   true,
+		MaxIdleConns:        128,
+		MaxIdleConnsPerHost: pushFanOut,
+		// No more connections to one push service than pushes in flight. Without
+		// it a push that started as another finished opened a new connection
+		// before the finished one was back in the pool, a few per burst on a
+		// busy machine; with it, it waits the moment for the free one.
+		MaxConnsPerHost:       pushFanOut,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,

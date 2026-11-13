@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -86,14 +88,33 @@ type Service struct {
 	sessions map[uuid.UUID]*session
 	stopping bool
 	running  sync.WaitGroup
+
+	// transcribing and writing are this server's turns at the two outside
+	// services, shared by every meeting it takes notes in. Without them a
+	// hundred meetings meant three hundred requests at once to speech to text,
+	// which answers that many with "too many requests", and every meeting
+	// ending on the hour asked the model for minutes in the same second.
+	transcribing chan struct{}
+	writing      chan struct{}
 }
+
+// MaxTranscribing is how many clips one server sends to speech to text at
+// once, across all its meetings. A clip is at most 25 seconds and takes a
+// second or two, so twelve keep up with dozens of meetings talking at once;
+// past that clips wait their turn in their meeting's queue.
+const MaxTranscribing = 12
+
+// MaxWriting is how many meetings' minutes one server asks the model for at
+// once. The rest wait, and say they are being written while they do.
+const MaxWriting = 4
 
 // NewService builds the note-taker. baseURL is TeamUp's own address, for the
 // link in the email.
 func NewService(db *pgxpool.Pool, config ConfigStore, lk LiveKit, baseURL string, logger zerolog.Logger) *Service {
 	s := &Service{db: db, config: config, livekit: lk, baseURL: strings.TrimRight(baseURL, "/"), logger: logger,
 		now: time.Now, GracePeriod: 30 * time.Second, Heartbeat: 15 * time.Second, StaleAfter: 45 * time.Second,
-		sessions: map[uuid.UUID]*session{}}
+		sessions:     map[uuid.UUID]*session{},
+		transcribing: make(chan struct{}, MaxTranscribing), writing: make(chan struct{}, MaxWriting)}
 	s.join = s.joinRoom
 	return s
 }
@@ -176,6 +197,8 @@ type session struct {
 	failures  int
 	clipCount int
 	lastError string
+	// dropped is clips thrown away because transcription was too far behind.
+	dropped atomic.Int64
 
 	finishOnce sync.Once
 	done       chan struct{}
@@ -258,6 +281,13 @@ loop:
 // joinRoom connects to LiveKit as a visible agent participant.
 func (s *Service) joinRoom(sess *session) error {
 	cb := lksdk.NewRoomCallback()
+	// Only audio is asked for. Subscribing to everything had the media server
+	// send the bot every camera and screen in the meeting, to be thrown away:
+	// in a meeting of ten, as much video as one more person watching, at the
+	// point a load test found the media server is the first thing to run short.
+	cb.OnTrackPublished = func(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+		sess.listenTo(pub, rp)
+	}
 	cb.OnTrackSubscribed = func(track *webrtc.TrackRemote, _ *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
 		if track.Kind() != webrtc.RTPCodecTypeAudio || rp.Kind() == lksdk.ParticipantAgent {
 			return
@@ -302,14 +332,32 @@ func (s *Service) joinRoom(sess *session) error {
 		ParticipantName:     "Notes",
 		ParticipantKind:     lksdk.ParticipantAgent,
 		ParticipantMetadata: `{"role":"notetaker"}`,
-	}, cb, lksdk.WithAutoSubscribe(true))
+	}, cb, lksdk.WithAutoSubscribe(false))
 	if err != nil {
 		return err
 	}
 	sess.mu.Lock()
 	sess.room = room
 	sess.mu.Unlock()
+	// Whoever was already talking when it joined. Asking twice is harmless.
+	for _, rp := range room.GetRemoteParticipants() {
+		for _, tp := range rp.TrackPublications() {
+			if pub, ok := tp.(*lksdk.RemoteTrackPublication); ok {
+				sess.listenTo(pub, rp)
+			}
+		}
+	}
 	return nil
+}
+
+// listenTo subscribes to a person's microphone, and to nothing else.
+func (sess *session) listenTo(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+	if pub.Kind() != lksdk.TrackKindAudio || rp.Kind() == lksdk.ParticipantAgent || pub.IsSubscribed() {
+		return
+	}
+	if err := pub.SetSubscribed(true); err != nil {
+		sess.svc.logger.Warn().Err(err).Str("call", sess.callID.String()).Str("who", rp.Name()).Msg("notetaker: could not listen to somebody")
+	}
 }
 
 func (sess *session) recorderFor(identity, name string) *recorder {
@@ -326,7 +374,9 @@ func (sess *session) recorderFor(identity, name string) *recorder {
 		case sess.clips <- c:
 		default:
 			// Far behind: dropping a clip loses a sentence, blocking would lose
-			// the call's audio.
+			// the call's audio. Counted, so the minutes can say so. This runs
+			// both with and without sess.mu held, so it does not take it.
+			sess.dropped.Add(1)
 			sess.svc.logger.Warn().Msg("notetaker: transcription is behind; a clip was dropped")
 		}
 	}, sess.svc.now)
@@ -386,7 +436,7 @@ func (sess *session) transcribe(stt Transcriber, clip Clip) {
 	sess.mu.Lock()
 	sess.clipCount++
 	sess.mu.Unlock()
-	text, err := stt.Transcribe(ctx, clip.Audio, "clip.ogg")
+	text, err := sess.svc.transcribeClip(ctx, stt, clip.Audio)
 	if err != nil {
 		sess.mu.Lock()
 		sess.failures++
@@ -425,6 +475,9 @@ func (s *Service) writeMinutes(ctx context.Context, sess *session) {
 		sttProblem = sess.lastError
 	}
 	sess.mu.Unlock()
+	if n := sess.dropped.Load(); n > 0 && sttProblem == "" {
+		sttProblem = fmt.Sprintf("transcription fell behind, and %d parts of what was said were not written down", n)
+	}
 	s.compose(ctx, sess.orgID, sess.callID, sess.settings, sttProblem)
 }
 
@@ -484,7 +537,15 @@ func (s *Service) compose(ctx context.Context, orgID, callID uuid.UUID, set Sett
 		}
 		w = nv
 	}
+	// One of this server's few turns at the model. Meetings that end together
+	// queue here, still showing "being written", rather than all asking at once
+	// and being told the service is busy.
+	if !turn(ctx, s.writing) {
+		s.markFailed(callID, "Waited too long for a turn to write the minutes.")
+		return
+	}
 	minutes, err := Write(ctx, w, title, startedAt, names, segments, time.UTC)
+	done(s.writing)
 	if err != nil {
 		log := s.logger.Warn().Err(err).Str("call", callID.String())
 		// What the model said instead, so the next failure can be understood.
@@ -701,4 +762,80 @@ func (s *Service) NotesFor(ctx context.Context, orgID, callID, userID uuid.UUID,
 		n.Transcript = []Segment{}
 	}
 	return &n, err
+}
+
+// sttPause is the first wait before asking speech to text again about a clip
+// it was too busy for; each later wait is twice as long, with some randomness
+// so the meetings that were turned away together do not come back together.
+var sttPause = 2 * time.Second
+
+// sttAttempts is how many times one clip is sent before it is given up on.
+const sttAttempts = 3
+
+// transcribeClip sends one clip to speech to text when this server has a turn
+// free, and again after a pause when the service was busy or out of reach. A
+// refusal of the request itself (a wrong key) is not sent again.
+func (s *Service) transcribeClip(ctx context.Context, stt Transcriber, audio []byte) (string, error) {
+	var err error
+	for i := 0; i < sttAttempts; i++ {
+		if i > 0 {
+			if !sleep(ctx, jitter(sttPause<<(i-1))) {
+				return "", err
+			}
+		}
+		if !turn(ctx, s.transcribing) {
+			return "", ctx.Err()
+		}
+		var text string
+		text, err = stt.Transcribe(ctx, audio, "clip.ogg")
+		done(s.transcribing)
+		if err == nil || !errors.Is(err, ErrUnavailable) {
+			return text, err
+		}
+	}
+	return "", err
+}
+
+// turn waits for a free place in slots, or for ctx to end. A nil slots is
+// unlimited.
+func turn(ctx context.Context, slots chan struct{}) bool {
+	if slots == nil {
+		return true
+	}
+	select {
+	case slots <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
+
+func done(slots chan struct{}) {
+	if slots != nil {
+		<-slots
+	}
+}
+
+// jitter is d give or take a quarter, at random: the same wait on average,
+// so nothing is slower than it was, but spread out.
+func jitter(d time.Duration) time.Duration {
+	if d <= 0 {
+		return 0
+	}
+	return d - d/4 + rand.N(d/2+1)
+}
+
+// sleep waits d, or until ctx ends, and says whether it waited it out.
+func sleep(ctx context.Context, d time.Duration) bool {
+	if d <= 0 {
+		return ctx.Err() == nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }

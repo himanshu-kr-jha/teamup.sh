@@ -65,7 +65,7 @@ test.describe('meeting notes', () => {
   });
 
   test('an administrator turns it on; it joins the call visibly, and everybody who was there gets the minutes', async ({ as }) => {
-    test.setTimeout(180_000);
+    test.setTimeout(240_000);
     const olivia = await as('owner');
     await olivia.page.goto('/organization');
     await olivia.page.getByRole('tab', { name: 'Meeting notes' }).click();
@@ -124,7 +124,9 @@ test.describe('meeting notes', () => {
       const list = (await alice.get('/notifications')).notifications as Array<{ type: string; data?: { url?: string } }>;
       return list.some((n) => n.type === type && n.data?.url === minutesPath);
     };
-    await expect.poll(told('minutes.failed'), { timeout: 90_000, intervals: [3_000] }).toBe(true);
+    // 30 s for the room to stay empty, then three asks with two pauses of
+    // 30 s give or take a quarter: up to about 110 s.
+    await expect.poll(told('minutes.failed'), { timeout: 150_000, intervals: [3_000] }).toBe(true);
 
     // Alice finds the meeting on the Meeting notes page.
     const page = aliceSession.page;

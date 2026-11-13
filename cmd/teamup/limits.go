@@ -25,10 +25,12 @@ const (
 func per(n int, d time.Duration) ratelimit.Limit { return ratelimit.Limit{N: n, Per: d} }
 
 // publicLimits apply before anybody is known, by address. An office shares one
-// address, so these are about volume a crowd never reaches.
+// address, so these are about volume a crowd never reaches: an office of 1,000
+// averages about 100 API calls a second and reconnects all at once after its
+// network drops.
 var publicLimits = []ratelimit.Rule{
 	// Every API request from one address.
-	{Name: "api-address", Prefix: "/api/", Limit: per(3000, minute), Who: ratelimit.ByAddress},
+	{Name: "api-address", Prefix: "/api/", Limit: per(15000, minute), Who: ratelimit.ByAddress},
 
 	// Turning a refresh token into a session.
 	{Name: "refresh", Method: http.MethodPost, Route: "/api/auth/refresh", Limit: per(120, minute), Who: ratelimit.ByAddress},
@@ -52,7 +54,7 @@ var publicLimits = []ratelimit.Rule{
 	{Name: "webhook", Method: http.MethodPost, Route: "/api/livekit/webhook", Limit: per(3000, minute), Who: ratelimit.ByAddress},
 
 	// The live connection: opening it, not what goes over it.
-	{Name: "ws-open", Method: http.MethodGet, Route: "/ws", Limit: per(120, minute), Who: ratelimit.ByAddress},
+	{Name: "ws-open", Method: http.MethodGet, Route: "/ws", Limit: per(1200, minute), Who: ratelimit.ByAddress},
 }
 
 // memberLimits apply once somebody is signed in, per person.

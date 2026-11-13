@@ -176,6 +176,20 @@ for _ in $(seq 1 60); do
   sleep 3
 done
 dc ps --format '{{.Service}}\t{{.Image}}\t{{.Status}}'
+
+# Each build leaves about 1.5 GB of build cache and a 100 MB image behind, so
+# a server deployed a few times a day fills its disk in weeks. Only once the
+# new one is healthy: keep the three newest images (this one and two to roll
+# back to) and 4 GB of cache, which is what makes the next build quick.
+case "$(dc ps teamup --format '{{.Status}}')" in *"(healthy)"*)
+  echo "== tidy"
+  sudo docker images teamup --format '{{.CreatedAt}}\t{{.Repository}}:{{.Tag}}' | sort -r | tail -n +4 | cut -f2 \
+    | xargs -r sudo docker rmi >/dev/null 2>&1 || true
+  sudo docker builder prune -f --max-used-space 4gb >/dev/null 2>&1 \
+    || sudo docker builder prune -f --keep-storage 4gb >/dev/null 2>&1 || true
+  sudo docker image prune -f >/dev/null 2>&1 || true
+  df -h / | awk 'NR==2 {print "disk: " $3 " used of " $2 " (" $5 ")"}'
+;; esac
 REMOTE_SCRIPT
 )
 printf '%s\n' "$REMOTE" | "${SSH[@]}" "$HOST" 'cat > /tmp/teamup-deploy.sh && rm -f /tmp/teamup-deploy.done'

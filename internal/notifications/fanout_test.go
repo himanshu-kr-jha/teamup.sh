@@ -195,11 +195,11 @@ func TestPushDeliveryKeepsItsConnectionsBetweenBursts(t *testing.T) {
 	if delivered != 2*len(ids) {
 		t.Fatalf("delivered %d pushes, want %d", delivered, 2*len(ids))
 	}
-	// A handful is fine — the pool is bounded and a burst can briefly want more
-	// than it holds. One per push is the handshake storm.
-	if opened > len(ids)/4 {
-		t.Errorf("a second burst of %d pushes opened %d new connections;"+
-			" the first burst's %d were not kept", len(ids), opened, afterWarmUp)
+	// Never more connections than pushes in flight, across both bursts: the
+	// second reuses the first's. One per push is the handshake storm.
+	if total > pushFanOut {
+		t.Errorf("two bursts of %d pushes opened %d connections (%d in the second);"+
+			" at most %d should ever be open, and kept", len(ids), total, opened, pushFanOut)
 	}
 }
 
