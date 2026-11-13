@@ -35,6 +35,11 @@ export const RELEASES: Release[] = [
         title: 'Conversations open quicker',
         body: 'Opening a conversation, and searching your messages, ask far less of the server, so both stay quick at the busiest time of day, even in a channel with the whole company in it.',
       },
+      {
+        area: 'meetings',
+        title: 'Big offices fit',
+        body: 'Everybody in an office shares one internet address, and TeamUp used to turn away the 101st person in a meeting or the app from the same office. An office of a thousand now fits.',
+      },
     ],
   },
   {
