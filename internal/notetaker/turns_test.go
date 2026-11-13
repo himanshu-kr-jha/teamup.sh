@@ -130,8 +130,8 @@ func TestRetriesAreSpreadOut(t *testing.T) {
 	seen := map[time.Duration]bool{}
 	for range 50 {
 		d := jitter(time.Second)
-		if d < time.Second || d > 1500*time.Millisecond {
-			t.Fatalf("jitter(1s) = %v, want between 1s and 1.5s", d)
+		if d < 750*time.Millisecond || d > 1250*time.Millisecond {
+			t.Fatalf("jitter(1s) = %v, want between 0.75s and 1.25s", d)
 		}
 		seen[d] = true
 	}

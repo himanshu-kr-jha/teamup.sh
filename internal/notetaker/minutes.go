@@ -87,7 +87,7 @@ func (u *UnusableAnswer) Error() string { return u.Err.Error() }
 func (u *UnusableAnswer) Unwrap() error { return u.Err }
 
 // retryPause is how long to wait before asking a service that was busy, slow
-// or out of reach again, plus up to half as much at random.
+// or out of reach again, give or take a quarter at random.
 var retryPause = 30 * time.Second
 
 // Write asks the model for the minutes and reads its answer, asking again

@@ -816,12 +816,13 @@ func done(slots chan struct{}) {
 	}
 }
 
-// jitter is d plus up to half as much again, at random.
+// jitter is d give or take a quarter, at random: the same wait on average,
+// so nothing is slower than it was, but spread out.
 func jitter(d time.Duration) time.Duration {
 	if d <= 0 {
 		return 0
 	}
-	return d + rand.N(d/2+1)
+	return d - d/4 + rand.N(d/2+1)
 }
 
 // sleep waits d, or until ctx ends, and says whether it waited it out.
