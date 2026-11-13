@@ -61,6 +61,10 @@ podSecurityContext:
   runAsUser: 65532
   runAsGroup: 65532
   fsGroup: 65532
+  # The container runtime's default syscall filter. Without it the pod runs
+  # unconfined, and the restricted Pod Security Standard rejects it.
+  seccompProfile:
+    type: RuntimeDefault
 
 securityContext:
   allowPrivilegeEscalation: false
@@ -88,6 +92,17 @@ ingress:
       paths:
         - path: /
           pathType: Prefix
+  # Operator endpoints that must not be reachable from outside the cluster:
+  # /metrics has no authentication, and readiness names internal hosts and the
+  # version. Prometheus and the kubelet reach the pod directly, never through
+  # the ingress. Each of these is routed to a Service that nothing creates, so
+  # the controller answers it itself (503 on ingress-nginx, 404 on most others)
+  # and the request never reaches TeamUp. That works on every controller,
+  # unlike a server-snippet, which ingress-nginx refuses by default.
+  blockedPaths:
+    - /metrics
+    - /readyz
+    - /healthz/ready
   tls: []
   # tls:
   #   - secretName: teamup-tls

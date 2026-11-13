@@ -145,7 +145,8 @@ export function parseInline(line: string): Inline[] {
     if (m.index! < at) continue;
     pushText(line.slice(at, m.index));
     if (m[0].startsWith('[')) {
-      tokens.push({ atom: { t: 'link', href: m[2], children: parseInline(m[1]) } });
+      // An address in the name is words here, not a second link inside the first.
+      tokens.push({ atom: { t: 'link', href: m[2], children: unlinked(parseInline(m[1])) } });
     } else {
       tokens.push({ atom: { t: 'code', text: m[1] ?? m[2] } });
     }
@@ -153,6 +154,43 @@ export function parseInline(line: string): Inline[] {
   }
   pushText(line.slice(at));
   return emphasis(tokens, 0, tokens.length);
+}
+
+function unlinked(runs: Inline[]): Inline[] {
+  return runs.flatMap((r): Inline[] => {
+    if (r.t === 'link') return unlinked(r.children);
+    if (r.t === 'text' || r.t === 'code') return [r];
+    return [{ ...r, children: unlinked(r.children) }];
+  });
+}
+
+/** The words of some runs, without their marks. */
+export function runsText(runs: Inline[]): string {
+  return runs.map((r) => (r.t === 'text' || r.t === 'code' ? r.text : runsText(r.children))).join('');
+}
+
+const ADDRESS_LIKE = /^(?:https?:\/\/)?((?:[\p{L}\p{N}-]+\.)+[\p{L}]{2,})(?::\d+)?(?:[/?#]\S*)?$/iu;
+
+const hostOf = (href: string) => {
+  try {
+    return new URL(href).hostname.replace(/^www\./, '');
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Where a named link really goes, when its name passes for another address:
+ * [paypal.com](https://evil.example) is shown with (evil.example) after it, so
+ * the name cannot pass the link off as somewhere else. Null when the name is
+ * plain words, or names the same site.
+ */
+export function hiddenHost(label: string, href: string): string | null {
+  const m = ADDRESS_LIKE.exec(label.trim().replace(/[.,;:!?]+$/, ''));
+  if (!m) return null;
+  const real = hostOf(href);
+  if (!real) return null;
+  return hostOf(`https://${m[1]}`) === real ? null : real;
 }
 
 const MARKS: Array<{ mark: string; kind: 'bold' | 'italic' | 'strike' }> = [
@@ -329,8 +367,11 @@ export function toHtml(blocks: Block[]): string {
             return `<em>${inline(r.children)}</em>`;
           case 'strike':
             return `<s>${inline(r.children)}</s>`;
-          case 'link':
-            return `<a href="${escapeHtml(r.href)}">${inline(r.children)}</a>`;
+          case 'link': {
+            const real = hiddenHost(runsText(r.children), r.href);
+            const a = `<a href="${escapeHtml(r.href)}">${inline(r.children)}</a>`;
+            return real ? `${a} (${escapeHtml(real)})` : a;
+          }
         }
       })
       .join('');

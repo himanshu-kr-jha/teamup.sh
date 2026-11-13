@@ -1,7 +1,7 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
 import { RouterProvider } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClientProvider } from '@tanstack/react-query';
 import { ReactQueryDevtools } from '@tanstack/react-query-devtools';
 import { router } from './app/router';
 import { AuthProvider } from '@/features/auth/AuthProvider';
@@ -10,21 +10,10 @@ import { Toaster } from '@/shared/components/ui/toaster';
 import { OfflineBanner } from '@/shared/components/OfflineBanner';
 import { LoadingScreen } from '@/shared/components/LoadingScreen';
 import { BrandingSync } from '@/features/branding/useBranding';
+import { queryClient } from '@/shared/api/queryClient';
 import { registerServiceWorker } from './sw/register';
 import { watchInstall } from '@/features/install/install';
 import './styles/globals.css';
-
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: {
-      staleTime: 5 * 60 * 1000,
-      gcTime: 10 * 60 * 1000,
-      retry: 1,
-      refetchOnWindowFocus: false,
-      refetchOnReconnect: true,
-    },
-  },
-});
 
 registerServiceWorker();
 watchInstall();

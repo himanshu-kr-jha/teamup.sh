@@ -188,8 +188,8 @@ func TestATestEmailGoesToWhoeverAskedAndAFailureSaysWhy(t *testing.T) {
 	}
 	w.mailer.fail = errors.New("535 5.7.8 Username and Password not accepted")
 	got := send(t, r, http.MethodPost, "/api/org/mail/test", nil)
-	if got.Code != http.StatusOK || !strings.Contains(got.Body.String(), `"sent":false`) || !strings.Contains(got.Body.String(), "Username and Password not accepted") {
-		t.Errorf("the server's own words: %d %s", got.Code, got.Body.String())
+	if got.Code != http.StatusOK || !strings.Contains(got.Body.String(), `"sent":false`) || !strings.Contains(got.Body.String(), `"problem":"the mail server did not take the message"`) {
+		t.Errorf("a fixed sentence, not the server's words: %d %s", got.Code, got.Body.String())
 	}
 	w.mailer.fail = mail.ErrNotConfigured
 	if got := send(t, r, http.MethodPost, "/api/org/mail/test", nil); got.Code != http.StatusConflict {
@@ -209,7 +209,7 @@ func TestAddingSomebodyEmailsThemOrSaysWhyNot(t *testing.T) {
 		t.Errorf("Bob's welcome: %+v", w.mailer.sent)
 	}
 
-	w.mailer.fail, w.mailer.failAfter = errors.New("could not reach smtp.example.com:587: i/o timeout"), 0
+	w.mailer.fail, w.mailer.failAfter = errorsJoin(mail.ErrUnreachable, errors.New("could not reach smtp.example.com:587: i/o timeout")), 0
 	failed := postMember(t, r, map[string]string{"name": "Cy", "email": "cy@mail.test"})
 	var body struct {
 		Emailed           bool   `json:"emailed"`
@@ -217,7 +217,7 @@ func TestAddingSomebodyEmailsThemOrSaysWhyNot(t *testing.T) {
 		TemporaryPassword string `json:"temporaryPassword"`
 	}
 	_ = json.Unmarshal(failed.Body.Bytes(), &body)
-	if failed.Code != http.StatusCreated || body.Emailed || !strings.Contains(body.MailProblem, "i/o timeout") || body.TemporaryPassword == "" {
+	if failed.Code != http.StatusCreated || body.Emailed || body.MailProblem != "could not connect to the mail server" || body.TemporaryPassword == "" {
 		t.Errorf("Cy still exists, with a password to pass on and why it was not sent: %d %s", failed.Code, failed.Body.String())
 	}
 
@@ -238,7 +238,7 @@ func TestImportingEmailsEverybodyAndStopsTryingOnceTheServerFails(t *testing.T) 
 		t.Fatalf("all three emailed: %d %s", got.Code, got.Body.String())
 	}
 
-	w.mailer.fail, w.mailer.failAfter = errors.New("could not reach smtp.example.com:587"), len(w.mailer.sent)+1
+	w.mailer.fail, w.mailer.failAfter = errorsJoin(mail.ErrUnreachable, errors.New("could not reach smtp.example.com:587")), len(w.mailer.sent)+1
 	csv = "name,email\nHal,hal@mail.test\nIvy,ivy@mail.test\nJo,jo@mail.test\n"
 	got = send(t, r, http.MethodPost, "/api/users/import", map[string]string{"csv": csv})
 	var body struct {
@@ -252,7 +252,7 @@ func TestImportingEmailsEverybodyAndStopsTryingOnceTheServerFails(t *testing.T) 
 			emailed++
 		}
 	}
-	if emailed != 1 || !strings.Contains(body.MailProblem, "could not reach") {
+	if emailed != 1 || body.MailProblem != "could not connect to the mail server" {
 		t.Errorf("Hal is emailed, then the server fails and it is not tried again: %s", got.Body.String())
 	}
 	if len(w.mailer.sent) != 4 {

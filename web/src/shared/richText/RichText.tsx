@@ -1,7 +1,7 @@
 import { Fragment, useMemo, type ReactNode } from 'react';
 import { cn } from '@/shared/utils/cn';
 import { TextLink } from '@/shared/components/LinkedText';
-import { parseBlocks, type Block, type Inline } from './format';
+import { hiddenHost, parseBlocks, runsText, type Block, type Inline } from './format';
 
 /**
  * A message's text shown with its formatting: bold, italic, struck, code,
@@ -43,12 +43,17 @@ export function RichText({
           return <em key={i}>{inline(r.children, inLink)}</em>;
         case 'strike':
           return <s key={i}>{inline(r.children, inLink)}</s>;
-        case 'link':
+        case 'link': {
+          const real = hiddenHost(runsText(r.children), r.href);
           return (
-            <TextLink key={i} href={r.href} onPrimary={onPrimary}>
-              {inline(r.children, true)}
-            </TextLink>
+            <Fragment key={i}>
+              <TextLink href={r.href} onPrimary={onPrimary}>
+                {inline(r.children, true)}
+              </TextLink>
+              {real && <span className="opacity-75"> ({real})</span>}
+            </Fragment>
           );
+        }
       }
     });
 

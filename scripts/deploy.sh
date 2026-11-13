@@ -102,6 +102,19 @@ fi
 step "Checking the server"
 "${SSH[@]}" "$HOST" "test -f '$DIR/.env' && test -f '$DIR/docker-compose.yml' && { docker compose version >/dev/null 2>&1 || sudo docker compose version >/dev/null; }" \
   || die "$HOST:$DIR does not look like a TeamUp install (no .env or compose file, or no Docker). Set it up with docs/DEPLOYMENT.md first."
+# The compose file hands Redis its password through `configs: content:`, which
+# Docker Compose understands from 2.23.1; an older one would stop mid-deploy.
+COMPOSE_VERSION="$("${SSH[@]}" "$HOST" "docker compose version --short 2>/dev/null || sudo docker compose version --short" | tr -d 'v\r')"
+if [ "$(printf '%s\n%s\n' 2.23.1 "$COMPOSE_VERSION" | sort -V | head -1)" != 2.23.1 ]; then
+  die "the server has Docker Compose $COMPOSE_VERSION; this release needs 2.23.1 or later (sudo apt-get install --only-upgrade docker-compose-plugin)"
+fi
+echo "  Docker Compose $COMPOSE_VERSION"
+# The Redis password is written into a config file, where spaces or quotes would split it.
+"${SSH[@]}" "$HOST" "grep -qE '^REDIS_PASSWORD=[A-Za-z0-9_-]+$' '$DIR/.env'" \
+  || die "REDIS_PASSWORD in $DIR/.env must be letters, digits, - and _ only (docs/DEPLOYMENT.md makes one with openssl rand -hex 24)"
+# The server refuses to start in production on a short or example call secret.
+"${SSH[@]}" "$HOST" "grep -E '^LIVEKIT_API_SECRET=' '$DIR/.env' | grep -qE '^LIVEKIT_API_SECRET=.{32,}$' && ! grep -qiE '^LIVEKIT_API_SECRET=.*(devsecret|changeme)' '$DIR/.env'" \
+  || die "LIVEKIT_API_SECRET in $DIR/.env must be at least 32 characters and not an example (openssl rand -hex 32); the new server will not start without it"
 CURRENT="$("${SSH[@]}" "$HOST" "grep -E '^TEAMUP_(IMAGE|DOMAIN)=' '$DIR/.env'" || true)"
 while IFS= read -r line; do echo "  now: $line"; done <<<"$CURRENT"
 if [ "$CHECK" = 1 ]; then

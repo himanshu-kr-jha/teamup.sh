@@ -207,8 +207,10 @@ docker compose logs migrate
 
 Open `https://teamup.example.com`, or run `scripts/create-org.sh` from your machine instead, which fills in the keys below from the server's `.env` itself.
 
-**Do this immediately.**
-The wizard needs no sign-in until it has been completed, so the first person to reach it owns the instance.
+The wizard asks for a setup code, so that only whoever runs the server can set it up.
+The server prints it to its log when it starts; read it with `sudo docker compose logs teamup | grep setup_code`.
+`scripts/create-org.sh` reads it for you.
+The code stops working once setup is done.
 
 | Screen | What to enter |
 | --- | --- |
@@ -573,8 +575,8 @@ That variation has not been tested.
 
 Each item here is true of this code, and most were checked against the running stack.
 
-- [ ] **Complete the wizard the moment the stack is up.**
-      It needs no sign-in until then.
+- [ ] **Complete the wizard soon after the stack is up.**
+      It needs the setup code from the server's log, so nobody else can, but there is no reason to leave it open.
 - [ ] **Keep `/metrics` private.**
       It has no authentication.
       The shipped `nginx.conf` answers 404 for `/metrics` and for the readiness endpoints, which name internal hosts and the version, and the app's own port is not published.

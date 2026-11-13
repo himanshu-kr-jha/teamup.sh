@@ -211,6 +211,9 @@ test.describe('ticket 26: somebody deactivated', () => {
     await expect(inACall(lee.page), 'out of the room without doing anything').toHaveCount(0, { timeout: 15_000 });
     await waitForLog(owner, call.id, 'Lee is recorded as having left', (l) => l.sessions.some((s) => s.userId === id && !!s.leftAt));
     await expect(inACall(olivia.page), 'and the call goes on for everybody else').toBeVisible();
+    // Their session is over, so their own page sends them to sign in; asking
+    // for the call again must not get them back in either.
+    await expect(lee.page).toHaveURL(/\/login/, { timeout: 15_000 });
     await lee.page.goto(`/calls/${call.id}`);
     await expect(lee.page).toHaveURL(/\/login/);
     await owner.dispose();

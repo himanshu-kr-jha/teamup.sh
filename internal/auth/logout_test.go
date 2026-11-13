@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // browser is a real HTTP client with a real cookie jar against the real routes.
@@ -23,6 +24,10 @@ type browser struct {
 	base   *url.URL
 	client *http.Client
 	email  string
+	// svc and pool are the server's own, for tests that need to reach behind
+	// the HTTP surface, such as ageing a token or hooking the sign-out signal.
+	svc  *Service
+	pool *pgxpool.Pool
 }
 
 const logoutTestPassword = "Logout-pass-12345"
@@ -54,7 +59,7 @@ func newBrowser(t *testing.T) *browser {
 	}
 	email := "logout-" + uuid.NewString() + "@example.test"
 	seedUser(t, pool, email, logoutTestPassword)
-	return &browser{t: t, base: base, client: &http.Client{Jar: jar}, email: email}
+	return &browser{t: t, base: base, client: &http.Client{Jar: jar}, email: email, svc: svc, pool: pool}
 }
 
 func (b *browser) url(path string) string { return b.base.String() + path }

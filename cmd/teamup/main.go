@@ -37,6 +37,7 @@ import (
 	"github.com/teamup/teamup/internal/observability"
 	"github.com/teamup/teamup/internal/org"
 	"github.com/teamup/teamup/internal/presence"
+	"github.com/teamup/teamup/internal/ratelimit"
 	"github.com/teamup/teamup/internal/status"
 	"github.com/teamup/teamup/internal/tasks"
 	"github.com/teamup/teamup/internal/websocket"
@@ -206,6 +207,10 @@ type Config struct {
 	// plain HTTP. Needed only to reach TeamUp from another machine on a local
 	// network by address; anything on the open internet must leave this alone.
 	InsecureCookies bool `env:"TEAMUP_INSECURE_COOKIES" envDefault:"false"`
+	// WeakLiveKitSecretForTests lets the test harness run as production
+	// against the test call server, whose secret is the example one. Never
+	// set it anywhere real.
+	WeakLiveKitSecretForTests bool `env:"TEAMUP_TEST_ONLY_WEAK_LIVEKIT_SECRET" envDefault:"false"`
 
 	// OIDC Providers (configured via wizard)
 	GoogleClientID     string `env:"TEAMUP_GOOGLE_CLIENT_ID"`
@@ -651,6 +656,19 @@ func runServer(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Until setup is done, it asks for a code only whoever runs the server can
+	// see, so the first stranger to open /wizard cannot make themselves owner.
+	{
+		tokenCtx, cancelToken := context.WithTimeout(context.Background(), 10*time.Second)
+		if complete, err := wizardService.IsSetupComplete(tokenCtx); err == nil && !complete {
+			if code, err := wizardService.SetupToken(tokenCtx); err == nil {
+				logger.Warn().Str("setup_code", code).
+					Msg("TeamUp is not set up yet. Open /wizard and enter this setup code, or open /wizard?setup=<code>")
+			}
+		}
+		cancelToken()
+	}
+
 	// The setup wizard generates and stores a VAPID keypair with the
 	// organization. Prefer it over the environment, otherwise an instance
 	// provisioned through the wizard has no working push keys at all.
@@ -679,6 +697,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 	router.Use(securityHeaders(contentSecurityPolicy(page, cfg.MinIOEndpoint, cfg.MinIOSecure, cfg.LiveKitURL, cfg.GitHubWebURL)))
 	router.Use(observability.GinLogger(logger))
 	router.Use(observability.GinMetrics())
+	// Limits per address apply to everything; limits per person once the
+	// person is known, on every signed-in route wherever it is registered.
+	limiter := ratelimit.New(redisClient, logger)
+	router.Use(limiter.Handler(publicLimits...))
+	authService.AfterSignedIn(limiter.Handler(memberLimits...))
 
 	// Health endpoints (no auth). /healthz and /readyz are the canonical paths;
 	// the /healthz/* forms are kept because nginx.conf and the production
@@ -813,6 +836,10 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// client-side route, and 404ing it made the setup wizard unreachable by
 	// direct link or page refresh. The wizard's server endpoints all live
 	// under /api/wizard/.
+	if err := checkLimitRoutes(router, publicLimits, memberLimits); err != nil {
+		return err
+	}
+
 	router.NoRoute(func(c *gin.Context) {
 		path := c.Request.URL.Path
 		if strings.HasPrefix(path, "/api/") ||

@@ -54,6 +54,7 @@ cd teamup.sh
 
 Open the address it prints, usually http://localhost:8080.
 The first page is the setup wizard: it creates your organization and your owner account.
+It asks for a setup code, which the server prints in its output as `setup_code` when it starts.
 There are no default passwords.
 
 | Command | What it does |

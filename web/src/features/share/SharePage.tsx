@@ -15,7 +15,7 @@ import { FormattedTextarea } from '@/shared/richText/composer';
 import { uploadFile } from '@/features/files/useUpload';
 import { humanSize } from '@/features/files/AttachmentChip';
 import { MAX_FORWARD_TARGETS } from '@/features/chat/ForwardDialog';
-import { clearInbox, composeShared, readInbox } from './inbox';
+import { SHARE_MAX_BYTES, SHARE_MAX_FILES, clearInbox, composeShared, readInbox } from './inbox';
 
 interface Conversation {
   id: string;
@@ -56,6 +56,8 @@ export function SharePage() {
   const [loaded, setLoaded] = useState(false);
   const [text, setText] = useState('');
   const [files, setFiles] = useState<File[]>([]);
+  const [leftOut, setLeftOut] = useState(0);
+  const [fromLink, setFromLink] = useState(false);
   const [query, setQuery] = useState('');
   const [chosen, setChosen] = useState<Target[]>([]);
   const [status, setStatus] = useState<string | null>(null);
@@ -72,6 +74,10 @@ export function SharePage() {
       });
       setText(shared?.text || fromLink);
       setFiles(shared?.files ?? []);
+      setLeftOut(shared?.leftOut ?? 0);
+      // Any page on the web can make such a link, so its words are not to be taken
+      // as the person's own without a look.
+      setFromLink(!shared?.text && !!fromLink);
       setLoaded(true);
     });
     return () => {
@@ -195,6 +201,17 @@ export function SharePage() {
                   <SharedFile key={i} file={f} disabled={busy} onRemove={() => setFiles((all) => all.filter((_, j) => j !== i))} />
                 ))}
               </ul>
+            )}
+            {leftOut > 0 && (
+              <p className="text-sm text-muted-foreground" role="status">
+                {leftOut === 1 ? '1 file was' : `${leftOut} files were`} left out: a share can carry {SHARE_MAX_FILES} files
+                and {SHARE_MAX_BYTES / 1024 / 1024} MB at most.
+              </p>
+            )}
+            {fromLink && (
+              <p className="text-sm text-muted-foreground" role="status">
+                This message came in a link from outside TeamUp. Read it before you send it.
+              </p>
             )}
             {loaded && nothing && (
               <p className="text-sm text-muted-foreground">

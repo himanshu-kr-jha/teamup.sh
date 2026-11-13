@@ -94,6 +94,15 @@ func (c Config) Validate() error {
 			len(secret), minAuthSecretLength)
 	}
 
+	// The call server's secret signs every call token; the example one, or
+	// anything short, lets whoever guesses it join any call as anybody.
+	if c.Environment == "production" && !c.WeakLiveKitSecretForTests {
+		lk := strings.TrimSpace(c.LiveKitAPISecret)
+		if len(lk) < 32 || strings.Contains(strings.ToLower(lk), "devsecret") || strings.Contains(strings.ToLower(lk), "changeme") {
+			report("TEAMUP_LIVEKIT_API_SECRET must be at least 32 characters and not an example value on TEAMUP_ENV=production (generate one with `openssl rand -hex 32`)")
+		}
+	}
+
 	if c.InsecureCookies && c.Environment == "production" {
 		problems = append(problems,
 			"TEAMUP_INSECURE_COOKIES=true drops the Secure flag from session cookies, which sends them in the clear; it cannot be used with TEAMUP_ENV=production")

@@ -2243,6 +2243,19 @@ type FileResult struct {
 	CreatedAt    time.Time  `json:"createdAt"`
 }
 
+// maxSearchOffset is how far into the results a search may page. Postgres
+// sorts and then skips every row before the offset, so an unbounded one is an
+// expensive query anybody signed in can ask for; nobody reads past the first
+// few hundred results of a search box.
+const maxSearchOffset = 10_000
+
+// containsPattern is a LIKE pattern that finds text anywhere, with text's own
+// "%", "_" and backslash matching only themselves. Unescaped, a search for "%"
+// matched every message and file. The queries name backslash as the ESCAPE.
+func containsPattern(text string) string {
+	return "%" + strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(text) + "%"
+}
+
 // SearchFiles finds shared files by name, in channels the caller can read.
 // Names are short, so trigram similarity does the work on its own: an exact
 // substring first, then anything close enough to be what was meant.
@@ -2256,6 +2269,9 @@ func (s *Service) SearchFiles(ctx context.Context, orgID, userID uuid.UUID, q Se
 	}
 	if q.Offset < 0 {
 		q.Offset = 0
+	}
+	if q.Offset > maxSearchOffset {
+		return []FileResult{}, nil
 	}
 
 	rows, err := s.db.Query(ctx, `
@@ -2272,13 +2288,13 @@ func (s *Service) SearchFiles(ctx context.Context, orgID, userID uuid.UUID, q Se
 		  AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.id = a.message_id AND m.deleted_at IS NOT NULL)
 		  AND c.deleted_at IS NULL
 		  AND (cm.user_id IS NOT NULL OR c.type = 'public')
-		  AND (a.filename ILIKE '%' || $2 || '%' OR word_similarity($2, a.filename) >= 0.4)
+		  AND (a.filename ILIKE $7 ESCAPE '\' OR word_similarity($2, a.filename) >= 0.4)
 		  AND ($4::uuid IS NULL OR c.id = $4)
-		ORDER BY (a.filename ILIKE '%' || $2 || '%') DESC,
+		ORDER BY (a.filename ILIKE $7 ESCAPE '\') DESC,
 		         word_similarity($2, a.filename) DESC,
 		         a.created_at DESC
 		LIMIT $5 OFFSET $6
-	`, orgID, text, userID, q.ChannelID, q.Limit, q.Offset)
+	`, orgID, text, userID, q.ChannelID, q.Limit, q.Offset, containsPattern(text))
 	if err != nil {
 		return nil, fmt.Errorf("search files: %w", err)
 	}
@@ -2376,7 +2392,7 @@ var searchMessagesSQL = `
 		  AND (cm.user_id IS NOT NULL OR c.type = 'public')
 		  AND (
 		        m.content_search @@ websearch_to_tsquery('english', $2)
-		        OR m.content ILIKE '%' || $2 || '%'
+		        OR m.content ILIKE $8 ESCAPE '\'
 		        OR ` + searchFuzzyPredicate + `
 		      )
 		  AND ($4::uuid IS NULL OR m.channel_id = $4)
@@ -2404,6 +2420,9 @@ func (s *Service) SearchMessages(ctx context.Context, orgID, userID uuid.UUID, q
 	if q.Offset < 0 {
 		q.Offset = 0
 	}
+	if q.Offset > maxSearchOffset {
+		return []SearchResult{}, nil
+	}
 
 	// Whole-word matching first, then trigram similarity for everything it
 	// misses — a typo, a partial word, a name spelled slightly differently.
@@ -2424,7 +2443,7 @@ func (s *Service) SearchMessages(ctx context.Context, orgID, userID uuid.UUID, q
 	}
 
 	rows, err := tx.Query(ctx, searchMessagesSQL,
-		orgID, text, userID, q.ChannelID, q.UserID, q.Limit, q.Offset)
+		orgID, text, userID, q.ChannelID, q.UserID, q.Limit, q.Offset, containsPattern(text))
 	if err != nil {
 		return nil, fmt.Errorf("search messages: %w", err)
 	}

@@ -50,6 +50,21 @@ export const RELEASES: Release[] = [
         title: 'Files open safely',
         body: 'Pictures, sound, video and PDFs open in place as before. Any other file downloads instead of opening in the browser.',
       },
+      {
+        area: 'app',
+        title: 'Limits nobody working will meet',
+        body: 'Sending, inviting, uploading, searching and the like now have limits far above what a person does, so a script or a stolen session cannot flood everybody. If you ever hit one, TeamUp says how long to wait.',
+      },
+      {
+        area: 'chat',
+        title: 'Links say where they really go',
+        body: 'A link whose words look like one address but which leads to another now shows the real address beside it, so a message cannot dress one site up as another.',
+      },
+      {
+        area: 'app',
+        title: 'Signing out leaves nothing behind',
+        body: 'However you are signed out, by choice, by a password change or because your session ended, TeamUp clears what it kept on that device. Sharing into TeamUp from another website is refused, and anything shared in a link says it came from outside.',
+      },
     ],
   },
   {

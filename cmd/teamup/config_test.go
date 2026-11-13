@@ -208,6 +208,14 @@ func TestServerConfigRejectsUnusableValues(t *testing.T) {
 			c.Environment = "production"
 			c.InsecureCookies = true
 		}, "TEAMUP_INSECURE_COOKIES"},
+		{"the example call server secret in production", func(c *Config) {
+			c.Environment = "production"
+			c.LiveKitAPISecret = "devsecret"
+		}, "TEAMUP_LIVEKIT_API_SECRET"},
+		{"a short call server secret in production", func(c *Config) {
+			c.Environment = "production"
+			c.LiveKitAPISecret = "short-but-not-the-example"
+		}, "TEAMUP_LIVEKIT_API_SECRET"},
 	}
 
 	for _, tc := range tests {
@@ -260,6 +268,7 @@ func TestServerConfigAcceptsUsableValues(t *testing.T) {
 			c.Environment = "production"
 			c.BaseURL = "https://teamup.example.com"
 			c.AuthSecret = strings.Repeat("a1b2c3d4", 8)
+			c.LiveKitAPISecret = strings.Repeat("f00dcafe", 8)
 		}},
 	}
 

@@ -36,7 +36,8 @@ cd teamup.sh
 
 Then open the URL it prints — **http://localhost:8080** unless that port was
 taken. The first page is a setup wizard that creates your organisation and
-owner account. There are no default credentials.
+owner account. It asks for the setup code the server prints as it starts.
+There are no default credentials.
 
 <details>
 <summary><b>What <code>setup.sh</code> actually does</b></summary>

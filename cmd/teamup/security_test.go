@@ -20,6 +20,10 @@ func TestThePolicyLetsOnlyThePagesOwnInlineScriptRun(t *testing.T) {
 	if strings.Contains(csp, "'unsafe-inline' 'self' 'wasm") || strings.Contains(strings.Split(strings.Split(csp, "script-src ")[1], ";")[0], "unsafe-inline") {
 		t.Errorf("inline script allowed wholesale: %s", csp)
 	}
+	connect := strings.Split(strings.Split(csp, "connect-src ")[1], ";")[0]
+	if strings.Contains(" "+connect+" ", " https: ") || strings.Contains(" "+connect+" ", " wss: ") {
+		t.Errorf("the page may connect anywhere: %s", connect)
+	}
 	for _, want := range []string{"object-src 'none'", "frame-ancestors 'self'", "base-uri 'self'", "http://localhost:9000", "ws://localhost:7880", "http://localhost:7880", "form-action 'self' https://github.com"} {
 		if !strings.Contains(csp, want) {
 			t.Errorf("missing %q in %s", want, csp)
@@ -53,11 +57,15 @@ func TestAnAPIRequestCannotSendMegabytes(t *testing.T) {
 		c.Status(http.StatusOK)
 	}
 	r.POST("/api/messages", read)
-	r.POST("/api/integrations/github/hook/:key", read)
+	r.POST("/api/integrations/github/hook/:hookKey", read)
+	r.POST("/api/guest/:token/join", read)
 	big := strings.Repeat("x", maxBody+1)
 	for path, want := range map[string]int{
 		"/api/messages":                     http.StatusRequestEntityTooLarge,
 		"/api/integrations/github/hook/abc": http.StatusOK,
+		// A made-up path with the right word in it is still capped.
+		"/api/guest/webhookX/join": http.StatusRequestEntityTooLarge,
+		"/api/guest/x/hook/join":   http.StatusNotFound,
 	} {
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, path, strings.NewReader(big)))

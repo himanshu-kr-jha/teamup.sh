@@ -93,7 +93,9 @@ func contentSecurityPolicy(page []byte, storage string, storageSecure bool, live
 		"img-src " + extra("'self'", "data:", "blob:", "https:", files),
 		"media-src " + extra("'self'", "data:", "blob:", files),
 		"font-src 'self' data:",
-		"connect-src " + extra("'self'", "https:", "wss:", files, callsWS, callsHTTP),
+		// Only this server, its storage and its call server: a script that
+		// somehow ran could otherwise send what it read anywhere.
+		"connect-src " + extra("'self'", files, callsWS, callsHTTP),
 		"worker-src 'self' blob:",
 		"frame-src 'self' blob:",
 		"manifest-src 'self'",
@@ -131,10 +133,19 @@ const maxBody = 2 << 20
 // what GitHub and Bitbucket send, which can be bigger, and cap it themselves.
 func limitBodies() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		path := c.Request.URL.Path
-		if strings.HasPrefix(path, "/api/") && !strings.Contains(path, "/webhook") && !strings.Contains(path, "/hook/") && c.Request.Body != nil {
+		// Matched on the route as registered, not on the path's text: a
+		// path someone makes up, such as /api/guest/webhookX/join, must not
+		// escape the cap by containing the right word.
+		if strings.HasPrefix(c.Request.URL.Path, "/api/") && !slices.Contains(webhookRoutes, c.FullPath()) && c.Request.Body != nil {
 			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxBody)
 		}
 		c.Next()
 	}
+}
+
+// webhookRoutes take what GitHub, Bitbucket and LiveKit send, and cap it themselves.
+var webhookRoutes = []string{
+	"/api/integrations/github/hook/:hookKey",
+	"/api/integrations/bitbucket/hook/:hookKey",
+	"/api/livekit/webhook",
 }

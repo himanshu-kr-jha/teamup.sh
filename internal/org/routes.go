@@ -382,9 +382,10 @@ func (h *Handler) sendWelcome(ctx context.Context, orgID uuid.UUID, member *User
 			h.logger.Info().Msg("no mail server configured; the new member's password was not posted")
 			return MailNotConfigured
 		}
-		// The error is the server's, and never holds the password.
+		// The detail goes to the log only. The administrator typed the host and
+		// port, so the server's own words would let them probe what answers there.
 		h.logger.Warn().Err(err).Msg("could not post the new member's password")
-		return err.Error()
+		return mail.Problem(err)
 	}
 	return ""
 }
@@ -472,7 +473,10 @@ func (h *Handler) UpdateMailSettings(c *gin.Context) {
 
 // TestMailSettings sends a test message to whoever asked, with the saved settings.
 // The mail server refusing is the answer to the question, not a failure of this
-// request, so it comes back as sent false with the server's words.
+// request, so it comes back as sent false with a fixed sentence saying what kind
+// of failure it was. The server's own words are logged rather than returned,
+// because the host and port are the administrator's to choose, and a detailed
+// answer would make this a tool for probing the network.
 func (h *Handler) TestMailSettings(c *gin.Context) {
 	orgID, ok := callerOrg(c)
 	if !ok {
@@ -497,7 +501,8 @@ func (h *Handler) TestMailSettings(c *gin.Context) {
 			c.JSON(http.StatusConflict, gin.H{"error": "Save the mail server's settings first."})
 			return
 		}
-		c.JSON(http.StatusOK, gin.H{"sent": false, "sentTo": caller.Email, "problem": err.Error()})
+		h.logger.Warn().Err(err).Msg("the test email was not sent")
+		c.JSON(http.StatusOK, gin.H{"sent": false, "sentTo": caller.Email, "problem": mail.Problem(err)})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"sent": true, "sentTo": caller.Email})
@@ -550,6 +555,10 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if req.AvatarURL != nil && !validAvatarURL(*req.AvatarURL) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "a picture address must be an https:// link, or the picture uploaded here"})
 		return
 	}
 	u, err := h.service.UpdateUser(c.Request.Context(), orgID, userID, req.Name, req.AvatarURL)

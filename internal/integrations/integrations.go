@@ -121,6 +121,13 @@ func (s *Service) loadConnection(ctx context.Context, where string, args ...any)
 	return &c, nil
 }
 
+// hookKnown says whether a hook key belongs to a connection of that provider.
+func (s *Service) hookKnown(ctx context.Context, provider, hookKey string) (bool, error) {
+	var known bool
+	err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM code_connections WHERE hook_key = $1 AND provider = $2)`, hookKey, provider).Scan(&known)
+	return known, err
+}
+
 func (s *Service) githubSecrets(c *connection) (githubSecrets, error) {
 	var sec githubSecrets
 	if s.box == nil {

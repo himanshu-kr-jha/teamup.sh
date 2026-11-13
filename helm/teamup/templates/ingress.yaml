@@ -24,6 +24,16 @@ spec:
     - host: {{ .host | quote }}
       http:
         paths:
+          {{- /* Deliberately unroutable; see ingress.blockedPaths in values.yaml. */}}
+          {{- range $.Values.ingress.blockedPaths }}
+          - path: {{ . }}
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ $fullName }}-not-exposed
+                port:
+                  number: {{ $svcPort }}
+          {{- end }}
           {{- range .paths }}
           - path: {{ .path }}
             pathType: {{ .pathType | default "Prefix" }}

@@ -1,16 +1,24 @@
 version: 2
 
+# A version update waits three days after a release before it is proposed, so
+# a compromised package that is caught and pulled quickly never reaches a pull
+# request. Cooldown applies to version updates only: a security update for a
+# known vulnerability is still opened as soon as the advisory appears.
 updates:
   - package-ecosystem: gomod
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 5
 
   - package-ecosystem: npm
     directory: /web
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 3
     open-pull-requests-limit: 5
 
   - package-ecosystem: github-actions
@@ -18,7 +26,15 @@ updates:
     schedule:
       interval: weekly
 
+  # The Dockerfile's base images.
   - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  # docker-compose.prod.yml and docker-compose.yml, whose images are pinned by
+  # digest and would otherwise never move.
+  - package-ecosystem: docker-compose
     directory: /
     schedule:
       interval: weekly

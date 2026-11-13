@@ -6,8 +6,10 @@ package calls
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -780,5 +782,36 @@ func TestOpeningAMeetingSomebodyJustOpenedIsNotARefusal(t *testing.T) {
 	}
 	if err := e.svc.openForJoin(context.Background(), stale); err != nil {
 		t.Errorf("the second arrived at the same moment and must get in: %v", err)
+	}
+}
+
+// A member's call token is for joining with, not a pass for six hours: one
+// copied out of a page stops working soon after.
+func TestAMembersCallTokenIsShortLived(t *testing.T) {
+	e := newLK(t)
+	invitee := e.person(t, "Invited Ivy", "member")
+	call := e.call(t, e.org.OwnerID, invitee)
+
+	w := doJSON(t, e.as(t, invitee, "member"), http.MethodPost, "/api/calls/"+call.ID.String()+"/token", "")
+	wantCode(t, w, http.StatusOK)
+	var token struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &token); err != nil {
+		t.Fatal(err)
+	}
+	grantOf(t, token.Token) // signed by the call server's secret
+	raw, err := base64.RawURLEncoding.DecodeString(strings.Split(token.Token, ".")[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims struct {
+		Exp, Nbf int64
+	}
+	if err := json.Unmarshal(raw, &claims); err != nil {
+		t.Fatal(err)
+	}
+	if life := time.Duration(claims.Exp-claims.Nbf) * time.Second; life > 20*time.Minute {
+		t.Fatalf("a member's call token lasts %v", life)
 	}
 }

@@ -844,7 +844,7 @@ func (s *Service) ScheduleMeeting(ctx context.Context, orgID, organizer uuid.UUI
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO calls (id, org_id, room_name, title, call_type, status, created_by, scheduled_start, scheduled_end)
 		VALUES ($1, $2, $3, $4, 'video', 'scheduled', $5, $6, $7)
-	`, m.ID, orgID, "call-"+uuid.NewString()[:8], title, organizer, start, end); err != nil {
+	`, m.ID, orgID, "call-"+uuid.NewString(), title, organizer, start, end); err != nil {
 		return nil, nil, fmt.Errorf("create meeting: %w", err)
 	}
 	if _, err := tx.Exec(ctx,

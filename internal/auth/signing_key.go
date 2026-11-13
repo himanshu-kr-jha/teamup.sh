@@ -52,7 +52,7 @@ func loadOrCreateSigningKey(ctx context.Context, db *pgxpool.Pool, secret string
 	if err != nil {
 		return nil, fmt.Errorf("begin signing key transaction: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, signingKeyLockKey); err != nil {
 		return nil, fmt.Errorf("acquire signing key lock: %w", err)

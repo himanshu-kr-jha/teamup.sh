@@ -6,7 +6,8 @@ import type {
   Scrum,
   ScrumSummary,
 } from '@/shared/types/dashboard';
-import { loginPathFor } from '@/features/auth/nextPath';
+import { signOutLocally } from '@/features/auth/session';
+import { useAuthStore } from '@/shared/store/authStore';
 import type { AvailabilityPerson, CalendarItem, CalendarKind } from '@/features/calendar/layout';
 import type { CalendarGroup } from '@/features/calendar/people';
 import type { CallLog } from '@/features/calls/callLog';
@@ -76,12 +77,11 @@ api.interceptors.response.use(
         return api.request(originalRequest);
       } catch (err) {
         processQueue(err, null);
-        // Redirect to login, but not if already on login or wizard pages
-        const publicPaths = ['/login', '/wizard', '/status', '/join'];
-        const isPublicPath = publicPaths.some(p => window.location.pathname === p || window.location.pathname.startsWith(p + '/'));
-        if (!isPublicPath) {
-          window.location.href = loginPathFor(window.location.pathname, window.location.search);
-        }
+        // Off to sign in again, so everything of theirs goes, as on signing out:
+        // whoever signs in next on this browser must not be served it. A
+        // visitor never signed in, such as a guest on a meeting link, has
+        // nothing of theirs here, and clearing would start their page over.
+        if (useAuthStore.getState().isAuthenticated) await signOutLocally();
         return Promise.reject(err);
       } finally {
         isRefreshing = false;

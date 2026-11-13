@@ -64,7 +64,7 @@ func (s *Service) List(ctx context.Context, orgID, userID uuid.UUID, isAdmin boo
 		FROM m
 		WHERE ($3 OR m.attended)
 		  AND ($4::timestamptz IS NULL OR m.at < $4)
-		  AND ($5 = '' OR m.title ILIKE '%' || $5 || '%' OR m.minutes->>'summary' ILIKE '%' || $5 || '%')
+		  AND ($5 = '' OR m.title ILIKE '%' || $5 || '%' ESCAPE '\' OR m.minutes->>'summary' ILIKE '%' || $5 || '%' ESCAPE '\')
 		ORDER BY m.at DESC, m.call_id
 		LIMIT $6`,
 		orgID, userID, all, q.Before, escapeLike(search), q.Limit+1)
@@ -99,6 +99,8 @@ func (s *Service) List(ctx context.Context, orgID, userID uuid.UUID, isAdmin boo
 	return out, more, nil
 }
 
+// escapeLike makes a search match only itself inside LIKE, so "%" or "_" in
+// the search box is not a wildcard. The query names backslash as its ESCAPE.
 func escapeLike(s string) string {
 	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }

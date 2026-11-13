@@ -240,7 +240,7 @@ func (s *Service) ListTasks(ctx context.Context, orgID uuid.UUID, f Filters) ([]
 		add("t.project_id = $%d", *f.ProjectID)
 	}
 	if f.Search != "" {
-		add("t.title ILIKE '%%' || $%d || '%%'", f.Search)
+		add(`t.title ILIKE '%%' || $%d || '%%' ESCAPE '\'`, escapeLike(f.Search))
 	}
 	if f.LabelID != nil {
 		add("EXISTS (SELECT 1 FROM task_labels tl WHERE tl.task_id = t.id AND tl.label_id = $%d)", *f.LabelID)
@@ -1796,4 +1796,11 @@ func (s *Service) NotifyAddedToTask(ctx context.Context, orgID, taskID, userID, 
 		map[string]any{"taskId": taskID.String()}); err != nil {
 		s.logger.Warn().Err(err).Msg("task add notification failed")
 	}
+}
+
+// escapeLike makes text match only itself inside a LIKE pattern. Without it a
+// "%" or "_" typed into the search box is a wildcard, so "%" finds every task;
+// the query names backslash as its ESCAPE character to match.
+func escapeLike(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }

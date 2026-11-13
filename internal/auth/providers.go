@@ -192,12 +192,8 @@ func (p *OIDCProvider) EndSessionURL(idTokenHint, postLogoutRedirectURI string) 
 }
 
 func (p *OIDCProvider) getEndSessionEndpoint() string {
-	if p.oidcProvider != nil {
-		// Try to get from provider metadata
-		// This would require parsing the discovery document
-	}
-
-	// Fallback to known endpoints
+	// Known endpoints; reading end_session_endpoint from the discovery
+	// document would cover any provider, and belongs with real OIDC sign-in.
 	switch p.name {
 	case "google":
 		return "https://accounts.google.com/Logout"
@@ -273,11 +269,6 @@ func MapRoles(provider string, groups []string, mappings map[string]RoleMapping)
 	}
 
 	var roles []string
-	groupClaim := mapping.GroupClaim
-	if groupClaim == "" {
-		groupClaim = "groups"
-	}
-
 	for _, g := range groups {
 		for _, m := range mapping.Mappings {
 			if matchGroup(g, m.ProviderGroup) {
