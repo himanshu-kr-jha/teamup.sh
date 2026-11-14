@@ -167,6 +167,11 @@ Planned: a self-hosted workspace suite, with a Drive and storage quotas for each
 person, office documents edited together in the browser, single sign-on and mail
 ([the proposal](.scratch/workspace-suite/proposal.md)).
 
+Before that, what is still missing for any organization to run TeamUp on its own:
+email in setup, Google and Microsoft sign-in, alerts, self-updates, a practised
+restore, phone push, and what paying customers ask for
+([the list](.scratch/ready-for-customers/proposal.md)).
+
 ---
 
 ## How it fits together
