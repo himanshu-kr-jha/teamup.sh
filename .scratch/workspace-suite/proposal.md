@@ -64,13 +64,21 @@ The office editor, and mail if it comes, should use TeamUp accounts so people si
 TeamUp would act as the identity provider for them, and also accept sign-in from Google or Microsoft for organizations that already have it.
 OIDC sign-in is a stub today (README, Known gaps, #15), and the mobile app needs it too, so this is worth doing for its own sake.
 
-### 4. Mail (integrate, last)
+### 4. TeamUp Mail: our own mail server (a feature, last)
 
-Running a mail server is the hardest part of a workspace and the one most likely to go wrong: messages land in spam unless the server's address has a good reputation and DNS has SPF, DKIM and DMARC, and AWS blocks sending on port 25 until asked.
-Two ways:
+Decision (owner, 14 November 2026): TeamUp gets its own mail server as a feature, so an organization running TeamUp hosts its people's mail itself.
+Connecting an outside provider (Google, Zoho, Microsoft) stays possible for organizations that already have one, but it is not the plan.
 
-- Plug in a self-hosted mail server such as **Stalwart** or **Mailcow**, with TeamUp accounts as its users through single sign-on.
-- Or keep mail with a provider (Google, Zoho, Microsoft) and connect it, so TeamUp shows mail notifications and turns a mail into a task.
+How to build it:
+
+- TeamUp owns everything a person and an administrator see: mailboxes made with the account, the mail screens in the web and phone apps, aliases and shared addresses such as `support@`, quotas, the DNS checks, and the admin settings.
+- The mail engine underneath (SMTP to send and receive, IMAP and JMAP for mail apps, spam filtering, DKIM signing, queues and retries) is a hard, security-sensitive area where mistakes lose mail or get it marked as spam.
+  Start from a proven open-source engine run as one more container that TeamUp drives over its API, with **Stalwart** the first candidate: one program, written in Rust, with SMTP, IMAP, JMAP, spam filtering and an admin API, and storage that can go in Postgres and the same bucket as Drive.
+  Writing parts of the engine ourselves is a later choice, made only where the bundled one gets in the way.
+- Mail in TeamUp: turn a mail into a task, share a mail into a conversation, and file attachments into Drive.
+
+Running a mail server is the part of a workspace most likely to go wrong: messages land in spam unless the server's address has a good reputation and DNS has SPF, DKIM and DMARC, and AWS blocks sending on port 25 until asked.
+The setup has to say so plainly, check the records, and offer a relay (below) from the start.
 
 `internal/mail` today only sends TeamUp's own messages, such as invitations; it is not a mailbox.
 
@@ -85,7 +93,7 @@ What the organization has to bring: its own domain, and a server allowed to send
 Where port 25 is blocked, as on AWS and Lightsail until asked, or the address has no reputation yet, mail goes out through a relay such as Amazon SES or Postmark.
 A new server's mail can land in spam for its first weeks, and the setup should say so.
 
-Mail should be something an administrator turns on, not a default: many organizations already have mail with Google or Microsoft and will connect it instead.
+Mail should be something an administrator turns on, not a default, since an organization with mail elsewhere may not want to move it.
 
 ### 5. Later
 
@@ -99,7 +107,7 @@ Mail should be something an administrator turns on, not a default: many organiza
 1. Drive with quotas.
 2. Office editing through ONLYOFFICE or Collabora, opened from Drive.
 3. Single sign-on, with TeamUp as the identity provider for the editor.
-4. Mail, as an integration.
+4. TeamUp Mail, our own mail server.
 
 Each stage is useful on its own, so the order can stop at any point.
 
