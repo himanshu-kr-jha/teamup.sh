@@ -572,10 +572,37 @@ func firstTime(fallback time.Time, times ...*time.Time) time.Time {
 func standingKey(id uuid.UUID, date string) string { return id.String() + "/" + date }
 
 // loadStanding adds each standing meeting's slot on the days it runs since it was
-// created, for everybody, unless the person really attended that day.
+// created, for everybody it is for, unless the person really attended that day.
 func (s *Service) loadStanding(ctx context.Context, orgID uuid.UUID, people []uuid.UUID, from, to time.Time, attended map[uuid.UUID]map[string]bool, out map[uuid.UUID][]Item) error {
+	// Who each meeting is for, among these people, by the one rule there is
+	// (standing_audience_includes); a meeting for everybody needs no asking.
+	audience := map[uuid.UUID]map[uuid.UUID]bool{}
+	arows, err := s.db.Query(ctx, `
+		SELECT sm.id, p FROM standing_meetings sm CROSS JOIN unnest($2::uuid[]) AS p
+		WHERE sm.org_id = $1 AND sm.archived_at IS NULL AND sm.audience <> 'everyone'
+		  AND standing_audience_includes(sm.id, p)
+	`, orgID, people)
+	if err != nil {
+		return fmt.Errorf("load standing meeting audiences: %w", err)
+	}
+	for arows.Next() {
+		var meeting, person uuid.UUID
+		if err := arows.Scan(&meeting, &person); err != nil {
+			arows.Close()
+			return fmt.Errorf("scan standing meeting audience: %w", err)
+		}
+		if audience[meeting] == nil {
+			audience[meeting] = map[uuid.UUID]bool{}
+		}
+		audience[meeting][person] = true
+	}
+	arows.Close()
+	if err := arows.Err(); err != nil {
+		return err
+	}
+
 	rows, err := s.db.Query(ctx, `
-		SELECT id, name, time_of_day, time_zone, weekdays, duration_minutes, created_at
+		SELECT id, name, time_of_day, time_zone, weekdays, duration_minutes, created_at, audience = 'everyone'
 		FROM standing_meetings WHERE org_id = $1 AND archived_at IS NULL
 	`, orgID)
 	if err != nil {
@@ -589,8 +616,9 @@ func (s *Service) loadStanding(ctx context.Context, orgID uuid.UUID, people []uu
 			weekdays          []int16
 			minutes           int
 			createdAt         time.Time
+			everyone          bool
 		)
-		if err := rows.Scan(&id, &name, &clock, &zone, &weekdays, &minutes, &createdAt); err != nil {
+		if err := rows.Scan(&id, &name, &clock, &zone, &weekdays, &minutes, &createdAt, &everyone); err != nil {
 			return fmt.Errorf("scan standing meeting: %w", err)
 		}
 		loc, err := time.LoadLocation(zone)
@@ -616,6 +644,9 @@ func (s *Service) loadStanding(ctx context.Context, orgID uuid.UUID, people []uu
 				continue
 			}
 			for _, person := range people {
+				if !everyone && !audience[id][person] {
+					continue
+				}
 				if attended[person][standingKey(id, date)] {
 					continue
 				}

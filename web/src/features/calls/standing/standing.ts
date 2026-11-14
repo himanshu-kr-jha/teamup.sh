@@ -3,6 +3,18 @@ import { formatMinutes } from '../callLog';
 
 /** Rules about standing meetings and their attendance, as plain functions. */
 
+export interface AudienceRef {
+  id: string;
+  name: string;
+}
+
+/** Who a standing meeting is for: everybody, or chosen teams (and the teams beneath them) and people. */
+export interface Audience {
+  everyone: boolean;
+  teams: AudienceRef[];
+  people: AudienceRef[];
+}
+
 export interface StandingMeeting {
   id: string;
   name: string;
@@ -12,9 +24,44 @@ export interface StandingMeeting {
   durationMinutes: number;
   createdBy?: string;
   createdAt?: string;
+  audience?: Audience;
+  /** Whether whoever asked may join it. */
+  inAudience?: boolean;
+  /** Whether whoever asked may change or archive it. */
+  canManage?: boolean;
 }
 
 export type StandingForm = Pick<StandingMeeting, 'name' | 'timeOfDay' | 'timeZone' | 'weekdays' | 'durationMinutes'>;
+
+/** Who it is for, as the dialog sends it. */
+export interface AudienceForm {
+  everyone: boolean;
+  teamIds: string[];
+  personIds: string[];
+}
+
+/** What somebody may choose from: the whole organization only for an admin. */
+export interface AudienceOptions {
+  everyone: boolean;
+  teams: AudienceRef[];
+  people: AudienceRef[];
+}
+
+export function audienceProblem(form: AudienceForm): string | null {
+  if (!form.everyone && form.teamIds.length === 0 && form.personIds.length === 0) return 'Choose who it is for.';
+  return null;
+}
+
+/** "Everybody", or the teams by name and then how many more people. */
+export function describeAudience(audience: Audience | undefined): string {
+  if (!audience || audience.everyone) return 'Everybody';
+  const teams = audience.teams.map((t) => t.name);
+  const people = audience.people.length;
+  const peopleText = people === 0 ? '' : people === 1 && teams.length === 0 ? audience.people[0].name : `${people} ${people === 1 ? 'person' : 'people'}`;
+  const parts = [...teams, ...(peopleText ? [peopleText] : [])];
+  if (parts.length === 1) return parts[0];
+  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+}
 
 export type AttendanceStatus = 'present' | 'absent' | 'unknown';
 

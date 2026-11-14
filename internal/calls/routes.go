@@ -44,6 +44,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.POST("/calls/:id/requests/:rid/deny", h.DenyKnock)
 
 	rg.GET("/standing-meetings", h.ListStandingMeetings)
+	rg.GET("/standing-audience-options", h.StandingAudienceOptions)
 	rg.POST("/standing-meetings", h.CreateStandingMeeting)
 	rg.PATCH("/standing-meetings/:id", h.UpdateStandingMeeting)
 	rg.DELETE("/standing-meetings/:id", h.ArchiveStandingMeeting)

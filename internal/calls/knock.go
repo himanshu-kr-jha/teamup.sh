@@ -199,6 +199,17 @@ func (s *Service) requireMember(ctx context.Context, orgID, callID, userID uuid.
 		return err
 	}
 	if !member {
+		// Nobody is invited to a day of a standing meeting, so its audience is who
+		// answers the door: the team lets in a visitor for the day.
+		if err := s.db.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM calls c
+			               JOIN standing_meetings sm ON sm.id = c.standing_meeting_id AND sm.audience = 'chosen'
+			               WHERE c.id = $1 AND c.org_id = $2 AND standing_audience_includes(sm.id, $3))
+		`, callID, orgID, userID).Scan(&member); err != nil {
+			return fmt.Errorf("check standing meeting audience: %w", err)
+		}
+	}
+	if !member {
 		return apperrors.New(apperrors.CodeForbidden, "only members of this call can see who is at the door")
 	}
 	return nil

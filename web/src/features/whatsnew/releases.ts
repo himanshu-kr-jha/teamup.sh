@@ -26,6 +26,19 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-14-b',
+    date: '2026-11-14',
+    title: 'Stand-ups for your team',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'A standing meeting for one team',
+        body: 'A standing meeting can now be for chosen teams and people instead of everybody, and a team\'s manager can make one for their own team. Only the people it is for see it, on Calls and in their calendar, and only they are counted in its attendance. Somebody joining the team later is in it at once. Anybody else with the link knocks, and somebody in the team can let them in for that day.',
+        link: '/calls',
+      },
+    ],
+  },
+  {
     id: '2026-11-14',
     date: '2026-11-14',
     title: 'See how the server is doing',

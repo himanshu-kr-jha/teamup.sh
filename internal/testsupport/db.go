@@ -41,7 +41,7 @@ const EnvDatabaseURL = "TEAMUP_TEST_DATABASE_URL"
 var tablesToClean = []string{
 	"audit_logs", "linked_identities", "refresh_tokens", "signing_keys", "org_configs",
 	"notifications", "push_subscriptions", "user_presence",
-	"call_events", "call_sessions", "call_knock_requests", "call_participants", "calls", "standing_meeting_schedules", "standing_meetings", "calendar_blocks",
+	"call_events", "call_sessions", "call_knock_requests", "call_participants", "calls", "standing_meeting_schedules", "standing_meeting_teams", "standing_meeting_people", "standing_meetings", "backup_runs", "calendar_blocks",
 	"scrum_entries", "scrum_participants", "scrums",
 	"sprint_tasks", "task_activities", "task_watchers", "task_attachments",
 	"task_comments", "task_labels", "labels", "tasks", "sprints", "projects",

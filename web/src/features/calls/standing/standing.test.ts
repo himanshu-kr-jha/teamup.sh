@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   attendanceCounts,
+  audienceProblem,
+  describeAudience,
   attendanceRangeProblem,
   defaultAttendanceRange,
   describeSchedule,
@@ -99,5 +101,27 @@ describe('defaultAttendanceRange', () => {
   it('falls back on your own date until it knows the meeting', () => {
     const now = new Date(2026, 10, 8, 12);
     expect(defaultAttendanceRange(now)).toEqual({ from: '2026-11-02', to: '2026-11-08' });
+  });
+});
+
+describe('describeAudience', () => {
+  const t = (name: string) => ({ id: name, name });
+  it('says everybody for a meeting for everybody, or one made before audiences', () => {
+    expect(describeAudience({ everyone: true, teams: [], people: [] })).toBe('Everybody');
+    expect(describeAudience(undefined)).toBe('Everybody');
+  });
+  it('names the teams and counts the people', () => {
+    expect(describeAudience({ everyone: false, teams: [t('Backend')], people: [] })).toBe('Backend');
+    expect(describeAudience({ everyone: false, teams: [t('Backend'), t('API')], people: [t('Bea'), t('Cy')] })).toBe('Backend, API and 2 people');
+    expect(describeAudience({ everyone: false, teams: [t('Backend')], people: [t('Bea')] })).toBe('Backend and 1 person');
+    expect(describeAudience({ everyone: false, teams: [], people: [t('Bea')] })).toBe('Bea');
+  });
+});
+
+describe('audienceProblem', () => {
+  it('wants somebody', () => {
+    expect(audienceProblem({ everyone: false, teamIds: [], personIds: [] })).toMatch(/who/i);
+    expect(audienceProblem({ everyone: true, teamIds: [], personIds: [] })).toBeNull();
+    expect(audienceProblem({ everyone: false, teamIds: ['x'], personIds: [] })).toBeNull();
   });
 });
