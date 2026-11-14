@@ -8,6 +8,7 @@ import {
   describeSchedule,
   describeWeekdays,
   orderAttendance,
+  sameZone,
   standingFormProblem,
   type AttendancePerson,
 } from './standing';
@@ -123,5 +124,16 @@ describe('audienceProblem', () => {
     expect(audienceProblem({ everyone: false, teamIds: [], personIds: [] })).toMatch(/who/i);
     expect(audienceProblem({ everyone: true, teamIds: [], personIds: [] })).toBeNull();
     expect(audienceProblem({ everyone: false, teamIds: ['x'], personIds: [] })).toBeNull();
+  });
+});
+
+describe('sameZone', () => {
+  it('takes an old and a new name of one zone for the same zone', () => {
+    expect(sameZone('Asia/Kolkata', 'Asia/Calcutta')).toBe(true);
+    expect(sameZone('Asia/Kolkata', 'Asia/Kolkata')).toBe(true);
+    expect(sameZone('Asia/Kolkata', 'Europe/London')).toBe(false);
+  });
+  it('does not show the zone of a meeting in your own zone under its other name', () => {
+    expect(describeSchedule({ weekdays: [1, 2, 3, 4, 5], timeOfDay: '09:30', timeZone: 'Asia/Kolkata', durationMinutes: 15 }, 'Asia/Calcutta')).not.toContain('Asia');
   });
 });
