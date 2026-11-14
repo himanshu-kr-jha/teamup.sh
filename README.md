@@ -197,6 +197,26 @@ S3 directly, and TeamUp just signs the tokens.
 Full detail, including request paths and what breaks when each service dies:
 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
+### Watch it under load
+
+**[Open TeamUp in Breakscale][breakscale-teamup]**, a system design simulator that runs in the browser.
+Press play, then drag the traffic on "Office: 250 busy people" up and watch where it breaks.
+
+The design is the production stack on one 2-CPU server, and its numbers come from the load test in [tools/loadtest](tools/loadtest/README.md).
+It breaks where the real server did:
+
+| Office load | Real server | Breakscale |
+| --- | --- | --- |
+| 250 busy people, 110 requests a second | fine | p50 10 ms |
+| 500 busy people, 220 requests a second | p50 70 ms, app CPU used up | p50 78 ms, app 100% busy |
+| more | overloaded | requests turned away, the app runs out first |
+
+It also shows live connections, files in MinIO, LiveKit with room for about 100 people in calls, and the note-taker's queues to speech-to-text and the minutes model.
+The times for MinIO, Sarvam and the minutes model are assumed rather than measured.
+The same design is in [docs/teamup.breakscale](docs/teamup.breakscale), which opens on breakscale.tech and in its VS Code extension.
+
+[breakscale-teamup]: https://breakscale.tech/#d3.AU3RzU7bQBAHcGfZ2E5CgkNJCP1iqAqyKxAJKlLVQ9WqFRUqAZdAe944m7Cts2t510Bv-wh5hDxCHwEuOVd9Aj-CTz1XDlTqcVYz-u38Z3XZMHy_dTIcsoC-hr39NvQT-QMiKqKQorRaSLFv8hHj16bW9gbK7Gxh9YyS8XkEJIrA_Si2oQPv_XOv5twWNSzoaorWTumASXBDNmZKbkMUU0l5QL2ao-2Ngq5muHlKyUDCq_1N2AVJ-UBCZ38TG2hS1-ZSj_IBEBhTKcmImtrewNOGtuq-kGoUUwnunfnmd9lxbrG2G9NGhmt3bJT0d2XSN9DPNW0-OWKXFC6SPrhRIi9ACRAR5aBIX3qmtj8bforKJ_-e0NtmilO0Op8KBOc0UExwCe7ulfTM2eaW4Wf40QELKSRRKPIdCB_AQFzxeYX8Wooz3OoyfngCQxbmn71kBOYheuXZ4g0yfG01_HnE8E0wzvgIAhKGEjnNFGtrPdc_MQW9g3NwSV8kCjrt9v1VPHNmNQx_UnraiygNLiAIWSRhGIsxdPZgTKlifCQRKaZ4UqofC0V3FPlO47tGw8xsbbbOYsJlELN-jqskzlfs7HnmTcFBuqqtZo_El2QMcm7sKLGj6LUytb310J9WnO69ApQPGB-ZM6tdTPG0Uu8ynigq85yvYqZozk3s5a8xU_9JLz2cM5PS2tFRF4YihvH9nHv85fDD4bv8NH8KBipgZCIbV9GvMq6grFBcLNYsp7RSaVUfL4HzrP78gbvyorH9Fw
+
 <details>
 <summary><b>Project layout</b></summary>
 
