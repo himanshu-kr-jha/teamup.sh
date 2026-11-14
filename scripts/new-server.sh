@@ -105,7 +105,8 @@ done
 FILES_ACCESS_KEY="" FILES_SECRET_KEY=""
 if [ -n "$FILES_BUCKET" ]; then
   step "The files bucket $FILES_BUCKET ($FILES_REGION)"
-  echo "  Its access key: on Lightsail, Storage > $FILES_BUCKET > Permissions > Create access key."
+  echo "  Its access key: on Amazon S3, an IAM user allowed this bucket alone, then Security credentials > Create access key;"
+  echo "  on Lightsail, Storage > $FILES_BUCKET > Permissions > Create access key."
   read -r -s -p "Access key ID: " FILES_ACCESS_KEY; echo
   read -r -s -p "Secret access key: " FILES_SECRET_KEY; echo
   [ -n "$FILES_ACCESS_KEY" ] && [ -n "$FILES_SECRET_KEY" ] || die "the bucket needs both parts of its access key"
@@ -162,6 +163,16 @@ remote '. /etc/os-release && [ "$ID" = ubuntu ]' || die "$HOST is not Ubuntu"
 SERVER_IP="$(remote 'curl -4 -s --max-time 10 https://checkip.amazonaws.com || true' | tr -d '[:space:]')"
 RESOLVED="$(python3 -c 'import socket, sys; print(socket.gethostbyname(sys.argv[1]))' "$DOMAIN" 2>/dev/null || true)"
 echo "  server's public address: ${SERVER_IP:-unknown}; $DOMAIN resolves to: ${RESOLVED:-nothing}"
+# Right after a DNS change, this machine's network often still has the old
+# address cached for up to an hour, although the rest of the internet, and the
+# certificate authority, already see the new one. A public resolver settles it.
+if [ -n "$SERVER_IP" ] && [ "$RESOLVED" != "$SERVER_IP" ] && command -v dig >/dev/null 2>&1; then
+  PUBLIC="$(dig +short +time=5 +tries=2 A "$DOMAIN" @1.1.1.1 | grep -E '^[0-9.]+$' | tail -1 || true)"
+  if [ "$PUBLIC" = "$SERVER_IP" ]; then
+    echo "  public DNS (1.1.1.1) already gives $SERVER_IP; this network still has the old address cached"
+    RESOLVED="$PUBLIC"
+  fi
+fi
 if [ -n "$SERVER_IP" ] && [ "$RESOLVED" != "$SERVER_IP" ]; then
   die "$DOMAIN does not point at this server yet. Point it at $SERVER_IP and wait until it resolves, because the certificate needs it."
 fi
