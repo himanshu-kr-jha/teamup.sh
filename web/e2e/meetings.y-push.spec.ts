@@ -67,12 +67,18 @@ test('the phone rings and shows messages while TeamUp is open on the laptop', as
     expect(Number(ring.ttl)).toBeLessThanOrEqual(60);
 
     // The caller gives up: the phone is told to stop, and then it stops.
+    // Pushes are told apart by how long they wait for a phone that is off: a ring
+    // as long as it rings, "Call ended" a minute, and a message, such as the
+    // missed call written into the chat, an hour. Counting every push failed on a
+    // slow machine, where those last two landed after a fixed pause.
+    const ended = Date.now();
     await sam.post(`/calls/${callId}/end`);
     callId = undefined;
-    await laptop.page.waitForTimeout(1_500);
-    const settled = phone.arrived.length;
+    const stopped = () => phone.arrived.find((p) => p.at >= ended && p.ttl === '60');
+    await expect.poll(() => !!stopped(), { message: 'the phone was never told the call was over', timeout: 15_000 }).toBe(true);
     await laptop.page.waitForTimeout(7_000);
-    expect(phone.arrived.length, 'the phone went on ringing after the call was over').toBe(settled);
+    const ringsAfter = phone.arrived.filter((p) => p.ttl === ring.ttl && p.at > stopped()!.at);
+    expect(ringsAfter, 'the phone went on ringing after the call was over').toEqual([]);
   } finally {
     if (callId) await sam.post(`/calls/${callId}/end`).catch(() => {});
     await alice.call('delete', '/notifications/subscribe', { endpoint: phone.endpoint }).catch(() => {});
