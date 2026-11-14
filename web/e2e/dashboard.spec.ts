@@ -523,7 +523,10 @@ test.describe('8. audit items that never met a real browser', () => {
     await page.unroute(`**/api/channels/${channelId}/messages`);
     await composer.press('Enter');
     await expect(composer).toHaveValue('');
-    await expect(page.getByTestId('message').filter({ hasText: text })).toBeVisible();
+    // Stored, not just shown while it is on its way: a reload while it still says
+    // "Sending…" stops the send, as it would for anybody, and on a slow machine
+    // the message was then missing after the reload.
+    await expect(page.getByTestId('message').filter({ hasText: text })).toHaveAttribute('data-state', 'sent');
     await page.reload();
     await expect(page.getByTestId('message').filter({ hasText: text })).toBeVisible();
   });
