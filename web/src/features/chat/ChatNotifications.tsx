@@ -7,7 +7,7 @@ import { useAuth } from '@/features/auth/AuthProvider';
 import { useChime } from '@/shared/hooks/useChime';
 import { useDesktopNotifications } from '@/shared/hooks/useDesktopNotifications';
 import { isEditFrame, watchChatChanges } from './liveChanges';
-import type { NotifyLevel } from '@/shared/api/client';
+import { channelsApi, type NotifyLevel } from '@/shared/api/client';
 import { mentionsPerson } from './mentions';
 
 /**
@@ -52,21 +52,56 @@ export function ChatNotifications() {
       // Your own message coming back is not news.
       if (incoming.userId === user?.id) return;
 
-      // What this person chose to hear about from this conversation (the bell in
-      // its header). The unread count below is kept whatever they chose.
-      const channel = ((queryClient.getQueryData(['channels']) as any)?.data ?? []).find(
-        (c: any) => c.id === incoming.channelId
-      );
-      const level: NotifyLevel = channel?.notifyLevel ?? 'all';
-      const interrupt =
-        level === 'all' ||
-        (level === 'mentions' && !!user && mentionsPerson(incoming.content ?? '', { id: user.id, name: user.name ?? '', email: user.email }));
-
-      if (interrupt) ping();
-
       const watchingThisConversation =
         document.visibilityState === 'visible' &&
         pathnameRef.current === `/chat/${incoming.channelId}`;
+
+      // What this person chose to hear about from this conversation (the bell in
+      // its header). The unread count is kept whatever they chose.
+      const decide = (level: NotifyLevel | null | undefined) => {
+        const chosen: NotifyLevel = level ?? 'all';
+        const interrupt =
+          chosen === 'all' ||
+          (chosen === 'mentions' && !!user && mentionsPerson(incoming.content ?? '', { id: user.id, name: user.name ?? '', email: user.email }));
+        if (!interrupt) return;
+        ping();
+        if (watchingThisConversation) return;
+
+        const body = incoming.content?.trim()
+          ? plainText(incoming.content)
+          : incoming.attachments?.length
+            ? 'Sent a file'
+            : 'Sent a message';
+
+        notify({
+          title: incoming.userName || 'New message',
+          body,
+          // One notification per conversation: a burst replaces itself rather
+          // than burying the screen.
+          tag: `chat-${incoming.channelId}`,
+          url: `/chat/${incoming.channelId}`,
+          onClick: () => navigate(`/chat/${incoming.channelId}`),
+          // The server pushes every message to every device of the person's.
+          alsoPushed: true,
+        });
+      };
+
+      const channel = ((queryClient.getQueryData(['channels']) as any)?.data ?? []).find(
+        (c: any) => c.id === incoming.channelId
+      );
+      if (!channel) {
+        // Not in the list in hand: the list has not arrived yet, as in the moments
+        // after a page loads, or this conversation is new to it, as when somebody
+        // opens a direct message with you. Either way it is read now, and arrives
+        // with this message already in its unread count, so nothing is added here.
+        // Deciding without it took every conversation to be All messages, and a
+        // conversation set to Only @mentions or Nothing chimed.
+        queryClient
+          .fetchQuery({ queryKey: ['channels'], queryFn: () => channelsApi.list() })
+          .then((list: any) => decide(list?.data?.find((c: any) => c.id === incoming.channelId)?.notifyLevel))
+          .catch(() => decide('all'));
+        return;
+      }
 
       // Unread counts live on the channel list, which is on screen only in
       // chat, so the badge has to be kept right from wherever you are.
@@ -80,18 +115,10 @@ export function ChatNotifications() {
       // A thread reply is not counted, because the server does not count one
       // either: the badge is cleared by reading the channel timeline, a reply
       // is not on it, and a badge nothing can clear sits there for ever. The
-      // sound and the notification below still happen — you should hear that
+      // sound and the notification still happen — you should hear that
       // somebody answered — and the way to see it is the reply count on the
       // parent, which the chat page moves as the frame arrives.
-      const known = ((queryClient.getQueryData(['channels']) as any)?.data ?? []).some(
-        (c: any) => c.id === incoming.channelId
-      );
-      if (!known) {
-        // A conversation this list has never seen, such as somebody opening
-        // a direct message with you: there is nothing to add one to, so the
-        // list is read again and arrives with it, unread count and all.
-        void queryClient.invalidateQueries({ queryKey: ['channels'] });
-      } else if (!watchingThisConversation && !incoming.replyTo) {
+      if (!watchingThisConversation && !incoming.replyTo) {
         queryClient.setQueryData(['channels'], (old: any) => {
           if (!old?.data) return old;
           return {
@@ -102,26 +129,7 @@ export function ChatNotifications() {
           };
         });
       }
-
-      if (watchingThisConversation || !interrupt) return;
-
-      const body = incoming.content?.trim()
-        ? plainText(incoming.content)
-        : incoming.attachments?.length
-          ? 'Sent a file'
-          : 'Sent a message';
-
-      notify({
-        title: incoming.userName || 'New message',
-        body,
-        // One notification per conversation: a burst replaces itself rather
-        // than burying the screen.
-        tag: `chat-${incoming.channelId}`,
-        url: `/chat/${incoming.channelId}`,
-        onClick: () => navigate(`/chat/${incoming.channelId}`),
-        // The server pushes every message to every device of the person's.
-        alsoPushed: true,
-      });
+      decide(channel.notifyLevel);
     });
   }, [on, user, queryClient, navigate, ping, notify]);
 
