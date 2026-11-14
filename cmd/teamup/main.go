@@ -320,6 +320,7 @@ func (c *Config) CallsConfig() calls.Config {
 		StorageSecretKey: c.MinIOSecretKey,
 		StorageBucket:    c.MinIOBucket,
 		StorageSecure:    c.MinIOSecure,
+		StorageRegion:    c.MinIORegion,
 
 		MaxCallParticipants: c.MaxCallParticipants,
 	}

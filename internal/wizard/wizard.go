@@ -57,7 +57,7 @@ type objectStore interface {
 type objectStoreFactory func(Data) (objectStore, error)
 
 func minioClientFor(data Data) (objectStore, error) {
-	client, err := minio.New(data.MinIOEndpoint, &minio.Options{
+	client, err := minio.New(data.MinIOHost(), &minio.Options{
 		Creds:  credentials.NewStaticV4(data.MinIOAccessKey, data.MinIOSecretKey, ""),
 		Secure: data.MinIOSecure(),
 	})
@@ -429,9 +429,19 @@ func testLiveKit(ctx context.Context, data Data) error {
 	return nil
 }
 
-// MinIOSecure reports whether the endpoint should be dialled over TLS.
+// MinIOSecure reports whether the endpoint should be dialled over TLS: it is
+// written with https://, as an outside bucket such as
+// https://s3.ap-south-1.amazonaws.com is.
 func (d Data) MinIOSecure() bool {
-	return strings.HasPrefix(d.MinIOEndpoint, "https")
+	return strings.HasPrefix(d.MinIOEndpoint, "https://")
+}
+
+// MinIOHost is the endpoint without its scheme, which is how the S3 client
+// takes it: given "https://host" it refuses the whole address, so an endpoint
+// written the way MinIOSecure asks for could never be used.
+func (d Data) MinIOHost() string {
+	host := strings.TrimPrefix(strings.TrimPrefix(d.MinIOEndpoint, "https://"), "http://")
+	return strings.TrimSuffix(host, "/")
 }
 
 // ValidateServices probes every configured dependency in one go, creating the

@@ -17,6 +17,16 @@
 #   --email you@acme.com    for the certificate's expiry notices
 #   --name acme             what to call this server here (default: from the domain)
 #   --ipv4                  ssh over IPv4 only
+#   --files-bucket name --files-region ap-south-1
+#                           keep files in this S3 bucket (Amazon S3 or a Lightsail
+#                           bucket) instead of a MinIO container on the server; it
+#                           asks for the bucket's access key, hidden as you type
+#
+# With a bucket, the bucket has to exist already, be private, and let the site
+# upload into it from the browser (a CORS rule). The script checks the key and
+# the rule before it touches the server, sets the rule itself when the key is
+# allowed to, and otherwise says what to set. Files then survive losing the
+# server, and the nightly backup is the database alone.
 #
 # What it does, in order: checks the server and the address; installs Docker and
 # certbot; copies main as it is on GitHub (never your uncommitted changes); writes
@@ -35,6 +45,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 HOST="" KEY="" DOMAIN="" EMAIL="" NAME="" IPV4=0 DIR=/opt/teamup
+FILES_BUCKET="" FILES_REGION=""
 ORG_NAME="" OWNER_NAME="" OWNER_EMAIL=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -47,6 +58,8 @@ while [ $# -gt 0 ]; do
     --org-name) ORG_NAME="$2"; shift 2 ;;
     --owner-name) OWNER_NAME="$2"; shift 2 ;;
     --owner-email) OWNER_EMAIL="$2"; shift 2 ;;
+    --files-bucket) FILES_BUCKET="$2"; shift 2 ;;
+    --files-region) FILES_REGION="$2"; shift 2 ;;
     -h|--help) awk 'NR==1{next} /^#/{sub(/^#[[:space:]]?/,""); print; next} {exit}' "$0"; exit 0 ;;
     *) echo "Unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
@@ -58,6 +71,11 @@ step() { printf '\n== %s\n' "$*"; }
 [ -n "$HOST" ] || die "say which server: --host user@address"
 [ -n "$DOMAIN" ] || die "say its address: --domain team.example.com (or <a>-<b>-<c>-<d>.sslip.io)"
 case "$DOMAIN" in *[!a-zA-Z0-9.-]* | .* | *. ) die "$DOMAIN is not a domain name" ;; esac
+if [ -n "$FILES_BUCKET$FILES_REGION" ]; then
+  [ -n "$FILES_BUCKET" ] && [ -n "$FILES_REGION" ] || die "a files bucket needs both --files-bucket and --files-region"
+  case "$FILES_BUCKET" in *[!a-z0-9.-]* | [!a-z0-9]* ) die "$FILES_BUCKET is not an S3 bucket name" ;; esac
+  case "$FILES_REGION" in *[!a-z0-9-]* ) die "$FILES_REGION is not an AWS region, such as ap-south-1" ;; esac
+fi
 NAME="${NAME:-$(printf '%s' "$DOMAIN" | cut -d. -f1 | tr -c 'a-zA-Z0-9-\n' '-' | tr '[:upper:]' '[:lower:]')}"
 DEPLOY_FILE=".deploy.$NAME.env"
 SAVED_ENV="$HOME/.teamup-servers/$DOMAIN.env"
@@ -84,6 +102,14 @@ while :; do
   [ "$OWNER_PASSWORD" = "$again" ] && break
   echo "  They differ; try again."
 done
+FILES_ACCESS_KEY="" FILES_SECRET_KEY=""
+if [ -n "$FILES_BUCKET" ]; then
+  step "The files bucket $FILES_BUCKET ($FILES_REGION)"
+  echo "  Its access key: on Lightsail, Storage > $FILES_BUCKET > Permissions > Create access key."
+  read -r -s -p "Access key ID: " FILES_ACCESS_KEY; echo
+  read -r -s -p "Secret access key: " FILES_SECRET_KEY; echo
+  [ -n "$FILES_ACCESS_KEY" ] && [ -n "$FILES_SECRET_KEY" ] || die "the bucket needs both parts of its access key"
+fi
 # The organization's short name, as the setup wizard asks for it.
 SHORT="$(printf '%s' "$ORG_NAME" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9\n' '-' | sed 's/--*/-/g; s/^-//; s/-$//' | cut -c1-40)"
 [ -n "$SHORT" ] || SHORT="$NAME"
@@ -94,6 +120,39 @@ git fetch --quiet origin main || die "could not fetch main from GitHub"
 COMMIT="$(git rev-parse origin/main)"
 TAG="$(git rev-parse --short "$COMMIT")"
 echo "  installs main as it is on GitHub: $TAG ($(git log -1 --format=%s "$COMMIT"))"
+
+if [ -n "$FILES_BUCKET" ]; then
+  FILES_URL="https://s3.$FILES_REGION.amazonaws.com/$FILES_BUCKET"
+  # The key goes to curl on stdin, never on its command line, where anybody on
+  # this machine could list it.
+  s3() { printf 'user = "%s:%s"\n' "$FILES_ACCESS_KEY" "$FILES_SECRET_KEY" | curl -K - -s --max-time 20 --aws-sigv4 "aws:amz:$FILES_REGION:s3" "$@"; }
+  code="$(s3 -o /dev/null -w '%{http_code}' -I "$FILES_URL/" || true)"
+  case "$code" in
+    200) echo "  the bucket answers to its key" ;;
+    403) die "the bucket refused the key ($FILES_URL): check the key, and that it belongs to this bucket" ;;
+    404 | 301) die "no bucket $FILES_BUCKET in $FILES_REGION: check the name and the region" ;;
+    *) die "could not reach $FILES_URL (answered ${code:-nothing})" ;;
+  esac
+  # Browsers upload straight into the bucket, which they do only when the
+  # bucket says this site may. A bucket that says nothing fails every upload
+  # with nothing on the page but a network error.
+  cors_ok() {
+    curl -s --max-time 20 -o /dev/null -D - -X OPTIONS "$FILES_URL/cors-check" \
+      -H "Origin: https://$DOMAIN" -H 'Access-Control-Request-Method: PUT' \
+      -H 'Access-Control-Request-Headers: content-type' | grep -qi "^access-control-allow-origin: https://$DOMAIN"
+  }
+  CORS="<CORSConfiguration><CORSRule><AllowedOrigin>https://$DOMAIN</AllowedOrigin><AllowedMethod>GET</AllowedMethod><AllowedMethod>HEAD</AllowedMethod><AllowedMethod>PUT</AllowedMethod><AllowedHeader>*</AllowedHeader><ExposeHeader>ETag</ExposeHeader><ExposeHeader>Content-Length</ExposeHeader><ExposeHeader>Content-Range</ExposeHeader><ExposeHeader>Accept-Ranges</ExposeHeader><MaxAgeSeconds>3600</MaxAgeSeconds></CORSRule></CORSConfiguration>"
+  if ! cors_ok; then
+    md5="$(printf '%s' "$CORS" | openssl md5 -binary | base64)"
+    code="$(s3 -o /dev/null -w '%{http_code}' -X PUT "$FILES_URL/?cors" -H "Content-MD5: $md5" -H 'Content-Type: application/xml' --data-binary "$CORS" || true)"
+    sleep 3
+    cors_ok || die "the bucket does not let https://$DOMAIN upload into it, and its key could not set that (answered ${code:-nothing}).
+  Add this CORS rule to $FILES_BUCKET, as docs/DEPLOYMENT.md says under \"Files in an outside bucket\", then run this again:
+  allowed origin https://$DOMAIN; methods GET, HEAD, PUT; headers *; expose ETag, Content-Length, Content-Range, Accept-Ranges"
+    echo "  set the bucket's CORS rule for https://$DOMAIN"
+  fi
+  echo "  the bucket lets https://$DOMAIN upload into it"
+fi
 
 remote 'true' || die "cannot ssh to $HOST"
 remote "test ! -e '$DIR/.env'" || die "$HOST already has TeamUp in $DIR; this script only sets up empty servers. To update it, use make deploy."
@@ -114,16 +173,18 @@ git archive "$COMMIT" | remote 'rm -rf /tmp/teamup-new && mkdir -p /tmp/teamup-n
 # The owner's details go over ssh's own encryption into a file only root can
 # read, and are deleted as soon as the organization exists.
 # Through the environment, not arguments, which anybody on this machine can list.
+# The bucket's key travels the same way.
 ORG_NAME="$ORG_NAME" SHORT="$SHORT" OWNER_NAME="$OWNER_NAME" OWNER_EMAIL="$OWNER_EMAIL" OWNER_PASSWORD="$OWNER_PASSWORD" \
-  python3 -c 'import json, os; e = os.environ; print(json.dumps({"orgName": e["ORG_NAME"], "orgSubdomain": e["SHORT"], "adminName": e["OWNER_NAME"], "adminEmail": e["OWNER_EMAIL"], "adminPassword": e["OWNER_PASSWORD"]}))' \
+FILES_ACCESS_KEY="$FILES_ACCESS_KEY" FILES_SECRET_KEY="$FILES_SECRET_KEY" \
+  python3 -c 'import json, os; e = os.environ; print(json.dumps({"orgName": e["ORG_NAME"], "orgSubdomain": e["SHORT"], "adminName": e["OWNER_NAME"], "adminEmail": e["OWNER_EMAIL"], "adminPassword": e["OWNER_PASSWORD"], "filesAccessKey": e["FILES_ACCESS_KEY"], "filesSecretKey": e["FILES_SECRET_KEY"]}))' \
   | remote 'umask 077; cat > /tmp/teamup-owner.json'
-unset OWNER_PASSWORD again
+unset OWNER_PASSWORD again FILES_ACCESS_KEY FILES_SECRET_KEY
 
 REMOTE=$(cat <<'REMOTE_SCRIPT'
 #!/bin/bash
 set -euo pipefail
 trap 'rc=$?; rm -f /tmp/teamup-owner.json; rm -rf /tmp/teamup-setup; echo "== exit $rc"; echo $rc > /tmp/teamup-new-server.done' EXIT
-TAG="$1"; DIR="$2"; DOMAIN="$3"; EMAIL="$4"
+TAG="$1"; DIR="$2"; DOMAIN="$3"; EMAIL="$4"; FILES_BUCKET="${5:-}"; FILES_REGION="${6:-}"
 export DEBIAN_FRONTEND=noninteractive
 
 echo "== install Docker and certbot $(date -u +%T)"
@@ -150,6 +211,20 @@ LIVEKIT_API_KEY=API$(openssl rand -hex 8)
 LIVEKIT_API_SECRET=$(openssl rand -hex 32)
 AUTH_SECRET=$(openssl rand -hex 32)
 EOF
+if [ -n "$FILES_BUCKET" ]; then
+  # Files in an outside bucket: docker-compose.prod.yml reads these instead of
+  # the minio container's, and MINIO_REPLICAS=0 leaves the container off.
+  python3 -c '
+import json, sys
+bucket, region, owner = sys.argv[1], sys.argv[2], json.load(open(sys.argv[3]))
+print("FILES_ENDPOINT=s3." + region + ".amazonaws.com")
+print("FILES_REGION=" + region)
+print("FILES_BUCKET=" + bucket)
+print("FILES_ACCESS_KEY=" + owner["filesAccessKey"])
+print("FILES_SECRET_KEY=" + owner["filesSecretKey"])
+print("MINIO_REPLICAS=0")
+' "$FILES_BUCKET" "$FILES_REGION" /tmp/teamup-owner.json >> .env
+fi
 umask 022
 dc() { sudo docker compose "$@"; }
 
@@ -170,7 +245,8 @@ dc build teamup 2>&1 | tail -2
 
 # Everything but the website, so the setup page is never reachable from outside.
 echo "== start, without the website $(date -u +%T)"
-dc up -d postgres redis minio livekit migrate teamup 2>&1 | tail -3
+if [ -n "$FILES_BUCKET" ]; then storage=(); else storage=(minio); fi
+dc up -d postgres redis "${storage[@]}" livekit migrate teamup 2>&1 | tail -3
 dc logs migrate --no-log-prefix 2>&1 | tail -1
 
 echo "== create the organization and its owner"
@@ -180,14 +256,21 @@ python3 - /tmp/teamup-owner.json /tmp/teamup-setup <<'PY'
 import json, os, sys
 owner = json.load(open(sys.argv[1]))
 out = sys.argv[2]
+e = os.environ
+storage = {
+    "minioEndpoint": "https://" + e["FILES_ENDPOINT"], "minioBucket": e["FILES_BUCKET"],
+    "minioAccessKey": e["FILES_ACCESS_KEY"], "minioSecretKey": e["FILES_SECRET_KEY"],
+} if e.get("FILES_ENDPOINT") else {
+    "minioEndpoint": "minio:9000", "minioBucket": "teamup-files",
+    "minioAccessKey": e["MINIO_ACCESS_KEY"], "minioSecretKey": e["MINIO_SECRET_KEY"],
+}
 steps = {
     "step1": {"orgName": owner["orgName"], "orgSubdomain": owner["orgSubdomain"]},
     "step2": {k: owner[k] for k in ("adminName", "adminEmail", "adminPassword")},
     # Password sign-in is the real path; the provider is a required field.
     "step3": {"oidcProvider": "custom"},
     "step4": {
-        "minioEndpoint": "minio:9000", "minioBucket": "teamup-files",
-        "minioAccessKey": os.environ["MINIO_ACCESS_KEY"], "minioSecretKey": os.environ["MINIO_SECRET_KEY"],
+        **storage,
         "livekitUrl": "http://livekit:7880",
         "livekitApiKey": os.environ["LIVEKIT_API_KEY"], "livekitApiSecret": os.environ["LIVEKIT_API_SECRET"],
     },
@@ -232,6 +315,10 @@ for _ in $(seq 1 60); do
   sleep 3
 done
 dc ps --format '{{.Service}}\t{{.Status}}'
+# Readiness covers the database, Redis and file storage, so a bucket the
+# server cannot use shows here rather than on somebody's first upload.
+dc exec -T nginx wget -qO- http://teamup:8080/readyz </dev/null || echo "readiness check failed: see sudo docker compose logs teamup"
+echo
 
 echo "== nightly backups"
 cat > backup.sh <<'EOF'
@@ -249,6 +336,8 @@ cp .env "backups/env-$D"
 find backups -type f -mtime +14 -delete
 EOF
 sed -i "s#/opt/teamup#$DIR#" backup.sh
+# Files in a bucket are not on this disk, so the backup is the database alone.
+if [ -n "$FILES_BUCKET" ]; then sed -i '/minio/d' backup.sh; fi
 chmod +x backup.sh
 mkdir -p backups
 # A new server has no crontab, and grep finds nothing to keep: both exit 1,
@@ -258,7 +347,7 @@ sudo certbot renew --dry-run >/dev/null 2>&1 && echo "certificate renewal: works
 REMOTE_SCRIPT
 )
 printf '%s\n' "$REMOTE" | remote 'cat > /tmp/teamup-new-server.sh && rm -f /tmp/teamup-new-server.done'
-remote "nohup bash /tmp/teamup-new-server.sh '$TAG' '$DIR' '$DOMAIN' '$EMAIL' > /tmp/teamup-new-server.log 2>&1 < /dev/null &"
+remote "nohup bash /tmp/teamup-new-server.sh '$TAG' '$DIR' '$DOMAIN' '$EMAIL' '$FILES_BUCKET' '$FILES_REGION' > /tmp/teamup-new-server.log 2>&1 < /dev/null &"
 
 step "Setting up on the server (10 minutes or so; safe to lose this connection)"
 shown=0

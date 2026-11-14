@@ -37,6 +37,9 @@ type Config struct {
 	StorageSecretKey string
 	StorageBucket    string
 	StorageSecure    bool
+	// StorageRegion is part of the signing key, so it has to be the bucket's
+	// own region. Empty means us-east-1, MinIO's default.
+	StorageRegion string
 
 	// MaxCallParticipants is the ceiling on one call: how large a LiveKit room
 	// is created, and one more than how many people a channel call rings.
@@ -577,7 +580,7 @@ func (s *Service) StartRecording(ctx context.Context, orgID, callID uuid.UUID) (
 						Endpoint:       s.storageEndpointURL(),
 						Bucket:         s.cfg.StorageBucket,
 						ForcePathStyle: true,
-						Region:         "us-east-1",
+						Region:         s.storageRegion(),
 					},
 				},
 			},
@@ -633,6 +636,14 @@ func (s *Service) StopRecording(ctx context.Context, orgID, callID uuid.UUID) er
 		return fmt.Errorf("finalise recording: %w", err)
 	}
 	return nil
+}
+
+// storageRegion is the bucket's region, or MinIO's default when none is set.
+func (s *Service) storageRegion() string {
+	if s.cfg.StorageRegion == "" {
+		return "us-east-1"
+	}
+	return s.cfg.StorageRegion
 }
 
 // storageEndpointURL gives Egress a scheme-qualified endpoint; the rest of the
