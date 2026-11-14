@@ -101,17 +101,22 @@ func (b *Box) Token(v any, life time.Duration) (string, error) {
 // ErrBadToken is a token not made here, changed, or expired.
 var ErrBadToken = errors.New("that link has expired or was not made here")
 
+var strictBase64 = base64.RawURLEncoding.Strict()
+
 // ReadToken checks a token made by Token and reads its value into v.
 func (b *Box) ReadToken(token string, v any) error {
 	body, sig, ok := strings.Cut(token, ".")
 	if !ok {
 		return ErrBadToken
 	}
-	got, err := base64.RawURLEncoding.DecodeString(sig)
+	// Strict: only the one spelling Token writes. The lenient decoder ignores the
+	// spare bits of the last character, so a token changed there read back the
+	// same, about once in a thousand (a flaky test found it).
+	got, err := strictBase64.DecodeString(sig)
 	if err != nil || !hmac.Equal(got, b.mac(body)) {
 		return ErrBadToken
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(body)
+	raw, err := strictBase64.DecodeString(body)
 	if err != nil {
 		return ErrBadToken
 	}

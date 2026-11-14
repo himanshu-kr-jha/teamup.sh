@@ -11,7 +11,7 @@ import { useAuthStore } from '@/shared/store/authStore';
 import type { AvailabilityPerson, CalendarItem, CalendarKind } from '@/features/calendar/layout';
 import type { CalendarGroup } from '@/features/calendar/people';
 import type { CallLog } from '@/features/calls/callLog';
-import type { AttendanceDay, StandingForm, StandingMeeting } from '@/features/calls/standing/standing';
+import type { AttendanceDay, AudienceForm, AudienceOptions, StandingForm, StandingMeeting } from '@/features/calls/standing/standing';
 
 export const api = axios.create({
   baseURL: '/api',
@@ -675,8 +675,15 @@ export const meetingsApi = {
 
 export const standingApi = {
   list: () => getList<StandingMeeting>('/standing-meetings', 'standingMeetings'),
-  create: (data: StandingForm) => api.post<{ standingMeeting: StandingMeeting }>('/standing-meetings', data),
-  update: (id: string, data: Partial<StandingForm>) =>
+  /** The meetings you may see, and whether you may make one (admins and managers). */
+  listWithRights: async () => {
+    const res = await api.get<{ standingMeetings?: StandingMeeting[]; canCreate?: boolean }>('/standing-meetings');
+    return { meetings: res.data.standingMeetings ?? [], canCreate: !!res.data.canCreate };
+  },
+  /** The teams and people you may make a standing meeting for. */
+  audienceOptions: () => api.get<AudienceOptions>('/standing-audience-options'),
+  create: (data: StandingForm & Partial<AudienceForm>) => api.post<{ standingMeeting: StandingMeeting }>('/standing-meetings', data),
+  update: (id: string, data: Partial<StandingForm & AudienceForm>) =>
     api.patch<{ standingMeeting: StandingMeeting }>(`/standing-meetings/${id}`, data),
   /** Archives it: the room goes and its history stays. */
   archive: (id: string) => api.delete(`/standing-meetings/${id}`),

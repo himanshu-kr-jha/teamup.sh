@@ -1698,7 +1698,8 @@ func (s *Service) IsParticipant(ctx context.Context, callID, userID uuid.UUID) (
 //
 // A call attached to a channel is open to that channel's members, which is how
 // "join the standup" works without inviting people one by one. A day of a live
-// standing meeting is open to everybody in the organization.
+// standing meeting is open to its audience (standing_audience.go): everybody in
+// the organization, or its teams and people.
 func (s *Service) MayJoin(ctx context.Context, orgID, callID, userID uuid.UUID) (bool, error) {
 	member, err := s.IsMember(ctx, orgID, callID, userID)
 	if err != nil || member {
@@ -1710,9 +1711,7 @@ func (s *Service) MayJoin(ctx context.Context, orgID, callID, userID uuid.UUID) 
 		SELECT EXISTS (
 			SELECT 1 FROM calls c
 			JOIN standing_meetings sm ON sm.id = c.standing_meeting_id AND sm.archived_at IS NULL
-			JOIN users u ON u.org_id = c.org_id AND u.id = $3
-			             AND u.deleted_at IS NULL AND COALESCE(u.is_active, true)
-			WHERE c.id = $1 AND c.org_id = $2)
+			WHERE c.id = $1 AND c.org_id = $2 AND standing_audience_includes(sm.id, $3))
 	`, callID, orgID, userID).Scan(&ok)
 	if err != nil {
 		return false, fmt.Errorf("check standing meeting access: %w", err)

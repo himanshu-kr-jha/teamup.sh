@@ -222,11 +222,13 @@ func (s *Service) readState(state, nonce string) (*consent, error) {
 	if !ok {
 		return nil, bad
 	}
-	got, err := base64.RawURLEncoding.DecodeString(sig)
+	// Strict, so only the one spelling we wrote is read: the lenient decoder
+	// ignores the last character's spare bits (as internal/secretbox found).
+	got, err := base64.RawURLEncoding.Strict().DecodeString(sig)
 	if err != nil || !hmac.Equal(got, s.sign(body)) {
 		return nil, bad
 	}
-	raw, err := base64.RawURLEncoding.DecodeString(body)
+	raw, err := base64.RawURLEncoding.Strict().DecodeString(body)
 	if err != nil {
 		return nil, bad
 	}

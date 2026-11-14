@@ -1,8 +1,7 @@
 import { useState } from 'react';
-import { PERMS, can } from '@/shared/permissions';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useNavigate } from 'react-router-dom';
-import { Archive, CalendarClock, ClipboardList, Loader2, Pencil, Plus, Video } from 'lucide-react';
+import { Archive, CalendarClock, ClipboardList, Loader2, Pencil, Plus, UsersRound, Video } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Card, CardContent } from '@/shared/components/ui/card';
 import {
@@ -13,13 +12,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/shared/components/ui/dialog';
-import { useAuth } from '@/features/auth/AuthProvider';
 import { standingApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
 import { useActiveCall } from '../ActiveCallProvider';
 import { StandingMeetingDialog } from './StandingMeetingDialog';
-import { describeSchedule, type StandingMeeting } from './standing';
+import { describeAudience, describeSchedule, type StandingMeeting } from './standing';
 
 /** Goes into today's room of a standing meeting. Shared with the calendar. */
 export function useJoinStanding() {
@@ -45,28 +43,29 @@ export function useJoinStanding() {
 
 /** The permanent rooms, pinned at the top of Calls. */
 export function StandingMeetings() {
-  const { user } = useAuth();
-  const isAdmin = can(user, PERMS.meetingsAll);
   const queryClient = useQueryClient();
   const toast = useToast();
   const { joinStanding, joining } = useJoinStanding();
 
+  // Each meeting says whether you are in it and may change it; the list says
+  // whether you may make one (an admin, or a team's manager).
   const { data, error, isPending, refetch } = useQuery({
-    queryKey: ['standing-meetings'],
-    queryFn: () => standingApi.list().then((res) => res.data),
+    queryKey: ['standing-meetings', 'with-rights'],
+    queryFn: () => standingApi.listWithRights(),
     staleTime: 30_000,
   });
+  const canCreate = !!data?.canCreate;
 
   const [editing, setEditing] = useState<StandingMeeting | null>(null);
   const [creating, setCreating] = useState(false);
   const [archiving, setArchiving] = useState<StandingMeeting | null>(null);
   const [busyArchiving, setBusyArchiving] = useState(false);
 
-  const meetings = data ?? [];
+  const meetings = data?.meetings ?? [];
 
   // Somebody with nothing to see and nothing they can do loses nothing by this
   // section not being there.
-  if (!isPending && !error && meetings.length === 0 && !isAdmin) return null;
+  if (!isPending && !error && meetings.length === 0 && !canCreate) return null;
 
   const archive = async () => {
     if (!archiving) return;
@@ -91,7 +90,7 @@ export function StandingMeetings() {
           <CalendarClock className="h-4 w-4 text-primary" aria-hidden="true" />
           Standing meetings
         </h2>
-        {isAdmin && (
+        {canCreate && (
           <Button variant="outline" size="sm" onClick={() => setCreating(true)}>
             <Plus className="mr-1 h-4 w-4" aria-hidden="true" />
             New
@@ -113,19 +112,23 @@ export function StandingMeetings() {
         </div>
       ) : meetings.length === 0 ? (
         <p className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-sm text-muted-foreground">
-          No standing meetings yet. Make one for the morning scrum, and everybody will have one room to join.
+          No standing meetings yet. Make one for the morning scrum, for everybody or for your team, and they will have one room to join.
         </p>
       ) : (
         <div className="grid gap-2 lg:grid-cols-2">
           {meetings.map((meeting) => (
-            <Card key={meeting.id} className="border-primary/30">
+            <Card key={meeting.id} className="border-primary/30" data-testid="standing-card">
               <CardContent className="flex flex-col gap-2 p-3 sm:flex-row sm:items-center">
                 <div className="min-w-0 flex-1">
                   <h3 className="break-anywhere font-semibold">{meeting.name}</h3>
                   <p className="text-sm text-muted-foreground">{describeSchedule(meeting)}</p>
+                  <p className="flex items-center gap-1 text-xs text-muted-foreground" data-testid="standing-audience">
+                    <UsersRound className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    <span className="break-anywhere">For {describeAudience(meeting.audience).replace(/^Everybody$/, 'everybody')}</span>
+                  </p>
                 </div>
                 <div className="flex shrink-0 flex-wrap items-center gap-1">
-                  {isAdmin && (
+                  {meeting.canManage && (
                     <>
                       <Button
                         variant="ghost"
@@ -155,19 +158,25 @@ export function StandingMeetings() {
                       Attendance
                     </Link>
                   </Button>
-                  <Button
-                    size="sm"
-                    disabled={joining === meeting.id}
-                    aria-label={`Join ${meeting.name}`}
-                    onClick={() => void joinStanding(meeting.id)}
-                  >
-                    {joining === meeting.id ? (
-                      <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden="true" />
-                    ) : (
-                      <Video className="mr-1 h-4 w-4" aria-hidden="true" />
-                    )}
-                    Join
-                  </Button>
+                  {meeting.inAudience !== false ? (
+                    <Button
+                      size="sm"
+                      disabled={joining === meeting.id}
+                      aria-label={`Join ${meeting.name}`}
+                      onClick={() => void joinStanding(meeting.id)}
+                    >
+                      {joining === meeting.id ? (
+                        <Loader2 className="mr-1 h-4 w-4 animate-spin" aria-hidden="true" />
+                      ) : (
+                        <Video className="mr-1 h-4 w-4" aria-hidden="true" />
+                      )}
+                      Join
+                    </Button>
+                  ) : (
+                    // An admin sees every meeting to look after it, but rank is not a
+                    // way into somebody else's: they knock like anybody.
+                    <span className="px-1 text-xs text-muted-foreground">Not one of yours</span>
+                  )}
                 </div>
               </CardContent>
             </Card>

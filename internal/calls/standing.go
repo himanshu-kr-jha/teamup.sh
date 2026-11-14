@@ -33,7 +33,8 @@ const (
 	earlyForNextSlot = 30 * time.Minute
 )
 
-// StandingMeeting is a permanent room for the whole organization.
+// StandingMeeting is a permanent room: for the whole organization, or for chosen
+// teams and people (standing_audience.go).
 type StandingMeeting struct {
 	ID              uuid.UUID  `json:"id"`
 	Name            string     `json:"name"`
@@ -44,13 +45,20 @@ type StandingMeeting struct {
 	CreatedBy       *uuid.UUID `json:"createdBy,omitempty"`
 	ArchivedAt      *time.Time `json:"archivedAt,omitempty"`
 	CreatedAt       time.Time  `json:"createdAt"`
+	// Audience is who it is for. InAudience and CanManage are for whoever asked:
+	// whether they may join it, and change or archive it.
+	Audience   *Audience `json:"audience,omitempty"`
+	InAudience bool      `json:"inAudience"`
+	CanManage  bool      `json:"canManage"`
+
+	audienceKind string
 }
 
-const standingColumns = `id, name, time_of_day, time_zone, weekdays, duration_minutes, created_by, archived_at, created_at`
+const standingColumns = `id, name, time_of_day, time_zone, weekdays, duration_minutes, created_by, archived_at, created_at, audience`
 
 func scanStanding(row pgx.Row) (*StandingMeeting, error) {
 	var m StandingMeeting
-	err := row.Scan(&m.ID, &m.Name, &m.TimeOfDay, &m.TimeZone, &m.Weekdays, &m.DurationMinutes, &m.CreatedBy, &m.ArchivedAt, &m.CreatedAt)
+	err := row.Scan(&m.ID, &m.Name, &m.TimeOfDay, &m.TimeZone, &m.Weekdays, &m.DurationMinutes, &m.CreatedBy, &m.ArchivedAt, &m.CreatedAt, &m.audienceKind)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, apperrors.ErrNotFound
 	}
@@ -176,13 +184,35 @@ func scheduleOn(versions []scheduleVersion, date string) (*scheduleVersion, bool
 	return found, found != nil
 }
 
-// standingFields is what an admin may set. Each field is optional on an edit.
+// standingFields is what its maker may set. Each field is optional on an edit;
+// sending any of the audience's three replaces the audience with what was sent.
 type standingFields struct {
-	Name            *string `json:"name"`
-	TimeOfDay       *string `json:"timeOfDay"`
-	TimeZone        *string `json:"timeZone"`
-	Weekdays        *[]int  `json:"weekdays"`
-	DurationMinutes *int    `json:"durationMinutes"`
+	Name            *string      `json:"name"`
+	TimeOfDay       *string      `json:"timeOfDay"`
+	TimeZone        *string      `json:"timeZone"`
+	Weekdays        *[]int       `json:"weekdays"`
+	DurationMinutes *int         `json:"durationMinutes"`
+	Everyone        *bool        `json:"everyone"`
+	TeamIDs         *[]uuid.UUID `json:"teamIds"`
+	PersonIDs       *[]uuid.UUID `json:"personIds"`
+}
+
+// audienceSent is the audience asked for, if any part of it was sent.
+func (f standingFields) audienceSent() (audienceChoice, bool) {
+	if f.Everyone == nil && f.TeamIDs == nil && f.PersonIDs == nil {
+		return audienceChoice{}, false
+	}
+	var c audienceChoice
+	if f.Everyone != nil {
+		c.everyone = *f.Everyone
+	}
+	if f.TeamIDs != nil {
+		c.teams = *f.TeamIDs
+	}
+	if f.PersonIDs != nil {
+		c.people = *f.PersonIDs
+	}
+	return c, true
 }
 
 func badRequest(message string) error { return apperrors.New(apperrors.CodeBadRequest, message) }
@@ -246,11 +276,29 @@ func (f standingFields) applyTo(m *StandingMeeting) error {
 	return nil
 }
 
-func (s *Service) CreateStandingMeeting(ctx context.Context, orgID, createdBy uuid.UUID, f standingFields) (*StandingMeeting, error) {
+// CreateStandingMeeting makes a meeting. Saying nothing of the audience means
+// everybody, as before audiences: an administrator may, and a manager is refused
+// and has to choose their teams or people.
+func (s *Service) CreateStandingMeeting(ctx context.Context, orgID uuid.UUID, a Actor, f standingFields) (*StandingMeeting, error) {
+	may, err := s.MayMakeStanding(ctx, orgID, a)
+	if err != nil {
+		return nil, err
+	}
+	if !may {
+		return nil, apperrors.New(apperrors.CodeForbidden, "only an organization admin or a team's manager can make a standing meeting")
+	}
 	m := &StandingMeeting{}
 	if err := f.applyTo(m); err != nil {
 		return nil, err
 	}
+	choice, sent := f.audienceSent()
+	if !sent {
+		choice.everyone = true
+	}
+	if err := s.checkAudience(ctx, orgID, a, choice, audienceChoice{}); err != nil {
+		return nil, err
+	}
+	createdBy := a.ID
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -267,10 +315,47 @@ func (s *Service) CreateStandingMeeting(ctx context.Context, orgID, createdBy uu
 	if err := recordSchedule(ctx, tx, created, created.CreatedAt); err != nil {
 		return nil, err
 	}
+	if err := saveAudience(ctx, tx, created.ID, choice); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return created, nil
+	return s.standingFor(ctx, orgID, created.ID, a)
+}
+
+// standingFor is one meeting as an actor sees it, audience and all.
+func (s *Service) standingFor(ctx context.Context, orgID, id uuid.UUID, a Actor) (*StandingMeeting, error) {
+	m, err := s.standingMeeting(ctx, orgID, id)
+	if err != nil {
+		return nil, err
+	}
+	list := []StandingMeeting{*m}
+	if err := s.fillAudiences(ctx, list, a); err != nil {
+		return nil, err
+	}
+	return &list[0], nil
+}
+
+// visibleStanding is a meeting the actor may see: an administrator sees every
+// one, anybody else those they are in or made. The rest are not found, so that a
+// team's meeting is not even known of outside it.
+func (s *Service) visibleStanding(ctx context.Context, orgID, id uuid.UUID, a Actor) (*StandingMeeting, error) {
+	m, err := s.standingMeeting(ctx, orgID, id)
+	if err != nil {
+		return nil, err
+	}
+	if mayManageStanding(m, a) {
+		return m, nil
+	}
+	in, err := s.inStandingAudience(ctx, id, a.ID)
+	if err != nil {
+		return nil, err
+	}
+	if !in {
+		return nil, apperrors.ErrNotFound
+	}
+	return m, nil
 }
 
 func recordSchedule(ctx context.Context, tx pgx.Tx, m *StandingMeeting, at time.Time) error {
@@ -289,10 +374,14 @@ func sameSchedule(a, b *StandingMeeting) bool {
 		slices.Equal(a.Weekdays, b.Weekdays)
 }
 
-func (s *Service) ListStandingMeetings(ctx context.Context, orgID uuid.UUID) ([]StandingMeeting, error) {
+// ListStandingMeetings is the meetings a viewer may see: every one for an
+// administrator, otherwise the ones they are in or made.
+func (s *Service) ListStandingMeetings(ctx context.Context, orgID uuid.UUID, viewer Actor) ([]StandingMeeting, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT `+standingColumns+` FROM standing_meetings
-		WHERE org_id = $1 AND archived_at IS NULL ORDER BY time_of_day, name, id`, orgID)
+		WHERE org_id = $1 AND archived_at IS NULL
+		  AND ($2::boolean OR created_by = $3 OR standing_audience_includes(id, $3))
+		ORDER BY time_of_day, name, id`, orgID, viewer.Admin, viewer.ID)
 	if err != nil {
 		return nil, fmt.Errorf("list standing meetings: %w", err)
 	}
@@ -305,7 +394,14 @@ func (s *Service) ListStandingMeetings(ctx context.Context, orgID uuid.UUID) ([]
 		}
 		meetings = append(meetings, *m)
 	}
-	return meetings, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	if err := s.fillAudiences(ctx, meetings, viewer); err != nil {
+		return nil, err
+	}
+	return meetings, nil
 }
 
 func (s *Service) standingMeeting(ctx context.Context, orgID, id uuid.UUID) (*StandingMeeting, error) {
@@ -316,13 +412,26 @@ func (s *Service) standingMeeting(ctx context.Context, orgID, id uuid.UUID) (*St
 // UpdateStandingMeeting changes the meeting from now on. A day already held keeps
 // the start it had, so nobody becomes late in retrospect, and a day that ran under
 // the old schedule still counts under it, so nobody becomes absent in retrospect.
-func (s *Service) UpdateStandingMeeting(ctx context.Context, orgID, id uuid.UUID, f standingFields) (*StandingMeeting, error) {
-	m, err := s.standingMeeting(ctx, orgID, id)
+func (s *Service) UpdateStandingMeeting(ctx context.Context, orgID, id uuid.UUID, a Actor, f standingFields) (*StandingMeeting, error) {
+	m, err := s.visibleStanding(ctx, orgID, id, a)
 	if err != nil {
 		return nil, err
 	}
 	if m.ArchivedAt != nil {
 		return nil, apperrors.ErrNotFound
+	}
+	if !mayManageStanding(m, a) {
+		return nil, apperrors.New(apperrors.CodeForbidden, "only whoever made this meeting, or an organization admin, can change it")
+	}
+	choice, changeAudience := f.audienceSent()
+	if changeAudience {
+		kept, err := s.currentAudience(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.checkAudience(ctx, orgID, a, choice, kept); err != nil {
+			return nil, err
+		}
 	}
 	before := *m
 	if err := f.applyTo(m); err != nil {
@@ -347,14 +456,26 @@ func (s *Service) UpdateStandingMeeting(ctx context.Context, orgID, id uuid.UUID
 			return nil, err
 		}
 	}
+	if changeAudience {
+		if err := saveAudience(ctx, tx, id, choice); err != nil {
+			return nil, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	return updated, nil
+	return s.standingFor(ctx, orgID, id, a)
 }
 
 // ArchiveStandingMeeting hides the room and keeps its history.
-func (s *Service) ArchiveStandingMeeting(ctx context.Context, orgID, id uuid.UUID) error {
+func (s *Service) ArchiveStandingMeeting(ctx context.Context, orgID, id uuid.UUID, a Actor) error {
+	m, err := s.visibleStanding(ctx, orgID, id, a)
+	if err != nil {
+		return err
+	}
+	if !mayManageStanding(m, a) {
+		return apperrors.New(apperrors.CodeForbidden, "only whoever made this meeting, or an organization admin, can archive it")
+	}
 	tag, err := s.db.Exec(ctx, `
 		UPDATE standing_meetings SET archived_at = $3, updated_at = NOW()
 		WHERE id = $1 AND org_id = $2 AND archived_at IS NULL
@@ -387,6 +508,15 @@ func (s *Service) JoinStandingMeeting(ctx context.Context, orgID, id, userID uui
 		return nil, err
 	}
 	if m.ArchivedAt != nil {
+		return nil, apperrors.ErrNotFound
+	}
+	// Outside the audience it is not there at all, administrators included: rank
+	// does not walk anybody into a meeting that is not theirs.
+	in, err := s.inStandingAudience(ctx, id, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !in {
 		return nil, apperrors.ErrNotFound
 	}
 	now := s.clock()
@@ -466,7 +596,8 @@ type occurrence struct {
 // Attendance is decisions 14 and 15. Joined and left are stored; absent is worked
 // out here from who was expected.
 func (s *Service) Attendance(ctx context.Context, orgID, meetingID, callerID uuid.UUID, isOrgAdmin bool, teamID *uuid.UUID, from, to time.Time) ([]AttendanceDay, error) {
-	m, err := s.standingMeeting(ctx, orgID, meetingID)
+	// A meeting somebody may not see has no attendance for them either.
+	m, err := s.visibleStanding(ctx, orgID, meetingID, Actor{ID: callerID, Admin: isOrgAdmin})
 	if err != nil {
 		return nil, err
 	}
@@ -478,6 +609,18 @@ func (s *Service) Attendance(ctx context.Context, orgID, meetingID, callerID uui
 	// own. A team filter asks for that team and nothing else.
 	if teamID == nil && !containsID(people, callerID) {
 		people = append(people, callerID)
+	}
+	// Only the meeting's audience is expected at it: somebody it is not for is
+	// not absent from it.
+	if m.audienceKind != "everyone" {
+		rows, err := s.db.Query(ctx,
+			`SELECT id FROM unnest($1::uuid[]) AS id WHERE standing_audience_includes($2, id)`, people, meetingID)
+		if err != nil {
+			return nil, fmt.Errorf("narrow to the audience: %w", err)
+		}
+		if people, err = pgx.CollectRows(rows, pgx.RowTo[uuid.UUID]); err != nil {
+			return nil, fmt.Errorf("scan audience: %w", err)
+		}
 	}
 	loc, err := time.LoadLocation(m.TimeZone)
 	if err != nil {
@@ -713,30 +856,48 @@ func (s *Service) occurrenceSessions(ctx context.Context, meetingID uuid.UUID, f
 	return out, rows.Err()
 }
 
-func (h *Handler) requireAdmin(c *gin.Context) bool {
-	if !isAdmin(c) {
-		c.JSON(http.StatusForbidden, gin.H{"error": "only an organization admin can manage standing meetings"})
-		return false
-	}
-	return true
+// actor is whoever is asking, with whether they administer meetings.
+func actor(c *gin.Context) (uuid.UUID, Actor, bool) {
+	orgID, userID, ok := caller(c)
+	return orgID, Actor{ID: userID, Admin: isAdmin(c)}, ok
 }
 
 func (h *Handler) ListStandingMeetings(c *gin.Context) {
-	orgID, _, ok := caller(c)
+	orgID, a, ok := actor(c)
 	if !ok {
 		return
 	}
-	meetings, err := h.service.ListStandingMeetings(c.Request.Context(), orgID)
+	meetings, err := h.service.ListStandingMeetings(c.Request.Context(), orgID, a)
 	if err != nil {
 		httpx.Error(c, err, "failed to list standing meetings")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"standingMeetings": meetings})
+	may, err := h.service.MayMakeStanding(c.Request.Context(), orgID, a)
+	if err != nil {
+		httpx.Error(c, err, "failed to list standing meetings")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"standingMeetings": meetings, "canCreate": may})
+}
+
+// StandingAudienceOptions lists the teams and people the caller may make a
+// standing meeting for.
+func (h *Handler) StandingAudienceOptions(c *gin.Context) {
+	orgID, a, ok := actor(c)
+	if !ok {
+		return
+	}
+	opts, err := h.service.StandingAudienceOptions(c.Request.Context(), orgID, a)
+	if err != nil {
+		httpx.Error(c, err, "failed to list who a standing meeting can be for")
+		return
+	}
+	c.JSON(http.StatusOK, opts)
 }
 
 func (h *Handler) CreateStandingMeeting(c *gin.Context) {
-	orgID, userID, ok := caller(c)
-	if !ok || !h.requireAdmin(c) {
+	orgID, a, ok := actor(c)
+	if !ok {
 		return
 	}
 	var f standingFields
@@ -744,7 +905,7 @@ func (h *Handler) CreateStandingMeeting(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	m, err := h.service.CreateStandingMeeting(c.Request.Context(), orgID, userID, f)
+	m, err := h.service.CreateStandingMeeting(c.Request.Context(), orgID, a, f)
 	if err != nil {
 		httpx.Error(c, err, "failed to create standing meeting")
 		return
@@ -753,8 +914,8 @@ func (h *Handler) CreateStandingMeeting(c *gin.Context) {
 }
 
 func (h *Handler) UpdateStandingMeeting(c *gin.Context) {
-	orgID, _, ok := caller(c)
-	if !ok || !h.requireAdmin(c) {
+	orgID, a, ok := actor(c)
+	if !ok {
 		return
 	}
 	id, ok := pathID(c, "id")
@@ -766,7 +927,7 @@ func (h *Handler) UpdateStandingMeeting(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	m, err := h.service.UpdateStandingMeeting(c.Request.Context(), orgID, id, f)
+	m, err := h.service.UpdateStandingMeeting(c.Request.Context(), orgID, id, a, f)
 	if err != nil {
 		httpx.Error(c, err, "failed to update standing meeting")
 		return
@@ -775,15 +936,15 @@ func (h *Handler) UpdateStandingMeeting(c *gin.Context) {
 }
 
 func (h *Handler) ArchiveStandingMeeting(c *gin.Context) {
-	orgID, _, ok := caller(c)
-	if !ok || !h.requireAdmin(c) {
+	orgID, a, ok := actor(c)
+	if !ok {
 		return
 	}
 	id, ok := pathID(c, "id")
 	if !ok {
 		return
 	}
-	if err := h.service.ArchiveStandingMeeting(c.Request.Context(), orgID, id); err != nil {
+	if err := h.service.ArchiveStandingMeeting(c.Request.Context(), orgID, id, a); err != nil {
 		httpx.Error(c, err, "failed to archive standing meeting")
 		return
 	}
