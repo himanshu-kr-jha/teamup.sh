@@ -153,6 +153,18 @@ export async function signIn(page: Page, who: PersonKey | { email: string; passw
  * busy, when the next test rang them.
  */
 async function closeLikeATab(session: Session) {
+  // Even so, a closing tab's "leaving" sometimes never reached the media server,
+  // which then held the person for its timeout of about twenty seconds, and the
+  // next test that rang them found them busy. Whoever is still in a call hangs up
+  // first, as a person would.
+  await Promise.all(
+    session.context.pages().map(async (page) => {
+      const leave = page.getByRole('button', { name: 'Leave the call' }).first();
+      if (!(await leave.isVisible().catch(() => false))) return;
+      await leave.click({ timeout: 5_000 }).catch(() => undefined);
+      await leave.waitFor({ state: 'detached', timeout: 5_000 }).catch(() => undefined);
+    })
+  );
   await Promise.all(
     session.context.pages().map((page) => page.close({ runBeforeUnload: true }).catch(() => undefined))
   );
