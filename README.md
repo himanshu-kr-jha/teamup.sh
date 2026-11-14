@@ -197,6 +197,11 @@ S3 directly, and TeamUp just signs the tokens.
 Full detail, including request paths and what breaks when each service dies:
 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**.
 
+### On phones
+
+TeamUp installs from the browser as an app on any phone.
+There is also a store app for Android, with iPhone to follow, in [mobile/](mobile/README.md): a native shell that opens the web app of your server, so it is always the same version as the website.
+
 ### Watch it under load
 
 **[Open TeamUp in Breakscale][breakscale-teamup]**, a system design simulator that runs in the browser.

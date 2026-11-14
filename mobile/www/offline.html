@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>TeamUp</title>
+<style>
+  :root { color-scheme: light dark; --bg: #ffffff; --fg: #111827; --muted: #6b7280; --accent: #4f46e5; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #0b0f19; --fg: #f3f4f6; --muted: #9ca3af; --accent: #818cf8; } }
+  html, body { height: 100%; margin: 0; }
+  body { background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         display: flex; align-items: center; justify-content: center; padding: 24px; box-sizing: border-box; text-align: center; }
+  main { max-width: 22rem; }
+  h1 { font-size: 1.25rem; margin: 0 0 .5rem; }
+  p { color: var(--muted); margin: 0 0 1.5rem; }
+  button { font: inherit; font-weight: 600; color: #fff; background: var(--accent); border: 0; border-radius: .5rem;
+           padding: .75rem 1.5rem; min-height: 44px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Can't reach TeamUp</h1>
+  <p>Check that you are online. If you are, the server may be down for a moment.</p>
+  <button type="button" onclick="location.replace(window.TEAMUP_URL || '/')">Try again</button>
+</main>
+<script src="server.js"></script>
+</body>
+</html>

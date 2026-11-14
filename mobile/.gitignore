@@ -1,0 +1,9 @@
+node_modules/
+# Per-server Firebase settings for push; see README.md
+android/app/google-services.json
+ios/App/App/GoogleService-Info.plist
+# Signing keys never go in the repository
+*.keystore
+*.jks
+keystore.properties
+www/server.js
