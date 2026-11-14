@@ -74,6 +74,19 @@ Two ways:
 
 `internal/mail` today only sends TeamUp's own messages, such as invitations; it is not a mailbox.
 
+What it gives an organization that runs TeamUp, once built:
+
+- Mail on the organization's own domain: adding a person makes their account and their mailbox, such as `ravi@acme.com`, in one step.
+- One sign-in for mail, in TeamUp or in any mail app on a phone.
+- The mailbox counts against the person's storage quota, beside their Drive.
+- The setup script lists the DNS records (MX, SPF, DKIM, DMARC) and checks them, as it already checks the domain for the site.
+
+What the organization has to bring: its own domain, and a server allowed to send mail.
+Where port 25 is blocked, as on AWS and Lightsail until asked, or the address has no reputation yet, mail goes out through a relay such as Amazon SES or Postmark.
+A new server's mail can land in spam for its first weeks, and the setup should say so.
+
+Mail should be something an administrator turns on, not a default: many organizations already have mail with Google or Microsoft and will connect it instead.
+
 ### 5. Later
 
 - Forms, with answers into a sheet.
