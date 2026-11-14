@@ -163,6 +163,10 @@ ones are tracked as
 Federation · end-to-end encryption · native mobile apps · guest access ·
 retention policies and compliance export · i18n
 
+Planned: a self-hosted workspace suite, with a Drive and storage quotas for each
+person, office documents edited together in the browser, single sign-on and mail
+([the proposal](.scratch/workspace-suite/proposal.md)).
+
 ---
 
 ## How it fits together
