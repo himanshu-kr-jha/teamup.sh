@@ -234,3 +234,25 @@ func TestValidateRejectsMalformedSubdomain(t *testing.T) {
 		}
 	}
 }
+
+// An outside bucket is addressed as https://s3.<region>.amazonaws.com, which is
+// how MinIOSecure knows to dial it over TLS. Validate refused any scheme, so a
+// new server keeping its files in S3 stopped at the very last setup step.
+func TestValidateEndpoints(t *testing.T) {
+	ok := []string{"minio:9000", "storage.example.com", "https://s3.ap-south-1.amazonaws.com", "http://minio:9000", "https://s3.ap-south-1.amazonaws.com/"}
+	for _, ep := range ok {
+		d := completeData()
+		d.MinIOEndpoint = ep
+		if err := d.Validate(); err != nil {
+			t.Errorf("%q should be accepted, got: %v", ep, err)
+		}
+	}
+	bad := []string{"ftp://storage.example.com", "https://s3.amazonaws.com/teamup-files", "storage.example.com/teamup-files", "https://"}
+	for _, ep := range bad {
+		d := completeData()
+		d.MinIOEndpoint = ep
+		if err := d.Validate(); err == nil {
+			t.Errorf("%q should be refused", ep)
+		}
+	}
+}
