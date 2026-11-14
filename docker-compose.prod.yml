@@ -49,7 +49,7 @@ services:
           memory: 512M
 
   redis:
-    image: redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
+    image: redis:8.10.2-alpine@sha256:9f8d2d789b9a1d1e3f283f979aa9cbf393373806472e1ccd460e2f9c869b833b
     restart: unless-stopped
     security_opt: ["no-new-privileges:true"]
     # The password is in a config file rather than on the command line, where
