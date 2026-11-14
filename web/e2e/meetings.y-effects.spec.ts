@@ -123,6 +123,40 @@ test.describe('the bell in a conversation', () => {
     await alice.page.goto(`/chat/${room.id}`);
     await expect(bell).toHaveAttribute('aria-label', 'Notifications: Nothing');
   });
+
+  // Seen in CI: a message that arrived just after a page loaded, before the list of
+  // conversations had, chimed in a conversation set to Only @mentions. Without the
+  // list the page did not know the choice, and took it to be All messages.
+  test('a quiet conversation stays quiet in the moments after a page loads', async ({ as }) => {
+    const owner = await apiAs('owner');
+    const room = await owner.post('/channels', { type: 'group', name: `hush-${Date.now()}` });
+    await owner.post(`/channels/${room.id}/members`, { userId: idOf('alice') });
+    const alice = await as('alice');
+    await alice.page.goto(`/chat/${room.id}`);
+    const bell = alice.page.getByTestId('notify-menu');
+    await bell.click();
+    await alice.page.getByRole('menuitemradio', { name: /Only @mentions/ }).click();
+    await expect(alice.page.getByText('You will only be notified when somebody mentions you here.').first()).toBeVisible();
+
+    // A slow network: the list of conversations takes a few seconds after a load.
+    let slow = true;
+    await alice.page.route(/\/api\/channels(\?.*)?$/, async (route) => {
+      if (slow) await new Promise((r) => setTimeout(r, 4_000));
+      await route.continue();
+    });
+    await listenForSounds(alice);
+    await alice.page.goto('/tasks');
+    // Signed in and connected, with the list still on its way.
+    await alice.page.waitForTimeout(1_500);
+    await owner.post(`/channels/${room.id}/messages`, { content: `just news ${Date.now()}` });
+    await alice.page.waitForTimeout(5_000);
+    expect(await sounds(alice.page), 'a quiet conversation chimed').not.toContain('notification');
+
+    // And a mention still gets through.
+    slow = false;
+    await owner.post(`/channels/${room.id}/messages`, { content: `@alice a look? ${Date.now()}` });
+    await expect.poll(() => sounds(alice.page), { timeout: 10_000 }).toContain('notification');
+  });
 });
 
 test.describe('backgrounds', () => {
