@@ -17,12 +17,14 @@ import {
   NotebookPen,
   FolderGit2,
   Plug,
+  Gauge,
 } from 'lucide-react';
 import { MailSettingsTab, mailProblemText } from './MailSettingsTab';
 import { AppearanceTab } from './AppearanceTab';
 import { NotetakerTab } from './NotetakerTab';
 import { ProjectsTab } from './ProjectsTab';
 import { IntegrationsTab } from './IntegrationsTab';
+import { SystemTab } from './SystemTab';
 import { RolesTab, roleSummary, usePermissionCatalog, withinReach } from './RolesTab';
 import { PERMS, can } from '@/shared/permissions';
 import { UserAvatar } from '@/shared/components/UserAvatar';
@@ -103,6 +105,7 @@ export function AdminPage() {
           {may.notes && <TabsTrigger value="notes"><NotebookPen className="mr-2 h-4 w-4" />Meeting notes</TabsTrigger>}
           <TabsTrigger value="projects"><FolderGit2 className="mr-2 h-4 w-4" />Projects</TabsTrigger>
           {may.settings && <TabsTrigger value="integrations"><Plug className="mr-2 h-4 w-4" />Integrations</TabsTrigger>}
+          {may.settings && <TabsTrigger value="system"><Gauge className="mr-2 h-4 w-4" />System</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="members" className="p-4 md:p-6">
@@ -155,6 +158,11 @@ export function AdminPage() {
                 )
               }
             />
+          </TabsContent>
+        )}
+        {may.settings && (
+          <TabsContent value="system" className="p-4 md:p-6">
+            <SystemTab />
           </TabsContent>
         )}
       </Tabs>

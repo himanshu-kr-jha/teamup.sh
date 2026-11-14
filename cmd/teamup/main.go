@@ -39,6 +39,7 @@ import (
 	"github.com/teamup/teamup/internal/presence"
 	"github.com/teamup/teamup/internal/ratelimit"
 	"github.com/teamup/teamup/internal/status"
+	"github.com/teamup/teamup/internal/system"
 	"github.com/teamup/teamup/internal/tasks"
 	"github.com/teamup/teamup/internal/websocket"
 	"github.com/teamup/teamup/internal/wizard"
@@ -733,6 +734,24 @@ func runServer(cmd *cobra.Command, args []string) error {
 		}
 		return out
 	}, status.NewRedisStore(redisClient), logger)
+	// The System tab: how loaded the server is, for administrators.
+	systemService := system.New(system.Deps{
+		DB:          dbPool,
+		Redis:       redisClient,
+		Connections: wsHub.ConnectionCount,
+		Online: func(orgID string) (int, error) {
+			online, err := presenceService.GetAllOnline(orgID)
+			return len(online), err
+		},
+		Files: func(ctx context.Context) (bool, bool) {
+			resp, _ := readiness.Evaluate(ctx)
+			check, ok := resp.Checks["minio"]
+			// Over TLS is an outside bucket: the MinIO container is reached in plain.
+			outside := cfg.MinIOInternalSecure
+			return ok && check.Status == "pass", outside
+		},
+		Logger: logger,
+	})
 	router.GET("/healthz", observability.LiveHandler)
 	router.GET("/readyz", readyHandler)
 	router.GET("/healthz/live", observability.LiveHandler)
@@ -792,6 +811,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 			gcal.RegisterRoutes(protected, api, gcalService)
 			integrations.RegisterRoutes(protected, api, integrationsService)
 			notetaker.RegisterRoutes(protected, notetakerService)
+			system.RegisterRoutes(protected, systemService)
 		}
 
 		// LiveKit has no session. The signature on the request is its credential.
@@ -929,6 +949,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// What the status page shows for the last day. Every replica records four
 	// times a minute, and a failure any of them saw wins.
 	go statusService.Run(sweepCtx, 15*time.Second)
+	go systemService.Run(sweepCtx, 15*time.Second)
 	// Meeting notes another server left off, on its way out or because it died:
 	// carried on in the call, or written up if the call has ended.
 	go notetakerService.RunResume(sweepCtx, 20*time.Second)

@@ -867,6 +867,21 @@ It is linked from the sign-in page and from the user menu, and while something i
 The history lives in Redis, so it survives restarts of the app but not of Redis, and a time nothing was running to record shows as "no record".
 It carries no error text, host names or ports; for those, read `/readyz` from inside the network as below.
 
+## The System page
+
+**Organization, System** shows how hard the server is working, to whoever may change the organization's settings (`org.settings`) and nobody else; `GET /api/org/system` and `/api/org/system/history` answer 403 to anybody else.
+It updates every 5 seconds while it is open:
+
+- **Server:** processors, memory and disk of the whole server, read from `/proc` inside the app's container, which on Linux describes the machine rather than the container. "Held back by the cloud provider" is CPU steal: a burstable instance (t3) out of credit.
+- **People:** online now, active in the last 24 hours (anybody whose session was renewed), and open connections.
+- **Calls:** in progress, people in calls, and the biggest call against what one 2-CPU server carries (about 50 with every camera on).
+- **App:** requests a minute and answer times over the last 5 minutes, and errors (5xx) in the last hour, from the app's own counters (the same ones `/metrics` serves).
+- **Storage and backup:** the database's size, whether file storage answers, and the last nightly backup, which `scripts/backup-db.sh` records in the `backup_runs` table (migration `0044`).
+
+Charts show the last 24 hours in 5-minute steps; each replica keeps a reading a minute in Redis for a day (`teamup:system:<minute>`).
+Warnings appear at the top for a disk over 80%, memory over 85%, processors over 80%, CPU steal over 10%, a call of 40 or more, file storage not answering, and a backup more than 26 hours old or one that did not reach the bucket.
+It does not send alerts: nobody is told unless somebody looks.
+
 ## Guests in meetings
 
 A meeting's organizer, or an administrator, can let people from outside the organization join it: **Make a guest link** in the meeting's details in the calendar, or **Guests** at the top of the call.

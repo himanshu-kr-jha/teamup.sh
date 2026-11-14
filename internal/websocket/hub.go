@@ -15,6 +15,7 @@ import (
 	"github.com/rs/zerolog"
 	"nhooyr.io/websocket"
 
+	"github.com/teamup/teamup/internal/observability"
 	"github.com/teamup/teamup/pkg/protocol"
 )
 
@@ -252,6 +253,9 @@ func (h *Hub) Register(conn *Connection) {
 	conn.touch()
 
 	h.mu.Lock()
+	if _, already := h.connections[conn.ID]; !already {
+		observability.RecordWSConnection(1)
+	}
 	h.connections[conn.ID] = conn
 
 	if h.userConns[conn.UserID()] == nil {
@@ -288,6 +292,14 @@ func (h *Hub) Register(conn *Connection) {
 	}
 }
 
+// ConnectionCount is how many sockets this process holds open: every tab and
+// phone of everybody connected here.
+func (h *Hub) ConnectionCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.connections)
+}
+
 // Unregister removes a connection, announcing the user as offline once their
 // last one has gone — anywhere, not just here. As in Register, the
 // announcement is made after the lock is released.
@@ -299,6 +311,11 @@ func (h *Hub) Register(conn *Connection) {
 // disappear. The registry is what makes the count a cluster count.
 func (h *Hub) Unregister(conn *Connection) {
 	h.mu.Lock()
+	// The /metrics gauge of open sockets, kept here where they are counted. A
+	// connection unregistered twice is taken off once.
+	if _, ok := h.connections[conn.ID]; ok {
+		observability.RecordWSConnection(-1)
+	}
 	delete(h.connections, conn.ID)
 
 	wentOffline := false

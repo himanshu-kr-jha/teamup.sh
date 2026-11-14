@@ -224,6 +224,61 @@ export const notetakerApi = {
     api.get<{ items: MeetingNotesItem[]; hasMore: boolean }>('/meeting-notes', { params }),
 };
 
+/** The System tab: how loaded the server is. A null number could not be read. */
+export interface SystemReport {
+  checkedAt: string;
+  server: {
+    cpuPercent: number | null;
+    stealPercent: number | null;
+    cores: number;
+    load1: number | null;
+    memoryTotal: number;
+    memoryAvailable: number;
+    diskTotal: number;
+    diskFree: number;
+    uptimeSeconds: number | null;
+    procAvailable: boolean;
+    connections: number;
+  };
+  people: { members: number; online: number; activeLastDay: number };
+  calls: {
+    active: number;
+    peopleInCalls: number;
+    busiest: { title: string; people: number } | null;
+    comfortableMax: number;
+    note: string;
+  };
+  app: {
+    requestsPerMinute: number | null;
+    p50ms: number | null;
+    p95ms: number | null;
+    errorsLastHour: number | null;
+    measuredMinutes: number;
+  };
+  storage: { databaseBytes: number | null; filesReachable: boolean; filesOutside: boolean };
+  backup: { finishedAt: string; sizeBytes: number; uploaded: boolean | null; problem?: string } | null;
+  warnings: { level: 'warn' | 'alarm'; text: string }[];
+}
+
+export interface SystemPoint {
+  at: string;
+  cpu: number | null;
+  steal: number | null;
+  memory: number | null;
+  disk: number | null;
+  connections: number;
+  inCalls: number;
+  requests: number;
+  errors: number;
+  p95ms: number | null;
+  minutes: number;
+}
+
+export const systemApi = {
+  get: () => api.get<SystemReport>('/org/system'),
+  history: () => api.get<{ points: SystemPoint[]; stepMinutes: number }>('/org/system/history'),
+};
+
 export const statusApi = {
   get: () => api.get<StatusReport>('/status'),
 };
