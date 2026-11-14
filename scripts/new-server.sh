@@ -17,6 +17,8 @@
 #   --email you@acme.com    for the certificate's expiry notices
 #   --name acme             what to call this server here (default: from the domain)
 #   --ipv4                  ssh over IPv4 only
+#   --timezone Asia/Kolkata the server's time zone, so the nightly backup runs at
+#                           23:55 there (default: the server's own, usually UTC)
 #   --files-bucket name --files-region ap-south-1
 #                           keep files in this S3 bucket (Amazon S3 or a Lightsail
 #                           bucket) instead of a MinIO container on the server; it
@@ -46,7 +48,7 @@ cd "$ROOT"
 
 HOST="" KEY="" DOMAIN="" EMAIL="" NAME="" IPV4=0 DIR=/opt/teamup
 FILES_BUCKET="" FILES_REGION=""
-ORG_NAME="" OWNER_NAME="" OWNER_EMAIL=""
+ORG_NAME="" OWNER_NAME="" OWNER_EMAIL="" TIMEZONE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --host) HOST="$2"; shift 2 ;;
@@ -60,6 +62,7 @@ while [ $# -gt 0 ]; do
     --owner-email) OWNER_EMAIL="$2"; shift 2 ;;
     --files-bucket) FILES_BUCKET="$2"; shift 2 ;;
     --files-region) FILES_REGION="$2"; shift 2 ;;
+    --timezone) TIMEZONE="$2"; shift 2 ;;
     -h|--help) awk 'NR==1{next} /^#/{sub(/^#[[:space:]]?/,""); print; next} {exit}' "$0"; exit 0 ;;
     *) echo "Unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
@@ -71,6 +74,9 @@ step() { printf '\n== %s\n' "$*"; }
 [ -n "$HOST" ] || die "say which server: --host user@address"
 [ -n "$DOMAIN" ] || die "say its address: --domain team.example.com (or <a>-<b>-<c>-<d>.sslip.io)"
 case "$DOMAIN" in *[!a-zA-Z0-9.-]* | .* | *. ) die "$DOMAIN is not a domain name" ;; esac
+if [ -n "$TIMEZONE" ] && [ ! -e "/usr/share/zoneinfo/$TIMEZONE" ]; then
+  case "$TIMEZONE" in *[!A-Za-z0-9/_+-]*) die "$TIMEZONE is not a time zone, such as Asia/Kolkata" ;; esac
+fi
 if [ -n "$FILES_BUCKET$FILES_REGION" ]; then
   [ -n "$FILES_BUCKET" ] && [ -n "$FILES_REGION" ] || die "a files bucket needs both --files-bucket and --files-region"
   case "$FILES_BUCKET" in *[!a-z0-9.-]* | [!a-z0-9]* ) die "$FILES_BUCKET is not an S3 bucket name" ;; esac
@@ -195,9 +201,10 @@ REMOTE=$(cat <<'REMOTE_SCRIPT'
 #!/bin/bash
 set -euo pipefail
 trap 'rc=$?; rm -f /tmp/teamup-owner.json; rm -rf /tmp/teamup-setup; echo "== exit $rc"; echo $rc > /tmp/teamup-new-server.done' EXIT
-TAG="$1"; DIR="$2"; DOMAIN="$3"; EMAIL="$4"; FILES_BUCKET="${5:-}"; FILES_REGION="${6:-}"
+TAG="$1"; DIR="$2"; DOMAIN="$3"; EMAIL="$4"; FILES_BUCKET="${5:-}"; FILES_REGION="${6:-}"; TIMEZONE="${7:-}"
 export DEBIAN_FRONTEND=noninteractive
 
+if [ -n "$TIMEZONE" ]; then sudo timedatectl set-timezone "$TIMEZONE"; fi
 echo "== install Docker and certbot $(date -u +%T)"
 # Docker keeps every container's log forever unless told otherwise, which on a
 # server left running for months fills the disk. Each container keeps three
@@ -341,33 +348,18 @@ dc exec -T nginx wget -qO- http://teamup:8080/readyz </dev/null || echo "readine
 echo
 
 echo "== nightly backups"
-cat > backup.sh <<'EOF'
-#!/bin/sh
-set -e
-cd /opt/teamup
-mkdir -p backups
-D=$(date +%F)
-docker compose exec -T postgres pg_dump -U teamup -Fc teamup > "backups/postgres-$D.dump"
-docker compose stop minio
-docker run --rm -v teamup_minio-data:/data:ro -v "$PWD/backups":/backup alpine:3.20 \
-  tar czf "/backup/minio-$D.tar.gz" -C /data .
-docker compose start minio
-cp .env "backups/env-$D"
-find backups -type f -mtime +14 -delete
-EOF
-sed -i "s#/opt/teamup#$DIR#" backup.sh
-# Files in a bucket are not on this disk, so the backup is the database alone.
-if [ -n "$FILES_BUCKET" ]; then sed -i '/minio/d' backup.sh; fi
+# The backup itself is scripts/backup-db.sh, which every deploy brings up to
+# date; backup.sh is what cron and scripts/deploy.sh run, and deploys leave it be.
+printf '#!/bin/sh\nexec %s/scripts/backup-db.sh "$@"\n' "$DIR" > backup.sh
 chmod +x backup.sh
 mkdir -p backups
-# A new server has no crontab, and grep finds nothing to keep: both exit 1,
-# which under pipefail stopped the setup here and left backups unscheduled.
-{ sudo crontab -l 2>/dev/null | grep -v "$DIR/backup.sh" || true; echo "0 3 * * * $DIR/backup.sh >> $DIR/backups/backup.log 2>&1"; } | sudo crontab -
+{ sudo crontab -l 2>/dev/null | grep -v "$DIR/backup.sh" || true; echo "55 23 * * * $DIR/backup.sh >> $DIR/backups/backup.log 2>&1"; } | sudo crontab -
+echo "  at 23:55 $(timedatectl show -p Timezone --value 2>/dev/null || date +%Z) every night"
 sudo certbot renew --dry-run >/dev/null 2>&1 && echo "certificate renewal: works" || echo "certificate renewal: the dry run failed; check with sudo certbot renew --dry-run"
 REMOTE_SCRIPT
 )
 printf '%s\n' "$REMOTE" | remote 'cat > /tmp/teamup-new-server.sh && rm -f /tmp/teamup-new-server.done'
-remote "nohup bash /tmp/teamup-new-server.sh '$TAG' '$DIR' '$DOMAIN' '$EMAIL' '$FILES_BUCKET' '$FILES_REGION' > /tmp/teamup-new-server.log 2>&1 < /dev/null &"
+remote "nohup bash /tmp/teamup-new-server.sh '$TAG' '$DIR' '$DOMAIN' '$EMAIL' '$FILES_BUCKET' '$FILES_REGION' '$TIMEZONE' > /tmp/teamup-new-server.log 2>&1 < /dev/null &"
 
 step "Setting up on the server (10 minutes or so; safe to lose this connection)"
 shown=0

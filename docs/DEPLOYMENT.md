@@ -340,32 +340,42 @@ Run a real all-hands as a test before relying on it, and watch `docker stats`.
 Two things hold durable data: Postgres and the MinIO volume.
 Redis holds presence and wizard sessions only, so it needs no backup.
 
-Create this script once.
-It stops MinIO for a moment so that the copy is consistent, so uploads fail during that moment.
+The backup is `scripts/backup-db.sh`, which every deploy keeps up to date on the server.
+`scripts/new-server.sh` sets it up, run by cron at 23:55 in the server's time zone (`--timezone Asia/Kolkata` sets that).
+It keeps 14 days in `backups/` on the server: the database, the `.env`, and the MinIO files when they live on the server.
+Copying the MinIO files stops MinIO for a moment so the copy is consistent, so uploads fail during that moment.
+
+On a server set up by hand, point `backup.sh` at it once and schedule it:
 
 ```bash
-cat > /opt/teamup/backup.sh <<'EOF'
-#!/bin/sh
-set -e
-cd /opt/teamup
-mkdir -p backups
-D=$(date +%F)
-docker compose exec -T postgres pg_dump -U teamup -Fc teamup > "backups/postgres-$D.dump"
-docker compose stop minio
-docker run --rm -v teamup_minio-data:/data:ro -v "$PWD/backups":/backup alpine:3.20 \
-  tar czf "/backup/minio-$D.tar.gz" -C /data .
-docker compose start minio
-cp .env "backups/env-$D"
-find backups -type f -mtime +14 -delete
-EOF
-chmod +x /opt/teamup/backup.sh
+printf '#!/bin/sh\nexec /opt/teamup/scripts/backup-db.sh "$@"\n' | sudo tee /opt/teamup/backup.sh >/dev/null
+sudo chmod +x /opt/teamup/backup.sh
+(sudo crontab -l 2>/dev/null; echo '55 23 * * * /opt/teamup/backup.sh >> /opt/teamup/backups/backup.log 2>&1') | sudo crontab -
 ```
 
-Run it nightly, and copy `backups/` off the VM, because a backup on the same disk does not survive losing the VM.
+A backup on the same disk does not survive losing the VM, so copy `backups/` off it, or keep the files in an outside bucket.
+
+### In the files bucket, one object with every night's copy behind it
+
+When the files live in an outside bucket, the database also goes there each night as one object, `_backups/teamup-db.dump`, written over every time.
+Turn on versioning for the bucket: it then keeps each night's copy behind the latest, so the bucket shows one file however many nights there are.
+How long the old copies stay is the bucket's lifecycle rule; "Permanently delete noncurrent versions" after 30 days keeps the last 30 nights.
+A deploy backs up first, so a deploy day has one more copy.
+
+The bucket's key needs `s3:ListBucketVersions` and `s3:GetObjectVersion` as well as reading and writing; the policy in "Files in an outside bucket" (`s3:*` on the bucket alone) has them.
+
+From your machine, with the server named in `.deploy.env` (or `--env FILE`):
 
 ```bash
-(crontab -l 2>/dev/null; echo '0 3 * * * /opt/teamup/backup.sh >> /opt/teamup/backups/backup.log 2>&1') | crontab -
+scripts/db-backups.sh list                    # every copy, newest first, with its size and version
+scripts/db-backups.sh get                     # the latest, saved here as teamup-db-<date>.dump
+scripts/db-backups.sh get --days-ago 7        # the last one made 7 days ago
+scripts/db-backups.sh get --date 2026-11-14   # the last one made that day
+scripts/db-backups.sh get --version <id>      # exactly that copy
 ```
+
+The key stays on the server: it asks the bucket, and the copy comes back over ssh.
+Restore it as below, with the server's `.env` from `~/.teamup-servers/`.
 
 The backups hold every message and the secrets in `.env`, so encrypt them wherever they go.
 
