@@ -174,8 +174,12 @@ func TestAManagerChoosesOnlyFromTheirOwnPeople(t *testing.T) {
 		"no audience at all": standingBody("Unsaid", "09:30", "Asia/Kolkata", everyDay...),
 	} {
 		code, _ := e.createStanding(t, c.max, "manager", body)
-		if code == http.StatusCreated {
-			t.Errorf("a manager choosing %s must be refused", name)
+		want := http.StatusForbidden
+		if name == "nobody" {
+			want = http.StatusBadRequest
+		}
+		if code != want {
+			t.Errorf("a manager choosing %s: want %d, got %d", name, want, code)
 		}
 	}
 	// A specific person they manage, and a team nested beneath theirs, are fine.

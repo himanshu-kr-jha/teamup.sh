@@ -276,8 +276,9 @@ func (f standingFields) applyTo(m *StandingMeeting) error {
 	return nil
 }
 
-// CreateStandingMeeting makes a meeting. An administrator who says nothing of the
-// audience makes one for everybody, as before audiences; a manager has to choose.
+// CreateStandingMeeting makes a meeting. Saying nothing of the audience means
+// everybody, as before audiences: an administrator may, and a manager is refused
+// and has to choose their teams or people.
 func (s *Service) CreateStandingMeeting(ctx context.Context, orgID uuid.UUID, a Actor, f standingFields) (*StandingMeeting, error) {
 	may, err := s.MayMakeStanding(ctx, orgID, a)
 	if err != nil {
@@ -292,7 +293,7 @@ func (s *Service) CreateStandingMeeting(ctx context.Context, orgID uuid.UUID, a 
 	}
 	choice, sent := f.audienceSent()
 	if !sent {
-		choice.everyone = a.Admin
+		choice.everyone = true
 	}
 	if err := s.checkAudience(ctx, orgID, a, choice, audienceChoice{}); err != nil {
 		return nil, err

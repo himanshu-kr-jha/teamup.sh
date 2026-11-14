@@ -769,6 +769,8 @@ test.describe('7. the standing meeting', () => {
     await owner.dispose();
   });
 
+  // A manager may make stand-ups for their own teams (meetings.y-standups), but
+  // not a room for everybody, nor change the admin's.
   test('an admin makes the morning and evening rooms; an employee and a manager cannot manage them', async ({ as }) => {
     const olivia = await as('owner');
     await createStandingInUi(olivia.page, MORNING, timeOfDay(-30));
