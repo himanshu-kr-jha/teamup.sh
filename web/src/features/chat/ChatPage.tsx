@@ -1668,6 +1668,7 @@ function MessageBubble({
                 message.pending && 'opacity-60'
               )}
               data-testid="message"
+              data-state={message.pending ? 'sending' : 'sent'}
             >
               {deleted ? (
                 <span className="flex items-center gap-1.5">
