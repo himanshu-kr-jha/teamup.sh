@@ -188,6 +188,11 @@ test.describe('ticket 22 and 31: a standing meeting on your own calendar', () =>
     await expect(dialog.getByText(NAME('pat'))).toHaveCount(0);
     await expect(dialog.getByText('Invited:')).toHaveCount(0);
     await expect(dialog.getByRole('button', { name: 'Log' })).toHaveCount(0);
+    // Alice left the room when her page went to the calendar; Pat hangs up. Both are
+    // waited out, because somebody the server still has in this room is busy, and
+    // the next test's call to Alice ended before it began.
+    await leaveCall(pat.page);
+    await waitForLog(owner, callId, 'both left', (l) => l.sessions.every((s) => !!s.leftAt));
     // It recurs every day; left behind it crowds other tests' calendars.
     await owner.del(`/standing-meetings/${roomOf}`);
     await owner.dispose();

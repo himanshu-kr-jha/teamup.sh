@@ -548,6 +548,30 @@ func TestAManagerWithNoLinkToAPrivateCallCannotRecordIt(t *testing.T) {
 	}
 }
 
+// The region is part of the S3 signature, so a recording written to a bucket
+// outside us-east-1 is refused unless Egress is told the bucket's own region.
+func TestARecordingIsSignedForTheBucketsRegion(t *testing.T) {
+	for _, tc := range []struct{ region, want string }{{"", "us-east-1"}, {"ap-south-1", "ap-south-1"}} {
+		e, media := recordingEnv(t)
+		e.svc.cfg.StorageRegion = tc.region
+		boss := e.person(t, "Boss Bea", "manager")
+		call := e.call(t, e.org.OwnerID, boss)
+		wantCode(t, doJSON(t, e.as(t, boss, "manager"), http.MethodPost, "/api/calls/"+call.ID.String()+"/record", ""), http.StatusOK)
+		if len(media.recorded) != 1 {
+			t.Fatalf("got %d recordings", len(media.recorded))
+		}
+		out, ok := media.recorded[0].Output.(*livekit.RoomCompositeEgressRequest_File)
+		if !ok {
+			t.Fatalf("the recording is not written to a file: %T", media.recorded[0].Output)
+		}
+		// The same field StartRecording fills; LiveKit marks it deprecated in favour
+		// of FileOutputs, which this server does not use yet.
+		if got := out.File.GetS3().GetRegion(); got != tc.want { //nolint:staticcheck // see above
+			t.Errorf("region %q: Egress was given %q, want %q", tc.region, got, tc.want)
+		}
+	}
+}
+
 func TestAManagerOnTheCallAndAnAdminMayRecordIt(t *testing.T) {
 	e, media := recordingEnv(t)
 	boss := e.person(t, "Boss Bea", "manager")

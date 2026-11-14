@@ -196,3 +196,30 @@ func TestEnsureObjectStorageRequiresAnEndpointAndBucket(t *testing.T) {
 		})
 	}
 }
+
+// An outside bucket is given with its scheme, as https://s3.<region>.amazonaws.com,
+// and the S3 client refuses an address with one. Setup's own client has to take
+// it apart, or the bucket check fails before the organization is created.
+func TestSetupReachesStorageGivenWithOrWithoutAScheme(t *testing.T) {
+	for _, tc := range []struct {
+		endpoint, host string
+		secure         bool
+	}{
+		{"minio:9000", "minio:9000", false},
+		{"http://minio:9000", "minio:9000", false},
+		{"https://s3.ap-south-1.amazonaws.com", "s3.ap-south-1.amazonaws.com", true},
+		{"https://s3.ap-south-1.amazonaws.com/", "s3.ap-south-1.amazonaws.com", true},
+		{"httpsfiles.example.com", "httpsfiles.example.com", false},
+	} {
+		d := Data{MinIOEndpoint: tc.endpoint, MinIOAccessKey: "k", MinIOSecretKey: "s", MinIOBucket: "b"}
+		if got := d.MinIOHost(); got != tc.host {
+			t.Errorf("%s: host %q, want %q", tc.endpoint, got, tc.host)
+		}
+		if got := d.MinIOSecure(); got != tc.secure {
+			t.Errorf("%s: secure %v, want %v", tc.endpoint, got, tc.secure)
+		}
+		if _, err := minioClientFor(d); err != nil {
+			t.Errorf("%s: the client refused it: %v", tc.endpoint, err)
+		}
+	}
+}

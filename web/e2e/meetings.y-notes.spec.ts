@@ -159,7 +159,8 @@ test.describe('meeting notes', () => {
     // Copied, they carry HTML for a document or an email and *marks* for chat apps.
     await page.context().grantPermissions(['clipboard-read', 'clipboard-write']);
     await page.getByRole('button', { name: 'Copy', exact: true }).click();
-    await expect(page.getByText('Copied. Paste into a document')).toBeVisible();
+    // Exactly, because the toast is also read out by a live region that repeats its words.
+    await expect(page.getByText('Copied. Paste into a document, an email or another app.', { exact: true })).toBeVisible();
     const copied = await page.evaluate(async () => {
       const [item] = await navigator.clipboard.read();
       return {

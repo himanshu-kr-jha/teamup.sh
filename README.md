@@ -279,7 +279,8 @@ least be configured.
 
 Because storage is plain S3, `TEAMUP_MINIO_*` points just as happily at Amazon
 S3, Cloudflare R2 or Backblaze B2 — change the endpoint and set
-`TEAMUP_MINIO_SECURE=true`.
+`TEAMUP_MINIO_SECURE=true`. On a server, see
+[Files in an outside bucket](docs/DEPLOYMENT.md#files-in-an-outside-bucket).
 
 <details>
 <summary><b>Running on your phone or another machine</b></summary>
@@ -391,6 +392,10 @@ people notice, moving to a new address and rolling back.
 
 - **One VM with Docker Compose** - `docker-compose.prod.yml`, the recommended
   path. It runs all six services, and it is what the guide was tested against.
+  Files can live in an S3 or Lightsail bucket instead of the MinIO container,
+  so they survive losing the server:
+  `scripts/new-server.sh --files-bucket <name> --files-region <region>` sets it
+  up. See [Files in an outside bucket](docs/DEPLOYMENT.md#files-in-an-outside-bucket).
 - **Kubernetes** - `helm/teamup`, which renders the deployment, service,
   ingress, config, secrets and a migration `pre-install` hook. The templates
   render and validate, but **have not yet been installed against a live

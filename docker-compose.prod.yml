@@ -104,6 +104,9 @@ services:
     volumes:
       - minio-data:/data
     deploy:
+      # 0 when files live in an outside bucket instead (FILES_ENDPOINT below),
+      # so the container is never started and its memory stays free.
+      replicas: ${MINIO_REPLICAS:-1}
       resources:
         limits:
           cpus: '1'
@@ -199,26 +202,32 @@ services:
     environment:
       TEAMUP_DATABASE_URL: postgres://teamup:${POSTGRES_PASSWORD}@postgres:5432/teamup?sslmode=disable
       TEAMUP_REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      # Files live in the minio container above unless .env names an outside
+      # S3 bucket with the FILES_* settings (docs/DEPLOYMENT.md, "Files in an
+      # outside bucket"); then those win and MINIO_REPLICAS=0 leaves MinIO off.
+      #
       # Presigned URLs are opened by the BROWSER, so this is the public origin,
       # not a compose hostname, and it has to be TLS or an https page blocks
       # the request as mixed content. nginx proxies https://<origin>/<bucket>/
       # straight through to MinIO; the bucket below must match that location
       # block, because the S3 signature covers the path.
-      TEAMUP_MINIO_ENDPOINT: ${TEAMUP_DOMAIN:?set TEAMUP_DOMAIN in .env}
+      TEAMUP_MINIO_ENDPOINT: ${FILES_ENDPOINT:-${TEAMUP_DOMAIN:?set TEAMUP_DOMAIN in .env}}
       TEAMUP_MINIO_SECURE: "true"
       # ...while this process reaches the same storage directly for the calls
       # it makes itself (readiness, stat, delete), which stays on the compose
-      # network and never touches the proxy or TLS.
-      TEAMUP_MINIO_INTERNAL_ENDPOINT: minio:9000
-      TEAMUP_MINIO_INTERNAL_SECURE: "false"
-      TEAMUP_MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
-      TEAMUP_MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
-      TEAMUP_MINIO_BUCKET: teamup-files
+      # network and never touches the proxy or TLS. An outside bucket has one
+      # address for both, over TLS.
+      TEAMUP_MINIO_INTERNAL_ENDPOINT: ${FILES_ENDPOINT:-minio:9000}
+      TEAMUP_MINIO_INTERNAL_SECURE: ${FILES_ENDPOINT:+true}
+      TEAMUP_MINIO_ACCESS_KEY: ${FILES_ACCESS_KEY:-${MINIO_ACCESS_KEY}}
+      TEAMUP_MINIO_SECRET_KEY: ${FILES_SECRET_KEY:-${MINIO_SECRET_KEY}}
+      TEAMUP_MINIO_BUCKET: ${FILES_BUCKET:-teamup-files}
       # Part of the signing key, so it must match the object store. MinIO's own
       # default is us-east-1; if you set MINIO_REGION on the minio service, set
-      # the same value here or every signature is wrong. A mismatch is caught
+      # the same value here or every signature is wrong. For an outside bucket
+      # it is the bucket's region, such as ap-south-1. A mismatch is caught
       # by the readiness probe at start-up, not by a user's failed upload.
-      TEAMUP_MINIO_REGION: us-east-1
+      TEAMUP_MINIO_REGION: ${FILES_REGION:-us-east-1}
       # Largest single upload, in bytes (100 MiB). Signed into each upload URL,
       # so object storage refuses anything else; keep nginx's
       # client_max_body_size on the /teamup-files/ location at least this big.

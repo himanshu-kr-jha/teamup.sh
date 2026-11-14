@@ -33,6 +33,7 @@ scripts/new-server.sh --host ubuntu@203.0.113.10 --key ~/keys/acme.pem --domain 
 It asks for the organization's name and the owner's name, email and password, the password hidden.
 It installs `main` as it is on GitHub, writes `.env` with new random secrets, gets the certificate, and creates the organization from inside the server before the website is switched on, so nobody can reach the setup page first.
 It refuses a server that already has TeamUp.
+To keep files in an S3 bucket instead of on the server, add `--files-bucket <name> --files-region <region>`; see [Files in an outside bucket](#files-in-an-outside-bucket).
 At the end it keeps a copy of the server's `.env` in `~/.teamup-servers/` and writes `.deploy.<name>.env`, so `make deploy ARGS="--env .deploy.<name>.env"` updates that server.
 A complete run on a fresh VM has not been verified yet; the organization step is the same one `scripts/create-org.sh` runs, which has.
 
@@ -568,8 +569,54 @@ Chainguard does not promise to keep old digests, so if a pull ever fails, take t
 A VM that already holds the image is not affected, and your data lives in the volume rather than in the image.
 
 Your risk here is limited because MinIO is not published directly and is reached only through the signed `/teamup-files/` path on nginx.
-If you would rather not run it at all, TeamUp speaks plain S3, so you can point `TEAMUP_MINIO_*` at Amazon S3, Cloudflare R2 or Backblaze B2.
-That variation has not been tested.
+If you would rather not run it at all, keep files in an outside bucket instead, as the next section says.
+
+### Files in an outside bucket
+
+Files can live in an S3 bucket instead of the MinIO container: Amazon S3, or a Lightsail bucket, which is S3 underneath and sold with its traffic included.
+Files then survive losing the server, the nightly backup is the database alone, and MinIO's memory stays free.
+
+`.env` says so with these settings, which `docker-compose.prod.yml` reads in place of MinIO's:
+
+```bash
+FILES_ENDPOINT=s3.ap-south-1.amazonaws.com
+FILES_REGION=ap-south-1
+FILES_BUCKET=acme-teamup-files
+FILES_ACCESS_KEY=...
+FILES_SECRET_KEY=...
+MINIO_REPLICAS=0
+```
+
+`FILES_REGION` is part of every signature, so it has to be the bucket's own region.
+`MINIO_REPLICAS=0` leaves the MinIO container off; the `minio` service stays in the file so a server can switch back.
+`scripts/new-server.sh --files-bucket acme-teamup-files --files-region ap-south-1` writes all of this and asks for the key, hidden as you type.
+
+The bucket has to exist already, and stay private: the browser gets a short-lived signed address for each file, so nothing needs to be public.
+Give the key access to this bucket alone.
+On Lightsail that is Storage, then the bucket, then Permissions, then Create access key.
+
+Browsers upload straight into the bucket, so the bucket has to allow the site's origin (CORS), or every upload fails with nothing on the page but a network error.
+`new-server.sh` checks this before it touches the server, and sets the rule itself when the key is allowed to.
+Otherwise set it yourself; with the AWS CLI:
+
+```bash
+aws s3api put-bucket-cors --bucket acme-teamup-files --cors-configuration '{"CORSRules":[{
+  "AllowedOrigins":["https://teamup.example.com"],"AllowedMethods":["GET","HEAD","PUT"],
+  "AllowedHeaders":["*"],"ExposeHeaders":["ETag","Content-Length","Content-Range","Accept-Ranges"],"MaxAgeSeconds":3600}]}'
+```
+
+The exposed range headers let the PDF viewer load a large PDF a piece at a time.
+Check it from anywhere; the answer must name your site in `access-control-allow-origin`:
+
+```bash
+curl -si -X OPTIONS https://s3.ap-south-1.amazonaws.com/acme-teamup-files/x \
+  -H 'Origin: https://teamup.example.com' -H 'Access-Control-Request-Method: PUT' | grep -i allow-origin
+```
+
+Turn on versioning for the bucket if you want a deleted file to be recoverable, since the nightly backup no longer holds files.
+With no MinIO container, nginx logs that `minio` could not be resolved every few seconds; that is expected and harmless, because nothing is sent to `/teamup-files/` any more.
+
+Moving a server that already has files from MinIO to a bucket means copying them across first, for example with `mc mirror` or `aws s3 sync` from a restored MinIO backup, keeping each object's key.
 
 ## Security checklist
 
@@ -663,6 +710,7 @@ Three things about the `location /teamup-files/` block in `nginx.conf` matter, b
 `TEAMUP_MINIO_ENDPOINT` is the address the browser uses, and it is set from `TEAMUP_DOMAIN`.
 `TEAMUP_MINIO_INTERNAL_ENDPOINT` is what the server itself dials, on the compose network.
 `TEAMUP_MINIO_REGION` is part of the signing key, so leave it at `us-east-1` unless you also set `MINIO_REGION` on the minio service.
+With files in an outside bucket none of this applies: the browser and the server both use the bucket's own address.
 
 ### Upload limits
 
