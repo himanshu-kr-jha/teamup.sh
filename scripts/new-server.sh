@@ -188,6 +188,15 @@ TAG="$1"; DIR="$2"; DOMAIN="$3"; EMAIL="$4"; FILES_BUCKET="${5:-}"; FILES_REGION
 export DEBIAN_FRONTEND=noninteractive
 
 echo "== install Docker and certbot $(date -u +%T)"
+# Docker keeps every container's log forever unless told otherwise, which on a
+# server left running for months fills the disk. Each container keeps three
+# files of 100 MB at most. Set before Docker starts, so every container
+# made from here on has it.
+sudo mkdir -p /etc/docker
+if [ ! -s /etc/docker/daemon.json ]; then
+  printf '{\n  "log-driver": "json-file",\n  "log-opts": { "max-size": "100m", "max-file": "3" }\n}\n' | sudo tee /etc/docker/daemon.json >/dev/null
+  if command -v docker >/dev/null 2>&1; then sudo systemctl restart docker; fi
+fi
 if ! command -v docker >/dev/null 2>&1; then curl -fsSL https://get.docker.com | sudo sh >/dev/null; fi
 sudo apt-get update -qq && sudo apt-get install -y -qq certbot rsync python3 openssl >/dev/null
 sudo usermod -aG docker "$USER" || true
