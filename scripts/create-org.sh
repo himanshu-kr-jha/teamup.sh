@@ -96,7 +96,10 @@ dc() { sudo docker compose "$@"; }
 
 # The website stays off until the organization exists.
 dc stop nginx >/dev/null 2>&1 || true
-dc up -d --wait postgres redis minio livekit >/dev/null
+# A server keeping its files in an outside bucket (FILES_ENDPOINT in .env) has
+# no MinIO to start.
+if grep -q '^FILES_ENDPOINT=.' .env; then storage=(); else storage=(minio); fi
+dc up -d --wait postgres redis "${storage[@]}" livekit >/dev/null
 # Not --wait for the app: until it is set up it has no storage bucket, so it
 # rightly says it is not ready. The setup page answering is what counts here.
 dc up -d teamup >/dev/null
@@ -108,14 +111,21 @@ python3 - /tmp/teamup-owner.json /tmp/teamup-setup <<'PY'
 import json, os, sys
 owner = json.load(open(sys.argv[1]))
 out = sys.argv[2]
+e = os.environ
+storage = {
+    "minioEndpoint": "https://" + e["FILES_ENDPOINT"], "minioBucket": e["FILES_BUCKET"],
+    "minioAccessKey": e["FILES_ACCESS_KEY"], "minioSecretKey": e["FILES_SECRET_KEY"],
+} if e.get("FILES_ENDPOINT") else {
+    "minioEndpoint": "minio:9000", "minioBucket": "teamup-files",
+    "minioAccessKey": e["MINIO_ACCESS_KEY"], "minioSecretKey": e["MINIO_SECRET_KEY"],
+}
 steps = {
     "step1": {"orgName": owner["orgName"], "orgSubdomain": owner["orgSubdomain"]},
     "step2": {k: owner[k] for k in ("adminName", "adminEmail", "adminPassword")},
     # Password sign-in is the real path; the provider is a required field.
     "step3": {"oidcProvider": "custom"},
     "step4": {
-        "minioEndpoint": "minio:9000", "minioBucket": "teamup-files",
-        "minioAccessKey": os.environ["MINIO_ACCESS_KEY"], "minioSecretKey": os.environ["MINIO_SECRET_KEY"],
+        **storage,
         "livekitUrl": "http://livekit:7880",
         "livekitApiKey": os.environ["LIVEKIT_API_KEY"], "livekitApiSecret": os.environ["LIVEKIT_API_SECRET"],
     },

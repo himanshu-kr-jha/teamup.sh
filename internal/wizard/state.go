@@ -220,11 +220,16 @@ func (d Data) Validate() error {
 	// and a TLS-fronted deployment addresses object storage as a bare hostname
 	// on 443, so the tag rejected exactly the configuration the production
 	// compose file now ships. A port is still accepted for a direct MinIO.
+	// http:// or https:// in front is allowed: https:// is how an outside bucket
+	// says it is reached over TLS (MinIOSecure).
 	if d.MinIOEndpoint != "" {
+		host := d.MinIOHost()
 		switch {
-		case strings.Contains(d.MinIOEndpoint, "://"):
-			problems = append(problems, "minioEndpoint must be a host with no scheme, such as storage.example.com or minio:9000")
-		case strings.Contains(d.MinIOEndpoint, "/"):
+		case strings.Contains(host, "://"):
+			problems = append(problems, "minioEndpoint must be a host, optionally after http:// or https://, such as storage.example.com, minio:9000 or https://s3.ap-south-1.amazonaws.com")
+		case host == "":
+			problems = append(problems, "minioEndpoint must name a host")
+		case strings.Contains(host, "/"):
 			problems = append(problems, "minioEndpoint must be a host with no path")
 		}
 	}
