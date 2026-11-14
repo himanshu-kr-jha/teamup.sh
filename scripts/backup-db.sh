@@ -35,6 +35,8 @@ fi
 cp .env "backups/env-$D"
 find backups -type f -mtime +14 -delete
 
+SIZE=$(stat -c %s "$DUMP")
+UPLOADED=NULL PROBLEM=NULL
 if [ -n "${FILES_BUCKET:-}" ]; then
   URL="https://$FILES_ENDPOINT/$FILES_BUCKET/_backups/teamup-db.dump"
   # The key goes to curl on stdin, not as an argument anybody could list.
@@ -46,12 +48,21 @@ if [ -n "${FILES_BUCKET:-}" ]; then
       -H 'Content-Type: application/octet-stream' \
       -T "$DUMP" "$URL" || true)
   if [ "$code" = 200 ]; then
+    UPLOADED=true
     echo "$(date '+%F %T %Z') bucket: $FILES_BUCKET/_backups/teamup-db.dump"
   else
+    UPLOADED=false
+    PROBLEM="'the bucket answered ${code:-nothing}'"
     echo "$(date '+%F %T %Z') bucket upload FAILED (answered ${code:-nothing}):" >&2
     cat /tmp/teamup-backup-upload.out >&2 2>/dev/null || true
-    rm -f /tmp/teamup-backup-upload.out
-    exit 1
   fi
   rm -f /tmp/teamup-backup-upload.out
 fi
+
+# The System tab reads how it went. A server not yet migrated has no table,
+# which is no reason to call the backup failed.
+docker compose exec -T postgres psql -U teamup -d teamup -q -c \
+  "INSERT INTO backup_runs (size_bytes, uploaded, problem) VALUES ($SIZE, $UPLOADED, $PROBLEM)" \
+  </dev/null >/dev/null 2>&1 || echo "$(date '+%F %T %Z') could not record the backup for the System tab" >&2
+
+[ "$UPLOADED" != false ] || exit 1

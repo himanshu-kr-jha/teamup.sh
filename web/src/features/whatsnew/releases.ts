@@ -26,6 +26,18 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-14',
+    date: '2026-11-14',
+    title: 'See how the server is doing',
+    changes: [
+      {
+        area: 'app',
+        title: 'A System page for administrators',
+        body: 'Organization, then System, shows how hard the server is working, updated every few seconds: processors, memory and disk, who is online, calls in progress and the biggest one, how quickly TeamUp answers, and when the last backup ran. Charts show the last 24 hours, and anything close to a limit, such as a full disk, a meeting near the size the server carries well or a missed backup, is called out at the top.',
+      },
+    ],
+  },
+  {
     id: '2026-11-13-b',
     date: '2026-11-13',
     title: 'Faster when everybody is busy',
