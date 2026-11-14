@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">TeamUp</string>
+    <string name="title_activity_main">TeamUp</string>
+    <string name="package_name">sh.teamup.app</string>
+    <string name="custom_url_scheme">sh.teamup.app</string>
+    <string name="download_started">Downloading %1$s</string>
+    <string name="download_unsupported">This file can only be saved from a browser for now.</string>
+</resources>

@@ -30,8 +30,14 @@ let installed = false;
 const listeners = new Set<() => void>();
 const changed = () => listeners.forEach((l) => l());
 
+/** Whether this page is inside the TeamUp phone app (mobile/), which adds this to its user agent. */
+export function isPhoneApp(): boolean {
+  return typeof navigator !== 'undefined' && navigator.userAgent.includes('TeamUpApp');
+}
+
 /** Whether this page is the installed app rather than a tab. */
 export function isStandalone(): boolean {
+  if (isPhoneApp()) return true;
   try {
     return matchMedia('(display-mode: standalone)').matches || (navigator as Navigator & { standalone?: boolean }).standalone === true;
   } catch {

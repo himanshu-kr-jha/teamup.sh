@@ -1,0 +1,21 @@
+{
+  "name": "teamup-mobile",
+  "private": true,
+  "description": "The TeamUp phone app: a native shell around the TeamUp web app of one server",
+  "scripts": {
+    "sync": "node scripts/server.mjs && cap sync",
+    "android": "node scripts/server.mjs && cap sync android && cd android && ./gradlew assembleDebug",
+    "android:release": "node scripts/server.mjs && cap sync android && cd android && ./gradlew bundleRelease assembleRelease"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.6.2",
+    "@capacitor/app": "8.1.2",
+    "@capacitor/browser": "8.0.5",
+    "@capacitor/core": "8.6.2",
+    "@capacitor/ios": "8.6.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.6.2",
+    "typescript": "5.9.3"
+  }
+}
