@@ -283,6 +283,25 @@ export function meetingStillOn(
   );
 }
 
+/**
+ * A scheduled meeting nobody started is missed once its time is up: a 30-minute
+ * meeting at 17:00 from 17:30, and not before, since somebody running late can
+ * still start it until then. The server refuses to open it from then on. Moving
+ * it to a new time makes it a meeting to come again. A standing meeting's day is
+ * nothing anybody scheduled, so it is never missed.
+ */
+export function meetingMissed(
+  call: { status?: string; scheduledEnd?: string; standingMeetingId?: string },
+  now: Date
+): boolean {
+  return (
+    call.status === 'scheduled' &&
+    !call.standingMeetingId &&
+    !!call.scheduledEnd &&
+    now.getTime() >= new Date(call.scheduledEnd).getTime()
+  );
+}
+
 export function joinTarget(item: CalendarItem, now: Date): JoinTarget | null {
   const start = new Date(item.startsAt).getTime();
   const end = new Date(item.endsAt).getTime();

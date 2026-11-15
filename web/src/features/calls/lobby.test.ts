@@ -23,6 +23,13 @@ describe('lobbyFor', () => {
     expect(lobbyFor(meeting({ status: 'ended' }), 'me', at(11))).toBe('none');
   });
 
+  it('says one nobody started is missed from its end, to anybody, and not before', () => {
+    expect(lobbyFor(meeting(), 'me', at(10, 59))).toBe('due');
+    expect(lobbyFor(meeting(), 'me', at(11))).toBe('missed');
+    expect(lobbyFor(meeting({ participants: [{ userId: 'other' }] }), 'me', at(12))).toBe('missed');
+    expect(lobbyFor(meeting({ standingMeetingId: 's' }), 'me', at(12))).toBe('none');
+  });
+
   it('lets them straight into one with people in it', () => {
     expect(lobbyFor(meeting({ status: 'active' }), 'me', at(9))).toBe('none');
   });

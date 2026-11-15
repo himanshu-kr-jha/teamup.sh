@@ -2,7 +2,9 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { format, isSameDay } from 'date-fns';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog';
 import { cn, formatTime } from '@/shared/utils/cn';
-import { meetingStillOn,
+import {
+  meetingMissed,
+  meetingStillOn,
   MIN_EVENT_MINUTES,
   dayLabelKey,
   itemKey,
@@ -307,8 +309,9 @@ function EventBlock({ segment, onSelect }: { segment: PlacedSegment; onSelect: (
   // The time only when there is width for it to be read.
   const showTime = segment.endMinute - segment.startMinute >= 40 && columns === 1;
   const finished =
-    item.status === 'ended' &&
-    !(item.source === 'meeting' && meetingStillOn({ status: item.status, scheduledEnd: item.endsAt }, new Date()));
+    (item.status === 'ended' &&
+      !(item.source === 'meeting' && meetingStillOn({ status: item.status, scheduledEnd: item.endsAt }, new Date()))) ||
+    (item.source === 'meeting' && meetingMissed({ status: item.status, scheduledEnd: item.endsAt }, new Date()));
   const kind = item.kind === 'focus' || item.kind === 'entry' ? item.kind : item.source === 'google' ? 'google' : 'busy';
 
   return (

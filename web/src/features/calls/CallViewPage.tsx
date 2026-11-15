@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react';
-import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, CalendarClock, CircleOff, Loader2, Video } from 'lucide-react';
+import { AlertTriangle, CalendarClock, CalendarX, CircleOff, Loader2, Video } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { callsApi } from '@/shared/api/client';
 import { formatDate, formatTime } from '@/shared/utils/cn';
 import { useAuth } from '@/features/auth/AuthProvider';
-import { JOIN_EARLY_MINUTES } from '@/features/calendar/layout';
+import { JOIN_EARLY_MINUTES, dayLabelKey } from '@/features/calendar/layout';
+import { useNow } from '@/shared/hooks/useNow';
 import { useActiveCall } from './ActiveCallProvider';
 import { KnockScreen } from './KnockScreen';
 import { lobbyFor } from './lobby';
@@ -51,7 +52,9 @@ function CallRoute({ callId }: { callId: string }) {
     refetchInterval: choice === 'lobby' ? LOBBY_RECHECK_MS : false,
   });
 
-  const lobby = call ? lobbyFor(call, user?.id, new Date()) : 'none';
+  // Looked at again as time passes, so a lobby left open turns missed at the end.
+  const now = useNow();
+  const lobby = call ? lobbyFor(call, user?.id, now) : 'none';
 
   useEffect(() => {
     if (choice !== null) return;
@@ -66,6 +69,10 @@ function CallRoute({ callId }: { callId: string }) {
   useEffect(() => {
     if (choice === 'join') void join(callId);
   }, [choice, callId, join]);
+
+  if (choice === 'lobby' && lobby === 'missed') {
+    return <MissedMeeting call={call} organizer={!!user && call?.createdBy === user.id} />;
+  }
 
   if (choice === 'lobby') {
     return <MeetingLobby callId={callId} call={call} early={lobby === 'early'} onJoin={() => setChoice('join')} />;
@@ -102,7 +109,9 @@ function CallRoute({ callId }: { callId: string }) {
             {over
               ? /cancel/i.test(failure.message)
                 ? 'This meeting was cancelled.'
-                : 'This call has ended.'
+                : /missed/i.test(failure.message)
+                  ? 'This meeting was missed. Nobody joined it before it ended.'
+                  : 'This call has ended.'
               : failure.kind === 'missing'
                 ? 'This call does not exist, or is not in your organization.'
                 : failure.message}
@@ -179,6 +188,53 @@ function MeetingLobby({
             <Video className="mr-2 h-4 w-4" aria-hidden="true" />
             {early && !started ? 'Join now' : 'Join'}
           </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A scheduled meeting nobody started before its end. There is nothing to join;
+ * whoever organized it can move it to a new time from the calendar.
+ */
+function MissedMeeting({
+  call,
+  organizer,
+}: {
+  call: { title?: string; scheduledStart?: string; scheduledEnd?: string } | undefined;
+  organizer: boolean;
+}) {
+  const navigate = useNavigate();
+  const start = call?.scheduledStart;
+  const end = call?.scheduledEnd;
+  return (
+    <div className="flex h-full items-center justify-center overflow-y-auto p-6">
+      <div className="w-full max-w-md text-center">
+        <CalendarX className="mx-auto mb-3 h-10 w-10 text-muted-foreground" aria-hidden="true" />
+        <h1 className="text-lg font-semibold">This meeting was missed</h1>
+        {call?.title?.trim() && <p className="mt-1 break-anywhere font-medium">{call.title.trim()}</p>}
+        {start && end && (
+          <p className="mt-1 text-sm tabular-nums text-muted-foreground">
+            {formatDate(start)}, {formatTime(start)} to {formatTime(end)}
+          </p>
+        )}
+        <p className="mt-3 text-sm text-muted-foreground">
+          Nobody joined it before it ended, so it can no longer be started.
+          {organizer && ' You can move it to a new time from the calendar.'}
+        </p>
+        <div className="mt-5 flex flex-wrap justify-center gap-2">
+          <Button variant={organizer ? 'outline' : 'default'} onClick={() => navigate('/calls')}>
+            Back to calls
+          </Button>
+          {organizer && start && (
+            <Button asChild>
+              <Link to={`/calendar?view=day&date=${dayLabelKey(new Date(start))}`}>
+                <CalendarClock className="mr-2 h-4 w-4" aria-hidden="true" />
+                Open the calendar
+              </Link>
+            </Button>
+          )}
         </div>
       </div>
     </div>

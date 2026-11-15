@@ -50,6 +50,19 @@ type Config struct {
 // ErrCallOver is somebody asking to join a call that has ended and cannot reopen.
 var ErrCallOver = apperrors.New(apperrors.CodeConflict, "this call has ended")
 
+// ErrMeetingMissed is somebody asking to join a scheduled meeting that nobody
+// started before its end. It is over, but it never happened.
+var ErrMeetingMissed = apperrors.New(apperrors.CodeConflict, "this meeting was missed: nobody joined it before it ended")
+
+// Missed says whether a scheduled meeting was never started and its time is up.
+// A 30-minute meeting at 17:00 that nobody joined is missed from 17:30, and not a
+// minute before: somebody running late can still start it until then. Moving it
+// to a new time makes it a meeting to come again. A standing meeting's day is not
+// a meeting anybody scheduled, so it is never missed.
+func (m *CallModel) Missed(now time.Time) bool {
+	return m.Status == "scheduled" && m.StandingMeetingID == nil && m.ScheduledEnd != nil && !m.ScheduledEnd.After(now)
+}
+
 type Broadcaster interface {
 	BroadcastToUser(userID string, msg *protocol.Message)
 	BroadcastToChannel(channelID string, msg *protocol.Message, excludeUserID string)
@@ -951,12 +964,22 @@ func (s *Service) ListCalls(ctx context.Context, orgID, viewerID uuid.UUID, stat
 		            WHERE cm.channel_id = c.channel_id AND cm.user_id = $2))
 		)`,
 	}
-	if status != "" && status != "all" {
-		args = append(args, status)
-		where = append(where, fmt.Sprintf("c.status = $%d", len(args)))
-	} else {
+	switch status {
+	case "", "all":
 		// A cancelled meeting never happened, so it is not history.
 		where = append(where, "c.status <> 'cancelled'")
+	case "missed":
+		args = append(args, s.clock())
+		where = append(where, fmt.Sprintf(
+			"c.status = 'scheduled' AND c.standing_meeting_id IS NULL AND c.scheduled_end <= $%d", len(args)))
+	case "scheduled":
+		// What is still to come, or still in its time; a missed one is not.
+		args = append(args, s.clock())
+		where = append(where, fmt.Sprintf(
+			"c.status = 'scheduled' AND (c.standing_meeting_id IS NOT NULL OR c.scheduled_end IS NULL OR c.scheduled_end > $%d)", len(args)))
+	default:
+		args = append(args, status)
+		where = append(where, fmt.Sprintf("c.status = $%d", len(args)))
 	}
 	if channelID != nil {
 		args = append(args, *channelID)
@@ -1793,7 +1816,10 @@ func (s *Service) openForJoin(ctx context.Context, call *CallModel) error {
 		    ended_at = NULL, duration_seconds = NULL, updated_at = NOW()
 		WHERE c.id = $1 AND (
 		    -- Somebody arriving at the same moment may have opened it already.
-		    c.status IN ('scheduled', 'active')
+		    c.status = 'active'
+		    -- One nobody started before its end was missed, and stays so.
+		    OR (c.status = 'scheduled' AND (c.standing_meeting_id IS NOT NULL
+		        OR c.scheduled_end IS NULL OR c.scheduled_end > $2))
 		    OR (c.status = 'ended' AND c.standing_meeting_id IS NULL AND c.scheduled_end > $2)
 		    OR (c.status = 'ended' AND EXISTS (
 		        SELECT 1 FROM standing_meetings sm
@@ -1804,6 +1830,9 @@ func (s *Service) openForJoin(ctx context.Context, call *CallModel) error {
 		return fmt.Errorf("open call: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
+		if call.Missed(now) {
+			return ErrMeetingMissed
+		}
 		return ErrCallOver
 	}
 	// LiveKit would make the room on first connection anyway, without the size

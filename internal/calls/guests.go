@@ -187,7 +187,7 @@ func (s *Service) SetGuestLink(ctx context.Context, orgID, callID, userID uuid.U
 		}
 		return nil, apperrors.New(apperrors.CodeForbidden, "only the organizer can let guests in")
 	}
-	if change.Enabled && (call.Status == "ended" && call.ScheduledEnd == nil || call.Status == "cancelled") {
+	if change.Enabled && (call.Status == "ended" && call.ScheduledEnd == nil || call.Status == "cancelled" || call.Missed(s.clock())) {
 		return nil, apperrors.New(apperrors.CodeConflict, "this meeting is over")
 	}
 	var passcode *string
@@ -298,7 +298,8 @@ func (s *Service) guestState(call *CallModel) string {
 	switch {
 	case call.Status == "active":
 		return "open"
-	case call.Status == "cancelled", call.Status == "ended" && (call.ScheduledEnd == nil || !call.ScheduledEnd.After(s.clock())):
+	case call.Status == "cancelled", call.Status == "ended" && (call.ScheduledEnd == nil || !call.ScheduledEnd.After(s.clock())),
+		call.Missed(s.clock()):
 		return "ended"
 	}
 	return "waiting"

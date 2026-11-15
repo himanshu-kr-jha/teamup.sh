@@ -475,6 +475,10 @@ func (h *Handler) GetCallToken(c *gin.Context) {
 		return
 	}
 	if !mayJoin {
+		if call.Missed(h.service.clock()) {
+			httpx.Error(c, ErrMeetingMissed, "this meeting was missed")
+			return
+		}
 		if call.Status == "ended" {
 			httpx.Error(c, ErrCallOver, "this call has ended")
 			return

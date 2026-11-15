@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { AlertTriangle, Video, Phone, Users, Search, Loader2, Clock, CheckCircle, XCircle, History, Link2, NotebookPen, ChevronRight, PhoneMissed, PhoneOff, PhoneForwarded } from 'lucide-react';
+import { AlertTriangle, Video, Phone, Users, Search, Loader2, Clock, CheckCircle, XCircle, History, Link2, NotebookPen, ChevronRight, PhoneMissed, PhoneOff, PhoneForwarded, CalendarX } from 'lucide-react';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
@@ -11,7 +11,8 @@ import { callsApi } from '@/shared/api/client';
 import { Link, useNavigate } from 'react-router-dom';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
-import { JOIN_EARLY_MINUTES, meetingStillOn } from '@/features/calendar/layout';
+import { JOIN_EARLY_MINUTES, meetingMissed, meetingStillOn } from '@/features/calendar/layout';
+import { useNow } from '@/shared/hooks/useNow';
 import { CallLogDialog } from './CallLogDialog';
 import { CreateCallDialog } from './CreateCallDialog';
 import { copyCallLink } from './copyLink';
@@ -87,7 +88,7 @@ export function CallsPage() {
   const filteredCalls = calls.filter((call) => {
     // A call needs no title, so match defensively.
     if (searchQuery && !(call.title ?? '').toLowerCase().includes(searchQuery.toLowerCase())) return false;
-    if (statusFilter !== 'all' && call.status !== statusFilter) return false;
+    // The status was filtered by the server, which knows what counts as missed.
     return true;
   });
 
@@ -116,6 +117,7 @@ export function CallsPage() {
           >
             <option value="all">All Status</option>
             <option value="scheduled">Scheduled</option>
+            <option value="missed">Missed</option>
             <option value="active">Active</option>
             <option value="ended">Ended</option>
             <option value="cancelled">Cancelled</option>
@@ -172,7 +174,8 @@ export function CallsPage() {
  * Whether Join is on offer. Joining opens a scheduled meeting, and a meeting that
  * has opened can no longer be moved, so it is not offered long before its time.
  */
-function joinable(call: Call, now: Date = new Date()): boolean {
+function joinable(call: Call, now: Date): boolean {
+  if (meetingMissed(call, now)) return false;
   const stillOn = meetingStillOn(call, now);
   if ((call.status === 'ended' && !stillOn) || call.status === 'cancelled') return false;
   if ((call.status !== 'scheduled' && !stillOn) || !call.scheduledStart) return true;
@@ -181,11 +184,18 @@ function joinable(call: Call, now: Date = new Date()): boolean {
 
 function CallCard({ call, onJoin }: { call: Call; onJoin: (id: string) => void }) {
   // A meeting whose room emptied before its end has not finished (decision 23).
-  const stillOn = meetingStillOn(call, new Date());
+  const now = useNow();
+  const stillOn = meetingStillOn(call, now);
+  // Nobody started it, and its time is up.
+  const missed = meetingMissed(call, now);
   const status = stillOn ? 'scheduled' : call.status;
   const config = statusConfig[status];
   const { user } = useAuth();
-  const mark = status === 'ended' && call.missedReason ? missedMark(call.missedReason, call.createdBy === user?.id) : null;
+  const mark = missed
+    ? { label: 'Missed', icon: CalendarX, color: MISSED }
+    : status === 'ended' && call.missedReason
+      ? missedMark(call.missedReason, call.createdBy === user?.id)
+      : null;
   const toast = useToast();
   const [showingLog, setShowingLog] = useState(false);
 
@@ -230,6 +240,10 @@ function CallCard({ call, onJoin }: { call: Call; onJoin: (id: string) => void }
                         )}
                       </>
                     )}
+                  </>
+                ) : missed ? (
+                  <>
+                    Was due {formatDate(call.scheduledStart ?? call.createdAt)} at {formatTime(call.scheduledStart ?? call.createdAt)}, nobody joined
                   </>
                 ) : (
                   <>
@@ -284,11 +298,11 @@ function CallCard({ call, onJoin }: { call: Call; onJoin: (id: string) => void }
                 <History className="h-4 w-4" />
               </Button>
             )}
-            {joinable(call) ? (
+            {joinable(call, now) ? (
               <Button variant="outline" size="sm" onClick={() => onJoin(call.id)}>
                 Join
               </Button>
-            ) : status === 'scheduled' ? (
+            ) : status === 'scheduled' && !missed ? (
               <span className="text-xs text-muted-foreground">Opens {JOIN_EARLY_MINUTES} min before</span>
             ) : null}
           </div>
