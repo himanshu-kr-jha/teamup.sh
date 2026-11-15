@@ -31,6 +31,7 @@ import (
 	"github.com/teamup/teamup/internal/files"
 	"github.com/teamup/teamup/internal/gcal"
 	"github.com/teamup/teamup/internal/integrations"
+	"github.com/teamup/teamup/internal/leave"
 	"github.com/teamup/teamup/internal/mail"
 	"github.com/teamup/teamup/internal/notetaker"
 	"github.com/teamup/teamup/internal/notifications"
@@ -517,6 +518,8 @@ func runServer(cmd *cobra.Command, args []string) error {
 	presenceService.SetDB(dbPool)
 	tasksService := tasks.NewService(dbPool)
 	calendarService := calendar.NewService(dbPool)
+	leaveService := leave.NewService(dbPool, tasksService)
+	presenceService.SetLeave(leaveService)
 	wizardService := wizard.NewService(dbPool, redisClient, &authCfg, logger)
 
 	// Without this every service logs to a nil writer, so the fail-closed
@@ -528,6 +531,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	notificationsService.SetLogger(logger)
 	tasksService.SetLogger(logger)
 	calendarService.SetLogger(logger)
+	leaveService.SetLogger(logger)
 	gcalService, err := gcal.NewService(dbPool, gcal.Config{
 		ClientID:        cfg.GCalClientID,
 		ClientSecret:    cfg.GCalClientSecret,
@@ -638,6 +642,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	tasksService.SetNotifier(notificationsService)
 	integrationsService.SetNotifier(notificationsService)
 	calendarService.SetNotifier(notificationsService)
+	leaveService.SetNotifier(notificationsService)
 	// People from outside invited by email are emailed, and told when the
 	// meeting moves or is cancelled.
 	callsService.SetGuestMailer(mailService, cfg.BaseURL)
@@ -808,6 +813,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 			presence.RegisterRoutes(protected, presenceService)
 			tasks.RegisterRoutes(protected, tasksService)
 			calendar.RegisterRoutes(protected, calendarService)
+			leave.RegisterRoutes(protected, leaveService)
 			gcal.RegisterRoutes(protected, api, gcalService)
 			integrations.RegisterRoutes(protected, api, integrationsService)
 			notetaker.RegisterRoutes(protected, notetakerService)

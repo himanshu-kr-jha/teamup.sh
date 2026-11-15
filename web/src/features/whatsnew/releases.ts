@@ -26,6 +26,24 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-15-d',
+    date: '2026-11-15',
+    title: 'Leave and holidays count in attendance',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'On leave is not absent',
+        body: 'A stand-up\'s attendance now shows On leave for somebody away, a whole day or half of one, and Holiday on the organization\'s holidays. Leave added after the meeting says who added it and that it came afterwards.',
+      },
+      {
+        area: 'calendar',
+        title: 'Plan leave, for yourself or your team',
+        body: 'Add leave under Leave, including days already gone. Managers can add or correct it for the people they manage, and they are told. Choosing On leave as your status records it too. Administrators keep the holidays there.',
+        link: '/leave',
+      },
+    ],
+  },
+  {
     id: '2026-11-15-c',
     date: '2026-11-15',
     title: 'From research to a branch, in one task',

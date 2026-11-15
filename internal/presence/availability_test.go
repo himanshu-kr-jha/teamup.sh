@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -105,7 +106,7 @@ func TestTheAvailabilityRosterReadsRedisInOneRoundTrip(t *testing.T) {
 	})
 
 	before := trips.count()
-	roster, err := svc.ListOrgAvailability(ctx, org.ID)
+	roster, err := svc.ListOrgAvailability(ctx, org.ID, time.Now().UTC().Format("2006-01-02"))
 	if err != nil {
 		t.Fatalf("list availability: %v", err)
 	}

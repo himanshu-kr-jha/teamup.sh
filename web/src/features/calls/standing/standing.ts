@@ -63,7 +63,16 @@ export function describeAudience(audience: Audience | undefined): string {
   return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
 }
 
-export type AttendanceStatus = 'present' | 'absent' | 'unknown';
+export type AttendanceStatus = 'present' | 'absent' | 'unknown' | 'on_leave' | 'holiday';
+
+/** The leave that excused somebody from a day. */
+export interface AttendanceLeave {
+  part: 'full' | 'morning' | 'afternoon';
+  recordedAt: string;
+  recordedBy: { id: string; name: string } | null;
+  /** Recorded only once the meeting had already started. */
+  afterTheDay: boolean;
+}
 
 export interface AttendancePerson {
   userId: string;
@@ -73,6 +82,7 @@ export interface AttendancePerson {
   lastLeaveAt: string | null;
   minutesPresent: number;
   minutesLate: number;
+  leave?: AttendanceLeave;
 }
 
 export interface AttendanceDay {
@@ -82,6 +92,8 @@ export interface AttendanceDay {
   attendanceRecorded: boolean;
   /** Whether whoever is reading may open this day's call log. */
   canReadLog: boolean;
+  /** The organization's holiday on this date, if it is one. */
+  holiday?: string;
   people: AttendancePerson[];
 }
 
@@ -141,12 +153,23 @@ export function standingFormProblem(form: StandingForm): string | null {
 }
 
 export function attendanceCounts(people: AttendancePerson[]): Record<AttendanceStatus, number> {
-  const counts: Record<AttendanceStatus, number> = { present: 0, absent: 0, unknown: 0 };
+  const counts: Record<AttendanceStatus, number> = { present: 0, absent: 0, unknown: 0, on_leave: 0, holiday: 0 };
   for (const person of people) counts[person.status]++;
   return counts;
 }
 
-const STATUS_RANK: Record<AttendanceStatus, number> = { present: 0, unknown: 1, absent: 2 };
+/** A day's tally in words, leaving out what is nought, except present. */
+export function attendanceSummary(day: Pick<AttendanceDay, 'attendanceRecorded' | 'holiday' | 'people'>): string {
+  const counts = attendanceCounts(day.people);
+  if (day.holiday && counts.present === 0) return 'Nobody was expected';
+  const parts = [`${counts.present} present`];
+  if (counts.absent > 0 || (!day.holiday && counts.on_leave === 0 && counts.unknown === 0)) parts.push(`${counts.absent} absent`);
+  if (counts.on_leave > 0) parts.push(`${counts.on_leave} on leave`);
+  if (counts.unknown > 0) parts.push(`${counts.unknown} unknown`);
+  return parts.join(', ');
+}
+
+const STATUS_RANK: Record<AttendanceStatus, number> = { present: 0, unknown: 1, absent: 2, on_leave: 3, holiday: 4 };
 
 export function orderAttendance(people: AttendancePerson[]): AttendancePerson[] {
   return [...people].sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || a.name.localeCompare(b.name));

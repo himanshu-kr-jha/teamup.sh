@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { User, Bell, Shield, Palette, Loader2, Save, Monitor } from 'lucide-react';
@@ -91,6 +92,19 @@ export function SettingsPage() {
                   Your email comes from your sign-in account and cannot be changed here.
                 </p>
               </div>
+            </CardContent>
+          </Card>
+
+          {/* Leave is in the sidebar on a computer; a phone's bottom bar has no room for it. */}
+          <Card className="lg:hidden">
+            <CardHeader><CardTitle>Leave</CardTitle></CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-sm text-muted-foreground">
+                Plan time off, or see the leave of the people you manage, and the holidays.
+              </p>
+              <Button variant="outline" asChild>
+                <Link to="/leave">Open Leave</Link>
+              </Button>
             </CardContent>
           </Card>
 

@@ -435,6 +435,12 @@ export const messagesApi = {
     }>('/search/files', 'results', params),
 };
 
+/** Today where you are, as YYYY-MM-DD: what "on leave today" means. */
+export function localToday(now: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
 export const presenceApi = {
   listOnline: () => getList('/presence/org/online', 'users'),
   /** Everybody in the organization, whether or not they are connected. */
@@ -445,10 +451,11 @@ export const presenceApi = {
       status: string;
       note?: string;
       until?: string;
-    }>('/presence/availability', 'people'),
-  /** What the caller has chosen to say about themselves. */
+    }>('/presence/availability', 'people', { today: localToday() }),
+  /** What the caller has chosen to say about themselves. Choosing on leave
+   *  records leave from today; anything else ends leave that covers today. */
   setAvailability: (data: { status: string; note?: string; until?: string | null }) =>
-    api.put('/presence/availability', data),
+    api.put('/presence/availability', { ...data, today: localToday() }),
   get: (userId: string) => api.get(`/presence/${userId}`),
   update: (status: string) => api.patch('/presence', { status }),
 };
@@ -695,6 +702,69 @@ export const standingApi = {
   /** Scope is decided by the server, by who is asking. */
   attendance: (id: string, params: { from: string; to: string; teamId?: string }) =>
     getList<AttendanceDay>(`/standing-meetings/${id}/attendance`, 'days', params),
+};
+
+export type LeavePart = 'full' | 'morning' | 'afternoon';
+
+export interface LeavePerson {
+  id: string;
+  name: string;
+}
+
+/** One stretch of somebody's leave. endsOn is null when there is no return date yet. */
+export interface LeaveRecord {
+  id: string;
+  userId: string;
+  userName: string;
+  startsOn: string;
+  endsOn: string | null;
+  part: LeavePart;
+  note: string;
+  addedBy: LeavePerson | null;
+  addedAt: string;
+  changedBy: LeavePerson | null;
+  changedAt: string;
+}
+
+export interface LeaveChange {
+  action: 'added' | 'changed' | 'removed';
+  startsOn: string;
+  endsOn: string | null;
+  part: LeavePart;
+  note: string;
+  actor: LeavePerson | null;
+  at: string;
+}
+
+export interface LeaveForm {
+  userId?: string;
+  startsOn: string;
+  endsOn: string | null;
+  part: LeavePart;
+  note: string;
+}
+
+export interface Holiday {
+  id: string;
+  date: string;
+  name: string;
+}
+
+export const leaveApi = {
+  /** Whose leave you may see and write: you first, then whoever you manage. */
+  people: () => getList<LeavePerson>('/leave/people', 'people'),
+  list: (params: { from: string; to: string; userId?: string }) => getList<LeaveRecord>('/leave', 'leave', params),
+  add: (data: LeaveForm) => api.post<LeaveRecord>('/leave', data),
+  change: (id: string, data: Omit<LeaveForm, 'userId'>) => api.patch<LeaveRecord>(`/leave/${id}`, data),
+  /** Removed, not deleted: its history stays. */
+  remove: (id: string) => api.delete(`/leave/${id}`),
+  history: (id: string) => getList<LeaveChange>(`/leave/${id}/history`, 'changes'),
+};
+
+export const holidaysApi = {
+  list: (params: { from: string; to: string }) => getList<Holiday>('/holidays', 'holidays', params),
+  add: (data: { date: string; name: string }) => api.post<Holiday>('/holidays', data),
+  remove: (id: string) => api.delete(`/holidays/${id}`),
 };
 
 /** An upload in progress, as the server describes it. */

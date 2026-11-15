@@ -13,12 +13,14 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 
+	"github.com/teamup/teamup/internal/leave"
 	"github.com/teamup/teamup/internal/websocket"
 	"github.com/teamup/teamup/pkg/protocol"
 )
 
 type Service struct {
 	db     *pgxpool.Pool
+	leave  *leave.Service
 	redis  *redis.Client
 	logger zerolog.Logger
 	ttl    time.Duration
@@ -68,6 +70,35 @@ func NewService(redis *redis.Client) *Service {
 // about themselves — is durable and lives on the user; whether they happen to
 // be connected is transient and lives in Redis.
 func (s *Service) SetDB(db *pgxpool.Pool) { s.db = db }
+
+// SetLeave wires dated leave: choosing "on leave" records it, coming back ends
+// it, and leave somebody's manager added shows as on leave on its days.
+func (s *Service) SetLeave(l *leave.Service) { s.leave = l }
+
+// ChooseAvailability is SetAvailability from the person's own picker, keeping
+// their dated leave in step with what they chose. today is their date.
+func (s *Service) ChooseAvailability(ctx context.Context, orgID, userID uuid.UUID, a Availability, today string) error {
+	if !choosableAvailability[a.Status] {
+		return fmt.Errorf("unknown availability %q", a.Status)
+	}
+	if s.leave != nil {
+		var err error
+		if a.Status == "on_leave" {
+			var back *string
+			if a.Until != nil {
+				d := a.Until.UTC().Format("2006-01-02")
+				back = &d
+			}
+			err = s.leave.StartToday(ctx, orgID, userID, today, back)
+		} else {
+			err = s.leave.EndToday(ctx, orgID, userID, today)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return s.SetAvailability(ctx, userID, a)
+}
 
 // Availability values somebody can choose for themselves. In a call and
 // offline are not here: those are observed rather than chosen.
@@ -326,7 +357,14 @@ type PersonAvailability struct {
 // ListOrgAvailability answers for everybody in the organization, not only the
 // people currently connected: somebody on leave has to show as on leave, and
 // that is precisely when they are not here.
-func (s *Service) ListOrgAvailability(ctx context.Context, orgID uuid.UUID) ([]PersonAvailability, error) {
+func (s *Service) ListOrgAvailability(ctx context.Context, orgID uuid.UUID, today string) ([]PersonAvailability, error) {
+	var onLeave map[uuid.UUID]*string
+	if s.leave != nil {
+		var err error
+		if onLeave, err = s.leave.OnLeaveToday(ctx, orgID, today); err != nil {
+			return nil, err
+		}
+	}
 	rows, err := s.db.Query(ctx, `
 		SELECT id, name, COALESCE(availability, 'available'), availability_note, availability_until
 		FROM users
@@ -348,6 +386,19 @@ func (s *Service) ListOrgAvailability(ctx context.Context, orgID uuid.UUID) ([]P
 		}
 		if note != nil {
 			p.Note = *note
+		}
+		// Leave on today's date is leave, whoever recorded it, and it says when
+		// they are back when the record knows.
+		if back, away := onLeave[p.UserID]; away {
+			if p.Status != "on_leave" {
+				p.Status, p.Note = "on_leave", ""
+			}
+			p.Until = nil
+			if back != nil {
+				if d, err := time.Parse("2006-01-02", *back); err == nil {
+					p.Until = &d
+				}
+			}
 		}
 		chosen[p.UserID] = Availability{Status: p.Status, Note: p.Note, Until: p.Until}
 		people = append(people, p)

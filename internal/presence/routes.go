@@ -9,6 +9,8 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/teamup/teamup/internal/auth"
+	"github.com/teamup/teamup/internal/httpx"
+	"github.com/teamup/teamup/internal/leave"
 )
 
 type Handler struct {
@@ -93,7 +95,7 @@ func (h *Handler) ListAvailability(c *gin.Context) {
 		return
 	}
 
-	people, err := h.service.ListOrgAvailability(c.Request.Context(), orgID)
+	people, err := h.service.ListOrgAvailability(c.Request.Context(), orgID, leave.Today(c.Query("today"), time.Now()))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list availability"})
 		return
@@ -104,8 +106,10 @@ func (h *Handler) ListAvailability(c *gin.Context) {
 // SetAvailability records what somebody has chosen to say about themselves.
 // Always about the caller: nobody sets anybody else's status.
 func (h *Handler) SetAvailability(c *gin.Context) {
-	userID, err := uuid.Parse(auth.GetUserFromContext(c).UserID)
-	if err != nil {
+	user := auth.GetUserFromContext(c)
+	userID, err := uuid.Parse(user.UserID)
+	orgID, orgErr := uuid.Parse(user.OrgID)
+	if err != nil || orgErr != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
 		return
 	}
@@ -114,6 +118,9 @@ func (h *Handler) SetAvailability(c *gin.Context) {
 		Status string     `json:"status" binding:"required,oneof=available away busy on_leave"`
 		Note   string     `json:"note"`
 		Until  *time.Time `json:"until"`
+		// Today is the person's own date, which is what "on leave from today"
+		// and "back today" mean.
+		Today string `json:"today"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -124,9 +131,9 @@ func (h *Handler) SetAvailability(c *gin.Context) {
 		return
 	}
 
-	if err := h.service.SetAvailability(c.Request.Context(), userID,
-		Availability{Status: req.Status, Note: req.Note, Until: req.Until}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to set availability"})
+	if err := h.service.ChooseAvailability(c.Request.Context(), orgID, userID,
+		Availability{Status: req.Status, Note: req.Note, Until: req.Until}, leave.Today(req.Today, time.Now())); err != nil {
+		httpx.Error(c, err, "failed to set availability")
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "availability updated"})
