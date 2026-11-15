@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -298,12 +299,31 @@ func TestOnlyTheAudienceIsAbsent(t *testing.T) {
 	e := newLK(t)
 	c := newCast(t, e)
 	_, m := e.createStanding(t, c.max, "manager", audienceBody("Backend stand-up", false, []uuid.UUID{c.backend}, nil))
-	e.mustJoinStanding(t, c.bea, "member", m.ID)
-	w := doJSON(t, e.as(t, c.ada, "admin"), http.MethodGet, "/api/standing-meetings/"+m.ID+"/attendance?date="+today("Asia/Kolkata"), "")
-	if w.Code != http.StatusOK {
-		t.Fatalf("attendance: %d %s", w.Code, w.Body.String())
+	j := e.mustJoinStanding(t, c.bea, "member", m.ID)
+	loc, _ := time.LoadLocation("Asia/Kolkata")
+	start, err := time.ParseInLocation("2006-01-02 15:04", j.Date+" 09:30", loc)
+	if err != nil {
+		t.Fatal(err)
 	}
-	body := w.Body.String()
+	read := func(at time.Time) string {
+		t.Helper()
+		e.svc.SetClock(func() time.Time { return at })
+		w := doJSON(t, e.as(t, c.ada, "admin"), http.MethodGet, "/api/standing-meetings/"+m.ID+"/attendance?date="+j.Date, "")
+		if w.Code != http.StatusOK {
+			t.Fatalf("attendance: %d %s", w.Code, w.Body.String())
+		}
+		return w.Body.String()
+	}
+
+	// Early in the morning, with Bea already in the room, the 09:30 slot has not
+	// started, so nobody is missing from it yet. The suite once ran at 06:04 in
+	// Kolkata and read the day like this, expecting Ana absent.
+	if body := read(start.Add(-3 * time.Hour)); strings.Contains(body, "Api Ana") {
+		t.Errorf("before the slot starts nobody is absent: %s", body)
+	}
+
+	// Once it is under way, only its audience is missing from it.
+	body := read(start.Add(2 * time.Hour))
 	if strings.Contains(body, "Frontend Fay") || strings.Contains(body, "Manager Flo") || strings.Contains(body, "Admin Ada") {
 		t.Errorf("people the meeting is not for are listed: %s", body)
 	}

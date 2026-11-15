@@ -94,8 +94,10 @@ test.describe('calendar views', () => {
   test('month, week and day, with the choice kept in the address, and a day opened from the month', async ({ as }) => {
     const olivia = await as('owner');
     const api = await apiAs('owner');
+    // The 15th two months on, never today: the suite before this fills today with
+    // more than a month day lists, and on the 15th the item went into "+37 more".
     const today = new Date();
-    const start = new Date(today.getFullYear(), today.getMonth(), 15, 10, 0);
+    const start = new Date(today.getFullYear(), today.getMonth() + 2, 15, 10, 0);
     const title = `Month review ${Date.now()}`;
     await api.post('/calendar/blocks', { kind: 'focus', title, startsAt: start.toISOString(), endsAt: new Date(start.getTime() + 3600_000).toISOString() });
 
