@@ -37,7 +37,7 @@ interface Call {
   endedAt?: string;
   durationSeconds?: number;
   /** Why a call between two people never happened. */
-  missedReason?: 'no_answer' | 'declined' | 'busy';
+  missedReason?: 'no_answer' | 'declined' | 'busy' | 'on_leave';
   participants?: { userId: string; userName: string; userAvatar?: string; role: string }[];
   createdAt: string;
 }
@@ -65,6 +65,10 @@ function missedMark(reason: NonNullable<Call['missedReason']>, isCaller: boolean
       return isCaller
         ? { label: 'Busy', icon: PhoneForwarded, color: NEUTRAL }
         : { label: 'Missed while busy', icon: PhoneMissed, color: MISSED };
+    case 'on_leave':
+      return isCaller
+        ? { label: 'On leave', icon: PhoneForwarded, color: NEUTRAL }
+        : { label: 'Missed while on leave', icon: PhoneMissed, color: NEUTRAL };
     default:
       return isCaller
         ? { label: 'No answer', icon: PhoneMissed, color: NEUTRAL }

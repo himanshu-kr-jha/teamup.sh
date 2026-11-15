@@ -18,4 +18,12 @@ describe('a call that did not happen, in the conversation', () => {
       text: 'Missed call from Ravi while you were in another call',
     });
   });
+  it('says the person called was on leave, and was not rung', () => {
+    expect(callEventView('Missed call, on leave', true, 'Ravi')).toEqual({ kind: 'on_leave', alert: false, text: 'Not rung, on leave' });
+    expect(callEventView('Missed call, on leave', false, 'Ravi')).toEqual({
+      kind: 'on_leave',
+      alert: true,
+      text: 'Missed call from Ravi while you were on leave',
+    });
+  });
 });

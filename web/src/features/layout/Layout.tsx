@@ -17,6 +17,7 @@ import { TopProgress } from "@/shared/components/TopProgress";
 import { WelcomeTour } from "@/features/tour/WelcomeTour";
 import { WhatsNewAfterUpdate } from '@/features/whatsnew/WhatsNew';
 import { InstallBanner } from "@/features/install/InstallApp";
+import { useKeepTimeZone } from "@/features/presence/useKeepTimeZone";
 
 export function Layout() {
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
@@ -25,6 +26,7 @@ export function Layout() {
   // already agreed to them is re-registered here on every load.
   usePushSubscription();
   const user = useAuthStore((s) => s.user);
+  useKeepTimeZone(!!user && !user.mustChangePassword);
 
   // The API refuses every one of these pages' requests until the password is
   // replaced, so showing the app at all would only render a wall of errors.

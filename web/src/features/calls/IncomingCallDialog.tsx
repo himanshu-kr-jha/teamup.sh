@@ -20,6 +20,8 @@ interface IncomingCall {
   callerName: string;
   callType: string;
   channelId?: string;
+  /** A stand-up ringing everybody it is for as it starts: callerName is its name. */
+  standing?: boolean;
 }
 
 /** How long to keep ringing before treating it as missed. */
@@ -86,6 +88,7 @@ export function IncomingCallDialog() {
                 callerName: payload.callerName,
                 callType: payload.callType ?? 'video',
                 channelId: payload.channelId,
+                standing: payload.kind === 'standing',
               },
             ]
       );
@@ -109,8 +112,11 @@ export function IncomingCallDialog() {
     stopToneRef.current = playSound('ringtone', { loop: true });
     // It rings for a while and then gives up rather than for ever.
     const missed = call.callId;
+    const standing = call.standing;
     giveUpTimerRef.current = setTimeout(() => {
       dismiss(missed);
+      // A stand-up has nobody waiting on an answer; its attendance says who came.
+      if (standing) return;
       // Tell the caller it rang out rather than leaving them waiting on a
       // room nobody is coming to.
       callsApi.decline(missed, 'no_answer').catch(() => {
@@ -129,6 +135,9 @@ export function IncomingCallDialog() {
   const decline = () => {
     const id = call!.callId;
     dismiss(id);
+    // Nobody rang a stand-up, so there is nobody to tell, and the room stays
+    // open for everybody else.
+    if (call!.standing) return;
     // Tell whoever rang, so they are not left watching it ring out.
     callsApi.decline(id, 'declined').catch(() => {
       // They will see it time out instead.
@@ -145,18 +154,20 @@ export function IncomingCallDialog() {
             ) : (
               <Video className="h-5 w-5 text-primary" aria-hidden="true" />
             )}
-            Incoming {call?.callType === 'audio' ? 'call' : 'video call'}
+            {call?.standing ? 'Stand-up starting' : `Incoming ${call?.callType === 'audio' ? 'call' : 'video call'}`}
           </DialogTitle>
-          <DialogDescription>{call?.callerName} is calling.</DialogDescription>
+          <DialogDescription className="break-anywhere">
+            {call?.standing ? `${call.callerName} is starting now.` : `${call?.callerName} is calling.`}
+          </DialogDescription>
         </DialogHeader>
         <DialogFooter className="gap-2 sm:justify-center">
           <Button variant="outline" onClick={decline}>
             <PhoneOff className="mr-2 h-4 w-4" />
-            Decline
+            {call?.standing ? 'Not now' : 'Decline'}
           </Button>
           <Button onClick={answer}>
             <Phone className="mr-2 h-4 w-4" />
-            Answer
+            {call?.standing ? 'Join' : 'Answer'}
           </Button>
         </DialogFooter>
       </DialogContent>

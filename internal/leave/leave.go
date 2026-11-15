@@ -970,3 +970,57 @@ func (s *Service) RemoveHoliday(ctx context.Context, orgID, id uuid.UUID) error 
 	}
 	return nil
 }
+
+// ── whether somebody is away right now ────────────────────────────────────
+
+// OnLeaveAt is who among these people is on leave at that moment, by their own
+// clock (users.timezone, which their browser keeps): a whole day, or the half of
+// it the moment falls in, with the day they are back when it is known. It is
+// what keeps a call, a ring or a reminder from reaching somebody on leave.
+func OnLeaveAt(ctx context.Context, db *pgxpool.Pool, orgID uuid.UUID, people []uuid.UUID, at time.Time) (map[uuid.UUID]*string, error) {
+	out := map[uuid.UUID]*string{}
+	if len(people) == 0 {
+		return out, nil
+	}
+	rows, err := db.Query(ctx, `
+		WITH p AS (
+			SELECT u.id, ($3::timestamptz AT TIME ZONE COALESCE(NULLIF(u.timezone, ''), 'UTC')) AS local
+			FROM users u WHERE u.org_id = $1 AND u.id = ANY($2)
+		)
+		SELECT p.id, (MAX(COALESCE(l.ends_on, 'infinity'::date)) + 1)::text
+		FROM p JOIN leave_periods l ON l.user_id = p.id AND l.org_id = $1 AND l.removed_at IS NULL
+		WHERE l.starts_on <= p.local::date AND COALESCE(l.ends_on, 'infinity'::date) >= p.local::date
+		  AND (l.part = 'full'
+		       OR (l.part = 'morning' AND EXTRACT(HOUR FROM p.local) < 12)
+		       OR (l.part = 'afternoon' AND EXTRACT(HOUR FROM p.local) >= 12))
+		GROUP BY p.id
+	`, orgID, people, at)
+	if err != nil {
+		return nil, fmt.Errorf("find who is on leave: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		var back string
+		if err := rows.Scan(&id, &back); err != nil {
+			return nil, err
+		}
+		if back == "infinity" {
+			out[id] = nil
+		} else {
+			b := back
+			out[id] = &b
+		}
+	}
+	return out, rows.Err()
+}
+
+// ValidZone is whether a time zone name is one the server knows, so that a
+// stored zone can never break a query that reads it.
+func ValidZone(name string) bool {
+	if name == "" || len(name) > 50 {
+		return false
+	}
+	_, err := time.LoadLocation(name)
+	return err == nil
+}

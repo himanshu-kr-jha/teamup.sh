@@ -456,6 +456,8 @@ export const presenceApi = {
    *  records leave from today; anything else ends leave that covers today. */
   setAvailability: (data: { status: string; note?: string; until?: string | null }) =>
     api.put('/presence/availability', { ...data, today: localToday() }),
+  /** Your browser's time zone, which is what "on leave today" means for calls that ring you. */
+  setZone: (timeZone: string) => api.put('/presence/zone', { timeZone }),
   get: (userId: string) => api.get(`/presence/${userId}`),
   update: (status: string) => api.patch('/presence', { status }),
 };

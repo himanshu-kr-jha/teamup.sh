@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/livekit/protocol/livekit"
 
+	"github.com/teamup/teamup/internal/leave"
 	"github.com/teamup/teamup/pkg/protocol"
 )
 
@@ -116,7 +117,7 @@ func (s *Service) answerBusy(ctx context.Context, call *Call, callerID string, b
 }
 
 // TurnedDown records that somebody who was called will not be picking up, and
-// why: "declined", "no_answer", or "busy". Whoever called is told, and a call
+// why: "declined", "no_answer", "busy" or "on_leave". Whoever called is told, and a call
 // nobody is left to answer and nobody joined is ended, which leaves the note
 // in the conversation between the two of them.
 func (s *Service) TurnedDown(ctx context.Context, orgID uuid.UUID, call *CallModel, userID uuid.UUID, reason string) error {
@@ -190,4 +191,54 @@ func (s *Service) peopleInRoom(ctx context.Context, callID uuid.UUID, roomName s
 		WHERE call_id = $1 AND joined_at IS NOT NULL AND left_at IS NULL
 	`, callID).Scan(&n)
 	return n, err
+}
+
+// splitOnLeave separates the people who can be rung from the ones on leave right
+// now by their own clock, with the day each is back when it is known.
+func (s *Service) splitOnLeave(ctx context.Context, orgID uuid.UUID, invitees []uuid.UUID) ([]uuid.UUID, map[uuid.UUID]*string) {
+	away, err := leave.OnLeaveAt(ctx, s.db, orgID, invitees, s.clock())
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("could not tell whether somebody is on leave; ringing them")
+		return invitees, nil
+	}
+	if len(away) == 0 {
+		return invitees, nil
+	}
+	free := make([]uuid.UUID, 0, len(invitees))
+	for _, id := range invitees {
+		if _, off := away[id]; !off {
+			free = append(free, id)
+		}
+	}
+	return free, away
+}
+
+// answerOnLeave tells whoever is calling that these people are on leave, and
+// settles their part in the call the way a decline would, which leaves a note
+// in the conversation for when they are back.
+func (s *Service) answerOnLeave(ctx context.Context, call *Call, callerID string, away map[uuid.UUID]*string) {
+	if s.broadcaster != nil {
+		for id, back := range away {
+			payload := map[string]any{
+				"callId":    call.ID.String(),
+				"userId":    id.String(),
+				"reachable": false,
+				"onLeave":   true,
+			}
+			if back != nil {
+				payload["backOn"] = *back
+			}
+			s.broadcaster.BroadcastToUser(callerID, protocol.NewMessage("call.reach", payload))
+		}
+	}
+	model, err := s.GetCall(ctx, call.OrgID, call.ID)
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("could not read a call to say who is on leave")
+		return
+	}
+	for id := range away {
+		if err := s.TurnedDown(ctx, call.OrgID, model, id, "on_leave"); err != nil {
+			s.logger.Warn().Err(err).Msg("could not settle the part of somebody on leave in a call")
+		}
+	}
 }

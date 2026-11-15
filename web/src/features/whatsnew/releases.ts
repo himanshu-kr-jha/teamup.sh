@@ -26,6 +26,24 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-15-e',
+    date: '2026-11-15',
+    title: 'Stand-ups ring, and leave stays quiet',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'A stand-up rings as it starts',
+        body: 'When a stand-up starts, everybody it is for is rung, like a call, in the browser and on their phone. Join takes you straight in, and Not now just stops the ringing. Nobody already in it, in another call, on leave or on a holiday is rung.',
+        link: '/calls',
+      },
+      {
+        area: 'meetings',
+        title: 'Nothing rings you on leave',
+        body: 'A call to somebody on leave does not ring them. Whoever called is told they are on leave, and a note waits in your conversation for when you are back. Meeting reminders skip you on your leave days too.',
+      },
+    ],
+  },
+  {
     id: '2026-11-15-d',
     date: '2026-11-15',
     title: 'Leave and holidays count in attendance',
