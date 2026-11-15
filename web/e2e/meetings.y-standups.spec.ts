@@ -17,6 +17,13 @@ function timeNow(): string {
   return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 }
 
+/** The local date this many days from today, as the calendar's address takes it. */
+function calendarDay(offset: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + offset);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
 test('a manager makes a stand-up for their team: the team sees it, nobody else does', async ({ as }) => {
   test.setTimeout(90_000);
   const name = `Backend stand-up ${Date.now()}`;
@@ -50,11 +57,15 @@ test('a manager makes a stand-up for their team: the team sees it, nobody else d
   await expect(sam.page.getByRole('heading', { name: 'Calls' }).first()).toBeVisible();
   await expect(sam.page.getByText(name)).toHaveCount(0);
 
-  // And on calendars: Alice's has it, Sam's does not.
+  // And on calendars: Alice's has it, Sam's does not. Tomorrow's, as it runs every
+  // day: today's is full of the suite's own calls around now, and a pile-up that
+  // deep put it into "+26 more at this time".
+  const tomorrow = calendarDay(1);
   const aliceCal = await as('alice');
-  await aliceCal.page.goto('/calendar');
+  await aliceCal.page.goto(`/calendar?view=day&date=${tomorrow}`);
+  await expect(aliceCal.page.getByRole('group', { name: 'View' }).getByRole('button', { name: 'Day' })).toHaveAttribute('aria-pressed', 'true');
   await expect(aliceCal.page.getByText(name).first()).toBeVisible();
-  await sam.page.goto('/calendar');
+  await sam.page.goto(`/calendar?view=day&date=${tomorrow}`);
   await expect(sam.page.getByRole('heading', { level: 1 }).first()).toBeVisible();
   await sam.page.waitForTimeout(1500);
   await expect(sam.page.getByText(name)).toHaveCount(0);
