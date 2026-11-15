@@ -275,6 +275,10 @@ type CallInvitedPayload struct {
 	// ChannelID names where the call came from, so a callee can tell a team
 	// call from a one-to-one one.
 	ChannelID string `json:"channelId,omitempty"`
+	// Kind is "standing" for a stand-up ringing everybody it is for as it
+	// starts: CallerName is then the meeting's name, and there is nobody to
+	// tell about a decline.
+	Kind string `json:"kind,omitempty"`
 }
 
 type CallAcceptPayload struct {

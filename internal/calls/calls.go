@@ -394,6 +394,14 @@ func (s *Service) Ring(ctx context.Context, call *Call, callerID, callerName str
 		return
 	}
 
+	// Somebody on leave is not rung at all, and whoever is calling hears so at
+	// once, with the day they are back when it is known. If leave cannot be read
+	// they are rung: a ring too many beats a call that never arrives.
+	invitees, away := s.splitOnLeave(ctx, call.OrgID, invitees)
+	if len(away) > 0 {
+		go s.answerOnLeave(context.WithoutCancel(ctx), call, callerID, away)
+	}
+
 	// Somebody already in a call or a meeting is not rung: whoever is calling
 	// hears at once that they are busy (see busy.go).
 	invitees, busy := s.splitBusy(ctx, call, invitees)
@@ -403,7 +411,7 @@ func (s *Service) Ring(ctx context.Context, call *Call, callerID, callerName str
 
 	// Devices first, and regardless of whether anything is open: somebody with
 	// no tab is exactly who this reaches.
-	s.ringDevices(ctx, call, callerName, invitees)
+	s.ringDevices(ctx, call, callerName, "", invitees)
 
 	if s.broadcaster == nil {
 		return
@@ -836,6 +844,9 @@ func (s *Service) HandleCallAccept(ctx context.Context, conn websocket.WSConnect
 
 	token, _ := s.GenerateToken(ctx, call.RoomName, conn.UserID(), s.DisplayName(ctx, userID), true, true)
 	s.notePickedUp(ctx, call, userID)
+	if call.StandingMeetingID != nil {
+		s.markAskedToJoin(ctx, call.ID)
+	}
 
 	if s.broadcaster != nil {
 		s.broadcaster.BroadcastToUser(conn.UserID(), protocol.NewMessage(protocol.TypeCallInvited, protocol.CallInvitedPayload{
@@ -1102,17 +1113,19 @@ func (s *Service) Close() {
 // one. It holds the screen until it is dealt with, it is not kept for a phone
 // that is off any longer than it rings, and its tag lets it be taken away again
 // when the caller gives up.
-func (s *Service) ringDevices(ctx context.Context, call *Call, callerName string, invitees []uuid.UUID) {
+func (s *Service) ringDevices(ctx context.Context, call *Call, callerName, body string, invitees []uuid.UUID) {
 	if s.notifier == nil || len(invitees) == 0 {
 		return
 	}
-	what := "video call"
-	if call.CallType == "audio" {
-		what = "call"
+	if body == "" {
+		body = "Incoming video call"
+		if call.CallType == "audio" {
+			body = "Incoming call"
+		}
 	}
 	ring := protocol.Push{
 		Title: callerName,
-		Body:  "Incoming " + what,
+		Body:  body,
 		Tag:   "call-" + call.ID.String(),
 		// Sounds again each time it is put up, which is what makes it ring.
 		Renotify: true,
@@ -1418,6 +1431,8 @@ func noteFor(reason string) string {
 		return "Call declined"
 	case "busy":
 		return "Missed call, in another call"
+	case "on_leave":
+		return "Missed call, on leave"
 	}
 	return "Missed call"
 }
@@ -1425,7 +1440,7 @@ func noteFor(reason string) string {
 // missedReason is what the calls list is told, one of the three it knows.
 func missedReason(reason string) string {
 	switch reason {
-	case "declined", "busy":
+	case "declined", "busy", "on_leave":
 		return reason
 	}
 	return "no_answer"

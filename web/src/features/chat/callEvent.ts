@@ -6,7 +6,7 @@
  * different: the caller knows they called, the other person may not.
  */
 
-export type CallEventKind = 'missed' | 'declined' | 'busy';
+export type CallEventKind = 'missed' | 'declined' | 'busy' | 'on_leave';
 
 export interface CallEventView {
   kind: CallEventKind;
@@ -18,6 +18,7 @@ export interface CallEventView {
 export function callEventKind(content: string): CallEventKind {
   if (content === 'Call declined') return 'declined';
   if (content === 'Missed call, in another call') return 'busy';
+  if (content === 'Missed call, on leave') return 'on_leave';
   return 'missed';
 }
 
@@ -32,6 +33,12 @@ export function callEventView(content: string, isCaller: boolean, callerName: st
         kind,
         alert: !isCaller,
         text: isCaller ? 'Busy, in another call or meeting' : `Missed call from ${who} while you were in another call`,
+      };
+    case 'on_leave':
+      return {
+        kind,
+        alert: !isCaller,
+        text: isCaller ? 'Not rung, on leave' : `Missed call from ${who} while you were on leave`,
       };
     default:
       return { kind, alert: !isCaller, text: isCaller ? 'No answer' : `Missed call from ${who}` };

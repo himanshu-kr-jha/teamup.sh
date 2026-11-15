@@ -99,7 +99,7 @@ export function useActiveCall() {
 }
 
 /** Whether the phone at the other end is ringing, switched off, or already on a call. */
-type Reach = boolean | 'busy';
+type Reach = boolean | 'busy' | 'on_leave';
 
 /**
  * What to call the wait. A phone that is switched off is not ringing, and
@@ -107,6 +107,7 @@ type Reach = boolean | 'busy';
  */
 function waitingLabel(reachable: Reach | null): string {
   if (reachable === 'busy') return 'In another call or meeting';
+  if (reachable === 'on_leave') return 'On leave';
   if (reachable === true) return 'Ringing\u2026';
   if (reachable === false) return 'Calling\u2026';
   return 'Waiting for others';
@@ -306,10 +307,14 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
   // first; it is said once per person per call.
   const toldBusyRef = useRef(new Set<string>());
   const sayBusy = useCallback(
-    (callId: string, name?: string) => {
+    (callId: string, name?: string, reason: 'busy' | 'on_leave' = 'busy') => {
       const key = `${callId}/${name ?? ''}`;
       if (toldBusyRef.current.has(key)) return;
       toldBusyRef.current.add(key);
+      if (reason === 'on_leave') {
+        toast.toast(name ? `${name} is on leave, so was not rung.` : 'They are on leave, so were not rung.');
+        return;
+      }
       toast.toast(name ? `${name} is in another call or meeting.` : 'They are in another call or meeting.');
     },
     [toast]
@@ -333,11 +338,11 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
         toast.toast(`${who}declined the call.`);
         return;
       }
-      // Not rung at all: they are talking to somebody else. Said here when
+      // Not rung at all: they are talking to somebody else, or on leave. Said here when
       // others are still being rung; when they were the only one, the call is
       // over at once, and call.missed below says it.
-      if (payload.reason === 'busy') {
-        sayBusy(payload.callId, payload.declinedBy);
+      if (payload.reason === 'busy' || payload.reason === 'on_leave') {
+        sayBusy(payload.callId, payload.declinedBy, payload.reason);
         return;
       }
       toast.toast('The call has ended.');
@@ -362,11 +367,11 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
         early.set(payload.callId, payload.channelId);
         if (early.size > 20) early.delete(early.keys().next().value as string);
         // Busy is decided as the call is made, so it is always about one just placed.
-        if (payload.reason === 'busy') sayBusy(payload.callId, payload.name);
+        if (payload.reason === 'busy' || payload.reason === 'on_leave') sayBusy(payload.callId, payload.name, payload.reason);
         return;
       }
       // Busy is known before the call has even opened here, so it is said now.
-      if (payload.reason === 'busy') sayBusy(payload.callId, payload.name);
+      if (payload.reason === 'busy' || payload.reason === 'on_leave') sayBusy(payload.callId, payload.name, payload.reason);
       navigate(`/chat/${payload.channelId}`);
     });
   }, [on, navigate, sayBusy]);
@@ -378,7 +383,10 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
     return on('call.reach', (msg) => {
       const payload = msg.payload as any;
       if (!payload?.callId) return;
-      setReach((current) => ({ ...current, [payload.callId]: payload.busy ? 'busy' : !!payload.reachable }));
+      setReach((current) => ({
+        ...current,
+        [payload.callId]: payload.busy ? 'busy' : payload.onLeave ? 'on_leave' : !!payload.reachable,
+      }));
     });
   }, [on]);
 

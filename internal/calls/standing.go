@@ -536,19 +536,8 @@ func (s *Service) JoinStandingMeeting(ctx context.Context, orgID, id, userID uui
 	}
 
 	out := &StandingJoin{Date: date}
-	err = s.db.QueryRow(ctx, `
-		INSERT INTO calls (org_id, room_name, title, call_type, status, started_at, created_by,
-		                   scheduled_start, scheduled_end, standing_meeting_id, occurrence_date)
-		VALUES ($1, $2, $3, 'video', 'active', $4, $5, $6, $7, $8, $9::date)
-		ON CONFLICT (standing_meeting_id, occurrence_date) WHERE standing_meeting_id IS NOT NULL
-		DO UPDATE SET status = 'active', ended_at = NULL, duration_seconds = NULL, updated_at = NOW()
-		RETURNING id, room_name
-	`, orgID, "standing-"+uuid.NewString(), m.Name, now, creator, start, end, id, date).Scan(&out.CallID, &out.RoomName)
-	if err != nil {
-		return nil, fmt.Errorf("find or make occurrence: %w", err)
-	}
-	if _, err := s.createRoom(ctx, out.RoomName); err != nil {
-		s.logger.Warn().Err(err).Str("room", out.RoomName).Msg("could not create the room for a standing meeting")
+	if out.CallID, out.RoomName, err = s.openOccurrence(ctx, orgID, m, creator, start, end, date, now, true); err != nil {
+		return nil, err
 	}
 
 	out.Token, err = s.GetToken(ctx, out.RoomName, userID.String(), s.DisplayName(ctx, userID))
@@ -556,6 +545,46 @@ func (s *Service) JoinStandingMeeting(ctx context.Context, orgID, id, userID uui
 		return nil, err
 	}
 	return out, nil
+}
+
+// openOccurrence finds or makes the day's call and opens its room. asked is
+// whether somebody asked to join, as opposed to the start-of-meeting ring opening
+// it: attendance reads a day nobody connected to as unknown only when somebody
+// asked, since that is what webhooks not arriving looks like.
+func (s *Service) openOccurrence(ctx context.Context, orgID uuid.UUID, m *StandingMeeting, creator uuid.UUID,
+	start, end time.Time, date string, now time.Time, asked bool) (uuid.UUID, string, error) {
+	var requested *time.Time
+	if asked {
+		requested = &now
+	}
+	var callID uuid.UUID
+	var room string
+	err := s.db.QueryRow(ctx, `
+		INSERT INTO calls (org_id, room_name, title, call_type, status, started_at, created_by,
+		                   scheduled_start, scheduled_end, standing_meeting_id, occurrence_date, join_requested_at)
+		VALUES ($1, $2, $3, 'video', 'active', $4, $5, $6, $7, $8, $9::date, $10)
+		ON CONFLICT (standing_meeting_id, occurrence_date) WHERE standing_meeting_id IS NOT NULL
+		DO UPDATE SET status = 'active', ended_at = NULL, duration_seconds = NULL, updated_at = NOW(),
+		              join_requested_at = COALESCE(calls.join_requested_at, EXCLUDED.join_requested_at)
+		RETURNING id, room_name
+	`, orgID, "standing-"+uuid.NewString(), m.Name, now, creator, start, end, m.ID, date, requested).Scan(&callID, &room)
+	if err != nil {
+		return uuid.Nil, "", fmt.Errorf("find or make occurrence: %w", err)
+	}
+	if _, err := s.createRoom(ctx, room); err != nil {
+		s.logger.Warn().Err(err).Str("room", room).Msg("could not create the room for a standing meeting")
+	}
+	return callID, room, nil
+}
+
+// markAskedToJoin records that somebody asked for a way into a standing meeting's
+// day, by its link or by answering its ring.
+func (s *Service) markAskedToJoin(ctx context.Context, callID uuid.UUID) {
+	if _, err := s.db.Exec(ctx,
+		`UPDATE calls SET join_requested_at = $2 WHERE id = $1 AND standing_meeting_id IS NOT NULL AND join_requested_at IS NULL`,
+		callID, s.clock()); err != nil {
+		s.logger.Warn().Err(err).Msg("could not record that somebody asked to join a standing meeting")
+	}
 }
 
 // Attendee is one person on one day of a standing meeting.
@@ -607,6 +636,8 @@ type occurrence struct {
 	scheduledStart time.Time
 	scheduledEnd   *time.Time
 	endedAt        *time.Time
+	// asked is whether anybody asked to join, rather than only the ring opening it.
+	asked bool
 }
 
 // Attendance is decisions 14 and 15. Joined and left are stored; absent is worked
@@ -731,7 +762,9 @@ func (s *Service) Attendance(ctx context.Context, orgID, meetingID, callerID uui
 		}
 
 		byPerson := sessions[date]
-		day.AttendanceRecorded = !held || len(byPerson) > 0
+		// Nobody connected although somebody asked to join is webhooks not
+		// arriving. A room only the ring opened, that nobody answered, is not.
+		day.AttendanceRecorded = !held || len(byPerson) > 0 || !occ.asked
 		endOfDay := time.Date(d.Year(), d.Month(), d.Day()+1, 0, 0, 0, 0, loc)
 		// A slot running past midnight is still that day's.
 		if held && occ.scheduledEnd != nil && occ.scheduledEnd.After(endOfDay) {
@@ -845,7 +878,7 @@ func attendeeFrom(id uuid.UUID, sessions personSessions, start time.Time, endedA
 
 func (s *Service) occurrences(ctx context.Context, meetingID uuid.UUID, from, to time.Time) (map[string]occurrence, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, occurrence_date::text, scheduled_start, scheduled_end, ended_at FROM calls
+		SELECT id, occurrence_date::text, scheduled_start, scheduled_end, ended_at, join_requested_at IS NOT NULL FROM calls
 		WHERE standing_meeting_id = $1 AND occurrence_date BETWEEN $2::date AND $3::date
 	`, meetingID, from.Format("2006-01-02"), to.Format("2006-01-02"))
 	if err != nil {
@@ -855,7 +888,7 @@ func (s *Service) occurrences(ctx context.Context, meetingID uuid.UUID, from, to
 	out := map[string]occurrence{}
 	for rows.Next() {
 		var o occurrence
-		if err := rows.Scan(&o.callID, &o.date, &o.scheduledStart, &o.scheduledEnd, &o.endedAt); err != nil {
+		if err := rows.Scan(&o.callID, &o.date, &o.scheduledStart, &o.scheduledEnd, &o.endedAt, &o.asked); err != nil {
 			return nil, fmt.Errorf("scan occurrence: %w", err)
 		}
 		out[o.date] = o

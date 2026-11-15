@@ -29,6 +29,30 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.GET("/presence/org/online", h.ListOnline)
 	rg.GET("/presence/availability", h.ListAvailability)
 	rg.PUT("/presence/availability", h.SetAvailability)
+	rg.PUT("/presence/zone", h.SetZone)
+}
+
+// SetZone records the time zone somebody's browser is in, which is what "on leave
+// today" and "this afternoon" mean for them when a call or a ring decides whether
+// to reach them.
+func (h *Handler) SetZone(c *gin.Context) {
+	userID, err := uuid.Parse(auth.GetUserFromContext(c).UserID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
+		return
+	}
+	var req struct {
+		TimeZone string `json:"timeZone"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || !leave.ValidZone(req.TimeZone) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "timeZone must be a time zone such as Asia/Kolkata"})
+		return
+	}
+	if err := h.service.SetZone(c.Request.Context(), userID, req.TimeZone); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to record the time zone"})
+		return
+	}
+	c.Status(http.StatusNoContent)
 }
 
 func (h *Handler) GetPresence(c *gin.Context) {

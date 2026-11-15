@@ -1239,6 +1239,19 @@ func (s *Service) SweepReminders(ctx context.Context, now time.Time) (int, error
 		if err != nil {
 			return sent, fmt.Errorf("list people to remind: %w", err)
 		}
+		// Nobody on leave when it starts, by their own clock, is reminded. If
+		// leave cannot be read they are: a reminder too many is the smaller harm.
+		if away, err := leave.OnLeaveAt(ctx, s.db, c.orgID, people, c.m.StartsAt); err != nil {
+			s.logger.Warn().Err(err).Msg("could not tell who is on leave; reminding everybody")
+		} else if len(away) > 0 {
+			kept := people[:0]
+			for _, id := range people {
+				if _, off := away[id]; !off {
+					kept = append(kept, id)
+				}
+			}
+			people = kept
+		}
 		s.notify(ctx, c.orgID, people, uuid.Nil, "meeting.reminder", c.m.Title+" starts soon", &c.m)
 		sent += len(people)
 	}

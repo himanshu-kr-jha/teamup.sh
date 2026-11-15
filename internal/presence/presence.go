@@ -136,6 +136,16 @@ func (s *Service) SetAvailability(ctx context.Context, userID uuid.UUID, a Avail
 	return nil
 }
 
+// SetZone records somebody's time zone. Writing only on a change keeps the
+// once-a-session call from touching the row every time.
+func (s *Service) SetZone(ctx context.Context, userID uuid.UUID, zone string) error {
+	_, err := s.db.Exec(ctx, `UPDATE users SET timezone = $2 WHERE id = $1 AND timezone IS DISTINCT FROM $2`, userID, zone)
+	if err != nil {
+		return fmt.Errorf("set time zone: %w", err)
+	}
+	return nil
+}
+
 // GetAvailability reads back what somebody has chosen.
 func (s *Service) GetAvailability(ctx context.Context, userID uuid.UUID) (Availability, error) {
 	var a Availability
