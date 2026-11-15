@@ -26,6 +26,24 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-15',
+    date: '2026-11-15',
+    title: 'Drag tasks across the board',
+    changes: [
+      {
+        area: 'tasks',
+        title: 'Drag a card to change its status',
+        body: 'On the Board, pick a card up and drop it on another column: To Do, In Progress, In Review, Blocked or Done. On a phone, hold the card for a moment, then drop it on one of the column names at the top. With a keyboard, press Space on a card, move it with the left and right arrows, and press Space again.',
+        link: '/tasks?tab=board',
+      },
+      {
+        area: 'app',
+        title: 'Easier on a phone',
+        body: 'Search is in the header on a phone too. The sections of Organization and Settings scroll to the one you are on, and team buttons no longer run off the screen. The calendar names your time zone in words, and removing a member or deleting a team now asks first.',
+      },
+    ],
+  },
+  {
     id: '2026-11-14-b',
     date: '2026-11-14',
     title: 'Stand-ups for your team',

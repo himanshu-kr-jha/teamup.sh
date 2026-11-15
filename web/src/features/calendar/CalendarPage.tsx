@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { zoneLabel } from '@/shared/utils/zoneLabel';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { addDays, format, isSameDay, isToday, parse, isValid } from 'date-fns';
@@ -281,7 +282,7 @@ export function CalendarPage() {
         {view === 'day' && <DayStrip anchor={anchor} now={now} onPick={(day) => setParam({ date: dayLabelKey(day) })} />}
 
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-          <span>Times in {timeZone.replace(/_/g, ' ')}</span>
+          <span>Times in {zoneLabel(timeZone)}</span>
           <Legend />
         </div>
       </div>

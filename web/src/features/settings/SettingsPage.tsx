@@ -6,7 +6,8 @@ import { Input } from '@/shared/components/ui/input';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/card';
 import { Label } from '@/shared/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs';
+import { Tabs, TabsContent, TabsTrigger } from '@/shared/components/ui/tabs';
+import { ScrollTabsList } from '@/shared/components/ui/scroll-tabs-list';
 import { PushSettings } from '@/features/notifications/PushSettings';
 import { Separator } from '@/shared/components/ui/separator';
 import { useAuth } from '@/features/auth/AuthProvider';
@@ -65,12 +66,14 @@ export function SettingsPage() {
       </div>
 
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 overflow-auto">
-        <TabsList className="border-b border-border p-4 md:p-6">
+        <div className="border-b border-border px-4 py-3 md:px-6">
+        <ScrollTabsList value={activeTab} aria-label="Settings sections">
           <TabsTrigger value="profile"><User className="mr-2 h-4 w-4" />Profile</TabsTrigger>
           <TabsTrigger value="notifications"><Bell className="mr-2 h-4 w-4" />Notifications</TabsTrigger>
           <TabsTrigger value="security"><Shield className="mr-2 h-4 w-4" />Security</TabsTrigger>
           <TabsTrigger value="appearance"><Palette className="mr-2 h-4 w-4" />Appearance</TabsTrigger>
-        </TabsList>
+        </ScrollTabsList>
+        </div>
 
         <TabsContent value="profile" className="p-4 md:p-6 space-y-6 max-w-2xl">
           <Card>

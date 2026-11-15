@@ -21,7 +21,10 @@ interface FormDialogProps {
   onSubmit: () => Promise<void>;
   /** Blocks submission and explains why, before the request is attempted. */
   disabledReason?: string;
-  children: ReactNode;
+  /** For a confirmation of something that cannot be taken back: the button is red. */
+  destructive?: boolean;
+  /** Absent for a plain confirmation, where the title and description say it all. */
+  children?: ReactNode;
 }
 
 /**
@@ -37,6 +40,7 @@ export function FormDialog({
   submitLabel,
   onSubmit,
   disabledReason,
+  destructive,
   children,
 }: FormDialogProps) {
   const [submitting, setSubmitting] = useState(false);
@@ -83,13 +87,13 @@ export function FormDialog({
             </div>
           )}
 
-          <div className="space-y-4">{children}</div>
+          {children && <div className="space-y-4">{children}</div>}
 
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
               Cancel
             </Button>
-            <Button type="submit" disabled={submitting || !!disabledReason} title={disabledReason}>
+            <Button type="submit" variant={destructive ? 'destructive' : 'default'} disabled={submitting || !!disabledReason} title={disabledReason}>
               {submitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {submitLabel}
             </Button>

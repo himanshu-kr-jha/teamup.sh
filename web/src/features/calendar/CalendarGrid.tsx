@@ -89,7 +89,8 @@ export function CalendarGrid({
     const element = scrollRef.current;
     if (!element) return;
     const hour = Math.max(now.getHours() - 1, 0);
-    element.scrollTop = pixels(Math.min(hour, 8) * 60);
+    // A little above the hour, so its label is not cut in half by the top edge.
+    element.scrollTop = Math.max(0, pixels(Math.min(hour, 8) * 60) - 12);
     // Only on arriving; moving through weeks should keep your place.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { Search, Loader2, Paperclip } from 'lucide-react';
+import { Search, Loader2, Paperclip, X } from 'lucide-react';
+import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { messagesApi } from '@/shared/api/client';
 import { formatRelativeTime, cn } from '@/shared/utils/cn';
@@ -45,7 +46,21 @@ export function SearchBox() {
   const [term, setTerm] = useState('');
   const [debounced, setDebounced] = useState('');
   const [open, setOpen] = useState(false);
+  // On a phone the box is an icon until tapped, then takes the header's whole
+  // width. There was no search on a phone at all before.
+  const [expanded, setExpanded] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  // The box is already in the page, hidden, so autofocus never fires; opened,
+  // it takes the focus so the keyboard comes up at once.
+  useEffect(() => {
+    if (expanded) inputRef.current?.focus();
+  }, [expanded]);
+  const finish = () => {
+    setOpen(false);
+    setTerm('');
+    setExpanded(false);
+  };
 
   // Debounced so typing does not fire a query per keystroke.
   useEffect(() => {
@@ -80,9 +95,36 @@ export function SearchBox() {
   const nothing = results.length === 0 && files.length === 0;
 
   return (
-    <div ref={containerRef} className="relative hidden md:block md:w-96">
+    <>
+    <Button
+      variant="ghost"
+      size="icon"
+      className={cn('ml-auto md:hidden', expanded && 'hidden')}
+      aria-label="Search messages and files"
+      onClick={() => {
+        setExpanded(true);
+        setOpen(true);
+      }}
+    >
+      <Search className="h-5 w-5" />
+    </Button>
+    <div
+      ref={containerRef}
+      className={cn(
+        expanded
+          ? 'fixed inset-x-0 top-[env(safe-area-inset-top)] z-[60] flex h-16 items-center gap-2 border-b border-border bg-background px-3 md:relative md:inset-auto md:h-auto md:w-96 md:border-0 md:p-0'
+          : 'relative hidden md:block md:w-96'
+      )}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') finish();
+      }}
+    >
+      <div className="relative min-w-0 flex-1">
       <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
       <Input
+        ref={inputRef}
+        type="search"
+        enterKeyHint="search"
         value={term}
         onChange={(e) => {
           setTerm(e.target.value);
@@ -94,9 +136,15 @@ export function SearchBox() {
         className="pl-10"
       />
       {searching && <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />}
+      </div>
+      {expanded && (
+        <Button variant="ghost" size="icon" className="shrink-0 md:hidden" aria-label="Close search" onClick={finish}>
+          <X className="h-5 w-5" />
+        </Button>
+      )}
 
       {open && debounced.length > 1 && (
-        <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-96 overflow-y-auto rounded-lg border border-border bg-popover shadow-lg">
+        <div className="absolute left-0 right-0 top-full z-50 mx-2 mt-1 max-h-[70vh] overflow-y-auto rounded-lg border border-border bg-popover shadow-lg md:mx-0 md:max-h-96">
           {nothing && !searching && (
             <p className="p-4 text-sm text-muted-foreground">Nothing matches “{debounced}”.</p>
           )}
@@ -110,8 +158,7 @@ export function SearchBox() {
                 <button
                   key={f.id}
                   onClick={() => {
-                    setOpen(false);
-                    setTerm('');
+                    finish();
                     navigate(`/chat/${f.channelId}`);
                   }}
                   className="flex w-full items-center gap-2 p-3 text-left hover:bg-accent focus:bg-accent focus:outline-none"
@@ -137,8 +184,7 @@ export function SearchBox() {
             <button
               key={r.id}
               onClick={() => {
-                setOpen(false);
-                setTerm('');
+                finish();
                 navigate(`/chat/${r.channelId}`);
               }}
               className={cn(
@@ -155,5 +201,6 @@ export function SearchBox() {
         </div>
       )}
     </div>
+    </>
   );
 }
