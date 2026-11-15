@@ -55,16 +55,17 @@ test('the phone rings and shows messages while TeamUp is open on the laptop', as
     expect(phone.arrived[0].urgency).toBe('high');
 
     // A call rings, again and again, until it is dealt with.
-    const before = phone.arrived.length;
+    // A ring is urgent, and is not delivered to a phone that comes back on after
+    // the call has stopped ringing. On a busy machine the message's own push, which
+    // waits an hour, can land after the call has started, so it is not counted.
+    const called = Date.now();
     const call = await sam.post('/calls', { callType: 'audio', invitees: [idOf('alice')] });
     callId = call.id;
+    const rings = () => phone.arrived.filter((p) => p.at >= called && p.urgency === 'high' && Number(p.ttl) <= 60);
     await expect
-      .poll(() => phone.arrived.length - before, { message: 'the call did not keep ringing the phone', timeout: 20_000 })
+      .poll(() => rings().length, { message: 'the call did not keep ringing the phone', timeout: 20_000 })
       .toBeGreaterThanOrEqual(3);
-    const ring = phone.arrived[before];
-    expect(ring.urgency).toBe('high');
-    // Not delivered to a phone that comes back on after the call has stopped ringing.
-    expect(Number(ring.ttl)).toBeLessThanOrEqual(60);
+    const ring = rings()[0];
 
     // The caller gives up: the phone is told to stop, and then it stops.
     // Pushes are told apart by how long they wait for a phone that is off: a ring
