@@ -124,7 +124,7 @@ test.describe('task news', () => {
     await expect(alice.page.getByRole('heading', { name: title })).toBeVisible();
     await marked; // leaving straight away would cancel it
     await openTasks(alice.page, '?tab=board');
-    const card = alice.page.locator('div.rounded-lg', { has: alice.page.getByRole('link', { name: title }) }).first();
+    const card = alice.page.getByTestId('task-card').filter({ has: alice.page.getByRole('link', { name: title }), visible: true });
     await expect(card.getByTestId('task-unread-dot')).toHaveCount(0);
     await alice.page.locator('body').click({ position: { x: 5, y: 5 } }); // a page nobody has touched may not play sound
 

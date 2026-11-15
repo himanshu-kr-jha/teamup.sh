@@ -19,6 +19,7 @@ import { UnreadTaskDot } from '@/features/notifications/UnreadTaskDot';
 import { liveTaskQuery } from './liveQuery';
 import { ErrorState, LoadingState } from './dashboard/parts';
 import { PersonAvatar } from '@/shared/components/UserAvatar';
+import { BoardDnd, centreOnPointer, DraggableTask, DragOverlay, DropColumn, type DragData } from './boardDrag';
 
 interface Task {
   id: string;
@@ -130,11 +131,32 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
 
   const tasks = tasksResponse?.data || [];
 
+  // A status change shows at once, before the server has answered: a card
+  // dropped on a column has to land there, not jump back and then reappear a
+  // moment later. If the server refuses, every list goes back as it was.
   const updateTaskMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: any }) => tasksApi.update(id, data),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tasks'] }),
-    onError: (err) => toast.error(apiErrorMessage(err, 'Could not update that task.')),
+    onMutate: async ({ id, data }) => {
+      if (!data?.status) return undefined;
+      await queryClient.cancelQueries({ queryKey: ['tasks'] });
+      const before = queryClient.getQueriesData({ queryKey: ['tasks'] });
+      queryClient.setQueriesData({ queryKey: ['tasks'] }, (old: any) =>
+        old && Array.isArray(old.data)
+          ? { ...old, data: old.data.map((t: Task) => (t.id === id ? { ...t, status: data.status } : t)) }
+          : old,
+      );
+      return { before };
+    },
+    onError: (err, _vars, context) => {
+      context?.before.forEach(([key, value]) => queryClient.setQueryData(key, value));
+      toast.error(apiErrorMessage(err, 'Could not update that task.'));
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['tasks'] }),
   });
+  const [dragging, setDragging] = useState<DragData | null>(null);
+  const draggedTask = dragging ? tasks.find((t) => t.id === dragging.taskId) : undefined;
+  const titleOf = (status: string) => columns.find((c) => c.id === status)?.title ?? status;
+  const dragData = (task: Task): DragData => ({ taskId: task.id, status: task.status, title: task.title });
 
   const filteredTasks = tasks.filter((task) => {
     if (searchQuery && !task.title.toLowerCase().includes(searchQuery.toLowerCase())) return false;
@@ -303,20 +325,45 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
         <div className="flex shrink-0 gap-2 border-b border-border px-3 py-2 md:hidden">{mineFilter(true)}</div>
       )}
 
+      <BoardDnd
+        titleOf={titleOf}
+        onDragStart={setDragging}
+        onDragEnd={() => setDragging(null)}
+        onMove={({ taskId, to }) => {
+          updateTaskMutation.mutate({ id: taskId, data: { status: to } });
+          toast.success(`Moved to ${titleOf(to)}.`);
+        }}
+      >
       {/* Phone: one column at a time, picked here. Columns side by side on a
           phone meant scrolling sideways to find a column and downwards to read
           it, with the counts of the others out of sight. */}
-      <div className="flex shrink-0 gap-1 overflow-x-auto scrollbar-hide border-b border-border px-3 py-2 md:hidden">
+      <div
+        data-no-autoscroll="true"
+        className={cn(
+          'flex shrink-0 gap-1 border-b border-border px-3 py-2 md:hidden',
+          // While a card is held every column has to be in reach at once, so
+          // the chips wrap instead of scrolling out of sight.
+          dragging ? 'flex-wrap' : 'overflow-x-auto scrollbar-hide'
+        )}
+      >
+        {/* They are also where a card held down in the list is dropped, so
+            while one is held they grow into proper targets. */}
         {columns.map((column) => (
-          <button
+          <DropColumn
+            as="button"
+            surface="phone"
+            status={column.id}
             key={column.id}
             onClick={() => setPhoneColumn(column.id)}
             aria-pressed={phoneColumn === column.id}
+            overClassName="ring-2 ring-primary ring-offset-1 ring-offset-background scale-105"
             className={cn(
-              'flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1.5 text-xs font-medium transition-colors',
+              'flex shrink-0 items-center gap-1.5 rounded-full px-3 text-xs font-medium transition-all',
+              dragging ? 'min-h-[2.75rem]' : 'min-h-[2.25rem]',
               phoneColumn === column.id
                 ? 'bg-primary text-primary-foreground'
-                : 'bg-muted text-muted-foreground'
+                : 'bg-muted text-muted-foreground',
+              dragging && dragging.status !== column.id && phoneColumn !== column.id && 'border border-dashed border-primary/60 bg-primary/5 text-foreground'
             )}
           >
             {column.title}
@@ -328,9 +375,15 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
             >
               {countIn(column.id)}
             </span>
-          </button>
+          </DropColumn>
         ))}
       </div>
+      <p
+        className={cn('shrink-0 px-3 pt-2 text-xs text-muted-foreground md:hidden', !dragging && 'hidden')}
+        aria-hidden="true"
+      >
+        Drop it on a column above to move it.
+      </p>
 
       {/* Task Board */}
       <div className="min-h-0 flex-1 overflow-y-auto p-3 md:overflow-auto md:p-6">
@@ -348,7 +401,9 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
                 </p>
               ) : (
                 onPhone.map((task) => (
-                  <TaskCard key={task.id} task={task} onUpdate={updateTaskMutation.mutate} />
+                  <DraggableTask key={task.id} surface="phone" data={dragData(task)} disabled={task.can?.edit === false}>
+                    <TaskCard task={task} onUpdate={updateTaskMutation.mutate} />
+                  </DraggableTask>
                 ))
               )}
             </div>
@@ -357,17 +412,31 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
             {viewMode === 'board' ? (
               <div className="hidden h-full gap-4 overflow-x-auto pb-2 md:flex">
                 {columns.map((column) => (
-                  <div key={column.id} className="flex w-72 min-h-0 flex-shrink-0 flex-col">
+                  <DropColumn
+                    key={column.id}
+                    surface="wide"
+                    status={column.id}
+                    aria-label={column.title}
+                    role="region"
+                    className="flex w-72 min-h-0 flex-shrink-0 flex-col rounded-lg transition-shadow"
+                  >
                     <div className={cn('rounded-t-lg px-3 py-2 text-sm font-medium', column.head)}>
                       {column.title}
                       <span className="ml-2 text-xs tabular-nums opacity-70">{countIn(column.id)}</span>
                     </div>
-                    <div className={cn('min-h-0 flex-1 overflow-y-auto rounded-b-lg p-2 space-y-2', column.body)}>
+                    <div className={cn('min-h-[6rem] flex-1 overflow-y-auto rounded-b-lg p-2 space-y-2', column.body)}>
                       {filteredTasks.filter((t) => t.status === column.id).map((task) => (
-                        <TaskCard key={task.id} task={task} onUpdate={updateTaskMutation.mutate} />
+                        <DraggableTask key={task.id} surface="wide" data={dragData(task)} disabled={task.can?.edit === false}>
+                          <TaskCard task={task} onUpdate={updateTaskMutation.mutate} />
+                        </DraggableTask>
                       ))}
+                      {countIn(column.id) === 0 && (
+                        <p className="py-6 text-center text-xs text-muted-foreground">
+                          {dragging ? 'Drop here' : 'Nothing here'}
+                        </p>
+                      )}
                     </div>
-                  </div>
+                  </DropColumn>
                 ))}
               </div>
             ) : filteredTasks.length === 0 ? (
@@ -382,6 +451,16 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
           </>
         )}
       </div>
+      {/* The card under the pointer, drawn above everything so a column's
+          scrolling never clips it. */}
+      <DragOverlay dropAnimation={null} modifiers={[centreOnPointer]}>
+        {draggedTask ? (
+          <div className="w-64 max-w-[75vw] rotate-1 cursor-grabbing opacity-95 shadow-xl md:w-72">
+            <TaskCard task={draggedTask} onUpdate={() => {}} />
+          </div>
+        ) : null}
+      </DragOverlay>
+      </BoardDnd>
     </div>
   );
 }
@@ -400,6 +479,7 @@ function TaskCard({ task, onUpdate }: { task: Task; onUpdate: (data: { id: strin
 
   return (
     <div
+      data-testid="task-card"
       className={cn(
         'rounded-lg border border-border bg-card p-3 shadow-sm transition-shadow hover:shadow-md md:p-4',
         restriction && 'border-dashed bg-muted/40'
@@ -412,21 +492,35 @@ function TaskCard({ task, onUpdate }: { task: Task; onUpdate: (data: { id: strin
         <Link
           to={`/tasks/${task.id}`}
           className="min-w-0 flex-1 break-anywhere text-sm font-medium hover:underline"
+          // Enter on the link opens the task; it must not reach the card,
+          // where Enter picks the card up to move it.
+          onKeyDown={(e) => e.stopPropagation()}
         >
           {task.key && <span className="mr-1.5 font-mono text-xs font-normal text-muted-foreground">{task.key}</span>}
           {task.title}
         </Link>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-6 w-6" aria-label="Task actions">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="-mr-1 -mt-1 h-8 w-8 shrink-0"
+              aria-label="Task actions"
+              // Pressing the menu must open the menu, not pick the card up.
+              onPointerDown={(e) => e.stopPropagation()}
+              onKeyDown={(e) => e.stopPropagation()}
+            >
               <MoreVertical className="h-4 w-4" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={() => onUpdate({ id: task.id, data: { status: 'todo' } })}>Move to To Do</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => onUpdate({ id: task.id, data: { status: 'in_progress' } })}>Move to In Progress</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => onUpdate({ id: task.id, data: { status: 'blocked' } })}>Mark Blocked</DropdownMenuItem>
-            <DropdownMenuItem onSelect={() => onUpdate({ id: task.id, data: { status: 'done' } })}>Mark Done</DropdownMenuItem>
+            {/* Every column but the one it is in. In Review was missing, so
+                a task could reach it only from the detail page. */}
+            {columns.filter((c) => c.id !== task.status).map((c) => (
+              <DropdownMenuItem key={c.id} onSelect={() => onUpdate({ id: task.id, data: { status: c.id } })}>
+                {c.id === 'blocked' ? 'Mark Blocked' : c.id === 'done' ? 'Mark Done' : `Move to ${c.title}`}
+              </DropdownMenuItem>
+            ))}
             <DropdownMenuSeparator />
             <DropdownMenuItem asChild>
               <Link to={`/tasks/${task.id}`}>Open</Link>

@@ -1,4 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
+import { useMediaQuery } from '@/shared/hooks/useMediaQuery';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   Hash, Send, Paperclip, Smile, Settings, ChevronLeft, MessageSquare, User,
@@ -107,6 +108,7 @@ interface Message {
 const READ_MARKER_DELAY_MS = 1500;
 
 export function ChatPage() {
+  const narrowComposer = useMediaQuery('(max-width: 639px)');
   const { user } = useAuth();
   const navigate = useNavigate();
   const { on, state: wsState } = useWebSocket();
@@ -1045,8 +1047,8 @@ export function ChatPage() {
           ) : (
           <>
           {/* Channel header */}
-          <div className="flex h-16 items-center gap-4 px-4 border-b border-border">
-            <div className="flex min-w-0 items-center gap-2">
+          <div className="flex h-16 items-center gap-2 border-b border-border px-2 md:gap-4 md:px-4">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
               <Button
                 variant="ghost"
                 size="icon"
@@ -1068,8 +1070,11 @@ export function ChatPage() {
                 </div>
               )}
               <div className="min-w-0">
-                <h2 className="flex items-center gap-2 truncate font-semibold leading-tight">
-                  {activeChannel?.name || (channelId ? 'Channel' : 'No channel selected')}
+                {/* The name is the part that gives, and it says so with an
+                    ellipsis; a flex row ignores truncate on bare text, so on a
+                    phone a long name was simply cut mid-letter. */}
+                <h2 className="flex min-w-0 items-center gap-2 font-semibold leading-tight">
+                  <span className="truncate">{activeChannel?.name || (channelId ? 'Channel' : 'No channel selected')}</span>
                   {activeChannel?.type === 'dm' && (
                     <PresenceDot
                       status={statusOf(activeChannel?.counterpartId)}
@@ -1080,8 +1085,7 @@ export function ChatPage() {
                 <p className="truncate text-sm text-muted-foreground">{channelSubtitle}</p>
               </div>
             </div>
-            <div className="flex-1" />
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 items-center gap-0.5 md:gap-2">
               <Button
                 variant="ghost"
                 size="icon"
@@ -1291,7 +1295,11 @@ export function ChatPage() {
                   aria-autocomplete="list"
                   aria-expanded={mentionChoices.length > 0}
                   placeholder={
-                    activeChannel?.type === 'dm'
+                    // A phone's box has room for one word; a textarea will not
+                    // end its placeholder with an ellipsis, so it was cut mid-name.
+                    narrowComposer
+                      ? 'Message'
+                      : activeChannel?.type === 'dm'
                       ? `Message ${activeChannel?.name ?? ''}`.trim()
                       : activeChannel?.name
                         ? `Message #${activeChannel.name}`
@@ -1842,6 +1850,15 @@ function MessageBubble({
 }
 
 /**
+ * The look of a message's own small controls. A mouse finds them by hovering;
+ * a finger cannot hover, so on a touch screen they were invisible as well as
+ * too small to hit. There they stay faintly in sight, at a size a thumb can use.
+ */
+const MESSAGE_TOOL =
+  'h-6 w-6 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100 ' +
+  '[@media(pointer:coarse)]:h-8 [@media(pointer:coarse)]:w-8 [@media(pointer:coarse)]:opacity-50';
+
+/**
  * The emoji offered on a message.
  *
  * Its own control rather than an item in the actions menu: reacting is meant
@@ -1856,7 +1873,7 @@ function ReactionPicker({ onPick }: { onPick: (emoji: string) => void }) {
           variant="ghost"
           size="icon"
           aria-label="Add a reaction"
-          className="h-6 w-6 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
+          className={MESSAGE_TOOL}
         >
           <Smile className="h-4 w-4" />
         </Button>
@@ -1930,7 +1947,7 @@ function MessageMenu({
           variant="ghost"
           size="icon"
           aria-label="Message actions"
-          className="h-6 w-6 shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus:opacity-100"
+          className={MESSAGE_TOOL}
         >
           <MoreVertical className="h-4 w-4" />
         </Button>

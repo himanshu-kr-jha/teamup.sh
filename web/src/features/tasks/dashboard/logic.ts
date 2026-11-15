@@ -244,10 +244,4 @@ export function completedCaption(scope: DashboardScope, lastScrumAt: string | nu
   return `Completed counts work since the last scrum on ${formatDate(lastScrumAt)}.`;
 }
 
-/**
- * Which ends of a sideways-scrolling strip have something out of sight. A pixel of
- * slack, because a zoomed page reports fractions and the end is never quite reached.
- */
-export function hiddenSides(scrollLeft: number, clientWidth: number, scrollWidth: number) {
-  return { left: scrollLeft > 1, right: scrollLeft + clientWidth < scrollWidth - 1 };
-}
+export { hiddenSides } from '@/shared/utils/hiddenSides';

@@ -85,8 +85,9 @@ for (const role of ROLES) {
           await openTasks(page, `?tab=${id}`);
           await settleTheme(page, theme);
           await expect(page.getByRole('tab', { name: label })).toHaveAttribute('aria-selected', 'true');
-          // The view has finished loading when its spinner is gone.
-          await expect(page.getByRole('status')).toHaveCount(0);
+          // The view has finished loading when its spinner is gone. Not every
+          // status: the board keeps one for what a screen reader hears while dragging.
+          await expect(page.getByTestId('view-loading')).toHaveCount(0);
           await page.screenshot({ path: path.join(OUT, `${role.label}__${id}__${viewport.name}__${theme}.png`) });
           const layout = await layoutProblems(page);
           found.push(...layout.problems.map((p) => `${id}: ${p}`));
@@ -126,7 +127,7 @@ for (const viewport of VIEWPORTS) {
       await settleTheme(page, theme);
       await page.getByRole('button', { name: 'Alice Archer' }).click();
       await expect(page.getByRole('dialog')).toBeVisible();
-      await expect(page.getByRole('status')).toHaveCount(0);
+      await expect(page.getByTestId('view-loading')).toHaveCount(0);
       await shot('contribution-detail');
     });
   }

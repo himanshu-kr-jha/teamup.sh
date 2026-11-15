@@ -18,6 +18,7 @@ import {
   FolderGit2,
   Plug,
   Gauge,
+  X,
 } from 'lucide-react';
 import { MailSettingsTab, mailProblemText } from './MailSettingsTab';
 import { AppearanceTab } from './AppearanceTab';
@@ -34,7 +35,8 @@ import { Textarea } from '@/shared/components/ui/textarea';
 import { Label } from '@/shared/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui/card';
 import { Badge } from '@/shared/components/ui/badge';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui/tabs';
+import { Tabs, TabsContent, TabsTrigger } from '@/shared/components/ui/tabs';
+import { ScrollTabsList } from '@/shared/components/ui/scroll-tabs-list';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
 import {
   Dialog,
@@ -95,8 +97,9 @@ export function AdminPage() {
       )}
 
       <Tabs value={tab} onValueChange={setTab} className="flex-1 overflow-y-auto overflow-x-hidden">
-        {/* Four tabs are wider than a phone, so the row scrolls rather than the page. */}
-        <TabsList className="flex max-w-full justify-start overflow-x-auto border-b border-border p-4 scrollbar-hide md:inline-flex md:p-6">
+        {/* Nine tabs are wider than a phone, so the row scrolls rather than the page. */}
+        <div className="border-b border-border px-4 py-3 md:px-6">
+        <ScrollTabsList value={tab} aria-label="Organization sections">
           <TabsTrigger value="members"><Users className="mr-2 h-4 w-4" />Members</TabsTrigger>
           <TabsTrigger value="roles"><Shield className="mr-2 h-4 w-4" />Roles</TabsTrigger>
           <TabsTrigger value="teams"><UsersRound className="mr-2 h-4 w-4" />Teams</TabsTrigger>
@@ -106,7 +109,8 @@ export function AdminPage() {
           <TabsTrigger value="projects"><FolderGit2 className="mr-2 h-4 w-4" />Projects</TabsTrigger>
           {may.settings && <TabsTrigger value="integrations"><Plug className="mr-2 h-4 w-4" />Integrations</TabsTrigger>}
           {may.settings && <TabsTrigger value="system"><Gauge className="mr-2 h-4 w-4" />System</TabsTrigger>}
-        </TabsList>
+        </ScrollTabsList>
+        </div>
 
         <TabsContent value="members" className="p-4 md:p-6">
           <MembersTab
@@ -187,6 +191,8 @@ function MembersTab({
   const toast = useToast();
   const queryClient = useQueryClient();
   const [assignFor, setAssignFor] = useState<any | null>(null);
+  // Deactivating somebody signs them out everywhere, so it is asked once first.
+  const [deactivating, setDeactivating] = useState<any | null>(null);
   const [resetFor, setResetFor] = useState<any | null>(null);
   const [adding, setAdding] = useState(false);
   const [importing, setImporting] = useState(false);
@@ -213,14 +219,11 @@ function MembersTab({
     }
   };
 
+  // Throws on failure, so the confirmation stays open and says why.
   const deactivate = async (userId: string) => {
-    try {
-      await orgApi.deactivateUser(userId);
-      refresh();
-      toast.success('Member deactivated.');
-    } catch (err) {
-      toast.error(apiErrorMessage(err, 'Could not deactivate that member.'));
-    }
+    await orgApi.deactivateUser(userId);
+    refresh();
+    toast.success('Member deactivated.');
   };
 
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading members…</p>;
@@ -265,9 +268,12 @@ function MembersTab({
                         <button
                           onClick={() => removeRole(u.id, role.id)}
                           aria-label={`Remove ${roleName} from ${u.name}`}
-                          className="ml-1 opacity-60 hover:opacity-100"
+                          title={`Remove ${roleName}`}
+                          // A whole hit area rather than the width of an ×,
+                          // which was seven pixels and easy to miss on a phone.
+                          className="-my-1 -mr-1.5 ml-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full opacity-60 hover:bg-background/60 hover:opacity-100 [@media(pointer:coarse)]:h-7 [@media(pointer:coarse)]:w-7"
                         >
-                          ×
+                          <X className="h-3 w-3" aria-hidden="true" />
                         </button>
                       )}
                     </Badge>
@@ -290,7 +296,14 @@ function MembersTab({
                     </Button>
                   )}
                   {canMembers && u.id !== currentUserId && (
-                    <Button variant="ghost" size="sm" onClick={() => deactivate(u.id)}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-muted-foreground hover:text-destructive"
+                      onClick={() => setDeactivating(u)}
+                      aria-label={`Deactivate ${u.name}`}
+                      title="Deactivate"
+                    >
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   )}
@@ -300,6 +313,16 @@ function MembersTab({
           ))}
         </CardContent>
       </Card>
+
+      <FormDialog
+        open={!!deactivating}
+        onOpenChange={(open) => !open && setDeactivating(null)}
+        title={`Deactivate ${deactivating?.name ?? 'this member'}?`}
+        description="They are signed out everywhere and can no longer sign in. Their messages and tasks stay."
+        submitLabel="Deactivate"
+        destructive
+        onSubmit={() => deactivate(deactivating.id)}
+      />
 
       <AddMemberDialog
         open={adding}
@@ -871,6 +894,7 @@ function TeamsTab({
   const [movingTeam, setMovingTeam] = useState<any | null>(null);
   const [moveToId, setMoveToId] = useState(isAdmin ? TOP_LEVEL : '');
   const [viewing, setViewing] = useState<any | null>(null);
+  const [deleting, setDeleting] = useState<any | null>(null);
   const [managerId, setManagerId] = useState('');
 
   const { data, isLoading } = useQuery({ queryKey: ['teams'], queryFn: () => orgApi.listTeams() });
@@ -903,14 +927,11 @@ function TeamsTab({
   // default, because the top level is not theirs to choose.
   const defaultParentChoice = isAdmin ? TOP_LEVEL : '';
 
+  // Throws on failure, so the confirmation stays open and says why.
   const remove = async (id: string) => {
-    try {
-      await orgApi.deleteTeam(id);
-      queryClient.invalidateQueries({ queryKey: ['teams'] });
-      toast.success('Team deleted.');
-    } catch (err) {
-      toast.error(apiErrorMessage(err, 'Could not delete that team.'));
-    }
+    await orgApi.deleteTeam(id);
+    queryClient.invalidateQueries({ queryKey: ['teams'] });
+    toast.success('Team deleted.');
   };
 
   if (isLoading) return <p className="text-sm text-muted-foreground">Loading teams…</p>;
@@ -933,8 +954,9 @@ function TeamsTab({
               key={t.id}
               // Indented, and hung off a rule, so the shape of the organization
               // is legible at a glance instead of being a flat list.
-              style={{ marginLeft: `${Math.min(depth, 8) * 1.5}rem` }}
-              className={`flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border p-3 ${
+              // Half as deep on a phone, where every rem of width counts.
+              style={{ marginLeft: `calc(${Math.min(depth, 8)} * var(--team-indent))` }}
+              className={`[--team-indent:0.75rem] sm:[--team-indent:1.5rem] flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border p-3 ${
                 depth > 0 ? 'border-l-4 border-l-primary/30' : ''
               }`}
             >
@@ -952,7 +974,8 @@ function TeamsTab({
                 </p>
               </div>
               {(isAdmin || managedTeamIds.has(t.id)) && (
-                <div className="flex gap-2">
+                // Wraps, or on a phone the last two buttons ran off the screen.
+                <div className="flex flex-wrap gap-2">
                   {isAdmin && (
                     <Button variant="outline" size="sm" onClick={() => setManagerFor(t)}>Set manager</Button>
                   )}
@@ -976,7 +999,14 @@ function TeamsTab({
                   <Button variant="outline" size="sm" onClick={() => setAddTo(t)}>Add member</Button>
                   <Button variant="outline" size="sm" onClick={() => setViewing(t)}>Members</Button>
                   {isAdmin && (
-                    <Button variant="ghost" size="sm" onClick={() => remove(t.id)}>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-muted-foreground hover:text-destructive"
+                      onClick={() => setDeleting(t)}
+                      aria-label={`Delete the team ${t.name}`}
+                      title="Delete team"
+                    >
                       <Trash2 className="h-4 w-4" />
                     </Button>
                   )}
@@ -1031,6 +1061,15 @@ function TeamsTab({
         </div>
       </FormDialog>
 
+      <FormDialog
+        open={!!deleting}
+        onOpenChange={(open) => !open && setDeleting(null)}
+        title={`Delete ${deleting?.name ?? 'this team'}?`}
+        description="Its people stay in the organization, and any teams under it move up a level."
+        submitLabel="Delete team"
+        destructive
+        onSubmit={() => remove(deleting.id)}
+      />
       <TeamMembersDialog
         team={viewing}
         canRemove={isAdmin || (viewing ? managedTeamIds.has(viewing.id) : false)}

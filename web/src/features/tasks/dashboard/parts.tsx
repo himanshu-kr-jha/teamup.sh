@@ -24,7 +24,7 @@ export function ViewFrame({ children }: { children: ReactNode }) {
 
 export function LoadingState({ label }: { label: string }) {
   return (
-    <div role="status" className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
+    <div role="status" data-testid="view-loading" className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground">
       <Loader2 className="h-4 w-4 animate-spin" aria-hidden />
       {label}
     </div>
