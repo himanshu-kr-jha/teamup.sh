@@ -103,7 +103,10 @@ func cloneTemplateDB(templateDSN string) (string, error) {
 	// is connected to the template while it is being copied.
 	adminCfg := cfg.Copy()
 	adminCfg.Database = "postgres"
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Generous: every package clones the same template at once when the whole
+	// suite runs, and Postgres copies databases one after another, so on a busy
+	// machine waiting a minute here failed the package with nothing wrong.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	admin, err := pgx.ConnectConfig(ctx, adminCfg)
 	if err != nil {
