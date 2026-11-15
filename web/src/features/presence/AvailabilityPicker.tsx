@@ -4,7 +4,9 @@ import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
 import { FormDialog } from '@/shared/components/FormDialog';
-import { presenceApi } from '@/shared/api/client';
+import { Link } from 'react-router-dom';
+import { localToday, presenceApi } from '@/shared/api/client';
+import { addDays } from '@/features/leave/leave';
 import { useToast } from '@/shared/hooks/useToast';
 import { cn } from '@/shared/utils/cn';
 import { PresenceDot } from './PresenceDot';
@@ -14,8 +16,8 @@ import type { PresenceStatus } from './usePresence';
  *  observed rather than chosen — both surface through the states below. */
 const choices: { value: PresenceStatus; label: string; hint: string }[] = [
   { value: 'available', label: 'Available', hint: 'Around and happy to be interrupted' },
-  { value: 'busy', label: 'Busy', hint: 'Head down, or in a call — interrupt only if it matters' },
-  { value: 'away', label: 'Away', hint: 'Not at the desk — how you appear when signed out too' },
+  { value: 'busy', label: 'Busy', hint: 'Head down, or in a call. Interrupt only if it matters' },
+  { value: 'away', label: 'Away', hint: 'Not at the desk, which is also how you appear when signed out' },
   { value: 'on_leave', label: 'On leave', hint: 'Off for a day or more' },
 ];
 
@@ -57,6 +59,7 @@ export function AvailabilityPicker({
           until: needsDates && until ? new Date(until).toISOString() : null,
         });
         queryClient.invalidateQueries({ queryKey: ['availability'] });
+        queryClient.invalidateQueries({ queryKey: ['leave'] });
         toast.success('Availability updated.');
       }}
     >
@@ -93,7 +96,7 @@ export function AvailabilityPicker({
           onChange={(e) => setNote(e.target.value)}
           placeholder={
             status === 'on_leave'
-              ? 'Back on the 14th — ask Priya for anything urgent'
+              ? 'Back on the 14th, ask Priya for anything urgent'
               : status === 'busy'
                 ? 'Heads down until lunch'
                 : 'Anything colleagues should know'
@@ -110,8 +113,16 @@ export function AvailabilityPicker({
             id="availabilityUntil"
             type="date"
             value={until}
+            min={addDays(localToday(), 1)}
             onChange={(e) => setUntil(e.target.value)}
           />
+          <p className="text-xs text-muted-foreground">
+            You are on leave from today, so stand-ups do not count you absent. To plan other days or half days, use{' '}
+            <Link to="/leave" className="font-medium text-primary underline-offset-2 hover:underline" onClick={() => onOpenChange(false)}>
+              Leave
+            </Link>
+            .
+          </p>
         </div>
       )}
     </FormDialog>

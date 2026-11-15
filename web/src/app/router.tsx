@@ -15,6 +15,7 @@ import { MeetingNotesPage } from '@/features/calls/MeetingNotesPage';
 import { GuestJoinPage } from '@/features/calls/GuestJoinPage';
 import { AttendancePage } from '@/features/calls/standing/AttendancePage';
 import { CalendarPage } from '@/features/calendar/CalendarPage';
+import { LeavePage } from '@/features/leave/LeavePage';
 import { StatusPage } from '@/features/status/StatusPage';
 import { WhatsNewPage } from '@/features/whatsnew/WhatsNew';
 import { SharePage } from '@/features/share/SharePage';
@@ -108,6 +109,7 @@ export const router = createBrowserRouter([
       { path: 'meeting-notes', element: <MeetingNotesPage /> },
       { path: 'calls/standing/:id/attendance', element: <AttendancePage /> },
       { path: 'calendar', element: <CalendarPage /> },
+      { path: 'leave', element: <LeavePage /> },
       { path: 'tasks', element: <TasksPage /> },
       { path: 'tasks/:taskId', element: <TaskDetailPage /> },
       { path: 'projects', element: <ProjectsPage /> },

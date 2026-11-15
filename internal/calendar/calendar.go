@@ -22,6 +22,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog"
 
+	"github.com/teamup/teamup/internal/leave"
 	"github.com/teamup/teamup/internal/tasks"
 	apperrors "github.com/teamup/teamup/pkg/errors"
 )
@@ -601,6 +602,14 @@ func (s *Service) loadStanding(ctx context.Context, orgID uuid.UUID, people []uu
 		return err
 	}
 
+	// Nobody is expected at a stand-up on their leave or on a holiday, so it is
+	// not on their calendar then. Dates a day either side, for the zones.
+	book, err := leave.Load(ctx, s.db, orgID, people,
+		from.AddDate(0, 0, -2).UTC().Format("2006-01-02"), to.AddDate(0, 0, 2).UTC().Format("2006-01-02"))
+	if err != nil {
+		return err
+	}
+
 	rows, err := s.db.Query(ctx, `
 		SELECT id, name, time_of_day, time_zone, weekdays, duration_minutes, created_at, audience = 'everyone'
 		FROM standing_meetings WHERE org_id = $1 AND archived_at IS NULL
@@ -643,11 +652,17 @@ func (s *Service) loadStanding(ctx context.Context, orgID uuid.UUID, people []uu
 			if !overlaps(start, end, from, to) {
 				continue
 			}
+			if _, off := book.Holiday(date); off {
+				continue
+			}
 			for _, person := range people {
 				if !everyone && !audience[id][person] {
 					continue
 				}
 				if attended[person][standingKey(id, date)] {
+					continue
+				}
+				if _, away := book.On(person, date, start); away {
 					continue
 				}
 				standing := id

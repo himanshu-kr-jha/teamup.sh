@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   attendanceCounts,
+  attendanceSummary,
   audienceProblem,
   describeAudience,
   attendanceRangeProblem,
@@ -72,7 +73,24 @@ describe('attendance', () => {
       present: 1,
       absent: 2,
       unknown: 1,
+      on_leave: 0,
+      holiday: 0,
     });
+  });
+
+  it('sums up a day, naming leave and leaving out what is not there', () => {
+    const day = (holiday: string | undefined, ...people: AttendancePerson[]) => ({ attendanceRecorded: true, holiday, people });
+    expect(attendanceSummary(day(undefined, person('a', 'present'), person('b', 'absent')))).toBe('1 present, 1 absent');
+    expect(attendanceSummary(day(undefined, person('a', 'present')))).toBe('1 present, 0 absent');
+    expect(attendanceSummary(day(undefined, person('a', 'present'), person('b', 'on_leave')))).toBe('1 present, 1 on leave');
+    expect(attendanceSummary(day(undefined, person('a', 'absent'), person('b', 'on_leave')))).toBe('0 present, 1 absent, 1 on leave');
+    expect(attendanceSummary(day('Diwali', person('a', 'holiday')))).toBe('Nobody was expected');
+    expect(attendanceSummary(day('Diwali', person('a', 'present'), person('b', 'holiday')))).toBe('1 present');
+  });
+
+  it('lists leave after absences', () => {
+    const ordered = orderAttendance([person('Amy', 'on_leave'), person('Bob', 'absent'), person('Cy', 'present')]);
+    expect(ordered.map((p) => p.name)).toEqual(['Cy', 'Bob', 'Amy']);
   });
 
   it('lists who came first, then who did not, alphabetically', () => {

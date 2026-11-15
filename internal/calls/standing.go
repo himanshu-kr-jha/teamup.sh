@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/teamup/teamup/internal/httpx"
+	"github.com/teamup/teamup/internal/leave"
 	"github.com/teamup/teamup/internal/tasks"
 	apperrors "github.com/teamup/teamup/pkg/errors"
 )
@@ -568,6 +569,18 @@ type Attendee struct {
 	LastLeaveAt    *time.Time `json:"lastLeaveAt"`
 	MinutesPresent int        `json:"minutesPresent"`
 	MinutesLate    int        `json:"minutesLate"`
+	// Leave is set when the status is on_leave: what part of the day, and when and
+	// by whom it was recorded, so leave added after the day always says so.
+	Leave *AttendeeLeave `json:"leave,omitempty"`
+}
+
+// AttendeeLeave is the leave that excuses somebody from one day.
+type AttendeeLeave struct {
+	Part       string        `json:"part"`
+	RecordedAt time.Time     `json:"recordedAt"`
+	RecordedBy *leave.Person `json:"recordedBy"`
+	// AfterTheDay is recorded only once the meeting had already started.
+	AfterTheDay bool `json:"afterTheDay"`
 }
 
 // AttendanceDay is one date. AttendanceRecorded is false when people asked to join
@@ -581,8 +594,11 @@ type AttendanceDay struct {
 	AttendanceRecorded bool       `json:"attendanceRecorded"`
 	// CanReadLog is whether whoever is reading may open this day's call log, so that
 	// nobody is offered a button whose only answer is a refusal.
-	CanReadLog bool       `json:"canReadLog"`
-	People     []Attendee `json:"people"`
+	CanReadLog bool `json:"canReadLog"`
+	// Holiday names the organization's holiday on this date. Nobody is absent on
+	// one, and whoever came anyway is still present.
+	Holiday string     `json:"holiday,omitempty"`
+	People  []Attendee `json:"people"`
 }
 
 type occurrence struct {
@@ -662,6 +678,15 @@ func (s *Service) Attendance(ctx context.Context, orgID, meetingID, callerID uui
 		return nil, err
 	}
 
+	expectedIDs := make([]uuid.UUID, 0, len(expect))
+	for id := range expect {
+		expectedIDs = append(expectedIDs, id)
+	}
+	book, err := leave.Load(ctx, s.db, orgID, expectedIDs, from.Format("2006-01-02"), to.Format("2006-01-02"))
+	if err != nil {
+		return nil, err
+	}
+
 	versions, err := s.scheduleVersions(ctx, m)
 	if err != nil {
 		return nil, err
@@ -680,6 +705,7 @@ func (s *Service) Attendance(ctx context.Context, orgID, meetingID, callerID uui
 		runs := existed && schedule.runsOn(d.Weekday())
 		occ, held := occurrences[date]
 		day := AttendanceDay{Date: date, People: []Attendee{}}
+		day.Holiday, _ = book.Holiday(date)
 		switch {
 		case held:
 			day.CallID = &occ.callID
@@ -727,10 +753,22 @@ func (s *Service) Attendance(ctx context.Context, orgID, meetingID, callerID uui
 			if !day.AttendanceRecorded {
 				absent = "unknown"
 			}
+			slot := day.ScheduledStart.In(loc)
 			for id, who := range expect {
-				if _, came := byPerson[id]; !came && who.joined <= date {
-					day.People = append(day.People, Attendee{UserID: id, Name: who.name, Status: absent})
+				if _, came := byPerson[id]; came || who.joined > date {
+					continue
 				}
+				// Leave and holidays are known whether or not the media server
+				// reported anything, so they beat unknown as well as absent.
+				a := Attendee{UserID: id, Name: who.name, Status: absent}
+				if day.Holiday != "" {
+					a.Status = "holiday"
+				} else if l, on := book.On(id, date, slot); on {
+					a.Status = "on_leave"
+					a.Leave = &AttendeeLeave{Part: l.Part, RecordedAt: l.RecordedAt, RecordedBy: l.RecordedBy,
+						AfterTheDay: l.RecordedAt.After(day.ScheduledStart)}
+				}
+				day.People = append(day.People, a)
 			}
 		}
 		sort.Slice(day.People, func(i, j int) bool {

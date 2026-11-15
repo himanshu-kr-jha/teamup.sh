@@ -15,8 +15,8 @@ import { useDashboard } from '@/features/tasks/dashboard/useDashboard';
 import { CallLogDialog } from '../CallLogDialog';
 import { formatMinutes } from '../callLog';
 import {
-  attendanceCounts,
   attendanceRangeProblem,
+  attendanceSummary,
   defaultAttendanceRange,
   describeSchedule,
   orderAttendance,
@@ -27,12 +27,20 @@ import {
 
 const ALL_TEAMS = 'all';
 
-const STATUS_LABEL: Record<AttendanceStatus, string> = { present: 'Present', absent: 'Absent', unknown: 'Unknown' };
+const STATUS_LABEL: Record<AttendanceStatus, string> = {
+  present: 'Present',
+  absent: 'Absent',
+  unknown: 'Unknown',
+  on_leave: 'On leave',
+  holiday: 'Holiday',
+};
 
 const STATUS_STYLE: Record<AttendanceStatus, string> = {
   present: 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-200',
   absent: 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200',
   unknown: 'bg-muted text-muted-foreground',
+  on_leave: 'bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200',
+  holiday: 'bg-muted text-muted-foreground',
 };
 
 /**
@@ -171,16 +179,18 @@ export function AttendancePage() {
 
 function DayCard({ day }: { day: AttendanceDay }) {
   const [showingLog, setShowingLog] = useState(false);
-  const counts = attendanceCounts(day.people);
   const people = orderAttendance(day.people);
-  const summary = day.attendanceRecorded
-    ? `${counts.present} present, ${counts.absent} absent`
-    : 'Attendance could not be recorded';
+  const summary = day.attendanceRecorded ? attendanceSummary(day) : 'Attendance could not be recorded';
 
   return (
     <section className="rounded-lg border border-border bg-card" aria-label={`Attendance on ${day.date}`}>
       <header className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border px-3 py-2">
         <h2 className="text-sm font-semibold">{dayTitle(day.date)}</h2>
+        {day.holiday && (
+          <Badge variant="secondary" className="break-anywhere">
+            Holiday: {day.holiday}
+          </Badge>
+        )}
         {day.scheduledStart && (
           <span className="text-xs tabular-nums text-muted-foreground">Starts {formatTime(day.scheduledStart)}</span>
         )}
@@ -199,7 +209,7 @@ function DayCard({ day }: { day: AttendanceDay }) {
         )}
       </header>
 
-      {!day.attendanceRecorded && (
+      {!day.attendanceRecorded && !day.holiday && (
         <p role="note" className="border-b border-border bg-muted/50 px-3 py-2 text-sm">
           People pressed Join on this day, but the media server's connection reports never arrived. So
           nobody can be marked present or absent, and everybody shows as unknown.
@@ -225,7 +235,10 @@ function DayCard({ day }: { day: AttendanceDay }) {
             <tbody className="divide-y divide-border">
               {people.map((person) => (
                 <tr key={person.userId}>
-                  <td className="break-anywhere px-3 py-2">{person.name}</td>
+                  <td className="break-anywhere px-3 py-2">
+                    {person.name}
+                    <LeaveDetail person={person} />
+                  </td>
                   <td className="px-2 py-2">
                     <StatusBadge status={person.status} />
                   </td>
@@ -252,6 +265,7 @@ function DayCard({ day }: { day: AttendanceDay }) {
                   <span className="min-w-0 break-anywhere font-medium">{person.name}</span>
                   <StatusBadge status={person.status} />
                 </div>
+                <LeaveDetail person={person} />
                 {person.status === 'present' && (
                   <p className="mt-0.5 text-xs tabular-nums text-muted-foreground">
                     {clock(person.firstJoinAt)} to {lastLeave(person)}, {formatMinutes(person.minutesPresent)}
@@ -268,6 +282,25 @@ function DayCard({ day }: { day: AttendanceDay }) {
 
       {day.callId && day.canReadLog && <CallLogDialog callId={day.callId} open={showingLog} onOpenChange={setShowingLog} />}
     </section>
+  );
+}
+
+const HALF: Record<string, string> = { morning: 'Morning off', afternoon: 'Afternoon off' };
+
+/**
+ * Who recorded somebody's leave and when. Leave recorded once the meeting had
+ * started is called out, so a past absence is never quietly turned into leave.
+ */
+function LeaveDetail({ person }: { person: AttendancePerson }) {
+  const leave = person.leave;
+  if (person.status !== 'on_leave' || !leave) return null;
+  const when = new Date(leave.recordedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const who = leave.recordedBy ? leave.recordedBy.name : 'somebody who has since left';
+  return (
+    <span className="mt-0.5 block text-xs text-muted-foreground">
+      {HALF[leave.part] ? `${HALF[leave.part]}. ` : ''}Added by {who} on {when}
+      {leave.afterTheDay && <span className="font-medium text-amber-700 dark:text-amber-400">, after the meeting</span>}
+    </span>
   );
 }
 
