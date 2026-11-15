@@ -204,13 +204,15 @@ type Commit struct {
 type TaskCode struct {
 	PullRequests []PullRequest `json:"pullRequests"`
 	Commits      []Commit      `json:"commits"`
+	// Branches started for it from TeamUp.
+	Branches []TaskBranch `json:"branches"`
 	// Whether anything is connected, so the panel can say how to start.
 	Connected bool `json:"connected"`
 }
 
 // ForTask is the pull requests and commits that name a task.
 func (s *Service) ForTask(ctx context.Context, orgID, taskID uuid.UUID) (*TaskCode, error) {
-	out := &TaskCode{PullRequests: []PullRequest{}, Commits: []Commit{}}
+	out := &TaskCode{PullRequests: []PullRequest{}, Commits: []Commit{}, Branches: []TaskBranch{}}
 	_ = s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM code_connections WHERE org_id = $1 AND status = 'active')`, orgID).Scan(&out.Connected)
 	rows, err := s.db.Query(ctx, `
 		SELECT p.id, r.full_name, p.number, p.title, p.state, p.html_url, p.head_branch, p.checks,
@@ -275,5 +277,13 @@ func (s *Service) ForTask(ctx context.Context, orgID, taskID uuid.UUID) (*TaskCo
 		}
 		out.Commits = append(out.Commits, c)
 	}
-	return out, crs.Err()
+	if err := crs.Err(); err != nil {
+		return nil, err
+	}
+	branches, err := s.branchesFor(ctx, orgID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	out.Branches = branches
+	return out, nil
 }

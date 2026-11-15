@@ -63,6 +63,10 @@ export function activityLine(a: ActivityFacts, nameOf: (userId: string) => strin
   };
   if (a.field === 'comment') return { verb: 'commented', to: a.newValue || undefined };
   if (a.field === 'position') return { verb: 'moved it on the board' };
+  // Stored as the old key and "Photon as PHO-31".
+  if (a.field === 'project') {
+    return { verb: `moved it to ${a.newValue || 'a project'}${a.oldValue ? `, was ${a.oldValue}` : ''}` };
+  }
   if (a.field === 'assigneeId' && !a.newValue) return { verb: 'unassigned it', from: value(a.oldValue) };
   if ((a.field === 'dueDate' || a.field === 'startDate') && !a.newValue) {
     return { verb: `removed ${FIELD_NAMES[a.field]}`, from: value(a.oldValue) };

@@ -8,6 +8,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	apperrors "github.com/teamup/teamup/pkg/errors"
 )
 
 // statusRank orders the statuses work moves through. Blocked is off to one
@@ -16,8 +18,10 @@ var statusRank = map[string]int{"todo": 0, "in_progress": 1, "in_review": 2, "do
 
 // TaskByKey finds a task by the key a branch, commit or pull request names.
 func (s *Service) TaskByKey(ctx context.Context, orgID uuid.UUID, key string) (*Task, error) {
+	// Or by a key it had before it moved into a project.
 	return scanTask(s.db.QueryRow(ctx,
-		taskColumns+` WHERE t.org_id = $1 AND UPPER(t.task_key) = UPPER($2) AND t.deleted_at IS NULL`, orgID, key))
+		taskColumns+` WHERE t.org_id = $1 AND t.deleted_at IS NULL AND (UPPER(t.task_key) = UPPER($2)
+		   OR t.id = (SELECT a.task_id FROM task_key_aliases a WHERE a.org_id = $1 AND UPPER(a.task_key) = UPPER($2)))`, orgID, key))
 }
 
 // MoveByCode moves a task forward because of something done in GitHub or
@@ -91,4 +95,66 @@ func (s *Service) moveByCode(ctx context.Context, orgID, taskID uuid.UUID, to, s
 	}
 	s.notifyInvolved(ctx, orgID, taskID, "task.updated", headline, why, except...)
 	return true, nil
+}
+
+// MoveToProject puts a task in a project, or another project, and gives it that
+// project's key: research filed as TASK-7 becomes PHO-31 once it is Photon's
+// work, keeping its comments, history, files and sub-tasks. The keys it had keep
+// finding it, so a branch named task-7-... or a commit that says TASK-7 still
+// links to it. Anybody who may edit the task may move it. Returns the task as
+// it now is; moving it to the project it is in already changes nothing.
+func (s *Service) MoveToProject(ctx context.Context, orgID, taskID, actorID, projectID uuid.UUID) (*Task, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var current *uuid.UUID
+	var oldKey string
+	err = tx.QueryRow(ctx, `SELECT project_id, COALESCE(task_key, '') FROM tasks
+		WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL FOR UPDATE`, taskID, orgID).Scan(&current, &oldKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, apperrors.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find task: %w", err)
+	}
+	if current != nil && *current == projectID {
+		return s.GetTask(ctx, orgID, taskID)
+	}
+	var projectName string
+	err = tx.QueryRow(ctx, `SELECT name FROM projects WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL`,
+		projectID, orgID).Scan(&projectName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, apperrors.New(apperrors.CodeNotFound, "project not found")
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find project: %w", err)
+	}
+	newKey, err := nextTaskKey(ctx, tx, orgID, &projectID)
+	if err != nil {
+		return nil, err
+	}
+	if oldKey != "" {
+		if _, err := tx.Exec(ctx, `INSERT INTO task_key_aliases (org_id, task_key, task_id) VALUES ($1, $2, $3)
+			ON CONFLICT DO NOTHING`, orgID, oldKey, taskID); err != nil {
+			return nil, fmt.Errorf("keep the old key: %w", err)
+		}
+	}
+	if _, err := tx.Exec(ctx, `UPDATE tasks SET project_id = $2, task_key = $3, updated_at = NOW() WHERE id = $1`,
+		taskID, projectID, newKey); err != nil {
+		return nil, fmt.Errorf("move task: %w", err)
+	}
+	// Read as "moved it to Photon as PHO-31, was TASK-7".
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO task_activities (id, task_id, user_id, field, old_value, new_value, created_at)
+		VALUES (gen_random_uuid(), $1, $2, 'project', $3, $4, NOW())
+	`, taskID, actorID, oldKey, projectName+" as "+newKey); err != nil {
+		return nil, fmt.Errorf("record move: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return s.GetTask(ctx, orgID, taskID)
 }

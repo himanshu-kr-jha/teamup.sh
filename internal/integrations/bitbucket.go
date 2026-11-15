@@ -48,7 +48,7 @@ var BitbucketPermissions = []string{
 	"Account: Email, Read",
 	"Workspace membership: Read",
 	"Projects: Read",
-	"Repositories: Read, Admin",
+	"Repositories: Read, Write, Admin",
 	"Pull requests: Read",
 	"Webhooks: Read and write",
 }

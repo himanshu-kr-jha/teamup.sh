@@ -490,6 +490,8 @@ export const tasksApi = {
     ),
   create: (data: { title: string; description?: string; projectId?: string; assigneeId?: string; priority?: string; taskType?: string; dueDate?: string; labels?: string[] }) => api.post('/tasks', data),
   get: (id: string) => api.get(`/tasks/${id}`),
+  /** Puts a task in a project, where it takes the project's key; its old key still finds it. */
+  moveToProject: (id: string, projectId: string) => api.post(`/tasks/${id}/project`, { projectId }),
   update: (id: string, data: Partial<{ title: string; description: string; status: string; priority: string; assigneeId: string; dueDate: string; storyPoints: number }>) => api.patch(`/tasks/${id}`, data),
   delete: (id: string) => api.delete(`/tasks/${id}`),
   addComment: (id: string, content: string, attachmentIds?: string[]) =>
@@ -906,6 +908,18 @@ export interface CodeCommit {
   committedAt: string;
 }
 
+/** A branch started for a task from TeamUp. */
+export interface TaskBranch {
+  id: string;
+  repository: string;
+  provider: 'github' | 'bitbucket';
+  name: string;
+  base: string;
+  url: string;
+  by: CodePerson;
+  createdAt: string;
+}
+
 export const integrationsApi = {
   connections: () => getList<CodeConnection>('/integrations', 'connections'),
   /** Where to post the GitHub App's manifest, and the manifest. */
@@ -920,7 +934,10 @@ export const integrationsApi = {
   linkGitHub: () => api.post<{ url: string }>('/integrations/github/identity'),
   unlink: (provider: string) => api.delete(`/integrations/me/${provider}`),
   taskCode: (taskId: string) =>
-    api.get<{ pullRequests: CodePullRequest[]; commits: CodeCommit[]; connected: boolean }>(`/tasks/${taskId}/code`),
+    api.get<{ pullRequests: CodePullRequest[]; commits: CodeCommit[]; branches: TaskBranch[]; connected: boolean }>(`/tasks/${taskId}/code`),
+  /** Makes the task's branch on one of its project's repositories; base is the default branch when left out. */
+  startBranch: (taskId: string, data: { repositoryId: string; base?: string }) =>
+    api.post<TaskBranch>(`/tasks/${taskId}/branches`, data),
 };
 
 // ── access to projects ────────────────────────────────────────────────────

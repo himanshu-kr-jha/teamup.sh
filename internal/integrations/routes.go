@@ -46,6 +46,7 @@ func RegisterRoutes(protected, public *gin.RouterGroup, s *Service) {
 	protected.POST("/integrations/github/identity", h.identityStart)
 	protected.DELETE("/integrations/me/:provider", h.unlink)
 	protected.GET("/tasks/:id/code", h.taskCode)
+	protected.POST("/tasks/:id/branches", h.startBranch)
 	protected.GET("/projects/:id/access", h.projectAccess)
 	protected.POST("/projects/:id/access/check", h.admin(h.checkAccess))
 	protected.POST("/projects/:id/access/requests", h.requestAccess)
@@ -298,6 +299,44 @@ func (h *handler) taskCode(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, code)
+}
+
+// startBranch makes a task's branch on one of its project's repositories.
+func (h *handler) startBranch(c *gin.Context) {
+	orgID, userID, ok := caller(c)
+	if !ok {
+		return
+	}
+	taskID, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid task id"})
+		return
+	}
+	var req struct {
+		RepositoryID string `json:"repositoryId" binding:"required"`
+		Base         string `json:"base"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "choose a repository"})
+		return
+	}
+	repoID, err := uuid.Parse(req.RepositoryID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid repository"})
+		return
+	}
+	branch, err := h.s.StartBranch(c.Request.Context(), orgID, taskID, userID, repoID, req.Base)
+	switch {
+	case errors.Is(err, ErrNeedsWriteAccess):
+		// Something the client can act on: this person can ask for access.
+		c.JSON(http.StatusForbidden, gin.H{"error": ErrNeedsWriteAccess.Message, "code": "access_required"})
+	case errors.Is(err, ErrBranchNotAllowed):
+		c.JSON(http.StatusConflict, gin.H{"error": ErrBranchNotAllowed.Message, "code": "provider_permission"})
+	case err != nil:
+		httpx.Error(c, err, "failed to start the branch")
+	default:
+		c.JSON(http.StatusCreated, branch)
+	}
 }
 
 // hook takes an event from GitHub. Answered at once; GitHub retries anything

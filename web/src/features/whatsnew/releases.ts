@@ -26,6 +26,23 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-15-c',
+    date: '2026-11-15',
+    title: 'From research to a branch, in one task',
+    changes: [
+      {
+        area: 'tasks',
+        title: 'Move a task into a project',
+        body: 'Research or a bug filed with no project can move into one once it is that project\'s work, from the Project box on the task. It takes the project\'s key, TASK-7 becoming PHO-31, and keeps its comments, history and files. Anything that named the old key still links to it.',
+      },
+      {
+        area: 'code',
+        title: 'Start the branch from the task',
+        body: 'On a task in a project, Start development creates its branch on GitHub or Bitbucket and puts the task in progress. You need write access to the project to do it; without it, ask for write access from the same place.',
+      },
+    ],
+  },
+  {
     id: '2026-11-15-b',
     date: '2026-11-15',
     title: 'Meetings nobody joined show as missed',

@@ -34,6 +34,8 @@ type fakeBitbucket struct {
 	permissions []string
 	// what people may do with every repository already, by uuid
 	holds map[string]string
+	// branches made, as "acme/cortex pho-1-fix-sign-in from hash-master"
+	branches []string
 }
 
 var bbPeople = map[string]bbAccount{
@@ -83,6 +85,32 @@ func (b *fakeBitbucket) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch {
+	case r.URL.Path == "/2.0/repositories/acme/cortex":
+		reply(map[string]any{"full_name": "acme/cortex", "mainbranch": map[string]any{"name": "master"}})
+	case strings.HasPrefix(r.URL.Path, "/2.0/repositories/acme/cortex/refs/branches/") && r.Method == http.MethodGet:
+		name := strings.TrimPrefix(r.URL.Path, "/2.0/repositories/acme/cortex/refs/branches/")
+		for _, made := range b.branches {
+			if strings.HasPrefix(made, "acme/cortex "+name+" ") {
+				reply(map[string]any{"name": name, "target": map[string]any{"hash": "hash-" + name}})
+				return
+			}
+		}
+		if name != "master" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		reply(map[string]any{"name": name, "target": map[string]any{"hash": "hash-master"}})
+	case r.URL.Path == "/2.0/repositories/acme/cortex/refs/branches" && r.Method == http.MethodPost:
+		var body struct {
+			Name   string `json:"name"`
+			Target struct {
+				Hash string `json:"hash"`
+			} `json:"target"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		b.branches = append(b.branches, "acme/cortex "+body.Name+" from "+body.Target.Hash)
+		w.WriteHeader(http.StatusCreated)
+		reply(map[string]any{"name": body.Name})
 	case r.URL.Path == "/site/oauth2/access_token":
 		key, secret, _ := r.BasicAuth()
 		_ = r.ParseForm()

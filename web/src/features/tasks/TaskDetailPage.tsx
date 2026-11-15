@@ -22,6 +22,7 @@ import { MentionTextarea } from '@/features/chat/MentionTextarea';
 import { MessageText } from '@/features/chat/MentionUI';
 import { PersonAvatar } from '@/shared/components/UserAvatar';
 import { DevelopmentCard } from './DevelopmentCard';
+import { ProjectCard } from './ProjectCard';
 import { LabelBadge } from './LabelBadge';
 import { MAX_LABEL, colorFor, existingLabel } from './labels';
 import { ShowMoreButton, useShowMore } from '@/shared/components/ShowMore';
@@ -254,7 +255,9 @@ function TaskDetailView() {
             {/* Main task info */}
             <div className="flex min-w-0 flex-col gap-6 md:flex-row md:items-start">
               <div className="min-w-0 flex-1 space-y-4">
-                <div className="flex min-w-0 items-start justify-between gap-4">
+                {/* On a phone the status and priority go under the title: beside it they
+                    squeezed it to a few letters a line. */}
+                <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
                   <div className="min-w-0 flex-1">
                     {editing ? (
                       <Input
@@ -288,9 +291,9 @@ function TaskDetailView() {
                       </p>
                     )}
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex w-full items-center gap-2 sm:w-auto sm:shrink-0">
                     <Select value={task.status} onValueChange={handleStatusChange}>
-                      <SelectTrigger className="w-[140px]">
+                      <SelectTrigger className="min-w-0 flex-1 sm:w-[140px] sm:flex-none" aria-label="Status">
                         <SelectValue placeholder="Status" />
                       </SelectTrigger>
                       <SelectContent>
@@ -300,7 +303,7 @@ function TaskDetailView() {
                       </SelectContent>
                     </Select>
                     <Select value={task.priority} onValueChange={handlePriorityChange}>
-                      <SelectTrigger className="w-[140px]">
+                      <SelectTrigger className="min-w-0 flex-1 sm:w-[140px] sm:flex-none" aria-label="Priority">
                         <SelectValue placeholder="Priority" />
                       </SelectTrigger>
                       <SelectContent>
@@ -447,17 +450,8 @@ function TaskDetailView() {
                   </CardContent>
                 </Card>
 
-                {/* Project */}
-                {task.projectName && (
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>Project</CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <p className="font-medium">{task.projectName}</p>
-                    </CardContent>
-                  </Card>
-                )}
+                {/* Project, and moving it into one */}
+                <ProjectCard taskId={taskId!} taskKey={task.key} projectId={task.projectId} projectName={task.projectName} />
               </div>
             </div>
 

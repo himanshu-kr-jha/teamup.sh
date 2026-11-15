@@ -7,6 +7,11 @@ describe('a line of task history', () => {
   it('says a comment was written, not that a field called comment changed', () => {
     expect(activityLine({ field: 'comment', newValue: 'Looks good' }, names)).toEqual({ verb: 'commented', to: 'Looks good' });
   });
+  it('says where a task moved, and the key it had', () => {
+    expect(activityLine({ field: 'project', oldValue: 'TASK-7', newValue: 'Photon as PHO-31' }, names)).toEqual({
+      verb: 'moved it to Photon as PHO-31, was TASK-7',
+    });
+  });
   it('names people rather than showing their ids', () => {
     expect(activityLine({ field: 'assigneeId', oldValue: 'u1', newValue: 'u2' }, names)).toEqual({
       verb: 'changed the assignee',

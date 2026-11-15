@@ -1,74 +1,7 @@
-import { createHmac } from 'node:crypto';
-import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { expect, test } from './support/fixtures';
 import { apiAs, idOf } from './support/meetings';
 import { PEOPLE } from './support/people';
-
-const PORT = Number(process.env.E2E_BITBUCKET_PORT ?? 18093);
-const BASE = `http://127.0.0.1:${PORT}`;
-
-const ACCOUNTS: Record<string, { uuid: string; account_id: string; nickname: string; display_name: string }> = {
-  'owner-code': { uuid: '{owner}', account_id: '557058:owner', nickname: 'olivia', display_name: 'Olivia Owner' },
-  'alice-code': { uuid: '{alice}', account_id: '557058:alice', nickname: 'alice-bb', display_name: 'Alice on Bitbucket' },
-  'sam-code': { uuid: '{sam}', account_id: '557058:sam', nickname: 'sam-bb', display_name: 'Sam on Bitbucket' },
-};
-
-/**
- * Bitbucket, as far as TeamUp and a browser can tell: the sign-in page, the
- * consumer's token endpoint, the workspace and its webhook, and people. The
- * server under test is pointed here by TEAMUP_BITBUCKET_WEB_URL and _API_URL.
- */
-async function fakeBitbucket() {
-  const hooks: Array<{ url: string; secret: string; uuid: string }> = [];
-  let nextUser = 'owner-code';
-  const read = (req: IncomingMessage) =>
-    new Promise<string>((done) => {
-      let body = '';
-      req.on('data', (c) => (body += c));
-      req.on('end', () => done(body));
-    });
-  const server: Server = createServer(async (req, res) => {
-    const url = new URL(req.url ?? '/', BASE);
-    const body = await read(req);
-    const json = (value: unknown, status = 200) => res.writeHead(status, { 'Content-Type': 'application/json' }).end(JSON.stringify(value));
-    const who = (req.headers.authorization ?? '').replace('Bearer access-', '');
-    if (url.pathname === '/site/oauth2/authorize') {
-      // Bitbucket sends people to the callback set on the consumer, the address TeamUp showed.
-      return res
-        .writeHead(302, { Location: `http://localhost:${process.env.E2E_PORT}/api/integrations/bitbucket/callback?code=${nextUser}&state=${encodeURIComponent(url.searchParams.get('state') ?? '')}` })
-        .end();
-    }
-    if (url.pathname === '/site/oauth2/access_token') {
-      const auth = Buffer.from((req.headers.authorization ?? '').replace('Basic ', ''), 'base64').toString();
-      if (auth !== 'e2e-key:e2e-secret') return json({ error: 'invalid_client' }, 401);
-      const form = new URLSearchParams(body);
-      const code = form.get('grant_type') === 'refresh_token' ? 'owner-code' : form.get('code');
-      return json({ access_token: `access-${code}`, refresh_token: `refresh-${Date.now()}`, expires_in: 3600 });
-    }
-    if (url.pathname === '/2.0/user/workspaces/cognecto/permission') return json({ permission: who === 'owner-code' ? 'owner' : 'member' });
-    if (url.pathname === '/2.0/workspaces/cognecto/hooks' && req.method === 'POST') {
-      const hook = { ...JSON.parse(body), uuid: '{hook}' };
-      hooks.push(hook);
-      return json(hook);
-    }
-    if (url.pathname.startsWith('/2.0/workspaces/cognecto/hooks/') && req.method === 'DELETE') {
-      hooks.length = 0;
-      return res.writeHead(204).end();
-    }
-    if (url.pathname === '/2.0/repositories/cognecto') {
-      return json({ values: [{ uuid: '{cortex}', full_name: 'cognecto/cortex', is_private: true, links: { html: { href: 'https://bitbucket.org/cognecto/cortex' } } }] });
-    }
-    if (url.pathname === '/2.0/user' && ACCOUNTS[who]) return json(ACCOUNTS[who]);
-    if (url.pathname === '/2.0/user/emails') return json({ values: [] });
-    res.writeHead(404).end();
-  });
-  await new Promise<void>((done) => server.listen(PORT, '127.0.0.1', done));
-  return {
-    signInAs: (code: string) => (nextUser = code),
-    hook: () => hooks[0],
-    close: () => new Promise((done) => server.close(done)),
-  };
-}
+import { ACCOUNTS, fakeBitbucket, sendBitbucket } from './support/bitbucket';
 
 // Reported: some of Cognecto's code is on Bitbucket, which TeamUp knew nothing of.
 test('Bitbucket: connected by the workspace owner, then pull requests move tasks and reach reviewers', async ({ as, request }) => {
@@ -124,20 +57,7 @@ test('Bitbucket: connected by the workspace owner, then pull requests move tasks
     taskId = task.id;
 
     const hook = bitbucket.hook();
-    const send = async (event: string, payload: unknown) => {
-      const raw = JSON.stringify(payload);
-      const res = await request.post(hook.url.replace(/^https?:\/\/[^/]+/, ''), {
-        data: raw,
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Event-Key': event,
-          'X-Hook-UUID': hook.uuid,
-          'X-Request-UUID': `${event}-${Date.now()}`,
-          'X-Hub-Signature': 'sha256=' + createHmac('sha256', hook.secret).update(raw).digest('hex'),
-        },
-      });
-      expect(res.status(), `${event} accepted`).toBe(204);
-    };
+    const send = (event: string, payload: unknown) => sendBitbucket(request, hook, event, payload);
     const repo = { uuid: '{cortex}', full_name: 'cognecto/cortex', is_private: true, links: { html: { href: 'https://bitbucket.org/cognecto/cortex' } } };
     const pull = (state: string) => ({
       id: 9, title: `${key}-1 Better ranking`, state, author: ACCOUNTS['alice-code'], reviewers: [ACCOUNTS['sam-code']],

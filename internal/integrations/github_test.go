@@ -35,8 +35,12 @@ type fakeGitHub struct {
 	collaborators []string
 	// what people may do with every repository already, by login: "admin", "read"...
 	holds map[string]string
-	key   *rsa.PrivateKey
-	users map[string]struct {
+	// branches made, as "acme/photon-web pho-1-fix-sign-in from sha-main"
+	branches []string
+	// the app has Contents: Read only, as an app made before branches came in
+	readOnlyContents bool
+	key              *rsa.PrivateKey
+	users            map[string]struct {
 		id     int64
 		login  string
 		emails []string
@@ -77,6 +81,49 @@ func (g *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 			return false
 		}
 		return true
+	}
+	if strings.HasPrefix(r.URL.Path, "/repos/") && (strings.Contains(r.URL.Path, "/git/") || strings.Count(r.URL.Path, "/") == 3) {
+		if r.Header.Get("Authorization") != "token installation-token" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		parts := strings.SplitN(strings.TrimPrefix(r.URL.Path, "/repos/"), "/", 3)
+		repo := parts[0] + "/" + parts[1]
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		switch {
+		case len(parts) == 2:
+			reply(map[string]any{"full_name": repo, "default_branch": "main"})
+		case strings.HasPrefix(parts[2], "git/ref/heads/"):
+			name := strings.TrimPrefix(parts[2], "git/ref/heads/")
+			if name != "main" && name != "release/2.0" {
+				http.NotFound(w, r)
+				return
+			}
+			reply(map[string]any{"ref": "refs/heads/" + name, "object": map[string]any{"sha": "sha-" + name}})
+		case parts[2] == "git/refs" && r.Method == http.MethodPost:
+			if g.readOnlyContents {
+				w.WriteHeader(http.StatusForbidden)
+				reply(map[string]any{"message": "Resource not accessible by integration"})
+				return
+			}
+			var body struct{ Ref, SHA string }
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			made := repo + " " + strings.TrimPrefix(body.Ref, "refs/heads/") + " from " + body.SHA
+			for _, b := range g.branches {
+				if strings.HasPrefix(b, repo+" "+strings.TrimPrefix(body.Ref, "refs/heads/")+" ") {
+					w.WriteHeader(http.StatusUnprocessableEntity)
+					reply(map[string]any{"message": "Reference already exists"})
+					return
+				}
+			}
+			g.branches = append(g.branches, made)
+			w.WriteHeader(http.StatusCreated)
+			reply(map[string]any{"ref": body.Ref})
+		default:
+			http.NotFound(w, r)
+		}
+		return
 	}
 	if strings.HasPrefix(r.URL.Path, "/repos/") && strings.HasSuffix(r.URL.Path, "/permission") {
 		if r.Header.Get("Authorization") != "token installation-token" {
