@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react';
+import { useCallback, useRef, type ReactNode } from 'react';
 import {
   DndContext,
   DragOverlay,
@@ -117,6 +117,21 @@ export const centreOnPointer: Modifier = ({ activatorEvent, draggingNodeRect, tr
 export const columnUnderPointer: CollisionDetection = (args) =>
   args.pointerCoordinates ? pointerWithin(args) : closestCenter(args);
 
+/** How far a pointer or finger travels before the card it holds is over anything. */
+export const MOVE_BEFORE_OVER = 12;
+
+/**
+ * A card held still is over nothing. On a phone the column chips grow to fit on
+ * the screen the moment a card is picked up, and the one above the card slid
+ * under the finger still resting on it: let go without moving, and the task
+ * moved to a column nobody chose. Measured from where the pointer was when the
+ * drag began, so the keyboard, which has no pointer, is not held back.
+ */
+export function stillUntilMoved(start: { x: number; y: number } | null, pointer: { x: number; y: number } | null): boolean {
+  if (!start || !pointer) return false;
+  return Math.hypot(pointer.x - start.x, pointer.y - start.y) < MOVE_BEFORE_OVER;
+}
+
 export function BoardDnd({
   children,
   titleOf,
@@ -137,6 +152,14 @@ export function BoardDnd({
     useSensor(KeyboardSensor, { coordinateGetter: columnKeyboardCoordinates }),
   );
 
+  // Where the pointer was when this drag began; see stillUntilMoved.
+  const start = useRef<{ x: number; y: number } | null>(null);
+  const collisions: CollisionDetection = useCallback((args) => {
+    if (args.pointerCoordinates && !start.current) start.current = { ...args.pointerCoordinates };
+    if (stillUntilMoved(start.current, args.pointerCoordinates)) return [];
+    return columnUnderPointer(args);
+  }, []);
+
   const titleOfData = (d: unknown) => (d as DragData | undefined)?.title ?? 'The task';
   const where = (id: string | number | undefined) => {
     const s = statusOfDrop(id);
@@ -154,7 +177,7 @@ export function BoardDnd({
   return (
     <DndContext
       sensors={sensors}
-      collisionDetection={columnUnderPointer}
+      collisionDetection={collisions}
       // The phone's column chips rearrange themselves while a card is held, so
       // where they are is measured as it changes, not once at the start.
       measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
@@ -169,6 +192,7 @@ export function BoardDnd({
         },
       }}
       onDragStart={(e: DragStartEvent) => {
+        start.current = null;
         const data = e.active.data.current as DragData | undefined;
         if (data) onDragStart?.(data);
       }}

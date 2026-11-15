@@ -17,6 +17,7 @@ import {
   itemKey,
   itemLabel,
   joinTarget,
+  meetingMissed,
   meetingStillOn,
   layoutDay,
   meetingProblem,
@@ -230,6 +231,22 @@ describe('a meeting whose room emptied before its end', () => {
     expect(meetingStillOn({ status: 'active', scheduledEnd: at(11).toISOString() }, at(10))).toBe(false);
     expect(meetingStillOn({ ...ended(at(11)), standingMeetingId: 's' }, at(10))).toBe(false);
     expect(meetingStillOn({ status: 'ended' }, at(10))).toBe(false);
+  });
+});
+
+describe('a meeting nobody started', () => {
+  const scheduled = (endsAt: Date) => ({ status: 'scheduled', scheduledEnd: endsAt.toISOString() });
+
+  it('is missed from its end, and not a minute before', () => {
+    expect(meetingMissed(scheduled(at(17, 30)), at(17, 29))).toBe(false);
+    expect(meetingMissed(scheduled(at(17, 30)), at(17, 30))).toBe(true);
+    expect(meetingMissed(scheduled(at(17, 30)), at(20))).toBe(true);
+  });
+
+  it('is never said of one that happened, a standing day, or an ordinary call', () => {
+    expect(meetingMissed({ status: 'ended', scheduledEnd: at(17, 30).toISOString() }, at(20))).toBe(false);
+    expect(meetingMissed({ ...scheduled(at(17, 30)), standingMeetingId: 's' }, at(20))).toBe(false);
+    expect(meetingMissed({ status: 'scheduled' }, at(20))).toBe(false);
   });
 });
 

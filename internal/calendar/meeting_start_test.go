@@ -499,3 +499,45 @@ func TestEverybodyOpeningAMeetingAtTheSameMomentGetsIn(t *testing.T) {
 		}
 	}
 }
+
+// A 30-minute meeting at 17:00 that nobody joined is missed from 17:30, and not a
+// minute before: whoever is running late can still start it until then.
+func TestAMeetingNobodyStartedIsMissedOnceItsTimeIsUp(t *testing.T) {
+	w := newCallWorld(t)
+	organizer := w.person(t, "Organizer Orla", "member")
+	bob := w.person(t, "Bob Builder", "member")
+	late := w.mustSchedule(t, organizer, "member", "Late start", at(17, 0), at(17, 30), bob).meeting.ID
+	missed := w.mustSchedule(t, organizer, "member", "Missed", at(17, 0), at(17, 30), bob).meeting.ID
+	r := w.callsAs(t, bob, "member")
+
+	now := at(17, 29)
+	w.svc.SetClock(func() time.Time { return now })
+	want(t, call(t, r, http.MethodPost, "/api/calls/"+late+"/token", nil), http.StatusOK)
+
+	now = at(17, 30)
+	res := call(t, r, http.MethodPost, "/api/calls/"+missed+"/token", nil)
+	want(t, res, http.StatusConflict)
+	if !strings.Contains(res.Body.String(), "missed") {
+		t.Errorf("the refusal says it was missed: %s", res.Body.String())
+	}
+	if got := w.status(t, uuid.MustParse(missed)); got != "scheduled" {
+		t.Errorf("a missed meeting is left as it was, got %q", got)
+	}
+
+	listed := func(status string) string {
+		return call(t, r, http.MethodGet, "/api/calls?status="+status, nil).Body.String()
+	}
+	if body := listed("missed"); !strings.Contains(body, missed) || strings.Contains(body, late) {
+		t.Errorf("the missed filter lists the missed one only: %s", body)
+	}
+	if body := listed("scheduled"); strings.Contains(body, missed) {
+		t.Errorf("a missed meeting is not still to come: %s", body)
+	}
+
+	// Moved to tomorrow, it is a meeting to come again.
+	want(t, call(t, w.as(t, organizer, "member"), http.MethodPatch, "/api/meetings/"+missed,
+		map[string]any{"startsAt": at(17, 0).Add(24 * time.Hour), "endsAt": at(17, 30).Add(24 * time.Hour)}), http.StatusOK)
+	if body := listed("scheduled"); !strings.Contains(body, missed) {
+		t.Errorf("moved to a new time, it is scheduled again: %s", body)
+	}
+}

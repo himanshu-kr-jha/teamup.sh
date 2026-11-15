@@ -13,7 +13,7 @@ import { formatDate, formatTime } from '@/shared/utils/cn';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { CallLogDialog } from '@/features/calls/CallLogDialog';
 import { useJoinStanding } from '@/features/calls/standing/StandingMeetings';
-import { JOIN_EARLY_MINUTES, extendedText, itemLabel, joinTarget, kindLabel, meetingStillOn, type CalendarItem } from './layout';
+import { JOIN_EARLY_MINUTES, extendedText, itemLabel, joinTarget, kindLabel, meetingMissed, meetingStillOn, type CalendarItem } from './layout';
 
 const SOURCE_LABEL: Record<string, string> = {
   block: 'Your time',
@@ -69,6 +69,8 @@ export function EventDialog({
   const hasLog =
     !!item.callId && item.canReadLog !== false && (item.source === 'call' || item.status === 'active' || item.status === 'ended');
   const stillOn = item.source === 'meeting' && meetingStillOn({ status: item.status, scheduledEnd: item.endsAt }, now);
+  // Nobody started it, and its time is up. It can still be moved to a new time.
+  const missed = item.source === 'meeting' && meetingMissed({ status: item.status, scheduledEnd: item.endsAt }, now);
   const startsLater =
     item.source === 'meeting' &&
     (item.status === 'scheduled' || stillOn) &&
@@ -115,6 +117,7 @@ export function EventDialog({
                   ? kindLabel(item.kind)
                   : SOURCE_LABEL[item.source ?? ''] ?? kindLabel(item.kind)}
               {item.status === 'ended' && !stillOn && ', finished'}
+              {missed && ', missed'}
               {item.status === 'active' && ', happening now'}
             </p>
             {item.details && (
@@ -152,13 +155,18 @@ export function EventDialog({
                 Open in Google Calendar
               </a>
             )}
+            {missed && (
+              <p className="text-muted-foreground">
+                Nobody joined it before it ended.{canChangeMeeting && ' Edit it to move it to a new time.'}
+              </p>
+            )}
             {startsLater && own && (
               <p className="text-muted-foreground">You can join from {JOIN_EARLY_MINUTES} minutes before it starts.</p>
             )}
           </div>
 
           {/* Guests from outside, for a meeting that is still to come or on. */}
-          {own && item.source === 'meeting' && item.callId && (item.status === 'scheduled' || item.status === 'active' || stillOn) && (
+          {own && item.source === 'meeting' && item.callId && (item.status === 'scheduled' || item.status === 'active' || stillOn) && !missed && (
             <GuestAccess callId={item.callId} title={item.title} />
           )}
 

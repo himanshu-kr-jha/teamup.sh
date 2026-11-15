@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -142,6 +143,8 @@ func TestInvitingByEmailTurnsTheLinkOnAndSendsBothLinks(t *testing.T) {
 		scheduled_start = '2026-11-09 04:30:00+00', scheduled_end = '2026-11-09 05:00:00+00' WHERE id = $1`, call.ID); err != nil {
 		t.Fatal(err)
 	}
+	// The meeting is still to come: one past its end that nobody joined was missed.
+	e.svc.SetClock(func() time.Time { return time.Date(2026, 11, 9, 4, 0, 0, 0, time.UTC) })
 	path := "/api/calls/" + call.ID.String() + "/guest-invites"
 
 	wantCode(t, doJSON(t, e.as(t, inv, "member"), http.MethodPost, path, `{"emails":["pat@client.test"]}`), http.StatusForbidden)

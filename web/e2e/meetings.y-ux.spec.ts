@@ -96,9 +96,12 @@ test.describe('dragging a task to another column changes its status', () => {
     await touch('touchStart', x0, y0);
     await page.waitForTimeout(350);
     await touch('touchMove', x0 + 3, y0 + 3);
+    // Picked up once the finger has rested long enough, which on a busy machine
+    // is not the moment the pause above ends.
+    await expect(page.locator('[id^="DndLiveRegion"]')).toContainText(`Picked up ${title}`, { timeout: 10_000 });
     // Held, the chips wrap so every column is in reach at once.
     const blocked = page.getByRole('button', { name: /^Blocked/ }).filter({ visible: true });
-    await expect(blocked).toBeInViewport({ ratio: 1 });
+    await expect(blocked).toBeInViewport({ ratio: 1, timeout: 10_000 });
     await expect(page.getByRole('button', { name: /^Done/ }).filter({ visible: true })).toBeInViewport({ ratio: 1 });
     const chip = await blocked.boundingBox();
     if (!chip) throw new Error('no Blocked chip');

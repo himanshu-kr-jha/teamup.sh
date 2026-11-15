@@ -26,6 +26,19 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-15-b',
+    date: '2026-11-15',
+    title: 'Meetings nobody joined show as missed',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'A meeting nobody joined says "Missed"',
+        body: 'Once a scheduled meeting is over and nobody joined it, it shows as Missed, with no Join button. A 30-minute meeting at 5:00 is missed from 5:30; until then, whoever is late can still start it. The organizer can move it to a new time from the calendar, and the Missed filter on Calls lists them.',
+        link: '/calls',
+      },
+    ],
+  },
+  {
     id: '2026-11-15',
     date: '2026-11-15',
     title: 'Drag tasks across the board',
