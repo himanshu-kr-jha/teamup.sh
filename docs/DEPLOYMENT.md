@@ -961,6 +961,15 @@ Somebody asks for read or write access to a project; administrators are told, an
 Approved, TeamUp gives the account they linked on GitHub or Bitbucket that access on each repository of the project: GitHub adds a member of the organization directly and sends anybody else an invitation, and Bitbucket can only give a repository to somebody who is already a member of the workspace.
 An administrator can also give or remove access directly, and every step, including somebody added on GitHub by hand, is kept in the access history.
 
+A task can start its own branch: on the task, Start development makes `pho-12-<title words>` on one of its project's repositories, from the default branch or another, and links it to the task.
+Only somebody with write access to that repository through the project may do it; anybody else is offered to ask for write access instead.
+The branch is made by the connection, so the GitHub App needs Contents: Read and write, and the Bitbucket consumer Repositories: Write.
+An app made before branches came in has Contents: Read only: an owner of the GitHub organization changes it to Read and write under the app's Permissions & events, and approves the change for the installation.
+For Bitbucket, a workspace owner ticks Repositories: Write on the consumer and signs in to Bitbucket again from Organization → Integrations.
+
+A task made with no project, research or a bug being looked into, can be moved into a project later and takes the project's key: TASK-7 becomes PHO-31.
+Its comments, history and files stay with it, and branches and commits that name the old key still link to it.
+
 GitHub sends its events to `https://<your domain>/api/integrations/github/hook/<key>`, so the server must be reachable from the internet.
 
 ## Troubleshooting

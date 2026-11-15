@@ -206,7 +206,7 @@ func (s *Service) Connections(ctx context.Context, orgID uuid.UUID) ([]Connectio
 // people's email addresses, makes GitHub refuse the whole manifest.
 var githubPermissions = map[string]string{
 	"metadata":       "read",
-	"contents":       "read",
+	"contents":       "write", // starting a task's branch
 	"pull_requests":  "read",
 	"issues":         "read", // a pull request's conversation is its issue's comments
 	"checks":         "read",

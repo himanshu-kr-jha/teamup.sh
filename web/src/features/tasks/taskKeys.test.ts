@@ -32,4 +32,11 @@ describe('branchFor', () => {
   it('is the key and a few words of the title, as a branch name', () => {
     expect(branchFor('PHO-12', 'Fix sign-in on Safari, again!')).toBe('pho-12-fix-sign-in-on-safari-again');
   });
+
+  // The server makes the branch, so it must name it the same (BranchName in Go).
+  it('names it as the server does', () => {
+    expect(branchFor('PHO-12', '  Why does the API return 500?? on /login  ')).toBe('pho-12-why-does-the-api-return-500');
+    expect(branchFor('TASK-3', '')).toBe('task-3');
+    expect(branchFor('BOS-1', 'Ünïcode & only')).toBe('bos-1-n-code-only');
+  });
 });

@@ -35,6 +35,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.POST("/tasks", h.CreateTask)
 	rg.GET("/tasks/:id", h.GetTask)
 	rg.PATCH("/tasks/:id", h.UpdateTask)
+	rg.POST("/tasks/:id/project", h.MoveToProject)
 	rg.DELETE("/tasks/:id", h.DeleteTask)
 	rg.GET("/tasks/:id/comments", h.ListComments)
 	rg.POST("/tasks/:id/comments", h.AddComment)
@@ -314,6 +315,36 @@ func (h *Handler) UpdateTask(c *gin.Context) {
 		auth.GetUserFromContext(c).Can(auth.PermTasksAll))
 	if err != nil {
 		httpx.Error(c, err, "failed to update task")
+		return
+	}
+	c.JSON(http.StatusOK, task)
+}
+
+// MoveToProject puts a task in a project and gives it that project's key.
+func (h *Handler) MoveToProject(c *gin.Context) {
+	cl, ok := callerFrom(c)
+	if !ok {
+		return
+	}
+	id, ok := pathUUID(c, "id")
+	if !ok {
+		return
+	}
+	var req struct {
+		ProjectID string `json:"projectId" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "a project is required"})
+		return
+	}
+	projectID, err := uuid.Parse(req.ProjectID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid projectId"})
+		return
+	}
+	task, err := h.service.MoveToProject(c.Request.Context(), cl.OrgID, id, cl.UserID, projectID)
+	if err != nil {
+		httpx.Error(c, err, "failed to move the task")
 		return
 	}
 	c.JSON(http.StatusOK, task)

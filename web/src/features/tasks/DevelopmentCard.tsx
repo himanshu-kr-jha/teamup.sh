@@ -7,6 +7,7 @@ import { PersonAvatar } from '@/shared/components/UserAvatar';
 import { useToast } from '@/shared/hooks/useToast';
 import { cn, formatRelativeTime } from '@/shared/utils/cn';
 import { liveTaskQuery } from './liveQuery';
+import { StartDevelopment, TaskBranches } from './StartDevelopment';
 import { ShowMoreButton, useShowMore } from '@/shared/components/ShowMore';
 
 /** The branch name that links work to this task: pho-12-fix-sign-in. */
@@ -63,7 +64,8 @@ export function DevelopmentCard({ taskId, taskKey, title, projectId }: { taskId:
   });
   const { data: projectsData } = useQuery({ queryKey: ['projects'], queryFn: () => projectsApi.list(), enabled: !!projectId });
   const branch = branchFor(taskKey, title);
-  const hasRepos = !!projectId && (projectsData?.data.find((p) => p.id === projectId)?.repositories.length ?? 0) > 0;
+  const project = projectId ? projectsData?.data.find((p) => p.id === projectId) : undefined;
+  const hasRepos = (project?.repositories.length ?? 0) > 0;
 
   const copy = async () => {
     try {
@@ -77,10 +79,14 @@ export function DevelopmentCard({ taskId, taskKey, title, projectId }: { taskId:
 
   const prs = data?.pullRequests ?? [];
   const commits = data?.commits ?? [];
+  const branches = data?.branches ?? [];
+  // A repository that has the task's branch already is not offered again.
+  const started = new Set(branches.map((b) => b.repository));
+  const unstarted = project?.repositories.filter((r) => !started.has(r.fullName)) ?? [];
   // The latest few of each; the rest are a click away.
   const morePrs = useShowMore(prs, 3);
   const moreCommits = useShowMore(commits, 5);
-  if (!hasRepos && prs.length === 0 && commits.length === 0) return null;
+  if (!hasRepos && prs.length === 0 && commits.length === 0 && branches.length === 0) return null;
 
   return (
     <Card>
@@ -88,7 +94,7 @@ export function DevelopmentCard({ taskId, taskKey, title, projectId }: { taskId:
         <CardTitle>Development</CardTitle>
       </CardHeader>
       <CardContent className="space-y-4 text-sm">
-        {hasRepos && (
+        {hasRepos && branches.length === 0 && (
           <div className="space-y-1">
             <p className="text-xs text-muted-foreground">Branch for this task</p>
             <div className="flex items-center gap-1 rounded-md border border-border bg-muted/40 py-1 pl-2 pr-1">
@@ -107,6 +113,26 @@ export function DevelopmentCard({ taskId, taskKey, title, projectId }: { taskId:
               Or put <span className="font-mono">{taskKey}</span> in a pull request&apos;s title or a commit message.
             </p>
           </div>
+        )}
+
+        <TaskBranches branches={branches} />
+
+        {branches.length > 0 && (
+          <p className="text-xs text-muted-foreground">
+            Or put <span className="font-mono">{taskKey}</span> in a pull request&apos;s title or a commit message.
+          </p>
+        )}
+
+        {project && unstarted.length > 0 && (
+          <StartDevelopment
+            again={branches.length > 0}
+            taskId={taskId}
+            taskKey={taskKey}
+            branch={branch}
+            projectId={project.id}
+            projectName={project.name}
+            repos={unstarted}
+          />
         )}
 
         {prs.length > 0 && (
