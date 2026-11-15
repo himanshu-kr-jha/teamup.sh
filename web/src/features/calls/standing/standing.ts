@@ -104,12 +104,30 @@ export function browserTimeZone(): string {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 }
 
+/**
+ * Whether two zone names are the same zone. A browser may report the old name
+ * of a zone (Chrome says Asia/Calcutta for India) where the meeting was saved
+ * with the current one (Asia/Kolkata), so names are compared as the browser
+ * resolves them.
+ */
+export function sameZone(a: string, b: string): boolean {
+  if (a === b) return true;
+  const resolve = (zone: string) => {
+    try {
+      return new Intl.DateTimeFormat('en', { timeZone: zone }).resolvedOptions().timeZone;
+    } catch {
+      return zone;
+    }
+  };
+  return resolve(a) === resolve(b);
+}
+
 /** The zone is said only when it is not the one you are in. */
 export function describeSchedule(
   meeting: Pick<StandingMeeting, 'weekdays' | 'timeOfDay' | 'timeZone' | 'durationMinutes'>,
   yourZone: string = browserTimeZone()
 ): string {
-  const zone = meeting.timeZone === yourZone ? '' : ` ${meeting.timeZone}`;
+  const zone = sameZone(meeting.timeZone, yourZone) ? '' : ` ${meeting.timeZone}`;
   return `${describeWeekdays(meeting.weekdays)} at ${meeting.timeOfDay}${zone}, ${formatMinutes(meeting.durationMinutes)}`;
 }
 
