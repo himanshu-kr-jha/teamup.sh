@@ -12,7 +12,7 @@ import (
 
 func TestThePolicyLetsOnlyThePagesOwnInlineScriptRun(t *testing.T) {
 	page := []byte("<head><script>var a = 1;</script></head><body><script type=\"module\" src=\"/x.js\"></script></body>")
-	csp := contentSecurityPolicy(page, "localhost:9000", false, "http://localhost:7880", "")
+	csp := contentSecurityPolicy(page, "http://localhost:9000", "http://localhost:7880", "")
 	// sha256 of "var a = 1;"
 	if !strings.Contains(csp, "'sha256-") {
 		t.Fatalf("no hash for the inline script: %s", csp)
