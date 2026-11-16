@@ -103,10 +103,25 @@ export default defineConfig({
         // answered with the cached index.html, the browser never reached the
         // server and connecting (or signing in) silently went nowhere.
         navigateFallbackDenylist: [/^\/api\//, /^\/ws/, /^\/livekit\//],
+        // No precached page for navigations while online: a precached index.html is
+        // served with the headers it had when it was cached, Content-Security-Policy
+        // included, until the next frontend release. A server-only fix to that policy
+        // (uploads to storage, 16 November) changed nothing for anybody already
+        // using the app. Each page load now asks the server, and only an offline
+        // load falls back to the cached shell (the navigation route below).
+        navigateFallback: null,
         // Push handling, pulled into the worker Workbox generates. Building our
         // own worker instead would mean reimplementing everything below.
         importScripts: ['/push-sw.js'],
         runtimeCaching: [
+          {
+            // Every page load, fresh from the server, so its headers are today's.
+            // Pages the server itself answers (/api, /ws, /livekit) are left alone.
+            urlPattern: ({ request, url }) =>
+              request.mode === 'navigate' && !/^\/(api|ws|livekit)(\/|$)/.test(url.pathname),
+            handler: 'NetworkOnly',
+            options: { precacheFallback: { fallbackURL: 'index.html' } },
+          },
           {
             urlPattern: /^https:\/\/.*\/api\/(channels|messages|tasks|users|presence)/,
             // Network first, the cache only when offline. Serving the cached

@@ -136,3 +136,35 @@ test.describe('a deploy while people have TeamUp open', () => {
     expect(await sameDocument(alice.page)).toBe(true);
   });
 });
+
+// The page's headers have to be the server's own on every load. The service worker
+// used to answer page loads with the index.html it precached, headers and all, so a
+// release of the server alone, fixing the Content-Security-Policy so uploads could
+// reach storage (16 November), reached nobody who already had the app open: their
+// uploads stayed blocked until the next frontend release.
+test.describe('a release of the server alone', () => {
+  test('reaches pages the service worker controls at once, and offline the app still opens', async ({ browser }) => {
+    test.setTimeout(90_000);
+    const swap = await startSwapServer(BASE_URL);
+    const alice = await openBrowser(browser, swap, 'alice');
+    try {
+      const policy = "default-src 'self'; connect-src 'self' https://storage-after-the-fix.example; x-release 2";
+      swap.serverOnlyRelease(policy);
+
+      // A plain reload: the service worker is in charge, and the server's new header arrives.
+      const page = await alice.page.reload();
+      expect(page?.fromServiceWorker(), 'the worker answered the page load').toBe(true);
+      expect(page?.headers()['content-security-policy']).toBe(policy);
+      await expect.poll(() => alice.page.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true);
+
+      // Offline, the cached app shell still opens.
+      await alice.context.setOffline(true);
+      await alice.page.goto(`${swap.url}/tasks`);
+      await expect(alice.page.locator('#root')).not.toBeEmpty();
+      await alice.context.setOffline(false);
+    } finally {
+      await alice.context.close();
+      await swap.close();
+    }
+  });
+});

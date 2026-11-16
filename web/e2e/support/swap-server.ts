@@ -10,6 +10,12 @@ export interface SwapServer {
   url: string;
   /** What a deploy looks like from a browser: sockets drop, and the origin now serves a different build. */
   deploy(): void;
+  /**
+   * A release of the server alone: the pages and sw.js are byte for byte the same,
+   * but the pages come with this Content-Security-Policy, as when the policy was
+   * fixed on 16 November without a frontend change.
+   */
+  serverOnlyRelease(policy: string): void;
   close(): Promise<void>;
 }
 
@@ -23,6 +29,7 @@ export interface SwapServer {
 export async function startSwapServer(upstream: string): Promise<SwapServer> {
   const target = new URL(upstream);
   let deployed = false;
+  let policy: string | undefined;
   const sockets = new Set<net.Socket>();
 
   const rewrite = (path: string, contentType: string, body: Buffer): Buffer => {
@@ -47,7 +54,8 @@ export async function startSwapServer(upstream: string): Promise<SwapServer> {
       back.on('end', () => {
         const path = (req.url ?? '').split('?')[0];
         const body = rewrite(path, String(back.headers['content-type'] ?? ''), Buffer.concat(chunks));
-        const replyHeaders = { ...back.headers, 'content-length': String(body.length) };
+        const replyHeaders: http.OutgoingHttpHeaders = { ...back.headers, 'content-length': String(body.length) };
+        if (policy && String(back.headers['content-type'] ?? '').includes('text/html')) replyHeaders['content-security-policy'] = policy;
         delete replyHeaders['transfer-encoding'];
         res.writeHead(back.statusCode ?? 502, replyHeaders);
         res.end(body);
@@ -87,6 +95,9 @@ export async function startSwapServer(upstream: string): Promise<SwapServer> {
     deploy() {
       deployed = true;
       for (const s of sockets) s.destroy();
+    },
+    serverOnlyRelease(next: string) {
+      policy = next;
     },
     close: () =>
       new Promise((resolve) => {
