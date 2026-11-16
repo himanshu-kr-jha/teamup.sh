@@ -25,7 +25,8 @@ flowchart TD
 | Deploy the latest `main` | `make deploy` | Yes: backs up, builds, migrates, restarts |
 | Roll back to an earlier commit of `main` | `make deploy ARGS="--ref <commit>"` | Yes |
 | Move to a new address | `make deploy ARGS="--domain new.example.com"` | Yes, and gets a certificate |
-| Deploy while people are in calls | `make deploy ARGS="--during-calls"` | Yes; normally a deploy waits up to 30 minutes (`--wait`) for calls to end |
+| Deploy during the day, an urgent fix | `make deploy ARGS="--now"` | Yes; normally a deploy is booked for 20:00 India time |
+| Deploy while people are in calls | `make deploy ARGS="--now --during-calls"` | Yes; normally a deploy waits up to 30 minutes (`--wait`) for calls to end |
 
 ## What gets built
 
@@ -99,13 +100,13 @@ What `scripts/deploy.sh` does:
 
 1. Fetches `main` from GitHub and takes the **committed** tree of its latest commit, or of the earlier commit of `main` given with `--ref`; a commit that is not on `main` is refused, and nothing uncommitted is ever deployed.
 2. Checks the server looks like a TeamUp install.
-3. Waits until nobody is in a call, checking once a minute for up to 30 minutes (`--wait`), and gives up rather than cut a call short.
-   Building on the server takes CPU from the call server for some minutes, and restarting the app makes everybody in a call reconnect: on 16 November a deploy during a call made a shared screen stutter and voices break.
-   `--during-calls` skips the wait, for a fix that cannot wait.
-4. Copies the tree over, keeping the server's `.env`, `certs/`, `backups/` and `backup.sh`.
-5. Runs `./backup.sh` first if the server has one, unless you pass `--no-backup`.
-6. Builds the image `teamup:<commit>` on the server, which takes a few minutes on a small VM.
-7. Starts it: migrations first, the server only if they pass, then reloads nginx so it reads any new config; a reload lets open connections finish where a restart dropped them.
+3. Decides when: deploys go out between 20:00 and 08:00 India time (`TEAMUP_DEPLOY_WINDOW`, `TEAMUP_DEPLOY_TZ`).
+   One asked for during the day is copied to the server and booked there, as a systemd timer, for 20:00, replacing any deploy booked before it; `--now` sends it at once.
+4. Copies the tree to the server, keeping the server's `.env`, `certs/`, `backups/` and `backup.sh`.
+5. On the server: downloads the image GitHub built for the commit, `ghcr.io/<repository>:sha-<commit>` (`.github/workflows/image.yml`, after `main`'s checks pass), and tags it `teamup:<commit>`.
+6. Waits until nobody is in a call, checking once a minute for up to 30 minutes (`--wait`), and gives up, changing nothing, rather than cut a call short; `--during-calls` skips the wait.
+   On 16 November a deploy during a call made a shared screen stutter and voices break: building the image took both of the server's CPUs from the call server for four minutes, and the restart made everybody reconnect at once.
+7. Runs `./backup.sh` if the server has one, unless you pass `--no-backup`; builds the image on the server only if none was downloaded; starts it (migrations first, the server only if they pass); then reloads nginx, which lets open connections finish where a restart dropped them.
 8. Waits for the server to report healthy, then checks `/`, `/healthz` and `/api/status` answer over HTTPS.
 
 The long part runs on the server under `nohup`, so a dropped ssh connection does not stop a deploy halfway.
