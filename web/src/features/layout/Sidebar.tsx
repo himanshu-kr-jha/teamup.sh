@@ -1,5 +1,5 @@
 import { Link, NavLink, useLocation } from 'react-router-dom';
-import { CalendarDays, MessageSquare, Video, CheckSquare, Settings, Users, ChevronLeft, ChevronRight, NotebookPen, FolderGit2, Palmtree } from 'lucide-react';
+import { CalendarDays, MessageSquare, Video, CheckSquare, Settings, Users, ChevronLeft, ChevronRight, NotebookPen, FolderGit2 } from 'lucide-react';
 import { useUIStore } from '@/shared/store';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { cn } from '@/shared/utils/cn';
@@ -27,7 +27,6 @@ export function Sidebar() {
     { path: '/calls', label: 'Calls', icon: Video },
     { path: '/meeting-notes', label: 'Meeting notes', icon: NotebookPen },
     { path: '/calendar', label: 'Calendar', icon: CalendarDays },
-    { path: '/leave', label: 'Leave', icon: Palmtree },
     { path: '/tasks', label: 'Tasks', icon: CheckSquare },
     { path: '/projects', label: 'Projects', icon: FolderGit2 },
     ...(mayAdminister ? [{ path: '/organization', label: 'Organization', icon: Users }] : []),

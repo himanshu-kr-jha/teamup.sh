@@ -4,6 +4,8 @@ import { cn, formatTime } from '@/shared/utils/cn';
 import { itemKey, itemLabel, itemsOnDay, type CalendarItem } from './layout';
 import type { DueTask } from '@/shared/api/client';
 import { DueChip, tasksDueOn } from './DueTasks';
+import { DayMarkChip } from './DayMarkChip';
+import { marksOn, type DayMark } from './dayMarks';
 
 /** How many things a day lists before saying how many more. */
 const SHOWN_PER_DAY = 3;
@@ -28,12 +30,17 @@ export function MonthGrid({
   onSelect,
   onOpenDay,
   dueTasks = [],
+  marks = [],
+  marksOf,
 }: {
   days: Date[];
   anchor: Date;
   items: CalendarItem[];
   /** Work due each day, listed first: a deadline is what a month view is for. */
   dueTasks?: DueTask[];
+  /** Leave and holidays, before anything else on the day: nobody is about. */
+  marks?: DayMark[];
+  marksOf?: string;
   now: Date;
   onSelect: (item: CalendarItem) => void;
   onOpenDay: (day: Date) => void;
@@ -59,11 +66,13 @@ export function MonthGrid({
           const inMonth = isSameMonth(day, anchor);
           const today = isSameDay(day, now);
           const onDay = itemsOnDay(items, day);
+          const away = marksOn(marks, day);
           const due = tasksDueOn(dueTasks, day);
-          const dueShown = due.slice(0, SHOWN_PER_DAY);
-          const itemsShown = onDay.slice(0, SHOWN_PER_DAY - dueShown.length);
-          const total = onDay.length + due.length;
-          const hidden = total - dueShown.length - itemsShown.length;
+          const awayShown = away.slice(0, SHOWN_PER_DAY);
+          const dueShown = due.slice(0, SHOWN_PER_DAY - awayShown.length);
+          const itemsShown = onDay.slice(0, SHOWN_PER_DAY - awayShown.length - dueShown.length);
+          const total = onDay.length + due.length + away.length;
+          const hidden = total - awayShown.length - dueShown.length - itemsShown.length;
           return (
             <div
               key={day.toISOString()}
@@ -95,10 +104,16 @@ export function MonthGrid({
               {/* Phones: one dot each. */}
               {total > 0 && (
                 <span className="pointer-events-none relative flex flex-wrap gap-0.5 sm:hidden" aria-hidden="true">
-                  {due.slice(0, 4).map((task) => (
+                  {away.slice(0, 4).map((mark) => (
+                    <span
+                      key={`${mark.kind}-${mark.from}`}
+                      className={cn('h-1.5 w-1.5 rounded-[1px]', mark.kind === 'holiday' ? 'bg-pink-500' : 'bg-slate-400')}
+                    />
+                  ))}
+                  {due.slice(0, Math.max(0, 4 - away.length)).map((task) => (
                     <span key={task.id} className="h-1.5 w-1.5 rounded-[1px] bg-foreground/60" />
                   ))}
-                  {onDay.slice(0, Math.max(0, 4 - due.length)).map((item, i) => (
+                  {onDay.slice(0, Math.max(0, 4 - away.length - due.length)).map((item, i) => (
                     <span key={itemKey(item, i)} className={cn('h-1.5 w-1.5 rounded-full', KIND_DOT[item.kind])} />
                   ))}
                 </span>
@@ -108,6 +123,11 @@ export function MonthGrid({
               {/* Only the entries themselves catch clicks: the space between and below
                   them is the day's, and opens it. */}
               <ul className="pointer-events-none relative hidden min-w-0 space-y-0.5 sm:block">
+                {awayShown.map((mark) => (
+                  <li key={`${mark.kind}-${mark.from}`}>
+                    <DayMarkChip mark={mark} whose={marksOf} />
+                  </li>
+                ))}
                 {dueShown.map((task) => (
                   <li key={task.id}>
                     <DueChip task={task} now={now} compact />

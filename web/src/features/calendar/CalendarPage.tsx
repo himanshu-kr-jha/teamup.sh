@@ -3,7 +3,7 @@ import { zoneLabel } from '@/shared/utils/zoneLabel';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import { addDays, format, isSameDay, isToday, parse, isValid } from 'date-fns';
-import { AlertTriangle, CalendarPlus, CheckSquare, ChevronLeft, ChevronRight, Eye, Loader2, NotebookPen, TimerOff } from 'lucide-react';
+import { AlertTriangle, CalendarPlus, CheckSquare, ChevronLeft, ChevronRight, Eye, Loader2, NotebookPen, TimerOff, Palmtree, PartyPopper } from 'lucide-react';
 import type { AxiosError } from 'axios';
 import { Button } from '@/shared/components/ui/button';
 import {
@@ -16,6 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/shared/components/ui/select';
+import type { DayMark } from './dayMarks';
 import { calendarApi, orgApi, tasksApi, type DueTask } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { cn } from '@/shared/utils/cn';
@@ -127,7 +128,7 @@ export function CalendarPage() {
 
   const { data, error, isPending, isFetching, refetch } = useQuery({
     queryKey: ['calendar', viewedId, range.from, range.to],
-    queryFn: () => calendarApi.get({ userId: viewedId, from: range.from, to: range.to }).then((res) => res.data),
+    queryFn: () => calendarApi.getWithDays({ userId: viewedId, from: range.from, to: range.to }),
     enabled: !!viewedId,
     placeholderData: keepPreviousData,
     staleTime: 15_000,
@@ -147,7 +148,11 @@ export function CalendarPage() {
   });
   const dueTasks: DueTask[] = useMemo(() => (own ? dueData ?? [] : []), [own, dueData]);
   const openMine = () => setParam({ person: null });
-  const items: CalendarItem[] = useMemo(() => (refused ? [] : data ?? []), [data, refused]);
+  const items: CalendarItem[] = useMemo(() => (refused ? [] : data?.items ?? []), [data, refused]);
+  // Leave and holidays: whole days, drawn with the day rather than at a time.
+  const marks: DayMark[] = useMemo(() => (refused ? [] : data?.days ?? []), [data, refused]);
+  // Somebody else's leave says whose it is.
+  const marksOf = own ? undefined : whose.name?.split(' ')[0];
 
   // Being invited or a meeting moving comes in as a notification. Nobody should
   // have to reload to see it on their calendar.
@@ -308,7 +313,7 @@ export function CalendarPage() {
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
           Loading the calendar
         </div>
-      ) : items.length === 0 && dueTasks.length === 0 ? (
+      ) : items.length === 0 && dueTasks.length === 0 && marks.length === 0 ? (
         <p className="shrink-0 border-b border-border bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground md:px-6">
           {own
             ? view === 'month'
@@ -325,6 +330,8 @@ export function CalendarPage() {
           anchor={anchor}
           items={liveItems}
           dueTasks={dueTasks}
+          marks={marks}
+          marksOf={marksOf}
           now={now}
           onSelect={setSelected}
           onOpenDay={(day) => setParam({ view: 'day', date: dayLabelKey(day) })}
@@ -334,6 +341,8 @@ export function CalendarPage() {
           days={days}
           items={liveItems}
           dueTasks={dueTasks}
+          marks={marks}
+          marksOf={marksOf}
           now={now}
           view={view}
           onSelect={setSelected}
@@ -430,6 +439,14 @@ function Legend() {
       <span className="flex items-center gap-1">
         <CheckSquare className="h-3 w-3" aria-hidden="true" />
         Task due
+      </span>
+      <span className="flex items-center gap-1">
+        <Palmtree className="h-3 w-3 text-slate-500" aria-hidden="true" />
+        Leave
+      </span>
+      <span className="flex items-center gap-1">
+        <PartyPopper className="h-3 w-3 text-pink-600 dark:text-pink-400" aria-hidden="true" />
+        Holiday
       </span>
     </span>
   );

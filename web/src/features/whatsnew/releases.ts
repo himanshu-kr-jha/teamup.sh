@@ -59,6 +59,42 @@ export const RELEASES: Release[] = [
     ],
   },
   {
+    id: '2026-11-16-c',
+    date: '2026-11-16',
+    title: 'Nobody chases you on leave',
+    changes: [
+      {
+        area: 'chat',
+        title: 'A conversation says when somebody is back',
+        body: 'Writing to somebody on leave, a note above the message box says they are on leave and the day they are back, so nobody waits for an answer.',
+      },
+      {
+        area: 'meetings',
+        title: 'Call tells you before it would not ring',
+        body: 'Pressing Call for somebody on leave says so first and offers to write instead, and starting a call from Calls marks whoever is on leave beside their name.',
+      },
+    ],
+  },
+  {
+    id: '2026-11-16-b',
+    date: '2026-11-16',
+    title: 'Leave on the calendar, and in your profile',
+    changes: [
+      {
+        area: 'calendar',
+        title: 'Leave and holidays are on the calendar',
+        body: "Your leave, half days included, and the organization's holidays show on your calendar, in the all-day row of a day or week and on the day in a month. A manager opening somebody's calendar sees their leave too.",
+        link: '/calendar',
+      },
+      {
+        area: 'app',
+        title: 'Leave moved to your profile',
+        body: "Leave now opens from your profile menu (your picture, top right) and from Settings, not the sidebar. Administrators keep the holidays, and see everybody's leave, under Organization, Leave & holidays.",
+        link: '/leave',
+      },
+    ],
+  },
+  {
     id: '2026-11-16-a',
     date: '2026-11-16',
     title: 'Forgot your password? Reset it yourself',
