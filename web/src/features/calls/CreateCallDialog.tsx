@@ -6,6 +6,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { FormDialog } from '@/shared/components/FormDialog';
 import { callsApi, orgApi } from '@/shared/api/client';
 import { useAuth } from '@/features/auth/AuthProvider';
+import { usePresence } from '@/features/presence/usePresence';
+import { backOnText, onLeave } from '@/features/presence/leaveNotice';
 
 interface Props {
   open: boolean;
@@ -15,6 +17,8 @@ interface Props {
 
 export function CreateCallDialog({ open, onOpenChange, onCreated }: Props) {
   const { user } = useAuth();
+  // Whoever is on leave is not rung, so say so beside their name before the call.
+  const { personOf } = usePresence();
   const queryClient = useQueryClient();
   const [title, setTitle] = useState('');
   const [callType, setCallType] = useState<'video' | 'audio'>('video');
@@ -90,6 +94,11 @@ export function CreateCallDialog({ open, onOpenChange, onCreated }: Props) {
                 className="h-4 w-4"
               />
               <span className="text-sm">{m.name}</span>
+              {onLeave(personOf(m.id)) && (
+                <span className="ml-auto text-xs text-muted-foreground">
+                  On leave, {backOnText(personOf(m.id)?.until)}; will not be rung
+                </span>
+              )}
             </label>
           ))}
         </div>

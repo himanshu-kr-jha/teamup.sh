@@ -26,6 +26,23 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-16-c',
+    date: '2026-11-16',
+    title: 'Nobody chases you on leave',
+    changes: [
+      {
+        area: 'chat',
+        title: 'A conversation says when somebody is back',
+        body: 'Writing to somebody on leave, a note above the message box says they are on leave and the day they are back, so nobody waits for an answer.',
+      },
+      {
+        area: 'meetings',
+        title: 'Call tells you before it would not ring',
+        body: 'Pressing Call for somebody on leave says so first and offers to write instead, and starting a call from Calls marks whoever is on leave beside their name.',
+      },
+    ],
+  },
+  {
     id: '2026-11-16-b',
     date: '2026-11-16',
     title: 'Leave on the calendar, and in your profile',
