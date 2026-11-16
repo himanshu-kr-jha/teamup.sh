@@ -118,8 +118,12 @@ test.describe('leave and holidays', () => {
     await expect(mia.page.getByText('An administrator keeps this list.')).toBeVisible();
     await expect(mia.page.getByRole('button', { name: 'Add holiday' })).toHaveCount(0);
 
+    // The owner keeps them under Organization; on Leave they are only read, with the way there.
     const olivia = await as('owner');
     await olivia.page.goto('/leave');
+    await expect(olivia.page.getByRole('button', { name: 'Add holiday' })).toHaveCount(0);
+    await olivia.page.getByRole('link', { name: 'Organization, Leave & holidays' }).click();
+    await expect(olivia.page.getByRole('tab', { name: 'Leave & holidays', selected: true })).toBeVisible();
     const holidays = olivia.page.getByRole('region', { name: 'Holidays' });
     await holidays.getByLabel('Date').fill(day);
     await holidays.getByLabel('Name').fill("Founders' day");
@@ -134,10 +138,44 @@ test.describe('leave and holidays', () => {
     await expect(section.getByText('Absent', { exact: true })).toHaveCount(0);
 
     // Taking it off makes it an ordinary day again.
-    await olivia.page.goto('/leave');
+    await olivia.page.goto('/organization?tab=leave');
     await holidays.getByRole('button', { name: "Remove Founders' day" }).click();
     await olivia.page.getByRole('dialog').getByRole('button', { name: 'Remove' }).click();
     await expect(holidays.getByText('No holidays this year or next.')).toBeVisible();
+  });
+
+  test('Leave opens from the profile menu, not the sidebar, and leave and holidays are on the calendar', async ({ as }) => {
+    const day = localDay(2);
+    const ann = await apiAs('ann');
+    await ann.post('/leave', { startsOn: day, endsOn: day, part: 'afternoon' });
+    await ann.dispose();
+    const owner = await apiAs('owner');
+    await owner.post('/holidays', { date: day, name: 'Harvest day' });
+    await owner.dispose();
+
+    const annSession = await as('ann');
+    await annSession.page.goto('/chat');
+    await expect(annSession.page.getByRole('navigation').getByRole('link', { name: 'Leave' })).toHaveCount(0);
+    await annSession.page.getByRole('button', { name: 'User menu' }).click();
+    await annSession.page.getByRole('menuitem', { name: 'Leave' }).click();
+    await expect(annSession.page).toHaveURL(/\/leave$/);
+    await expect(annSession.page.getByRole('heading', { name: 'Leave', exact: true })).toBeVisible();
+
+    // Her calendar, the day itself: the holiday, and her afternoon off, above the hours.
+    await annSession.page.goto(`/calendar?view=day&date=${day}`);
+    const row = annSession.page.getByTestId('due-row');
+    await expect(row.getByTestId('day-mark').filter({ hasText: 'Holiday: Harvest day' })).toBeVisible();
+    await expect(row.getByTestId('day-mark').filter({ hasText: 'On leave, afternoon' })).toBeVisible();
+    await expect(row).toContainText('All day');
+    // And the month.
+    await annSession.page.goto(`/calendar?view=month&date=${day}`);
+    const cell = annSession.page.locator(`[data-testid="month-day"][data-day="${day}"]`);
+    await expect(cell.getByTestId('day-mark')).toHaveCount(2);
+
+    // Her manager, opening her calendar, reads whose leave it is.
+    const mia = await as('mia');
+    await mia.page.goto(`/calendar?view=day&date=${day}&person=${idOf('ann')}`);
+    await expect(mia.page.getByTestId('day-mark').filter({ hasText: `${NAME('ann').split(' ')[0]} on leave, afternoon` })).toBeVisible();
   });
 
   test('choosing On leave as your status records leave from today, and coming back ends it', async ({ as }) => {

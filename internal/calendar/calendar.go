@@ -1274,3 +1274,49 @@ func (s *Service) RunReminders(ctx context.Context, every time.Duration) {
 		}
 	}
 }
+
+// DayMark is a whole day, or half of one, that somebody is away: their leave,
+// or a holiday of the organization's. Dates are calendar dates, the same
+// wherever the reader is, so each is drawn on the day it names.
+type DayMark struct {
+	Kind string `json:"kind"` // leave or holiday
+	// From and To are the first and last day; To is empty for leave with no end yet.
+	From string `json:"from"`
+	To   string `json:"to,omitempty"`
+	// Part is full, morning or afternoon, for leave.
+	Part string `json:"part,omitempty"`
+	// Name is the holiday's.
+	Name string `json:"name,omitempty"`
+}
+
+// DayMarks is the leave and holidays that fall between from and to on the
+// calendar of userID. Call it after Calendar, which decides who may read it.
+// The range is widened by a day each side, because from and to are instants and
+// the dates are drawn in the reader's own zone.
+func (s *Service) DayMarks(ctx context.Context, orgID, userID uuid.UUID, from, to time.Time) ([]DayMark, error) {
+	first := from.UTC().AddDate(0, 0, -1).Format("2006-01-02")
+	last := to.UTC().AddDate(0, 0, 1).Format("2006-01-02")
+	rows, err := s.db.Query(ctx, `
+		SELECT 'leave', starts_on::text, COALESCE(ends_on::text, ''), part, ''
+		FROM leave_periods
+		WHERE org_id = $1 AND user_id = $2 AND removed_at IS NULL
+		  AND starts_on <= $4::date AND (ends_on IS NULL OR ends_on >= $3::date)
+		UNION ALL
+		SELECT 'holiday', on_date::text, on_date::text, '', name
+		FROM org_holidays
+		WHERE org_id = $1 AND on_date BETWEEN $3::date AND $4::date
+		ORDER BY 2`, orgID, userID, first, last)
+	if err != nil {
+		return nil, fmt.Errorf("load leave and holidays: %w", err)
+	}
+	defer rows.Close()
+	marks := []DayMark{}
+	for rows.Next() {
+		var m DayMark
+		if err := rows.Scan(&m.Kind, &m.From, &m.To, &m.Part, &m.Name); err != nil {
+			return nil, fmt.Errorf("scan leave and holidays: %w", err)
+		}
+		marks = append(marks, m)
+	}
+	return marks, rows.Err()
+}

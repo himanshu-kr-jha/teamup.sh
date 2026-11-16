@@ -125,7 +125,13 @@ func (h *Handler) Calendar(c *gin.Context) {
 	if items == nil {
 		items = []Item{}
 	}
-	c.JSON(http.StatusOK, gin.H{"items": items})
+	// Leave and holidays, which have dates rather than times.
+	days, err := h.service.DayMarks(c.Request.Context(), orgID, target, from, to)
+	if err != nil {
+		httpx.Error(c, err, "failed to load calendar")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items, "days": days})
 }
 
 // People answers with whose calendars, besides their own, the caller may open,
