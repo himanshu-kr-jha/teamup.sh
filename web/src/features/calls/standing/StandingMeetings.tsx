@@ -16,6 +16,7 @@ import { standingApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
 import { useActiveCall } from '../ActiveCallProvider';
+import { FieldWorkBar } from './FieldWork';
 import { StandingMeetingDialog } from './StandingMeetingDialog';
 import { describeAudience, describeSchedule, type StandingMeeting } from './standing';
 
@@ -97,6 +98,9 @@ export function StandingMeetings() {
           </Button>
         )}
       </div>
+
+      {/* Whoever a stand-up is for may be out in the field instead. */}
+      {meetings.some((m) => m.inAudience) && <FieldWorkBar />}
 
       {isPending ? (
         <div role="status" className="flex items-center gap-2 py-3 text-sm text-muted-foreground">

@@ -355,7 +355,7 @@ function LeaveDetail({ person }: { person: AttendancePerson }) {
 
 function StatusBadge({ status }: { status: AttendanceStatus }) {
   return (
-    <Badge variant="secondary" className={cn('shrink-0', STATUS_STYLE[status])}>
+    <Badge variant="secondary" className={cn('shrink-0 whitespace-nowrap', STATUS_STYLE[status])}>
       {STATUS_LABEL[status]}
     </Badge>
   );

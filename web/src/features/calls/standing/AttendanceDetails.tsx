@@ -122,9 +122,9 @@ export function ReviewButton({ meetingId, day, person }: { meetingId: string; da
   return (
     <>
       <Button
-        variant={person.status === 'review' ? 'default' : 'outline'}
+        variant={person.status === 'review' ? 'default' : 'ghost'}
         size="sm"
-        className="h-7 px-2 text-xs"
+        className={cn('h-7 px-2 text-xs', person.status !== 'review' && 'text-muted-foreground hover:text-foreground')}
         onClick={() => setOpen(true)}
         aria-label={`Decide ${person.name} on ${day.date}`}
       >

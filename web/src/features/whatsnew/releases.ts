@@ -26,6 +26,29 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-16-d',
+    date: '2026-11-16',
+    title: 'Attendance: cameras, field work, review and export',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'A stand-up can require cameras',
+        body: 'Turn on Camera must be on in a stand-up. Whoever joins and never turns their camera on is In review, not Present, until somebody who reviews attendance decides.',
+      },
+      {
+        area: 'meetings',
+        title: 'Check in from the field',
+        body: "When your organization turns on field work, Calls offers Check in from the field: a photo taken in the app and where you are, with a note. Today's stand-ups count you as in the field, not absent. Your manager and HR can see the photo and the place.",
+        link: '/calls',
+      },
+      {
+        area: 'meetings',
+        title: 'Review attendance, and take it away as a spreadsheet',
+        body: 'Give a role Review attendance under Roles, for HR. Reviewers decide days in review as Present or Absent, with a note that is kept with their name. Every attendance page downloads as Excel or CSV: people down the side, days across, and totals.',
+      },
+    ],
+  },
+  {
     id: '2026-11-16-a',
     date: '2026-11-16',
     title: 'Forgot your password? Reset it yourself',
