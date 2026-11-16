@@ -69,6 +69,13 @@ func TestSomebodyOnLeaveIsOnLeaveNotAbsentAndLeaveAddedAfterwardsSaysSo(t *testi
 	w := newScrumWorld(t)
 	// The manager records Abe's leave now, after the 09:00 scrum.
 	w.leaveFor(t, w.mgr, w.absent, leave.PartFull)
+	// Pin "now" to an hour after the scrum: the database clock is the wall clock, and
+	// before 09:00 in Kolkata the scrum has not yet happened.
+	if _, err := w.pool.Exec(context.Background(),
+		`UPDATE leave_changes SET created_at = $1 WHERE leave_id IN (SELECT id FROM leave_periods WHERE user_id = $2)`,
+		w.start.Add(time.Hour), w.absent); err != nil {
+		t.Fatal(err)
+	}
 	// Tia planned the morning off before: put her record before the meeting.
 	w.leaveFor(t, w.tokenOnly, w.tokenOnly, leave.PartMorning)
 	if _, err := w.pool.Exec(context.Background(),

@@ -75,7 +75,7 @@ test.describe('ringing and leave', () => {
     await alice.page.goto('/calls');
     const res = await alice.page.request.post('/api/calls', { data: { callType: 'audio', invitees: [idOf('ann')] } });
     expect(res.status()).toBe(201);
-    await expect(alice.page.getByText(`${NAME('ann')} is on leave, so was not rung.`)).toBeVisible({ timeout: 15_000 });
+    await expect(alice.page.getByText(`${NAME('ann')} is on leave, so was not rung.`, { exact: true })).toBeVisible({ timeout: 15_000 });
     await expect(ann.page.getByRole('dialog').filter({ hasText: 'Incoming' })).toHaveCount(0);
 
     // The calls list says why, to each of them.
