@@ -836,11 +836,11 @@ test.describe('54. forgotten password', () => {
     const signedInBefore = await Api.signIn(email, oldPassword);
     await owner.dispose();
 
-    // The login page says what to do, and no longer links anywhere.
+    // The login page offers to reset it by email (meetings.y-reset.spec.ts), and
+    // where there is no mail an administrator still does it, as here.
     const member = await as('alice', { signedOut: true });
     await member.page.goto('/login');
-    await expect(member.page.getByText('Ask an administrator of your organization to reset it.')).toBeVisible();
-    await expect(member.page.getByRole('link', { name: /forgot/i })).toHaveCount(0);
+    await expect(member.page.getByRole('link', { name: 'Forgot password?' })).toHaveAttribute('href', '/forgot-password');
 
     // The owner resets it from the Organization page.
     const { page } = await as('owner');

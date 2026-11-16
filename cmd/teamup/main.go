@@ -630,6 +630,9 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// Outgoing mail reads its settings from the organization, which is where
 	// the setup wizard puts them.
 	mailService := mail.NewService(orgService, cfg.BaseURL, logger)
+	// Somebody who forgot their password is emailed a link, or, where mail is
+	// not set up, the administrators are asked to reset it for them.
+	authService.SetPasswordResets(mailService, notificationsService.NotifyMany)
 
 	// The meeting note-taker joins every call while an administrator has it on,
 	// and sends the minutes to whoever was there.
