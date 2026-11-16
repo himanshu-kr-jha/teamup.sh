@@ -51,12 +51,11 @@ func origin(raw, scheme string) string {
 // they do in development; in production both are this server.
 //
 // GitHub is where connecting it sends a form, so forms may go there too.
-func contentSecurityPolicy(page []byte, storage string, storageSecure bool, liveKit, gitHub string) string {
-	storageScheme := "http"
-	if storageSecure {
-		storageScheme = "https"
-	}
-	files := origin(storage, storageScheme)
+//
+// files is where the browser really goes for uploads and downloads, as
+// files.Service.PublicOrigin reads it from a signed URL: the configured
+// endpoint is not it for Amazon, and naming that one blocked every upload.
+func contentSecurityPolicy(page []byte, files string, liveKit, gitHub string) string {
 	// The call server is configured by one address but reached by the browser
 	// over both its socket and its HTTP forms of it.
 	calls := origin(liveKit, "ws")
