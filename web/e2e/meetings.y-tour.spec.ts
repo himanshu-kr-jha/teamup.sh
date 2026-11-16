@@ -38,12 +38,13 @@ test.describe('the welcome tour', () => {
     const places: [string, Locator][] = [
       ['Chat', main.getByRole('link', { name: 'Chat' })],
       ['Calls and meetings', main.getByRole('link', { name: 'Calls' })],
-      ['Meeting notes', main.getByRole('link', { name: 'Meeting notes' })],
       ['Calendar', main.getByRole('link', { name: 'Calendar' })],
       ['Tasks', main.getByRole('link', { name: 'Tasks' })],
       ['Projects', main.getByRole('link', { name: 'Projects' })],
       ['Your availability', sam.page.locator('[data-tour="availability"]')],
     ];
+    // Meeting notes are only for whoever is given them (16 November), so a member has no such place.
+    await expect(main.getByRole('link', { name: 'Meeting notes' })).toHaveCount(0);
     for (const [i, [title, target]] of places.entries()) {
       const step = sam.page.getByRole('dialog', { name: title });
       await expect(step).toBeVisible();

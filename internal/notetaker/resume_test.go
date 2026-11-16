@@ -24,6 +24,9 @@ func (w *world) status(t *testing.T) (status string, released bool) {
 
 func TestADeployInTheMiddleOfAMeetingHandsTheNotesToTheNextServer(t *testing.T) {
 	w := newWorld(t)
+	// Everybody here may read the notes of their meetings, so is told.
+	w.mayReadOwn(t, w.ada)
+	w.mayReadOwn(t, w.bo)
 	srv := standIns(t)
 	ctx := context.Background()
 	if err := w.orgs.SetConfig(ctx, w.orgID, ConfigKey, Settings{Enabled: true, STTKey: "k", STTBaseURL: srv.URL, LLMKey: "k", LLMBaseURL: srv.URL}, true); err != nil {
@@ -67,7 +70,7 @@ func TestADeployInTheMiddleOfAMeetingHandsTheNotesToTheNextServer(t *testing.T) 
 		return nil
 	}
 	next.Resume(ctx)
-	notes := w.waitFor(t, w.router(t, w.ada, "member"))
+	notes := w.waitFor(t, w.reader(t, w.ada))
 	if notes.Status != "ready" || rejoined != 1 {
 		t.Fatalf("minutes after carrying on (rejoined %d): %+v", rejoined, notes)
 	}
@@ -104,7 +107,7 @@ func TestNotesLeftByAServerThatDiedAreWrittenUpOnceTheCallHasEnded(t *testing.T)
 	}
 
 	w.svc.Resume(ctx)
-	notes := w.waitFor(t, w.router(t, w.ada, "member"))
+	notes := w.waitFor(t, w.reader(t, w.ada))
 	if notes.Status != "ready" || notes.Minutes.Decisions[0] != "Ship on Friday" {
 		t.Fatalf("written up: %+v", notes)
 	}

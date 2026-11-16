@@ -567,10 +567,46 @@ func (s *Service) compose(ctx context.Context, orgID, callID uuid.UUID, set Sett
 	s.deliver(ctx, orgID, callID, minutes, attendees)
 }
 
+// readers is the attendees who may read the notes: whoever holds Read minutes
+// of their meetings, Read every meeting's minutes, or everything. Nobody else
+// is told the minutes are ready or sent them.
+func (s *Service) readers(ctx context.Context, attendees []attendee) []attendee {
+	if len(attendees) == 0 {
+		return attendees
+	}
+	ids := make([]uuid.UUID, 0, len(attendees))
+	for _, a := range attendees {
+		ids = append(ids, a.id)
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT DISTINCT ur.user_id FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+		WHERE ur.user_id = ANY($1) AND r.permissions ?| array['*', 'notes.read_all', 'notes.read_own']`, ids)
+	if err != nil {
+		s.logger.Warn().Err(err).Msg("notetaker: could not tell who may read the minutes; telling nobody")
+		return nil
+	}
+	defer rows.Close()
+	may := map[uuid.UUID]bool{}
+	for rows.Next() {
+		var id uuid.UUID
+		if rows.Scan(&id) == nil {
+			may[id] = true
+		}
+	}
+	out := attendees[:0:0]
+	for _, a := range attendees {
+		if may[a.id] {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 func (s *Service) notify(ctx context.Context, orgID, callID uuid.UUID, attendees []attendee, kind, title, body string) {
 	if s.notifier == nil {
 		return
 	}
+	attendees = s.readers(ctx, attendees)
 	link := "/calls/" + callID.String() + "/minutes"
 	for _, a := range attendees {
 		if err := s.notifier.Notify(ctx, orgID, a.id, kind, title, body,
@@ -694,6 +730,7 @@ func (s *Service) deliver(ctx context.Context, orgID, callID uuid.UUID, m Minute
 	if s.mailer == nil || !s.mailer.Configured(ctx, orgID) {
 		return
 	}
+	attendees = s.readers(ctx, attendees)
 	for _, a := range attendees {
 		if a.email == "" {
 			continue
@@ -716,8 +753,8 @@ type Notes struct {
 	Transcript []Segment `json:"transcript"`
 }
 
-// mayRead says whether somebody may read a call's notes: they were in it, or
-// they administer the organization.
+// mayRead says whether somebody may read a call's notes: they read every
+// meeting's, or they were in it (and, checked before this, may read their own).
 func (s *Service) mayRead(ctx context.Context, callID, userID uuid.UUID, isAdmin bool) (bool, error) {
 	if isAdmin {
 		return true, nil

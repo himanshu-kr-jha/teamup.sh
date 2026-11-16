@@ -14,6 +14,7 @@ export const PERMS = {
   callsRecord: 'calls.record',
   notesSettings: 'notes.settings',
   notesReadAll: 'notes.read_all',
+  notesReadOwn: 'notes.read_own',
 } as const;
 
 export type PermissionKey = (typeof PERMS)[keyof typeof PERMS];
@@ -35,4 +36,12 @@ export function can(user: { roles?: string[]; permissions?: string[] } | null | 
 /** Whether somebody holding `held` may hand `perm` on: nobody grants what they lack. */
 export function grants(held: string[] | undefined, perm: string): boolean {
   return !!held && (held.includes(EVERY) || held.includes(perm));
+}
+
+/**
+ * Whether somebody sees meeting notes at all: the owner's decision of 16
+ * November makes them a permission, of their own meetings or of every one.
+ */
+export function readsNotes(user: Parameters<typeof can>[0]): boolean {
+  return can(user, PERMS.notesReadAll) || can(user, PERMS.notesReadOwn);
 }

@@ -77,6 +77,10 @@ func requireAdmin(c *gin.Context) {
 	c.Next()
 }
 
+// caller is who is asking, and whether they read every meeting's notes. Meeting
+// notes are only for whoever is given them (the owner's decision of 16
+// November): Read every meeting's minutes, or Read minutes of their meetings;
+// anybody else is refused before anything is looked up.
 func caller(c *gin.Context) (orgID, userID uuid.UUID, isAdmin, ok bool) {
 	u := auth.GetUserFromContext(c)
 	o, err1 := uuid.Parse(u.OrgID)
@@ -85,7 +89,12 @@ func caller(c *gin.Context) (orgID, userID uuid.UUID, isAdmin, ok bool) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid session"})
 		return uuid.Nil, uuid.Nil, false, false
 	}
-	return o, id, u.Can(auth.PermNotesReadAll), true
+	all := u.Can(auth.PermNotesReadAll)
+	if !all && !u.Can(auth.PermNotesReadOwn) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "meeting notes are for whoever is given them under Roles"})
+		return uuid.Nil, uuid.Nil, false, false
+	}
+	return o, id, all, true
 }
 
 // settingsView is the settings without the keys, which never go back to a page.
