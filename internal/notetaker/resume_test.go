@@ -77,6 +77,7 @@ func TestADeployInTheMiddleOfAMeetingHandsTheNotesToTheNextServer(t *testing.T) 
 	if len(notes.Transcript) != 3 || !strings.Contains(notes.Transcript[2].Text, "after the deploy") {
 		t.Errorf("before and after the deploy, in one transcript: %+v", notes.Transcript)
 	}
+	w.told(t, func(r *recorded) bool { return len(r.notified) >= 2 })
 	w.sent.mu.Lock()
 	defer w.sent.mu.Unlock()
 	if len(w.sent.notified) != 2 {

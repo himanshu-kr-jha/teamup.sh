@@ -265,6 +265,7 @@ func TestEverybodyWhoWasThereGetsTheMinutesAndNobodyElseCanReadThem(t *testing.T
 		t.Errorf("transcript, in order: %+v", notes.Transcript)
 	}
 
+	w.told(t, func(r *recorded) bool { return len(r.notified) >= 1 && len(r.mailed) >= 1 })
 	w.sent.mu.Lock()
 	notified, mailed := len(w.sent.notified), w.sent.mailed
 	w.sent.mu.Unlock()
@@ -324,6 +325,7 @@ func TestAGuestIsHeardAndNamedInTheMinutes(t *testing.T) {
 	if !heard {
 		t.Errorf("the guest is in the transcript: %+v", notes.Transcript)
 	}
+	w.told(t, func(r *recorded) bool { return len(r.notified) >= 2 })
 	w.sent.mu.Lock()
 	defer w.sent.mu.Unlock()
 	if len(w.sent.notified) != 2 {
@@ -346,6 +348,24 @@ func TestTurnedOffItDoesNotJoin(t *testing.T) {
 }
 
 // waitFor polls a call's minutes until they are done one way or the other.
+// told waits until whoever is told about the minutes has been: that happens
+// just after they are saved, so reading them ready is not yet enough.
+func (w *world) told(t *testing.T, done func(r *recorded) bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		w.sent.mu.Lock()
+		ok := done(w.sent)
+		w.sent.mu.Unlock()
+		if ok {
+			// A moment more, so anybody told who should not have been is counted too.
+			time.Sleep(100 * time.Millisecond)
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func (w *world) waitFor(t *testing.T, as *gin.Engine) Notes {
 	t.Helper()
 	var notes Notes
@@ -449,6 +469,7 @@ func TestFailedMinutesAreWrittenAgainFromTheTranscriptAndListed(t *testing.T) {
 	if notes.Status != "failed" || !strings.Contains(notes.Error, "503") || len(notes.Transcript) != 2 {
 		t.Fatalf("failed, with why, and the transcript kept: %+v", notes)
 	}
+	w.told(t, func(r *recorded) bool { return len(r.failed) >= 2 })
 	w.sent.mu.Lock()
 	failedTold := len(w.sent.failed)
 	w.sent.mu.Unlock()
