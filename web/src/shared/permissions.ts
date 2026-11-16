@@ -14,6 +14,7 @@ export const PERMS = {
   callsRecord: 'calls.record',
   notesSettings: 'notes.settings',
   notesReadAll: 'notes.read_all',
+  attendance: 'attendance.review',
 } as const;
 
 export type PermissionKey = (typeof PERMS)[keyof typeof PERMS];

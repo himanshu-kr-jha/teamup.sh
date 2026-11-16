@@ -20,6 +20,7 @@ describe('describeEvent', () => {
     expect(describeEvent(event('joined'))).toBe('Ann joined');
     expect(describeEvent(event('left'))).toBe('Ann left');
     expect(describeEvent(event('screen_share_started'))).toBe('Ann started sharing their screen');
+    expect(describeEvent(event('camera_on'))).toBe('Ann turned their camera on');
     expect(describeEvent(event('screen_share_stopped'))).toBe('Ann stopped sharing their screen');
   });
 

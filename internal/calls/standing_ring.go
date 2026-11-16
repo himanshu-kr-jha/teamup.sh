@@ -39,7 +39,7 @@ func (s *Service) SweepStandingRings(ctx context.Context, now time.Time) (int, e
 		var orgID uuid.UUID
 		var m StandingMeeting
 		if err := rows.Scan(&orgID, &m.ID, &m.Name, &m.TimeOfDay, &m.TimeZone, &m.Weekdays, &m.DurationMinutes,
-			&m.CreatedBy, &m.ArchivedAt, &m.CreatedAt, &m.audienceKind); err != nil {
+			&m.CreatedBy, &m.ArchivedAt, &m.CreatedAt, &m.audienceKind, &m.CameraRequired); err != nil {
 			rows.Close()
 			return 0, fmt.Errorf("scan standing meeting: %w", err)
 		}

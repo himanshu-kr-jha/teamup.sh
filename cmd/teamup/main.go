@@ -28,6 +28,7 @@ import (
 	"github.com/teamup/teamup/internal/calendar"
 	"github.com/teamup/teamup/internal/calls"
 	"github.com/teamup/teamup/internal/chat"
+	"github.com/teamup/teamup/internal/fieldwork"
 	"github.com/teamup/teamup/internal/files"
 	"github.com/teamup/teamup/internal/gcal"
 	"github.com/teamup/teamup/internal/integrations"
@@ -519,6 +520,8 @@ func runServer(cmd *cobra.Command, args []string) error {
 	tasksService := tasks.NewService(dbPool)
 	calendarService := calendar.NewService(dbPool)
 	leaveService := leave.NewService(dbPool, tasksService)
+	// Field work counts somebody working away for the day's stand-ups.
+	fieldWorkService := fieldwork.NewService(dbPool, tasksService)
 	presenceService.SetLeave(leaveService)
 	wizardService := wizard.NewService(dbPool, redisClient, &authCfg, logger)
 
@@ -817,6 +820,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 			tasks.RegisterRoutes(protected, tasksService)
 			calendar.RegisterRoutes(protected, calendarService)
 			leave.RegisterRoutes(protected, leaveService)
+			fieldwork.RegisterRoutes(protected, fieldWorkService)
 			gcal.RegisterRoutes(protected, api, gcalService)
 			integrations.RegisterRoutes(protected, api, integrationsService)
 			notetaker.RegisterRoutes(protected, notetakerService)

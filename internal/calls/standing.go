@@ -46,6 +46,9 @@ type StandingMeeting struct {
 	CreatedBy       *uuid.UUID `json:"createdBy,omitempty"`
 	ArchivedAt      *time.Time `json:"archivedAt,omitempty"`
 	CreatedAt       time.Time  `json:"createdAt"`
+	// CameraRequired puts whoever joins and never turns their camera on in review
+	// rather than present.
+	CameraRequired bool `json:"cameraRequired"`
 	// Audience is who it is for. InAudience and CanManage are for whoever asked:
 	// whether they may join it, and change or archive it.
 	Audience   *Audience `json:"audience,omitempty"`
@@ -55,11 +58,11 @@ type StandingMeeting struct {
 	audienceKind string
 }
 
-const standingColumns = `id, name, time_of_day, time_zone, weekdays, duration_minutes, created_by, archived_at, created_at, audience`
+const standingColumns = `id, name, time_of_day, time_zone, weekdays, duration_minutes, created_by, archived_at, created_at, audience, camera_required`
 
 func scanStanding(row pgx.Row) (*StandingMeeting, error) {
 	var m StandingMeeting
-	err := row.Scan(&m.ID, &m.Name, &m.TimeOfDay, &m.TimeZone, &m.Weekdays, &m.DurationMinutes, &m.CreatedBy, &m.ArchivedAt, &m.CreatedAt, &m.audienceKind)
+	err := row.Scan(&m.ID, &m.Name, &m.TimeOfDay, &m.TimeZone, &m.Weekdays, &m.DurationMinutes, &m.CreatedBy, &m.ArchivedAt, &m.CreatedAt, &m.audienceKind, &m.CameraRequired)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, apperrors.ErrNotFound
 	}
@@ -196,6 +199,7 @@ type standingFields struct {
 	Everyone        *bool        `json:"everyone"`
 	TeamIDs         *[]uuid.UUID `json:"teamIds"`
 	PersonIDs       *[]uuid.UUID `json:"personIds"`
+	CameraRequired  *bool        `json:"cameraRequired"`
 }
 
 // audienceSent is the audience asked for, if any part of it was sent.
@@ -220,6 +224,9 @@ func badRequest(message string) error { return apperrors.New(apperrors.CodeBadRe
 
 // applyTo validates what was sent and writes it onto m.
 func (f standingFields) applyTo(m *StandingMeeting) error {
+	if f.CameraRequired != nil {
+		m.CameraRequired = *f.CameraRequired
+	}
 	if f.Name != nil {
 		m.Name = strings.TrimSpace(*f.Name)
 	}
@@ -306,10 +313,10 @@ func (s *Service) CreateStandingMeeting(ctx context.Context, orgID uuid.UUID, a 
 	}
 	defer tx.Rollback(ctx)
 	created, err := scanStanding(tx.QueryRow(ctx, `
-		INSERT INTO standing_meetings (org_id, name, time_of_day, time_zone, weekdays, duration_minutes, created_by)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		INSERT INTO standing_meetings (org_id, name, time_of_day, time_zone, weekdays, duration_minutes, created_by, camera_required)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING `+standingColumns,
-		orgID, m.Name, m.TimeOfDay, m.TimeZone, m.Weekdays, m.DurationMinutes, createdBy))
+		orgID, m.Name, m.TimeOfDay, m.TimeZone, m.Weekdays, m.DurationMinutes, createdBy, m.CameraRequired))
 	if err != nil {
 		return nil, err
 	}
@@ -445,10 +452,11 @@ func (s *Service) UpdateStandingMeeting(ctx context.Context, orgID, id uuid.UUID
 	defer tx.Rollback(ctx)
 	updated, err := scanStanding(tx.QueryRow(ctx, `
 		UPDATE standing_meetings
-		SET name = $3, time_of_day = $4, time_zone = $5, weekdays = $6, duration_minutes = $7, updated_at = NOW()
+		SET name = $3, time_of_day = $4, time_zone = $5, weekdays = $6, duration_minutes = $7,
+		    camera_required = $8, updated_at = NOW()
 		WHERE id = $1 AND org_id = $2 AND archived_at IS NULL
 		RETURNING `+standingColumns,
-		id, orgID, m.Name, m.TimeOfDay, m.TimeZone, m.Weekdays, m.DurationMinutes))
+		id, orgID, m.Name, m.TimeOfDay, m.TimeZone, m.Weekdays, m.DurationMinutes, m.CameraRequired))
 	if err != nil {
 		return nil, err
 	}
@@ -561,13 +569,14 @@ func (s *Service) openOccurrence(ctx context.Context, orgID uuid.UUID, m *Standi
 	var room string
 	err := s.db.QueryRow(ctx, `
 		INSERT INTO calls (org_id, room_name, title, call_type, status, started_at, created_by,
-		                   scheduled_start, scheduled_end, standing_meeting_id, occurrence_date, join_requested_at)
-		VALUES ($1, $2, $3, 'video', 'active', $4, $5, $6, $7, $8, $9::date, $10)
+		                   scheduled_start, scheduled_end, standing_meeting_id, occurrence_date, join_requested_at,
+		                   camera_required)
+		VALUES ($1, $2, $3, 'video', 'active', $4, $5, $6, $7, $8, $9::date, $10, $11)
 		ON CONFLICT (standing_meeting_id, occurrence_date) WHERE standing_meeting_id IS NOT NULL
 		DO UPDATE SET status = 'active', ended_at = NULL, duration_seconds = NULL, updated_at = NOW(),
 		              join_requested_at = COALESCE(calls.join_requested_at, EXCLUDED.join_requested_at)
 		RETURNING id, room_name
-	`, orgID, "standing-"+uuid.NewString(), m.Name, now, creator, start, end, m.ID, date, requested).Scan(&callID, &room)
+	`, orgID, "standing-"+uuid.NewString(), m.Name, now, creator, start, end, m.ID, date, requested, m.CameraRequired).Scan(&callID, &room)
 	if err != nil {
 		return uuid.Nil, "", fmt.Errorf("find or make occurrence: %w", err)
 	}
@@ -601,6 +610,12 @@ type Attendee struct {
 	// Leave is set when the status is on_leave: what part of the day, and when and
 	// by whom it was recorded, so leave added after the day always says so.
 	Leave *AttendeeLeave `json:"leave,omitempty"`
+	// CameraOn is set on a day that required cameras: whether they turned theirs on.
+	CameraOn *bool `json:"cameraOn,omitempty"`
+	// Field is the field work that counted for them (attendance_rules.go).
+	Field *AttendeeField `json:"field,omitempty"`
+	// Review is a reviewer's decision about this day, when there is one.
+	Review *AttendeeReview `json:"review,omitempty"`
 }
 
 // AttendeeLeave is the leave that excuses somebody from one day.
@@ -626,8 +641,10 @@ type AttendanceDay struct {
 	CanReadLog bool `json:"canReadLog"`
 	// Holiday names the organization's holiday on this date. Nobody is absent on
 	// one, and whoever came anyway is still present.
-	Holiday string     `json:"holiday,omitempty"`
-	People  []Attendee `json:"people"`
+	Holiday string `json:"holiday,omitempty"`
+	// CameraRequired is the stand-up's camera rule as it was that day.
+	CameraRequired bool       `json:"cameraRequired"`
+	People         []Attendee `json:"people"`
 }
 
 type occurrence struct {
@@ -638,6 +655,8 @@ type occurrence struct {
 	endedAt        *time.Time
 	// asked is whether anybody asked to join, rather than only the ring opening it.
 	asked bool
+	// cameraRequired is the stand-up's camera rule as it was that day.
+	cameraRequired bool
 }
 
 // Attendance is decisions 14 and 15. Joined and left are stored; absent is worked
@@ -717,6 +736,10 @@ func (s *Service) Attendance(ctx context.Context, orgID, meetingID, callerID uui
 	if err != nil {
 		return nil, err
 	}
+	extras, err := s.loadAttendanceExtras(ctx, orgID, meetingID, expectedIDs, from, to)
+	if err != nil {
+		return nil, err
+	}
 
 	versions, err := s.scheduleVersions(ctx, m)
 	if err != nil {
@@ -741,6 +764,7 @@ func (s *Service) Attendance(ctx context.Context, orgID, meetingID, callerID uui
 		case held:
 			day.CallID = &occ.callID
 			day.ScheduledStart = occ.scheduledStart
+			day.CameraRequired = occ.cameraRequired
 			loaded := &CallModel{ID: occ.callID, StandingMeetingID: &meetingID}
 			if day.CanReadLog, err = s.MayReadLog(ctx, orgID, loaded, callerID, isOrgAdmin); err != nil {
 				return nil, err
@@ -804,6 +828,7 @@ func (s *Service) Attendance(ctx context.Context, orgID, meetingID, callerID uui
 				day.People = append(day.People, a)
 			}
 		}
+		extras.apply(&day)
 		sort.Slice(day.People, func(i, j int) bool {
 			if day.People[i].Name != day.People[j].Name {
 				return day.People[i].Name < day.People[j].Name
@@ -878,7 +903,7 @@ func attendeeFrom(id uuid.UUID, sessions personSessions, start time.Time, endedA
 
 func (s *Service) occurrences(ctx context.Context, meetingID uuid.UUID, from, to time.Time) (map[string]occurrence, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, occurrence_date::text, scheduled_start, scheduled_end, ended_at, join_requested_at IS NOT NULL FROM calls
+		SELECT id, occurrence_date::text, scheduled_start, scheduled_end, ended_at, join_requested_at IS NOT NULL, camera_required FROM calls
 		WHERE standing_meeting_id = $1 AND occurrence_date BETWEEN $2::date AND $3::date
 	`, meetingID, from.Format("2006-01-02"), to.Format("2006-01-02"))
 	if err != nil {
@@ -888,7 +913,7 @@ func (s *Service) occurrences(ctx context.Context, meetingID uuid.UUID, from, to
 	out := map[string]occurrence{}
 	for rows.Next() {
 		var o occurrence
-		if err := rows.Scan(&o.callID, &o.date, &o.scheduledStart, &o.scheduledEnd, &o.endedAt, &o.asked); err != nil {
+		if err := rows.Scan(&o.callID, &o.date, &o.scheduledStart, &o.scheduledEnd, &o.endedAt, &o.asked, &o.cameraRequired); err != nil {
 			return nil, fmt.Errorf("scan occurrence: %w", err)
 		}
 		out[o.date] = o
@@ -1104,7 +1129,8 @@ func (h *Handler) StandingMeetingAttendance(c *gin.Context) {
 	if !ok {
 		return
 	}
-	days, err := h.service.Attendance(c.Request.Context(), orgID, id, userID, isAdmin(c), teamID, from, to)
+	// Reviewers read every stand-up's attendance, as whoever manages everybody's meetings does.
+	days, err := h.service.Attendance(c.Request.Context(), orgID, id, userID, readsAllAttendance(c), teamID, from, to)
 	if err != nil {
 		httpx.Error(c, err, "failed to read attendance")
 		return

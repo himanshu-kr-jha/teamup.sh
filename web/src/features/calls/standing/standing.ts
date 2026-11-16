@@ -29,9 +29,13 @@ export interface StandingMeeting {
   inAudience?: boolean;
   /** Whether whoever asked may change or archive it. */
   canManage?: boolean;
+  /** Whoever joins and never turns their camera on is in review, not present. */
+  cameraRequired?: boolean;
 }
 
-export type StandingForm = Pick<StandingMeeting, 'name' | 'timeOfDay' | 'timeZone' | 'weekdays' | 'durationMinutes'>;
+export type StandingForm = Pick<StandingMeeting, 'name' | 'timeOfDay' | 'timeZone' | 'weekdays' | 'durationMinutes'> & {
+  cameraRequired?: boolean;
+};
 
 /** Who it is for, as the dialog sends it. */
 export interface AudienceForm {
@@ -63,7 +67,26 @@ export function describeAudience(audience: Audience | undefined): string {
   return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
 }
 
-export type AttendanceStatus = 'present' | 'absent' | 'unknown' | 'on_leave' | 'holiday';
+export type AttendanceStatus = 'present' | 'absent' | 'unknown' | 'on_leave' | 'holiday' | 'field_work' | 'review';
+
+/** Field work that counted for somebody's day: a photo taken in the app, and where. */
+export interface AttendanceField {
+  id: string;
+  takenAt: string;
+  latitude: number;
+  longitude: number;
+  accuracyM: number;
+  note?: string;
+}
+
+/** A reviewer's decision about somebody's day, and what the day said before it. */
+export interface AttendanceReview {
+  decision: 'present' | 'absent';
+  note?: string;
+  decidedBy: { id: string; name: string } | null;
+  decidedAt: string;
+  was: AttendanceStatus;
+}
 
 /** The leave that excused somebody from a day. */
 export interface AttendanceLeave {
@@ -83,6 +106,10 @@ export interface AttendancePerson {
   minutesPresent: number;
   minutesLate: number;
   leave?: AttendanceLeave;
+  /** On a day that required cameras: whether they turned theirs on. */
+  cameraOn?: boolean;
+  field?: AttendanceField;
+  review?: AttendanceReview;
 }
 
 export interface AttendanceDay {
@@ -94,6 +121,8 @@ export interface AttendanceDay {
   canReadLog: boolean;
   /** The organization's holiday on this date, if it is one. */
   holiday?: string;
+  /** The stand-up's camera rule as it was that day. */
+  cameraRequired?: boolean;
   people: AttendancePerson[];
 }
 
@@ -153,7 +182,15 @@ export function standingFormProblem(form: StandingForm): string | null {
 }
 
 export function attendanceCounts(people: AttendancePerson[]): Record<AttendanceStatus, number> {
-  const counts: Record<AttendanceStatus, number> = { present: 0, absent: 0, unknown: 0, on_leave: 0, holiday: 0 };
+  const counts: Record<AttendanceStatus, number> = {
+    present: 0,
+    absent: 0,
+    unknown: 0,
+    on_leave: 0,
+    holiday: 0,
+    field_work: 0,
+    review: 0,
+  };
   for (const person of people) counts[person.status]++;
   return counts;
 }
@@ -163,13 +200,25 @@ export function attendanceSummary(day: Pick<AttendanceDay, 'attendanceRecorded' 
   const counts = attendanceCounts(day.people);
   if (day.holiday && counts.present === 0) return 'Nobody was expected';
   const parts = [`${counts.present} present`];
-  if (counts.absent > 0 || (!day.holiday && counts.on_leave === 0 && counts.unknown === 0)) parts.push(`${counts.absent} absent`);
+  if (counts.absent > 0 || (!day.holiday && counts.on_leave === 0 && counts.unknown === 0 && counts.field_work === 0 && counts.review === 0))
+    parts.push(`${counts.absent} absent`);
+  if (counts.field_work > 0) parts.push(`${counts.field_work} in the field`);
+  if (counts.review > 0) parts.push(`${counts.review} in review`);
   if (counts.on_leave > 0) parts.push(`${counts.on_leave} on leave`);
   if (counts.unknown > 0) parts.push(`${counts.unknown} unknown`);
   return parts.join(', ');
 }
 
-const STATUS_RANK: Record<AttendanceStatus, number> = { present: 0, unknown: 1, absent: 2, on_leave: 3, holiday: 4 };
+// In review first among the rest, since somebody has to act on it.
+const STATUS_RANK: Record<AttendanceStatus, number> = {
+  review: 0,
+  present: 1,
+  field_work: 2,
+  unknown: 3,
+  absent: 4,
+  on_leave: 5,
+  holiday: 6,
+};
 
 export function orderAttendance(people: AttendancePerson[]): AttendancePerson[] {
   return [...people].sort((a, b) => STATUS_RANK[a.status] - STATUS_RANK[b.status] || a.name.localeCompare(b.name));

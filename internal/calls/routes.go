@@ -50,6 +50,8 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.DELETE("/standing-meetings/:id", h.ArchiveStandingMeeting)
 	rg.POST("/standing-meetings/:id/join", h.JoinStandingMeeting)
 	rg.GET("/standing-meetings/:id/attendance", h.StandingMeetingAttendance)
+	rg.GET("/standing-meetings/:id/attendance/export", h.ExportAttendance)
+	rg.POST("/standing-meetings/:id/attendance/review", h.DecideAttendance)
 
 	registerGuestRoutes(rg, h)
 }

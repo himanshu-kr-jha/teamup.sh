@@ -35,6 +35,7 @@ const (
 	PermCallsRecord   = "calls.record"
 	PermNotesSettings = "notes.settings"
 	PermNotesReadAll  = "notes.read_all"
+	PermAttendance    = "attendance.review"
 )
 
 // Permission is one entry on the Roles screen.
@@ -57,6 +58,7 @@ var Catalog = []Permission{
 	{PermCallsRecord, "Meetings", "Record calls", "Start and stop recording a call they are in."},
 	{PermNotesSettings, "Meetings", "Set up meeting notes", "Turn the note-taker on or off and choose its services and keys."},
 	{PermNotesReadAll, "Meetings", "Read every meeting's minutes", "Minutes and transcripts of meetings they were not in."},
+	{PermAttendance, "Meetings", "Review attendance", "Decide stand-up attendance that is in review, such as a camera never turned on, and see the photos people send from field work. Give it to HR."},
 }
 
 // IsPermission says whether key is on the list.

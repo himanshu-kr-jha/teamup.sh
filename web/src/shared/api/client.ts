@@ -711,6 +711,36 @@ export const standingApi = {
   /** Scope is decided by the server, by who is asking. */
   attendance: (id: string, params: { from: string; to: string; teamId?: string }) =>
     getList<AttendanceDay>(`/standing-meetings/${id}/attendance`, 'days', params),
+  /** A reviewer decides somebody's day; an empty decision takes it back. */
+  review: (id: string, data: { date: string; userId: string; decision: 'present' | 'absent' | ''; note?: string }) =>
+    api.post<{ days: AttendanceDay[] }>(`/standing-meetings/${id}/attendance/review`, data),
+  /** Where the attendance downloads as a spreadsheet; the session cookie goes with the link. */
+  exportUrl: (id: string, params: { from: string; to: string; teamId?: string; format: 'xlsx' | 'csv' }) =>
+    `/api/standing-meetings/${id}/attendance/export?${new URLSearchParams(
+      Object.entries(params).filter((e): e is [string, string] => !!e[1])
+    ).toString()}`,
+};
+
+/** A field work check-in, without its photo (fieldWorkApi.photoUrl). */
+export interface FieldCheckin {
+  id: string;
+  userId: string;
+  onDate: string;
+  takenAt: string;
+  latitude: number;
+  longitude: number;
+  accuracyM: number;
+  note: string;
+}
+
+export const fieldWorkApi = {
+  settings: () => api.get<{ enabled: boolean; mayChange: boolean }>('/field-work/settings'),
+  setEnabled: (enabled: boolean) => api.put<{ enabled: boolean; mayChange: boolean }>('/field-work/settings', { enabled }),
+  mine: () => getList<FieldCheckin>('/field-work/checkins/mine', 'checkins', { today: localToday() }),
+  checkIn: (data: { photo: string; latitude: number; longitude: number; accuracyM: number; note?: string }) =>
+    api.post<{ checkin: FieldCheckin }>('/field-work/checkins', { ...data, today: localToday() }),
+  remove: (id: string) => api.delete(`/field-work/checkins/${id}`, { params: { today: localToday() } }),
+  photoUrl: (id: string) => `/api/field-work/checkins/${id}/photo`,
 };
 
 export type LeavePart = 'full' | 'morning' | 'afternoon';

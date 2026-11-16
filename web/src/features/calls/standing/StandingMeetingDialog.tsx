@@ -5,6 +5,7 @@ import { PeoplePicker } from '@/shared/components/PeoplePicker';
 import { FormDialog } from '@/shared/components/FormDialog';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
+import { Switch } from '@/shared/components/ui/switch';
 import { standingApi } from '@/shared/api/client';
 import { cn } from '@/shared/utils/cn';
 import {
@@ -23,6 +24,7 @@ const blank = (): StandingForm => ({
   timeZone: browserTimeZone(),
   weekdays: [1, 2, 3, 4, 5],
   durationMinutes: 30,
+  cameraRequired: false,
 });
 
 /** Every zone the browser knows, with the one already chosen always on the list. */
@@ -66,6 +68,7 @@ export function StandingMeetingDialog({
       timeZone: start.timeZone,
       weekdays: start.weekdays,
       durationMinutes: start.durationMinutes,
+      cameraRequired: !!start.cameraRequired,
     });
     setLengthText(String(start.durationMinutes));
     const a = meeting?.audience;
@@ -283,6 +286,22 @@ export function StandingMeetingDialog({
       </fieldset>
 
       {problem && open && form.name && <p className="text-xs text-muted-foreground">{problem}</p>}
+
+      <div className="flex items-start gap-3">
+        <Switch
+          id="standingCamera"
+          checked={!!form.cameraRequired}
+          onCheckedChange={(on) => setForm({ ...form, cameraRequired: on })}
+          className="mt-0.5"
+        />
+        <Label htmlFor="standingCamera" className="cursor-pointer text-sm font-normal leading-snug">
+          <span className="font-medium">Camera must be on</span>
+          <span className="block text-muted-foreground">
+            Whoever joins and never turns their camera on is in review, not present, until somebody who reviews
+            attendance decides. Changing this does not change days already held.
+          </span>
+        </Label>
+      </div>
     </FormDialog>
   );
 }

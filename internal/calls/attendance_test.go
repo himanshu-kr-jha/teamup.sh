@@ -262,7 +262,9 @@ func TestOnePersonOnTwoDevicesIsPresentUntilTheLastDeviceLeaves(t *testing.T) {
 	}
 }
 
-func TestScreenShareStartAndStopComeFromTrackEventsAndCameraDoesNot(t *testing.T) {
+// The camera is on the trail once, when it is first turned on, for stand-ups that
+// require it; turning it off is not, because the browser mutes it instead.
+func TestScreenShareStartAndStopComeFromTrackEventsAndCameraOnlyWhenTurnedOn(t *testing.T) {
 	e := newLK(t)
 	invitee := e.person(t, "Invited Ivy", "member")
 	call := e.call(t, e.org.OwnerID, invitee)
@@ -281,9 +283,14 @@ func TestScreenShareStartAndStopComeFromTrackEventsAndCameraDoesNot(t *testing.T
 	if len(stopped) != 1 || !near(stopped[0].At, start.Add(4*time.Minute)) {
 		t.Errorf("one screen share stop at LiveKit's time, got %+v", stopped)
 	}
+	if on := log.events("camera_on", invitee); len(on) != 1 || !near(on[0].At, start.Add(time.Second)) {
+		t.Errorf("one camera turned on, at LiveKit's time, got %+v", on)
+	}
 	for _, ev := range log.Events {
-		if ev.Type != "joined" && ev.Type != "screen_share_started" && ev.Type != "screen_share_stopped" {
-			t.Errorf("a camera track must not add an event, got %+v", ev)
+		switch ev.Type {
+		case "joined", "screen_share_started", "screen_share_stopped", "camera_on":
+		default:
+			t.Errorf("an unexpected event, got %+v", ev)
 		}
 	}
 }

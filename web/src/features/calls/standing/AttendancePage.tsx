@@ -1,13 +1,24 @@
 import { useState } from 'react';
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
-import { ChevronLeft, History } from 'lucide-react';
+import { ChevronLeft, Download, History, Video } from 'lucide-react';
 import { Badge } from '@/shared/components/ui/badge';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
-import { standingApi } from '@/shared/api/client';
+import { fieldWorkApi, standingApi } from '@/shared/api/client';
+import { Switch } from '@/shared/components/ui/switch';
+import { useAuth } from '@/features/auth/AuthProvider';
+import { PERMS, can } from '@/shared/permissions';
+import {
+  CameraDetail,
+  FieldDetail,
+  ReviewButton,
+  ReviewDetail,
+  STATUS_LABEL,
+  reviewable,
+} from './AttendanceDetails';
 import { cn, formatTime } from '@/shared/utils/cn';
 import { DANGER_TEXT } from '@/features/tasks/dueDate';
 import { EmptyState, ErrorState, LoadingState } from '@/features/tasks/dashboard/parts';
@@ -27,20 +38,14 @@ import {
 
 const ALL_TEAMS = 'all';
 
-const STATUS_LABEL: Record<AttendanceStatus, string> = {
-  present: 'Present',
-  absent: 'Absent',
-  unknown: 'Unknown',
-  on_leave: 'On leave',
-  holiday: 'Holiday',
-};
-
 const STATUS_STYLE: Record<AttendanceStatus, string> = {
   present: 'bg-green-100 text-green-800 dark:bg-green-950 dark:text-green-200',
   absent: 'bg-red-100 text-red-800 dark:bg-red-950 dark:text-red-200',
   unknown: 'bg-muted text-muted-foreground',
   on_leave: 'bg-sky-100 text-sky-800 dark:bg-sky-950 dark:text-sky-200',
   holiday: 'bg-muted text-muted-foreground',
+  field_work: 'bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-200',
+  review: 'bg-amber-100 text-amber-900 dark:bg-amber-950 dark:text-amber-200',
 };
 
 /**
@@ -92,6 +97,9 @@ export function AttendancePage() {
     staleTime: 15_000,
   });
   const days = [...(data ?? [])].sort((a, b) => b.date.localeCompare(a.date));
+  const { user } = useAuth();
+  const reviewer = can(user, PERMS.attendance);
+  const exportParams = { ...range, teamId: team };
 
   return (
     <div className="h-full overflow-y-auto">
@@ -138,6 +146,23 @@ export function AttendancePage() {
               />
             </div>
           </div>
+          <div className="flex flex-wrap items-end gap-2 sm:ml-auto">
+            {!problem && (
+              <>
+                <Button variant="outline" size="sm" className="h-9" asChild>
+                  <a href={standingApi.exportUrl(id, { ...exportParams, format: 'xlsx' })} download>
+                    <Download className="mr-1.5 h-4 w-4" aria-hidden="true" />
+                    Excel
+                  </a>
+                </Button>
+                <Button variant="outline" size="sm" className="h-9" asChild>
+                  <a href={standingApi.exportUrl(id, { ...exportParams, format: 'csv' })} download>
+                    <Download className="mr-1.5 h-4 w-4" aria-hidden="true" />
+                    CSV
+                  </a>
+                </Button>
+              </>
+            )}
           {teams.length > 0 && (
             <Select value={team ?? ALL_TEAMS} onValueChange={(v) => update({ team: v === ALL_TEAMS ? null : v })}>
               <SelectTrigger className="h-9 w-full sm:w-48" aria-label="Filter by team">
@@ -153,7 +178,10 @@ export function AttendancePage() {
               </SelectContent>
             </Select>
           )}
+          </div>
         </div>
+
+        <FieldWorkSwitch />
 
         {problem ? (
           <p role="alert" className={cn('text-sm', DANGER_TEXT)}>
@@ -168,7 +196,7 @@ export function AttendancePage() {
         ) : (
           <div className={cn('space-y-3', isFetching && 'opacity-70')}>
             {days.map((day) => (
-              <DayCard key={day.date} day={day} />
+              <DayCard key={day.date} day={day} meetingId={id} reviewer={reviewer} />
             ))}
           </div>
         )}
@@ -177,7 +205,7 @@ export function AttendancePage() {
   );
 }
 
-function DayCard({ day }: { day: AttendanceDay }) {
+function DayCard({ day, meetingId, reviewer }: { day: AttendanceDay; meetingId: string; reviewer: boolean }) {
   const [showingLog, setShowingLog] = useState(false);
   const people = orderAttendance(day.people);
   const summary = day.attendanceRecorded ? attendanceSummary(day) : 'Attendance could not be recorded';
@@ -193,6 +221,12 @@ function DayCard({ day }: { day: AttendanceDay }) {
         )}
         {day.scheduledStart && (
           <span className="text-xs tabular-nums text-muted-foreground">Starts {formatTime(day.scheduledStart)}</span>
+        )}
+        {day.cameraRequired && (
+          <Badge variant="outline" className="gap-1 text-xs font-normal">
+            <Video className="h-3 w-3" aria-hidden="true" />
+            Cameras required
+          </Badge>
         )}
         <span className="ml-auto text-xs tabular-nums text-muted-foreground">{summary}</span>
         {day.callId && day.canReadLog && (
@@ -230,6 +264,11 @@ function DayCard({ day }: { day: AttendanceDay }) {
                 <th scope="col" className="px-2 py-2 text-right font-medium">Last leave</th>
                 <th scope="col" className="px-2 py-2 text-right font-medium">Minutes present</th>
                 <th scope="col" className="px-3 py-2 text-right font-medium">Minutes late</th>
+                {reviewer && (
+                  <th scope="col" className="px-3 py-2 text-right font-medium">
+                    <span className="sr-only">Decide</span>
+                  </th>
+                )}
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
@@ -237,7 +276,7 @@ function DayCard({ day }: { day: AttendanceDay }) {
                 <tr key={person.userId}>
                   <td className="break-anywhere px-3 py-2">
                     {person.name}
-                    <LeaveDetail person={person} />
+                    <PersonDetails person={person} />
                   </td>
                   <td className="px-2 py-2">
                     <StatusBadge status={person.status} />
@@ -248,11 +287,16 @@ function DayCard({ day }: { day: AttendanceDay }) {
                   <td
                     className={cn(
                       'px-3 py-2 text-right tabular-nums',
-                      person.status === 'present' && person.minutesLate > 0 && DANGER_TEXT
+                      attended(person) && person.minutesLate > 0 && DANGER_TEXT
                     )}
                   >
                     {minutes(person, person.minutesLate)}
                   </td>
+                  {reviewer && (
+                    <td className="px-3 py-2 text-right">
+                      {reviewable(person) && <ReviewButton meetingId={meetingId} day={day} person={person} />}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -265,14 +309,19 @@ function DayCard({ day }: { day: AttendanceDay }) {
                   <span className="min-w-0 break-anywhere font-medium">{person.name}</span>
                   <StatusBadge status={person.status} />
                 </div>
-                <LeaveDetail person={person} />
-                {person.status === 'present' && (
+                <PersonDetails person={person} />
+                {attended(person) && (
                   <p className="mt-0.5 text-xs tabular-nums text-muted-foreground">
                     {clock(person.firstJoinAt)} to {lastLeave(person)}, {formatMinutes(person.minutesPresent)}
                     {person.minutesLate > 0 && (
                       <span className={DANGER_TEXT}>, {formatMinutes(person.minutesLate)} late</span>
                     )}
                   </p>
+                )}
+                {reviewer && reviewable(person) && (
+                  <div className="mt-1.5">
+                    <ReviewButton meetingId={meetingId} day={day} person={person} />
+                  </div>
                 )}
               </li>
             ))}
@@ -326,12 +375,64 @@ function clock(at: string | null): string {
   return at ? formatTime(at) : '-';
 }
 
+/** Somebody who was in the room, whatever the day ended up saying. */
+function attended(person: AttendancePerson): boolean {
+  return person.firstJoinAt !== null && ['present', 'review'].includes(person.review?.was ?? person.status);
+}
+
+function PersonDetails({ person }: { person: AttendancePerson }) {
+  return (
+    <>
+      <LeaveDetail person={person} />
+      <FieldDetail person={person} />
+      <CameraDetail person={person} />
+      <ReviewDetail person={person} />
+    </>
+  );
+}
+
+/**
+ * Whether field work counts for stand-ups in this organization. Only whoever
+ * changes organization settings sees the switch.
+ */
+function FieldWorkSwitch() {
+  const queryClient = useQueryClient();
+  const { data } = useQuery({
+    queryKey: ['field-work-settings'],
+    queryFn: () => fieldWorkApi.settings().then((res) => res.data),
+    staleTime: 60_000,
+  });
+  const change = useMutation({
+    mutationFn: (enabled: boolean) => fieldWorkApi.setEnabled(enabled),
+    onSuccess: (res) => queryClient.setQueryData(['field-work-settings'], res.data),
+  });
+  if (!data?.mayChange) return null;
+  return (
+    <div className="flex items-start gap-3 rounded-lg border border-border bg-card px-3 py-2">
+      <Switch
+        id="fieldWork"
+        checked={data.enabled}
+        disabled={change.isPending}
+        onCheckedChange={(on) => change.mutate(on)}
+        className="mt-0.5"
+      />
+      <Label htmlFor="fieldWork" className="cursor-pointer text-sm font-normal leading-snug">
+        <span className="font-medium">Field work check-ins</span>
+        <span className="block text-muted-foreground">
+          Somebody working away sends a photo and their location from the app, and is in the field rather than absent
+          that day.
+        </span>
+      </Label>
+    </div>
+  );
+}
+
 function lastLeave(person: AttendancePerson): string {
-  if (person.status !== 'present') return '-';
+  if (!attended(person)) return '-';
   return person.lastLeaveAt ? formatTime(person.lastLeaveAt) : 'Still there';
 }
 
 function minutes(person: AttendancePerson, value: number): string {
-  return person.status === 'present' ? String(value) : '-';
+  return attended(person) ? String(value) : '-';
 }
 
