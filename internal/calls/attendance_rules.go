@@ -32,10 +32,11 @@ type AttendeeField struct {
 
 // AttendeeReview is a reviewer's decision about somebody's day.
 type AttendeeReview struct {
-	Decision  string        `json:"decision"`
-	Note      string        `json:"note,omitempty"`
-	DecidedBy *leave.Person `json:"decidedBy"`
-	DecidedAt time.Time     `json:"decidedAt"`
+	Decision    string        `json:"decision"`
+	LateMinutes *int          `json:"lateMinutes,omitempty"`
+	Note        string        `json:"note,omitempty"`
+	DecidedBy   *leave.Person `json:"decidedBy"`
+	DecidedAt   time.Time     `json:"decidedAt"`
 	// Was is what the day said before the decision: review, absent, field_work...
 	Was string `json:"was"`
 }
@@ -111,7 +112,7 @@ func (s *Service) loadAttendanceExtras(ctx context.Context, orgID, meetingID uui
 	}
 
 	rows, err = s.db.Query(ctx, `
-		SELECT r.on_date::text, r.user_id, r.decision, r.note, r.decided_at, r.decided_by, COALESCE(u.name, '')
+		SELECT r.on_date::text, r.user_id, r.decision, r.late_minutes, r.note, r.decided_at, r.decided_by, COALESCE(u.name, '')
 		FROM attendance_reviews r LEFT JOIN users u ON u.id = r.decided_by
 		WHERE r.standing_meeting_id = $1 AND r.on_date BETWEEN $2::date AND $3::date
 	`, meetingID, first, last)
@@ -124,7 +125,7 @@ func (s *Service) loadAttendanceExtras(ctx context.Context, orgID, meetingID uui
 		var user uuid.UUID
 		var by *uuid.UUID
 		var r AttendeeReview
-		if err := rows.Scan(&date, &user, &r.Decision, &r.Note, &r.DecidedAt, &by, &name); err != nil {
+		if err := rows.Scan(&date, &user, &r.Decision, &r.LateMinutes, &r.Note, &r.DecidedAt, &by, &name); err != nil {
 			return nil, fmt.Errorf("scan attendance review: %w", err)
 		}
 		if by != nil {
@@ -160,8 +161,20 @@ func (x *attendanceExtras) apply(day *AttendanceDay) {
 		if r, ok := x.reviews[day.Date][a.UserID]; ok {
 			review := r
 			review.Was = a.Status
-			a.Status = r.Decision
 			a.Review = &review
+			switch r.Decision {
+			case "late":
+				// Late is present, by as many minutes as the reviewer said.
+				a.Status = "present"
+				if r.LateMinutes != nil {
+					a.MinutesLate = *r.LateMinutes
+				}
+			case "present":
+				a.Status = "present"
+				a.MinutesLate = 0
+			default:
+				a.Status = r.Decision
+			}
 		}
 	}
 }

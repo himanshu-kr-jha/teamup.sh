@@ -5,8 +5,9 @@
 //
 // An organization turns it on; it is off until then. A check-in counts for
 // every stand-up on its date (calls/attendance_rules.go), shown as field work
-// rather than absent. Its photo is for the person, whoever has authority over
-// them, and reviewers.
+// rather than absent. The photo carries the time and place stamped on it by
+// the page. A person sees their own check-ins; only whoever sees attendance
+// (owners, admins, See or Review attendance) sees anybody else's.
 package fieldwork
 
 import (
@@ -39,19 +40,13 @@ const settingsKey = "field_work"
 
 var photoTypes = map[string]bool{"image/jpeg": true, "image/png": true, "image/webp": true}
 
-// Authority says whether somebody may see another person's field work.
-type Authority interface {
-	HasAuthorityOver(ctx context.Context, orgID, actorID, subjectID uuid.UUID, isOrgAdmin bool) (bool, error)
-}
-
 type Service struct {
 	db    *pgxpool.Pool
-	chart Authority
 	clock func() time.Time
 }
 
-func NewService(db *pgxpool.Pool, chart Authority) *Service {
-	return &Service{db: db, chart: chart, clock: time.Now}
+func NewService(db *pgxpool.Pool) *Service {
+	return &Service{db: db, clock: time.Now}
 }
 
 // Settings is the organization's choice.
@@ -104,6 +99,7 @@ type Input struct {
 type Checkin struct {
 	ID        uuid.UUID `json:"id"`
 	UserID    uuid.UUID `json:"userId"`
+	Name      string    `json:"name,omitempty"`
 	OnDate    string    `json:"onDate"`
 	TakenAt   time.Time `json:"takenAt"`
 	Latitude  float64   `json:"latitude"`
@@ -212,15 +208,15 @@ func (s *Service) Mine(ctx context.Context, orgID, userID uuid.UUID, rawToday st
 	return out, rows.Err()
 }
 
-// Viewer is who is asking for a photo, and what they may do.
+// Viewer is who is asking: Sees is whoever sees attendance (owners, admins,
+// See or Review attendance), who may look at anybody's field work.
 type Viewer struct {
-	ID uuid.UUID
-	// Reviewer holds attendance.review; Admin manages everybody's meetings.
-	Reviewer, Admin bool
+	ID   uuid.UUID
+	Sees bool
 }
 
-// Photo is a check-in's photo, for its owner, whoever has authority over them,
-// and reviewers. Anybody else is told there is no such thing.
+// Photo is a check-in's photo, for its owner and whoever sees attendance.
+// Anybody else is told there is no such thing.
 func (s *Service) Photo(ctx context.Context, orgID, id uuid.UUID, v Viewer) ([]byte, string, error) {
 	var owner uuid.UUID
 	var kind string
@@ -233,16 +229,56 @@ func (s *Service) Photo(ctx context.Context, orgID, id uuid.UUID, v Viewer) ([]b
 	if err != nil {
 		return nil, "", fmt.Errorf("read field work photo: %w", err)
 	}
-	if owner != v.ID && !v.Reviewer {
-		allowed, err := s.chart.HasAuthorityOver(ctx, orgID, v.ID, owner, v.Admin)
-		if err != nil {
-			return nil, "", err
-		}
-		if !allowed {
-			return nil, "", apperrors.ErrNotFound
-		}
+	if owner != v.ID && !v.Sees {
+		return nil, "", apperrors.ErrNotFound
 	}
 	return photo, kind, nil
+}
+
+// ListInput is a range of dates, and whose: one person, or everybody.
+type ListInput struct {
+	From, To string
+	UserID   *uuid.UUID
+}
+
+// List is check-ins in a range, newest first: somebody's own, or for whoever
+// sees attendance, anybody's.
+func (s *Service) List(ctx context.Context, orgID uuid.UUID, v Viewer, in ListInput) ([]Checkin, error) {
+	from, err1 := time.Parse("2006-01-02", in.From)
+	to, err2 := time.Parse("2006-01-02", in.To)
+	if err1 != nil || err2 != nil || to.Before(from) {
+		return nil, badRequest("from and to must be dates, from first")
+	}
+	if to.Sub(from) > 92*24*time.Hour {
+		return nil, badRequest("a range can cover at most 92 days")
+	}
+	who := in.UserID
+	if !v.Sees {
+		// Anybody else's is not there to ask for.
+		who = &v.ID
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT f.id, f.user_id, u.name, f.on_date::text, f.taken_at, f.latitude, f.longitude, f.accuracy_m, f.note
+		FROM field_checkins f JOIN users u ON u.id = f.user_id
+		WHERE f.org_id = $1 AND f.on_date BETWEEN $2::date AND $3::date AND ($4::uuid IS NULL OR f.user_id = $4)
+		ORDER BY f.taken_at DESC
+		LIMIT 500
+	`, orgID, in.From, in.To, who)
+	if err != nil {
+		return nil, fmt.Errorf("list field work: %w", err)
+	}
+	defer rows.Close()
+	out := []Checkin{}
+	for rows.Next() {
+		var c Checkin
+		var accuracy float32
+		if err := rows.Scan(&c.ID, &c.UserID, &c.Name, &c.OnDate, &c.TakenAt, &c.Latitude, &c.Longitude, &accuracy, &c.Note); err != nil {
+			return nil, fmt.Errorf("scan field work: %w", err)
+		}
+		c.AccuracyM = float64(accuracy)
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // Remove takes back one of somebody's own check-ins, made by mistake, on its day.

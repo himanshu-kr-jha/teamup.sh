@@ -14,6 +14,7 @@ export const PERMS = {
   callsRecord: 'calls.record',
   notesSettings: 'notes.settings',
   notesReadAll: 'notes.read_all',
+  attendanceView: 'attendance.view',
   attendance: 'attendance.review',
 } as const;
 

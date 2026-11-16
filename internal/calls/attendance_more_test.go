@@ -688,15 +688,13 @@ func TestAnAttendanceRangeIsValidated(t *testing.T) {
 	}
 }
 
-func TestAManagerSeesTheirOwnAttendanceWithoutATeamFilter(t *testing.T) {
+func TestAManagerWithoutThePermissionSeesNoAttendanceNorDownloadsIt(t *testing.T) {
 	w := newScrumWorld(t)
-	d := w.day(t, w.mgr, "manager", "")
-	if _, ok := d.person(w.mgr); !ok {
-		t.Error("nobody needs permission to see themself")
-	}
-	d = w.day(t, w.mgr, "manager", "&teamId="+w.backend.String())
-	if _, ok := d.person(w.mgr); ok {
-		t.Error("a team filter asks for that team and nothing else")
+	r := w.as(t, w.mgr, "manager")
+	for _, path := range []string{"/attendance?date=" + w.date, "/attendance/export?format=csv&date=" + w.date} {
+		if code := doJSON(t, r, http.MethodGet, "/api/standing-meetings/"+w.meeting.ID+path, "").Code; code != http.StatusForbidden {
+			t.Errorf("%s: want 403, got %d", path, code)
+		}
 	}
 }
 

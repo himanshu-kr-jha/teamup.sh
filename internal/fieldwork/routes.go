@@ -18,6 +18,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.GET("/field-work/settings", h.GetSettings)
 	rg.PUT("/field-work/settings", h.PutSettings)
 	rg.GET("/field-work/checkins/mine", h.Mine)
+	rg.GET("/field-work/checkins", h.List)
 	rg.POST("/field-work/checkins", h.CheckIn)
 	rg.DELETE("/field-work/checkins/:id", h.Remove)
 	rg.GET("/field-work/checkins/:id/photo", h.Photo)
@@ -32,6 +33,36 @@ func caller(c *gin.Context) (uuid.UUID, uuid.UUID, bool) {
 		return uuid.Nil, uuid.Nil, false
 	}
 	return orgID, userID, true
+}
+
+// viewer is the signed-in person, and whether they see attendance.
+func viewer(c *gin.Context, userID uuid.UUID) Viewer {
+	u := auth.GetUserFromContext(c)
+	return Viewer{ID: userID, Sees: u.Can(auth.PermMeetingsAll) || u.Can(auth.PermAttendanceSee) || u.Can(auth.PermAttendance)}
+}
+
+// List is check-ins for ?from=&to=, and ?userId= for one person.
+func (h *Handler) List(c *gin.Context) {
+	orgID, userID, ok := caller(c)
+	if !ok {
+		return
+	}
+	in := ListInput{From: c.Query("from"), To: c.Query("to")}
+	if raw := c.Query("userId"); raw != "" {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid userId"})
+			return
+		}
+		in.UserID = &id
+	}
+	v := viewer(c, userID)
+	list, err := h.service.List(c.Request.Context(), orgID, v, in)
+	if err != nil {
+		httpx.Error(c, err, "failed to read field work")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"checkins": list, "everybody": v.Sees})
 }
 
 func (h *Handler) GetSettings(c *gin.Context) {
@@ -128,10 +159,7 @@ func (h *Handler) Photo(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid id"})
 		return
 	}
-	u := auth.GetUserFromContext(c)
-	photo, kind, err := h.service.Photo(c.Request.Context(), orgID, id, Viewer{
-		ID: userID, Reviewer: u.Can(auth.PermAttendance), Admin: u.Can(auth.PermMeetingsAll),
-	})
+	photo, kind, err := h.service.Photo(c.Request.Context(), orgID, id, viewer(c, userID))
 	if err != nil {
 		httpx.Error(c, err, "failed to read the photo")
 		return

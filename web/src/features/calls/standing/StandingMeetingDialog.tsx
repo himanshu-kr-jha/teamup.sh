@@ -12,6 +12,7 @@ import {
   WEEKDAY_OPTIONS,
   audienceProblem,
   browserTimeZone,
+  describeWindow,
   standingFormProblem,
   type AudienceForm,
   type StandingForm,
@@ -25,6 +26,8 @@ const blank = (): StandingForm => ({
   weekdays: [1, 2, 3, 4, 5],
   durationMinutes: 30,
   cameraRequired: false,
+  attendBeforeMinutes: 30,
+  attendAfterMinutes: 30,
 });
 
 /** Every zone the browser knows, with the one already chosen always on the list. */
@@ -69,6 +72,8 @@ export function StandingMeetingDialog({
       weekdays: start.weekdays,
       durationMinutes: start.durationMinutes,
       cameraRequired: !!start.cameraRequired,
+      attendBeforeMinutes: start.attendBeforeMinutes ?? 30,
+      attendAfterMinutes: start.attendAfterMinutes ?? 30,
     });
     setLengthText(String(start.durationMinutes));
     const a = meeting?.audience;
@@ -286,6 +291,39 @@ export function StandingMeetingDialog({
       </fieldset>
 
       {problem && open && form.name && <p className="text-xs text-muted-foreground">{problem}</p>}
+
+      <fieldset className="space-y-2">
+        <legend className="text-sm font-medium">When joining counts</legend>
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <Input
+            id="attendBefore"
+            type="number"
+            min={0}
+            max={720}
+            className="h-9 w-20"
+            aria-label="Minutes before the start"
+            value={form.attendBeforeMinutes ?? 30}
+            onChange={(e) => setForm({ ...form, attendBeforeMinutes: Number(e.target.value) })}
+          />
+          <span>minutes before the start to</span>
+          <Input
+            id="attendAfter"
+            type="number"
+            min={1}
+            max={720}
+            className="h-9 w-20"
+            aria-label="Minutes after the start"
+            value={form.attendAfterMinutes ?? 30}
+            onChange={(e) => setForm({ ...form, attendAfterMinutes: Number(e.target.value) })}
+          />
+          <span>after</span>
+        </div>
+        <p className="text-xs text-muted-foreground" data-testid="attend-window">
+          {form.timeOfDay
+            ? `Attendance counts ${describeWindow(form.timeOfDay, form.attendBeforeMinutes, form.attendAfterMinutes)}. Joining before ${form.timeOfDay} is on time; after the window is absent.`
+            : 'Pick a time first.'}
+        </p>
+      </fieldset>
 
       <div className="flex items-start gap-3">
         <Switch

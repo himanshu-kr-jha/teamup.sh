@@ -31,11 +31,26 @@ export interface StandingMeeting {
   canManage?: boolean;
   /** Whoever joins and never turns their camera on is in review, not present. */
   cameraRequired?: boolean;
+  /** Joining counts from this many minutes before the start to this many after. */
+  attendBeforeMinutes?: number;
+  attendAfterMinutes?: number;
 }
 
 export type StandingForm = Pick<StandingMeeting, 'name' | 'timeOfDay' | 'timeZone' | 'weekdays' | 'durationMinutes'> & {
   cameraRequired?: boolean;
+  attendBeforeMinutes?: number;
+  attendAfterMinutes?: number;
 };
+
+/** "08:30 to 09:30": when joining counts, as clock times on the meeting's own clock. */
+export function describeWindow(timeOfDay: string, before = 30, after = 30): string {
+  const [h, m] = timeOfDay.split(':').map(Number);
+  const at = (offset: number) => {
+    const total = (((h * 60 + m + offset) % 1440) + 1440) % 1440;
+    return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
+  };
+  return `${at(-before)} to ${at(after)}`;
+}
 
 /** Who it is for, as the dialog sends it. */
 export interface AudienceForm {
@@ -79,9 +94,12 @@ export interface AttendanceField {
   note?: string;
 }
 
+export type ReviewDecision = 'present' | 'late' | 'absent' | 'on_leave' | 'field_work';
+
 /** A reviewer's decision about somebody's day, and what the day said before it. */
 export interface AttendanceReview {
-  decision: 'present' | 'absent';
+  decision: ReviewDecision;
+  lateMinutes?: number;
   note?: string;
   decidedBy: { id: string; name: string } | null;
   decidedAt: string;
@@ -110,6 +128,8 @@ export interface AttendancePerson {
   cameraOn?: boolean;
   field?: AttendanceField;
   review?: AttendanceReview;
+  /** Somebody who came only after attendance closed: absent, but they did come. */
+  joinedAfterWindow?: string;
 }
 
 export interface AttendanceDay {
@@ -123,6 +143,9 @@ export interface AttendanceDay {
   holiday?: string;
   /** The stand-up's camera rule as it was that day. */
   cameraRequired?: boolean;
+  /** When joining counted that day. */
+  attendFrom?: string;
+  attendUntil?: string;
   people: AttendancePerson[];
 }
 

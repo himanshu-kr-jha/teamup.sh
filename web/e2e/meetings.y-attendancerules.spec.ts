@@ -81,7 +81,9 @@ test.describe('attendance rules', () => {
     await expect(day.getByText('Cameras required')).toBeVisible();
     await expect(row(olivia.page, NAME('alice'))).toContainText('In review');
     await expect(row(olivia.page, NAME('alice'))).toContainText('Camera never turned on');
-    await expect(row(olivia.page, NAME('pat'))).toContainText('Present');
+    // Pat came ten minutes after the start, inside the window: late.
+    await expect(row(olivia.page, NAME('pat'))).toContainText('Late');
+    await expect(day.getByText(/^Counts /)).toBeVisible();
     await expect(day).toContainText('in review');
 
     // The owner reviews: present, with a reason.
@@ -90,17 +92,36 @@ test.describe('attendance rules', () => {
     await expect(review).toContainText('they joined but never turned their camera on');
     await review.getByRole('radio', { name: 'Present' }).click();
     await review.getByLabel(/Note/).fill('Her camera was broken; she spoke throughout');
-    await review.getByRole('button', { name: 'Save decision' }).click();
+    await review.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(review).toHaveCount(0);
     await expect(row(olivia.page, NAME('alice'))).toContainText('Present');
-    await expect(row(olivia.page, NAME('alice'))).toContainText(`Decided by ${NAME('owner')}`);
+    await expect(row(olivia.page, NAME('alice'))).toContainText(`Changed by ${NAME('owner')}`);
     await expect(row(olivia.page, NAME('alice'))).toContainText('was in review: Her camera was broken');
 
-    // Somebody without the permission is offered nothing to decide.
-    const mia = await as('mia');
-    await mia.page.goto(`/calls/standing/${id}/attendance?from=${today()}&to=${today()}`);
-    await expect(mia.page.getByRole('region', { name: `Attendance on ${today()}` })).toBeVisible();
-    await expect(mia.page.getByRole('button', { name: /^Decide / })).toHaveCount(0);
+    // Any other day can be changed too: Pat, present, set late by 7 minutes.
+    await row(olivia.page, NAME('pat')).getByRole('button', { name: `Change ${NAME('pat')} on ${today()}` }).click();
+    const change = olivia.page.getByRole('dialog');
+    await change.getByRole('radio', { name: 'Late' }).click();
+    await change.getByLabel('Minutes late').fill('7');
+    await change.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(change).toHaveCount(0);
+    await expect(row(olivia.page, NAME('pat'))).toContainText('Late');
+    await expect(row(olivia.page, NAME('pat'))).toContainText('was present');
+
+    // Somebody given only See attendance reads it, and is offered nothing to change.
+    const owner2 = await apiAs('owner');
+    const role = await owner2.post('/roles', { name: `Viewer ${Date.now()}`, permissions: ['attendance.view'] });
+    await owner2.post(`/users/${idOf('mia')}/roles`, { roleId: role.id });
+    try {
+      const mia = await as('mia');
+      await mia.page.goto(`/calls/standing/${id}/attendance?from=${today()}&to=${today()}`);
+      await expect(mia.page.getByRole('region', { name: `Attendance on ${today()}` })).toBeVisible();
+      await expect(mia.page.getByRole('button', { name: /^(Decide|Change) / })).toHaveCount(0);
+    } finally {
+      await owner2.call('delete', `/users/${idOf('mia')}/roles/${role.id}`);
+      await owner2.call('delete', `/roles/${role.id}`);
+      await owner2.dispose();
+    }
 
     // The export: people down the side, the day across, totals at the end.
     const csv = olivia.page.waitForEvent('download');
@@ -110,6 +131,7 @@ test.describe('attendance rules', () => {
     const text = readFileSync(await csvFile.path(), 'utf8').replace(/^\uFEFF/, '');
     expect(text.split('\n')[0].trim()).toBe(`Name,${today()},Present,Absent,Leave,Holiday,Field work,In review,Unknown`);
     expect(text).toContain(`${NAME('alice')},Present,1,0,0,0,0,0,0`);
+    expect(text).toContain(`${NAME('pat')},Late 7 min,1,0,0,0,0,0,0`);
     const xlsx = olivia.page.waitForEvent('download');
     await olivia.page.getByRole('link', { name: 'Excel' }).click();
     const xlsxFile = await xlsx;
@@ -161,6 +183,19 @@ test.describe('attendance rules', () => {
     const photo = olivia.page.getByRole('dialog').getByRole('img', { name: `Field work photo from ${NAME('ann')}` });
     await expect(photo).toBeVisible();
     await expect.poll(() => photo.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
+
+    // In one place: Ann's own check-ins, and everybody's for the owner.
+    await ann.page.goto('/field-work');
+    await expect(ann.page.getByText('Your check-ins from the field', { exact: false })).toBeVisible();
+    await expect(ann.page.getByTestId('field-checkin')).toHaveCount(1);
+    await expect(ann.page.getByTestId('field-checkin')).toContainText('Survey at the Ranchi site, block C');
+    await expect(ann.page.getByTestId('field-checkin')).toContainText('23.34410° N, 85.30960° E');
+    await olivia.page.goto('/field-work');
+    await expect(olivia.page.getByText('Everybody’s check-ins from the field', { exact: false })).toBeVisible();
+    await expect(olivia.page.getByTestId('field-checkin').filter({ hasText: NAME('ann') })).toHaveCount(1);
+    const samSession = await as('sam');
+    await samSession.page.goto('/field-work');
+    await expect(samSession.page.getByText('No check-ins in these dates')).toBeVisible();
 
     // A colleague cannot open the photo.
     const sam = await apiAs('sam');

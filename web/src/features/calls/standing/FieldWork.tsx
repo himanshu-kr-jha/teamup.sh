@@ -9,10 +9,64 @@ import { fieldWorkApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
 import { formatTime } from '@/shared/utils/cn';
+import { Link } from 'react-router-dom';
 import { mapLink } from './AttendanceDetails';
 
 /** The long side of the photo sent, which keeps it to a few hundred kilobytes. */
 const PHOTO_EDGE = 1280;
+
+/** "23.34410° N, 85.30960° E" */
+export function coordinates(latitude: number, longitude: number): string {
+  const lat = `${Math.abs(latitude).toFixed(5)}° ${latitude >= 0 ? 'N' : 'S'}`;
+  const lng = `${Math.abs(longitude).toFixed(5)}° ${longitude >= 0 ? 'E' : 'W'}`;
+  return `${lat}, ${lng}`;
+}
+
+/** What is printed on the photo: when, where and how closely, and the note. */
+export function stampLines(at: Date, place: { latitude: number; longitude: number; accuracyM: number }, note: string): string[] {
+  const when = at.toLocaleString('en-IN', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZoneName: 'short',
+  });
+  const lines = [when, `${coordinates(place.latitude, place.longitude)}  ±${Math.round(place.accuracyM)} m`];
+  const trimmed = note.trim();
+  if (trimmed) lines.push(trimmed.length > 70 ? `${trimmed.slice(0, 69)}…` : trimmed);
+  return lines;
+}
+
+/**
+ * The photo with the time and place printed across its foot, as a GPS camera
+ * does, so it says where and when it was taken wherever it is looked at.
+ */
+function stampPhoto(raw: string, lines: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return reject(new Error('no canvas'));
+      ctx.drawImage(img, 0, 0);
+      const size = Math.max(14, Math.round(canvas.width / 40));
+      const pad = Math.round(size * 0.6);
+      const band = lines.length * size * 1.35 + pad * 2;
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+      ctx.fillRect(0, canvas.height - band, canvas.width, band);
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `600 ${size}px system-ui, -apple-system, Segoe UI, Roboto, sans-serif`;
+      ctx.textBaseline = 'top';
+      lines.forEach((line, i) => ctx.fillText(line, pad, canvas.height - band + pad + i * size * 1.35, canvas.width - pad * 2));
+      resolve(canvas.toDataURL('image/jpeg', 0.85));
+    };
+    img.onerror = () => reject(new Error('the photo could not be read'));
+    img.src = raw;
+  });
+}
 
 /**
  * Working away today: a photo taken here and now, with where the phone is, so
@@ -69,7 +123,10 @@ export function FieldWorkBar() {
           field, not absent.
         </p>
       )}
-      <div className="flex shrink-0 gap-2">
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
+        <Link to="/field-work" className="text-sm text-muted-foreground underline underline-offset-2 hover:text-foreground">
+          Your check-ins
+        </Link>
         {latest && (
           <Button
             variant="ghost"
@@ -99,7 +156,10 @@ function CheckInDialog({ onClose }: { onClose: () => void }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [cameraProblem, setCameraProblem] = useState('');
+  // The picture as taken, and as sent: with the time and place printed on it.
   const [photo, setPhoto] = useState('');
+  const [takenAt, setTakenAt] = useState<Date | null>(null);
+  const [stamped, setStamped] = useState('');
   const [place, setPlace] = useState<Place | null>(null);
   const [placeProblem, setPlaceProblem] = useState('');
   const [note, setNote] = useState('');
@@ -155,10 +215,26 @@ function CheckInDialog({ onClose }: { onClose: () => void }) {
     canvas.height = Math.round(video.videoHeight * scale);
     canvas.getContext('2d')?.drawImage(video, 0, 0, canvas.width, canvas.height);
     setPhoto(canvas.toDataURL('image/jpeg', 0.85));
+    setTakenAt(new Date());
   };
 
+  // Reprinted when the place arrives or the note changes, so the preview is what is sent.
+  useEffect(() => {
+    if (!photo || !place || !takenAt) {
+      setStamped('');
+      return;
+    }
+    let live = true;
+    stampPhoto(photo, stampLines(takenAt, place, note))
+      .then((url) => live && setStamped(url))
+      .catch(() => live && setStamped(''));
+    return () => {
+      live = false;
+    };
+  }, [photo, place, takenAt, note]);
+
   const send = useMutation({
-    mutationFn: () => fieldWorkApi.checkIn({ photo, ...place!, note: note.trim() }),
+    mutationFn: () => fieldWorkApi.checkIn({ photo: stamped, ...place!, note: note.trim() }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['field-work-mine'] });
       void queryClient.invalidateQueries({ queryKey: ['attendance'] });
@@ -181,7 +257,7 @@ function CheckInDialog({ onClose }: { onClose: () => void }) {
 
         <div className="overflow-hidden rounded-md bg-muted">
           {photo ? (
-            <img src={photo} alt="The photo you took" className="aspect-[4/3] w-full object-cover" />
+            <img src={stamped || photo} alt="The photo you took" className="aspect-[4/3] w-full object-contain" />
           ) : cameraProblem ? (
             <p role="alert" className="flex aspect-[4/3] items-center justify-center p-4 text-center text-sm text-muted-foreground">
               {cameraProblem}
@@ -192,7 +268,11 @@ function CheckInDialog({ onClose }: { onClose: () => void }) {
         </div>
         <div className="flex gap-2">
           {photo ? (
-            <Button variant="outline" className="flex-1" onClick={() => setPhoto('')}>
+            <Button variant="outline" className="flex-1" onClick={() => {
+                setPhoto('');
+                setStamped('');
+              }}
+>
               <RotateCcw className="mr-1.5 h-4 w-4" aria-hidden="true" />
               Take another
             </Button>
@@ -239,7 +319,7 @@ function CheckInDialog({ onClose }: { onClose: () => void }) {
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          <Button disabled={!photo || !place || send.isPending} onClick={() => send.mutate()}>
+          <Button disabled={!stamped || !place || send.isPending} onClick={() => send.mutate()}>
             {send.isPending ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" aria-hidden="true" /> : null}
             Send check-in
           </Button>

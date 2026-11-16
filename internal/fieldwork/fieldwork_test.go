@@ -9,7 +9,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/teamup/teamup/internal/tasks"
 	"github.com/teamup/teamup/internal/testsupport"
 	apperrors "github.com/teamup/teamup/pkg/errors"
 )
@@ -27,7 +26,7 @@ func newWorld(t *testing.T) *world {
 	t.Helper()
 	pool := testsupport.DB(t)
 	org := testsupport.SeedOrg(t, pool)
-	w := &world{svc: NewService(pool, tasks.NewService(pool)), org: org}
+	w := &world{svc: NewService(pool), org: org}
 	w.ravi = testsupport.SeedUser(t, pool, org, "ravi@example.test", "member")
 	w.mia = testsupport.SeedUser(t, pool, org, "mia@example.test", "manager")
 	w.sam = testsupport.SeedUser(t, pool, org, "sam@example.test", "member")
@@ -90,7 +89,9 @@ func TestACheckInNeedsARealLocationAndAPhoto(t *testing.T) {
 	}
 }
 
-func TestThePhotoIsForHimHisManagerAndReviewersOnly(t *testing.T) {
+// Attendance is for whoever is given it, the owner's decision of 16 November:
+// the photo is his own, and theirs, not his manager's as such.
+func TestThePhotoIsForHimAndWhoeverSeesAttendanceOnly(t *testing.T) {
 	w := newWorld(t)
 	ctx := context.Background()
 	if err := w.svc.SetSettings(ctx, w.org.ID, Settings{Enabled: true}); err != nil {
@@ -101,21 +102,51 @@ func TestThePhotoIsForHimHisManagerAndReviewersOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, v := range map[string]Viewer{
-		"himself":     {ID: w.ravi},
-		"his manager": {ID: w.mia},
-		"a reviewer":  {ID: w.hema, Reviewer: true},
-		"an admin":    {ID: w.sam, Admin: true},
+		"himself":                      {ID: w.ravi},
+		"somebody who sees attendance": {ID: w.hema, Sees: true},
 	} {
 		if photo, kind, err := w.svc.Photo(ctx, w.org.ID, c.ID, v); err != nil || kind != "image/jpeg" || len(photo) == 0 {
 			t.Errorf("%s should see it, got %v", name, err)
 		}
 	}
-	if _, _, err := w.svc.Photo(ctx, w.org.ID, c.ID, Viewer{ID: w.sam}); !errors.Is(err, apperrors.ErrNotFound) {
-		t.Errorf("a colleague learns nothing, got %v", err)
+	for name, v := range map[string]Viewer{"his manager, without the permission": {ID: w.mia}, "a colleague": {ID: w.sam}} {
+		if _, _, err := w.svc.Photo(ctx, w.org.ID, c.ID, v); !errors.Is(err, apperrors.ErrNotFound) {
+			t.Errorf("%s learns nothing, got %v", name, err)
+		}
 	}
 	other := testsupport.SeedOrg(t, testsupport.DB(t))
-	if _, _, err := w.svc.Photo(ctx, other.ID, c.ID, Viewer{ID: other.OwnerID, Reviewer: true}); !errors.Is(err, apperrors.ErrNotFound) {
+	if _, _, err := w.svc.Photo(ctx, other.ID, c.ID, Viewer{ID: other.OwnerID, Sees: true}); !errors.Is(err, apperrors.ErrNotFound) {
 		t.Errorf("another organization learns nothing, got %v", err)
+	}
+}
+
+func TestTheListIsYourOwnUnlessYouSeeAttendance(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	if err := w.svc.SetSettings(ctx, w.org.ID, Settings{Enabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.svc.CheckIn(ctx, w.org.ID, w.ravi, checkin(23.36, 85.33, 15)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.svc.CheckIn(ctx, w.org.ID, w.sam, checkin(12.97, 77.59, 20)); err != nil {
+		t.Fatal(err)
+	}
+	span := ListInput{From: "2026-11-01", To: "2026-11-30"}
+	mine, err := w.svc.List(ctx, w.org.ID, Viewer{ID: w.ravi}, ListInput{From: span.From, To: span.To, UserID: &w.sam})
+	if err != nil || len(mine) != 1 || mine[0].UserID != w.ravi || mine[0].Name == "" {
+		t.Errorf("Ravi asking for Sam's gets his own, got %+v %v", mine, err)
+	}
+	all, err := w.svc.List(ctx, w.org.ID, Viewer{ID: w.hema, Sees: true}, span)
+	if err != nil || len(all) != 2 {
+		t.Errorf("whoever sees attendance sees everybody's, got %+v %v", all, err)
+	}
+	one, err := w.svc.List(ctx, w.org.ID, Viewer{ID: w.hema, Sees: true}, ListInput{From: span.From, To: span.To, UserID: &w.sam})
+	if err != nil || len(one) != 1 || one[0].UserID != w.sam {
+		t.Errorf("and narrows to one person, got %+v %v", one, err)
+	}
+	if _, err := w.svc.List(ctx, w.org.ID, Viewer{ID: w.ravi}, ListInput{From: "2026-01-01", To: "2026-12-31"}); apperrors.HTTPStatus(err) != 400 {
+		t.Errorf("a year at once is refused, got %v", err)
 	}
 }
 

@@ -3,13 +3,14 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { CameraOff, MapPin } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog';
+import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
 import { Textarea } from '@/shared/components/ui/textarea';
 import { fieldWorkApi, standingApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
 import { cn, formatTime } from '@/shared/utils/cn';
-import type { AttendanceDay, AttendancePerson, AttendanceStatus } from './standing';
+import type { AttendanceDay, AttendancePerson, AttendanceStatus, ReviewDecision } from './standing';
 
 export const STATUS_LABEL: Record<AttendanceStatus, string> = {
   present: 'Present',
@@ -106,15 +107,41 @@ export function ReviewDetail({ person }: { person: AttendancePerson }) {
   const who = review.decidedBy ? review.decidedBy.name : 'somebody who has since left';
   return (
     <span className="mt-0.5 block text-xs text-muted-foreground">
-      Decided by {who} on {shortDay(review.decidedAt)}, was {STATUS_LABEL[review.was].toLowerCase()}
+      Changed by {who} on {shortDay(review.decidedAt)}, was {STATUS_LABEL[review.was].toLowerCase()}
       {review.note ? `: ${review.note}` : ''}
     </span>
   );
 }
 
-/** Whether a reviewer is offered a decision for somebody's day. */
+/** Somebody who came only once attendance had closed. */
+export function LateJoinDetail({ person }: { person: AttendancePerson }) {
+  if (!person.joinedAfterWindow) return null;
+  return (
+    <span className="mt-0.5 block text-xs text-muted-foreground">
+      Joined at {formatTime(person.joinedAfterWindow)}, after attendance closed
+    </span>
+  );
+}
+
+/** Whether a reviewer is offered a change for somebody's day: any day but a holiday. */
 export function reviewable(person: AttendancePerson): boolean {
-  return !!person.review || ['review', 'field_work', 'absent', 'unknown'].includes(person.status);
+  return person.status !== 'holiday' || !!person.review;
+}
+
+const DECISIONS: { value: ReviewDecision; label: string }[] = [
+  { value: 'present', label: 'Present' },
+  { value: 'late', label: 'Late' },
+  { value: 'absent', label: 'Absent' },
+  { value: 'on_leave', label: 'On leave' },
+  { value: 'field_work', label: 'Field work' },
+];
+
+/** What a day says now, as the dialog's starting choice. */
+function currentDecision(person: AttendancePerson): ReviewDecision {
+  if (person.review) return person.review.decision;
+  if (person.status === 'present') return person.minutesLate > 0 ? 'late' : 'present';
+  if (person.status === 'on_leave' || person.status === 'field_work' || person.status === 'absent') return person.status;
+  return 'present';
 }
 
 export function ReviewButton({ meetingId, day, person }: { meetingId: string; day: AttendanceDay; person: AttendancePerson }) {
@@ -126,9 +153,9 @@ export function ReviewButton({ meetingId, day, person }: { meetingId: string; da
         size="sm"
         className={cn('h-7 px-2 text-xs', person.status !== 'review' && 'text-muted-foreground hover:text-foreground')}
         onClick={() => setOpen(true)}
-        aria-label={`Decide ${person.name} on ${day.date}`}
+        aria-label={`${person.status === 'review' ? 'Decide' : 'Change'} ${person.name} on ${day.date}`}
       >
-        {person.review ? 'Change' : 'Decide'}
+        {person.status === 'review' ? 'Decide' : 'Change'}
       </Button>
       {open && <ReviewDialog meetingId={meetingId} day={day} person={person} onClose={() => setOpen(false)} />}
     </>
@@ -148,11 +175,20 @@ function ReviewDialog({
 }) {
   const toast = useToast();
   const queryClient = useQueryClient();
-  const [decision, setDecision] = useState<'present' | 'absent'>(person.review?.decision ?? 'present');
+  const [decision, setDecision] = useState<ReviewDecision>(currentDecision(person));
+  const [lateMinutes, setLateMinutes] = useState(String(person.review?.lateMinutes ?? (person.minutesLate || 5)));
   const [note, setNote] = useState(person.review?.note ?? '');
+  const late = Number(lateMinutes);
+  const lateProblem = decision === 'late' && !(Number.isInteger(late) && late >= 1 && late <= 720) ? 'Late by 1 to 720 minutes.' : '';
   const save = useMutation({
-    mutationFn: (d: 'present' | 'absent' | '') =>
-      standingApi.review(meetingId, { date: day.date, userId: person.userId, decision: d, note: d ? note : '' }),
+    mutationFn: (d: ReviewDecision | '') =>
+      standingApi.review(meetingId, {
+        date: day.date,
+        userId: person.userId,
+        decision: d,
+        lateMinutes: d === 'late' ? late : undefined,
+        note: d ? note : '',
+      }),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['attendance', meetingId] });
       onClose();
@@ -164,7 +200,7 @@ function ReviewDialog({
     <Dialog open onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
-          <DialogTitle>Decide {person.name}</DialogTitle>
+          <DialogTitle>{person.status === 'review' ? 'Decide' : 'Change'} {person.name}</DialogTitle>
           <DialogDescription>
             {new Date(`${day.date}T00:00:00`).toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}. The
             day says {STATUS_LABEL[was].toLowerCase()}
@@ -172,23 +208,38 @@ function ReviewDialog({
             {was === 'field_work' ? ': they sent a photo from the field' : ''}. Your decision is kept with your name.
           </DialogDescription>
         </DialogHeader>
-        <div className="grid grid-cols-2 gap-1 rounded-md bg-muted p-1" role="radiogroup" aria-label="Decision">
-          {(['present', 'absent'] as const).map((d) => (
+        <div className="grid grid-cols-3 gap-1 rounded-md bg-muted p-1 sm:grid-cols-5" role="radiogroup" aria-label="Decision">
+          {DECISIONS.map((d) => (
             <button
-              key={d}
+              key={d.value}
               type="button"
               role="radio"
-              aria-checked={decision === d}
-              onClick={() => setDecision(d)}
+              aria-checked={decision === d.value}
+              onClick={() => setDecision(d.value)}
               className={cn(
-                'rounded px-3 py-1.5 text-sm font-medium',
-                decision === d ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                'rounded px-2 py-1.5 text-sm font-medium',
+                decision === d.value ? 'bg-background shadow-sm' : 'text-muted-foreground hover:text-foreground'
               )}
             >
-              {STATUS_LABEL[d]}
+              {d.label}
             </button>
           ))}
         </div>
+        {decision === 'late' && (
+          <div className="space-y-1">
+            <Label htmlFor="reviewLate">Minutes late</Label>
+            <Input
+              id="reviewLate"
+              type="number"
+              min={1}
+              max={720}
+              className="w-28"
+              value={lateMinutes}
+              onChange={(e) => setLateMinutes(e.target.value)}
+            />
+            {lateProblem && <p className="text-xs text-destructive">{lateProblem}</p>}
+          </div>
+        )}
         <div className="space-y-1">
           <Label htmlFor="reviewNote">Note (optional)</Label>
           <Textarea
@@ -203,14 +254,14 @@ function ReviewDialog({
         <div className="flex flex-wrap justify-end gap-2">
           {person.review && (
             <Button variant="ghost" className="mr-auto" disabled={save.isPending} onClick={() => save.mutate('')}>
-              Take back the decision
+              Undo the change
             </Button>
           )}
           <Button variant="outline" onClick={onClose}>
             Cancel
           </Button>
-          <Button disabled={save.isPending} onClick={() => save.mutate(decision)}>
-            Save decision
+          <Button disabled={save.isPending || !!lateProblem} onClick={() => save.mutate(decision)}>
+            Save
           </Button>
         </div>
       </DialogContent>

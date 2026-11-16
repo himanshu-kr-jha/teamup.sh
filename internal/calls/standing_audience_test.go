@@ -131,8 +131,9 @@ func TestAManagersStandUpIsForTheirTeamAndTheTeamsBeneathIt(t *testing.T) {
 	if code, _ := e.joinStanding(t, c.fay, "member", m.ID); code != http.StatusNotFound {
 		t.Errorf("somebody outside joining: want 404, got %d", code)
 	}
-	if w := doJSON(t, e.as(t, c.fay, "member"), http.MethodGet, "/api/standing-meetings/"+m.ID+"/attendance", ""); w.Code != http.StatusNotFound {
-		t.Errorf("somebody outside reading attendance: want 404, got %d", w.Code)
+	// Nor its attendance, which since 16 November nobody without the permission reads.
+	if w := doJSON(t, e.as(t, c.fay, "member"), http.MethodGet, "/api/standing-meetings/"+m.ID+"/attendance", ""); w.Code != http.StatusForbidden {
+		t.Errorf("somebody outside reading attendance: want 403, got %d", w.Code)
 	}
 
 	// An admin sees it to manage it, but is not walked into it by rank.

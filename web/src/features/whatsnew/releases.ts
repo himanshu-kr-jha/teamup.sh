@@ -28,23 +28,33 @@ export const RELEASES: Release[] = [
   {
     id: '2026-11-16-d',
     date: '2026-11-16',
-    title: 'Attendance: cameras, field work, review and export',
+    title: 'Attendance: a window, cameras, field work, changes and export',
     changes: [
       {
         area: 'meetings',
+        title: 'Attendance counts in a window',
+        body: 'Each stand-up says when joining counts, by default from half an hour before the start to half an hour after: for 9:00, 8:30 to 9:30. Before the start is on time, inside the window is late by the minutes after the start, and joining after it is absent, with when they came.',
+      },
+      {
+        area: 'meetings',
+        title: 'Only whoever is given it sees attendance',
+        body: 'Attendance is for owners, admins and whoever has See attendance or Review attendance under Roles. Reviewers, and so owners and admins, can change anybody\'s day to present, late, absent, on leave or field work, with a note that is kept with their name.',
+      },
+      {
+        area: 'meetings',
         title: 'A stand-up can require cameras',
-        body: 'Turn on Camera must be on in a stand-up. Whoever joins and never turns their camera on is In review, not Present, until somebody who reviews attendance decides.',
+        body: 'Turn on Camera must be on in a stand-up. Whoever joins and never turns their camera on is In review until somebody decides.',
       },
       {
         area: 'meetings',
         title: 'Check in from the field',
-        body: "When your organization turns on field work, Calls offers Check in from the field: a photo taken in the app and where you are, with a note. Today's stand-ups count you as in the field, not absent. Your manager and HR can see the photo and the place.",
-        link: '/calls',
+        body: "When your organization turns on field work, Calls offers Check in from the field: a photo taken in the app with the date, time and place printed on it, and a note. Today's stand-ups count you as in the field, not absent, and Field work lists every check-in with its photo and map.",
+        link: '/field-work',
       },
       {
         area: 'meetings',
-        title: 'Review attendance, and take it away as a spreadsheet',
-        body: 'Give a role Review attendance under Roles, for HR. Reviewers decide days in review as Present or Absent, with a note that is kept with their name. Every attendance page downloads as Excel or CSV: people down the side, days across, and totals.',
+        title: 'Attendance as a spreadsheet',
+        body: 'Every attendance page downloads as Excel or CSV: people down the side, days across, and totals.',
       },
     ],
   },

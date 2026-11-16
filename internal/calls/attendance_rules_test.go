@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -236,7 +237,7 @@ func TestAttendanceExportsAsCSVAndExcelWithTotals(t *testing.T) {
 			lena = l
 		}
 	}
-	if abe != "Absent Abe,Field work,0,0,0,0,1,0,0" || lena != "Late Lena,Present,1,0,0,0,0,0,0" {
+	if abe != "Absent Abe,Field work,0,0,0,0,1,0,0" || lena != "Late Lena,Late 7 min,1,0,0,0,0,0,0" {
 		t.Errorf("rows: Abe %q, Lena %q", abe, lena)
 	}
 
@@ -266,5 +267,114 @@ func TestAttendanceExportsAsCSVAndExcelWithTotals(t *testing.T) {
 	}
 	if code := doJSON(t, r, http.MethodGet, path+"&format=pdf", "").Code; code != http.StatusBadRequest {
 		t.Errorf("an unknown format: %d", code)
+	}
+}
+
+// The window, the owner's decision of 16 November: a 9:00 stand-up counts from
+// 8:30 to 9:30. Early is on time; inside it, late by the minutes after 9:00;
+// after it, absent, with when they came.
+func TestJoiningCountsOnlyInsideTheDaysWindow(t *testing.T) {
+	w := newScrumWorld(t)
+	var room string
+	if err := w.pool.QueryRow(context.Background(),
+		`SELECT room_name FROM calls WHERE standing_meeting_id = $1 AND occurrence_date = $2::date`, w.meeting.ID, w.date).Scan(&room); err != nil {
+		t.Fatal(err)
+	}
+	at := func(m int) time.Time { return w.start.Add(time.Duration(m) * time.Minute) }
+	// Mia only after it closed; Max from before it opened, staying into it.
+	w.mustDeliver(t, joinedEv(room, w.mgr, "PA_mia", at(45)))
+	w.mustDeliver(t, leftEv(room, w.mgr, "PA_mia", at(60)))
+	w.mustDeliver(t, joinedEv(room, w.mgr2, "PA_max", at(-40)))
+	w.mustDeliver(t, leftEv(room, w.mgr2, "PA_max", at(10)))
+
+	res := doJSON(t, w.asOwner(t), http.MethodGet, "/api/standing-meetings/"+w.meeting.ID+"/attendance?date="+w.date, "")
+	var body struct {
+		Days []struct {
+			AttendFrom  *time.Time `json:"attendFrom"`
+			AttendUntil *time.Time `json:"attendUntil"`
+			People      []struct {
+				UserID            string     `json:"userId"`
+				Status            string     `json:"status"`
+				MinutesLate       int        `json:"minutesLate"`
+				JoinedAfterWindow *time.Time `json:"joinedAfterWindow"`
+			} `json:"people"`
+		} `json:"days"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil || len(body.Days) != 1 {
+		t.Fatalf("decode %s: %v", res.Body.String(), err)
+	}
+	day := body.Days[0]
+	if day.AttendFrom == nil || !near(*day.AttendFrom, at(-30)) || day.AttendUntil == nil || !near(*day.AttendUntil, at(30)) {
+		t.Errorf("the window is 8:30 to 9:30, got %v to %v", day.AttendFrom, day.AttendUntil)
+	}
+	for _, p := range day.People {
+		switch p.UserID {
+		case w.mgr.String():
+			if p.Status != "absent" || p.JoinedAfterWindow == nil || !near(*p.JoinedAfterWindow, at(45)) {
+				t.Errorf("Mia came at 9:45, after it closed: absent, with when, got %+v", p)
+			}
+		case w.mgr2.String():
+			if p.Status != "present" || p.MinutesLate != 0 {
+				t.Errorf("Max was there from 8:20 into the window: on time, got %+v", p)
+			}
+		case w.late.String():
+			if p.Status != "present" || p.MinutesLate != 7 {
+				t.Errorf("Lena at 9:07 is 7 minutes late, got %+v", p)
+			}
+		}
+	}
+}
+
+func TestAReviewerSetsAnyDayToAnyStatus(t *testing.T) {
+	w := newScrumWorld(t)
+	asReviewer := withPermissions(t, w, w.person(t, "Hema HR", "member"), "attendance.review")
+	late := func(who uuid.UUID, minutes int) int {
+		body, _ := json.Marshal(map[string]any{"date": w.date, "userId": who, "decision": "late", "lateMinutes": minutes})
+		return doJSON(t, asReviewer, http.MethodPost, "/api/standing-meetings/"+w.meeting.ID+"/attendance/review", string(body)).Code
+	}
+	if code := late(w.absent, 12); code != http.StatusOK {
+		t.Fatalf("late by 12: %d", code)
+	}
+	if code := late(w.absent, 0); code != http.StatusBadRequest {
+		t.Errorf("late by nothing: %d", code)
+	}
+	if code := decide(t, w, asReviewer, w.early, "on_leave", "Forgot to record it"); code != http.StatusOK {
+		t.Fatalf("on leave: %d", code)
+	}
+	if code := decide(t, w, asReviewer, w.late, "field_work", ""); code != http.StatusOK {
+		t.Fatalf("field work: %d", code)
+	}
+	res := doJSON(t, asReviewer, http.MethodGet, "/api/standing-meetings/"+w.meeting.ID+"/attendance?date="+w.date, "")
+	var body struct {
+		Days []struct {
+			People []struct {
+				UserID      string `json:"userId"`
+				Status      string `json:"status"`
+				MinutesLate int    `json:"minutesLate"`
+				Review      *struct {
+					Decision string `json:"decision"`
+					Was      string `json:"was"`
+				} `json:"review"`
+			} `json:"people"`
+		} `json:"days"`
+	}
+	if err := json.Unmarshal(res.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range body.Days[0].People {
+		switch p.UserID {
+		case w.absent.String():
+			if p.Status != "present" || p.MinutesLate != 12 || p.Review == nil || p.Review.Decision != "late" || p.Review.Was != "absent" {
+				t.Errorf("Abe, decided late by 12, got %+v", p)
+			}
+		case w.early.String():
+			if p.Status != "on_leave" || p.Review == nil || p.Review.Was != "present" {
+				t.Errorf("Eve, decided on leave, got %+v", p)
+			}
+		case w.late.String():
+			if p.Status != "field_work" {
+				t.Errorf("Lena, decided field work, got %+v", p)
+			}
+		}
 	}
 }

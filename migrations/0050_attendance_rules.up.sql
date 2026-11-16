@@ -6,6 +6,16 @@
 ALTER TABLE standing_meetings ADD COLUMN IF NOT EXISTS camera_required BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE calls ADD COLUMN IF NOT EXISTS camera_required BOOLEAN NOT NULL DEFAULT FALSE;
 
+-- When joining counts: from this many minutes before the start to this many
+-- after. 9:00 with 30 and 30 is 8:30 to 9:30; joining after 9:30 is absent.
+-- Each day's call keeps the window as it was that day.
+ALTER TABLE standing_meetings
+    ADD COLUMN IF NOT EXISTS attend_before_min INT NOT NULL DEFAULT 30 CHECK (attend_before_min BETWEEN 0 AND 720),
+    ADD COLUMN IF NOT EXISTS attend_after_min INT NOT NULL DEFAULT 30 CHECK (attend_after_min BETWEEN 1 AND 720);
+ALTER TABLE calls
+    ADD COLUMN IF NOT EXISTS attend_before_min INT,
+    ADD COLUMN IF NOT EXISTS attend_after_min INT;
+
 -- A camera turned on is on the call's trail, which is how the rule is read.
 ALTER TABLE call_events DROP CONSTRAINT IF EXISTS call_events_type_check;
 ALTER TABLE call_events ADD CONSTRAINT call_events_type_check CHECK (type IN (
@@ -38,14 +48,19 @@ CREATE TABLE IF NOT EXISTS attendance_reviews (
     standing_meeting_id UUID NOT NULL REFERENCES standing_meetings(id) ON DELETE CASCADE,
     on_date             DATE NOT NULL,
     user_id             UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    decision            VARCHAR(16) NOT NULL CHECK (decision IN ('present', 'absent')),
+    decision            VARCHAR(16) NOT NULL CHECK (decision IN ('present', 'late', 'absent', 'on_leave', 'field_work')),
+    -- For late: by how many minutes.
+    late_minutes        INT CHECK (late_minutes IS NULL OR late_minutes BETWEEN 1 AND 720),
     note                TEXT NOT NULL DEFAULT '',
     decided_by          UUID REFERENCES users(id) ON DELETE SET NULL,
     decided_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (standing_meeting_id, on_date, user_id)
 );
 
--- Reviewing attendance is a permission of its own, to give to an HR role.
--- Administrators have it; the owner has everything already.
+-- Seeing attendance and deciding it are permissions of their own, to give to
+-- HR or a team lead; nobody else sees attendance. Administrators have both; the
+-- owner has everything already.
+UPDATE roles SET permissions = permissions || '["attendance.view"]'::jsonb, updated_at = NOW()
+WHERE is_system AND name = 'admin' AND NOT permissions ? 'attendance.view';
 UPDATE roles SET permissions = permissions || '["attendance.review"]'::jsonb, updated_at = NOW()
 WHERE is_system AND name = 'admin' AND NOT permissions ? 'attendance.review';

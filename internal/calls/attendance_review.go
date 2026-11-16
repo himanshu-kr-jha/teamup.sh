@@ -22,19 +22,27 @@ import (
 	apperrors "github.com/teamup/teamup/pkg/errors"
 )
 
-// readsAllAttendance is somebody who reads every stand-up's attendance in full:
-// whoever manages everybody's meetings, and reviewers.
-func readsAllAttendance(c *gin.Context) bool {
+// seesAttendance is who may see attendance at all, the owner's decision of 16
+// November: whoever manages everybody's meetings (owners and admins), and
+// whoever is given See attendance or Review attendance. They see everybody;
+// nobody else sees any, their own included.
+func seesAttendance(c *gin.Context) bool {
 	u := auth.GetUserFromContext(c)
-	return u.Can(auth.PermMeetingsAll) || u.Can(auth.PermAttendance)
+	return u.Can(auth.PermMeetingsAll) || u.Can(auth.PermAttendanceSee) || u.Can(auth.PermAttendance)
 }
 
-// ReviewInput is a reviewer's decision. An empty decision takes one back.
+func refuseAttendance(c *gin.Context) {
+	c.JSON(http.StatusForbidden, gin.H{"error": "attendance is for administrators and whoever is given See attendance"})
+}
+
+// ReviewInput is a reviewer's decision: present, late (with LateMinutes),
+// absent, on_leave or field_work. An empty decision takes one back.
 type ReviewInput struct {
-	Date     string    `json:"date" binding:"required"`
-	UserID   uuid.UUID `json:"userId" binding:"required"`
-	Decision string    `json:"decision"`
-	Note     string    `json:"note"`
+	Date        string    `json:"date" binding:"required"`
+	UserID      uuid.UUID `json:"userId" binding:"required"`
+	Decision    string    `json:"decision"`
+	LateMinutes *int      `json:"lateMinutes"`
+	Note        string    `json:"note"`
 }
 
 // DecideAttendance records a reviewer's decision about one person's day of a
@@ -63,16 +71,22 @@ func (s *Service) DecideAttendance(ctx context.Context, orgID, meetingID, review
 			`DELETE FROM attendance_reviews WHERE standing_meeting_id = $1 AND on_date = $2::date AND user_id = $3`,
 			meetingID, in.Date, in.UserID)
 		return err
-	case "present", "absent":
+	case "present", "absent", "on_leave", "field_work":
+		in.LateMinutes = nil
+	case "late":
+		if in.LateMinutes == nil || *in.LateMinutes < 1 || *in.LateMinutes > 720 {
+			return apperrors.New(apperrors.CodeBadRequest, "say how many minutes late, from 1 to 720")
+		}
 	default:
-		return apperrors.New(apperrors.CodeBadRequest, "decision must be present or absent")
+		return apperrors.New(apperrors.CodeBadRequest, "decision must be present, late, absent, on_leave or field_work")
 	}
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO attendance_reviews (org_id, standing_meeting_id, on_date, user_id, decision, note, decided_by, decided_at)
-		VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8)
+		INSERT INTO attendance_reviews (org_id, standing_meeting_id, on_date, user_id, decision, late_minutes, note, decided_by, decided_at)
+		VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (standing_meeting_id, on_date, user_id) DO UPDATE
-		SET decision = EXCLUDED.decision, note = EXCLUDED.note, decided_by = EXCLUDED.decided_by, decided_at = EXCLUDED.decided_at
-	`, orgID, meetingID, in.Date, in.UserID, in.Decision, in.Note, reviewer, s.clock())
+		SET decision = EXCLUDED.decision, late_minutes = EXCLUDED.late_minutes, note = EXCLUDED.note,
+		    decided_by = EXCLUDED.decided_by, decided_at = EXCLUDED.decided_at
+	`, orgID, meetingID, in.Date, in.UserID, in.Decision, in.LateMinutes, in.Note, reviewer, s.clock())
 	if err != nil {
 		return fmt.Errorf("record the decision: %w", err)
 	}
@@ -102,7 +116,7 @@ func (h *Handler) DecideAttendance(c *gin.Context) {
 		return
 	}
 	day, _ := time.Parse("2006-01-02", in.Date)
-	days, err := h.service.Attendance(c.Request.Context(), orgID, id, userID, true, nil, day, day)
+	days, err := h.service.AttendanceForEverybody(c.Request.Context(), orgID, id, userID, isAdmin(c), nil, day, day)
 	if err != nil {
 		httpx.Error(c, err, "failed to read attendance")
 		return
@@ -121,6 +135,14 @@ var statusLabels = map[string]string{
 	"unknown":    "Unknown",
 }
 
+// cellLabel is a person's day in the spreadsheet: late is present, with by how much.
+func cellLabel(a Attendee) string {
+	if a.Status == "present" && a.MinutesLate > 0 {
+		return fmt.Sprintf("Late %d min", a.MinutesLate)
+	}
+	return statusLabels[a.Status]
+}
+
 // summaryOrder is the totals, in the order the columns are written.
 var summaryOrder = []string{"present", "absent", "on_leave", "holiday", "field_work", "review", "unknown"}
 
@@ -136,6 +158,7 @@ func gridOf(days []AttendanceDay) attendanceGrid {
 	type person struct {
 		name   string
 		byDate map[string]string
+		label  map[string]string
 	}
 	people := map[uuid.UUID]*person{}
 	dates := []string{}
@@ -144,10 +167,11 @@ func gridOf(days []AttendanceDay) attendanceGrid {
 		for _, a := range d.People {
 			p := people[a.UserID]
 			if p == nil {
-				p = &person{name: a.Name, byDate: map[string]string{}}
+				p = &person{name: a.Name, byDate: map[string]string{}, label: map[string]string{}}
 				people[a.UserID] = p
 			}
 			p.byDate[d.Date] = a.Status
+			p.label[d.Date] = cellLabel(a)
 		}
 	}
 	ordered := make([]*person, 0, len(people))
@@ -166,7 +190,7 @@ func gridOf(days []AttendanceDay) attendanceGrid {
 		counts := map[string]int{}
 		for _, date := range dates {
 			status := p.byDate[date]
-			row = append(row, statusLabels[status])
+			row = append(row, p.label[date])
 			statuses = append(statuses, status)
 			counts[status]++
 		}
@@ -306,6 +330,10 @@ func (h *Handler) ExportAttendance(c *gin.Context) {
 		}
 		teamID = &parsed
 	}
+	if !seesAttendance(c) {
+		refuseAttendance(c)
+		return
+	}
 	format := c.DefaultQuery("format", "xlsx")
 	if format != "xlsx" && format != "csv" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "format must be xlsx or csv"})
@@ -316,7 +344,7 @@ func (h *Handler) ExportAttendance(c *gin.Context) {
 		return
 	}
 	ctx := c.Request.Context()
-	days, err := h.service.Attendance(ctx, orgID, id, userID, readsAllAttendance(c), teamID, from, to)
+	days, err := h.service.AttendanceForEverybody(ctx, orgID, id, userID, isAdmin(c), teamID, from, to)
 	if err != nil {
 		httpx.Error(c, err, "failed to read attendance")
 		return

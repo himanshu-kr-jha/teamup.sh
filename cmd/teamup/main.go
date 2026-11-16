@@ -521,7 +521,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	calendarService := calendar.NewService(dbPool)
 	leaveService := leave.NewService(dbPool, tasksService)
 	// Field work counts somebody working away for the day's stand-ups.
-	fieldWorkService := fieldwork.NewService(dbPool, tasksService)
+	fieldWorkService := fieldwork.NewService(dbPool)
 	presenceService.SetLeave(leaveService)
 	wizardService := wizard.NewService(dbPool, redisClient, &authCfg, logger)
 

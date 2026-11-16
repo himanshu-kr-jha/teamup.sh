@@ -642,29 +642,21 @@ func TestWhoMayReadAttendanceAndWhatTheyGet(t *testing.T) {
 		}
 	}
 
-	// Manager: the people they answer for, nested teams included, nobody else.
-	m := ids(w.day(t, w.mgr, "manager", ""))
-	for label, id := range map[string]uuid.UUID{"late": w.late, "absent": w.absent, "nested team": w.nested, "two devices": w.twoDevices} {
-		if !m[id.String()] {
-			t.Errorf("the manager answers for %s", label)
+	// Attendance is for whoever is given it (16 November): a manager and an
+	// employee see none, their own included; somebody given See attendance sees
+	// everybody, as an admin does.
+	for _, who := range []struct {
+		name string
+		id   uuid.UUID
+		role string
+	}{{"a manager", w.mgr, "manager"}, {"an employee", w.late, "member"}, {"somebody absent", w.absent, "member"}} {
+		if code, days := w.attendanceRaw(t, who.id, who.role, w.meeting.ID, "date="+w.date); code != http.StatusForbidden || len(days) != 0 {
+			t.Errorf("%s sees no attendance: got %d with %d days", who.name, code, len(days))
 		}
 	}
-	for label, id := range map[string]uuid.UUID{"sales": w.otherTeam, "other manager": w.mgr2, "the owner": w.org.OwnerID} {
-		if m[id.String()] {
-			t.Errorf("the manager does not answer for %s", label)
-		}
-	}
-
-	// Employee: only themselves, even when asking for another team.
-	for _, extra := range []string{"", "&teamId=" + w.backend.String(), "&teamId=" + w.sales.String()} {
-		d := w.day(t, w.late, "member", extra)
-		if len(d.People) != 1 || d.People[0].UserID != w.late.String() || d.People[0].MinutesLate != 7 {
-			t.Errorf("%q: an employee sees only themself, got %+v", extra, d.People)
-		}
-	}
-	// Even somebody who was absent sees that about themself.
-	if d := w.day(t, w.absent, "member", ""); len(d.People) != 1 || d.People[0].Status != "absent" {
-		t.Errorf("an absent employee sees their own absence, got %+v", d.People)
+	res := doJSON(t, withPermissions(t, w, w.late, "attendance.view"), http.MethodGet, "/api/standing-meetings/"+w.meeting.ID+"/attendance?date="+w.date, "")
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), w.otherTeam.String()) || !strings.Contains(res.Body.String(), w.absent.String()) {
+		t.Errorf("See attendance is everybody: %d %s", res.Code, res.Body.String())
 	}
 }
 
@@ -675,7 +667,7 @@ func TestAttendanceTeamFilterWorksLikeTheDashboard(t *testing.T) {
 	if len(d.People) != 1 || d.People[0].UserID != w.otherTeam.String() {
 		t.Errorf("an admin narrowing to Sales sees only Sales, got %+v", d.People)
 	}
-	d = w.day(t, w.mgr, "manager", "&teamId="+w.platform.String())
+	d = w.day(t, w.org.OwnerID, "owner", "&teamId="+w.platform.String())
 	for _, p := range d.People {
 		if p.UserID == w.late.String() {
 			t.Errorf("narrowing to the nested Platform team drops Backend-only people, got %+v", d.People)
@@ -683,14 +675,6 @@ func TestAttendanceTeamFilterWorksLikeTheDashboard(t *testing.T) {
 	}
 	if len(d.People) != 2 {
 		t.Errorf("Platform has two people, got %+v", d.People)
-	}
-
-	code, days := w.attendanceRaw(t, w.mgr, "manager", w.meeting.ID, "date="+w.date+"&teamId="+w.sales.String())
-	if code != http.StatusForbidden && code != http.StatusNotFound {
-		t.Errorf("a manager asking for a team they do not run: want 403 or 404, got %d", code)
-	}
-	if len(days) != 0 {
-		t.Error("a refusal carries no data")
 	}
 }
 

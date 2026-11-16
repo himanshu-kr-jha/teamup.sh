@@ -14,6 +14,7 @@ import { PERMS, can } from '@/shared/permissions';
 import {
   CameraDetail,
   FieldDetail,
+  LateJoinDetail,
   ReviewButton,
   ReviewDetail,
   STATUS_LABEL,
@@ -89,16 +90,18 @@ export function AttendancePage() {
   const { data: dashboard } = useDashboard(undefined);
   const teams = dashboard?.teams ?? [];
 
+  const { user } = useAuth();
+  const reviewer = can(user, PERMS.attendance);
+  // Attendance is for owners, admins and whoever is given it (16 November).
+  const sees = reviewer || can(user, PERMS.attendanceView) || can(user, PERMS.meetingsAll);
   const { data, error, isPending, isFetching, refetch } = useQuery({
     queryKey: ['attendance', id, range.from, range.to, team ?? 'all'],
     queryFn: () => standingApi.attendance(id, { ...range, teamId: team }).then((res) => res.data),
-    enabled: !problem && !loadingMeetings,
+    enabled: !problem && !loadingMeetings && sees,
     placeholderData: keepPreviousData,
     staleTime: 15_000,
   });
   const days = [...(data ?? [])].sort((a, b) => b.date.localeCompare(a.date));
-  const { user } = useAuth();
-  const reviewer = can(user, PERMS.attendance);
   const exportParams = { ...range, teamId: team };
 
   return (
@@ -114,6 +117,14 @@ export function AttendancePage() {
           <h1 className="break-anywhere text-xl font-bold">{meeting?.name ?? 'Attendance'}</h1>
           <p className="text-sm text-muted-foreground">
             {meeting ? `${describeSchedule(meeting)}. ` : ''}Times below are in your time zone.
+            {sees && (
+              <>
+                {' '}
+                <Link to="/field-work" className="underline underline-offset-2 hover:text-foreground">
+                  Field work photos
+                </Link>
+              </>
+            )}
           </p>
         </div>
 
@@ -183,7 +194,12 @@ export function AttendancePage() {
 
         <FieldWorkSwitch />
 
-        {problem ? (
+        {!sees ? (
+          <EmptyState
+            title="Attendance is not for you to see"
+            hint="Attendance is for administrators and whoever is given See attendance under Roles."
+          />
+        ) : problem ? (
           <p role="alert" className={cn('text-sm', DANGER_TEXT)}>
             {problem}
           </p>
@@ -221,6 +237,11 @@ function DayCard({ day, meetingId, reviewer }: { day: AttendanceDay; meetingId: 
         )}
         {day.scheduledStart && (
           <span className="text-xs tabular-nums text-muted-foreground">Starts {formatTime(day.scheduledStart)}</span>
+        )}
+        {day.attendFrom && day.attendUntil && (
+          <span className="text-xs tabular-nums text-muted-foreground">
+            Counts {formatTime(day.attendFrom)} to {formatTime(day.attendUntil)}
+          </span>
         )}
         {day.cameraRequired && (
           <Badge variant="outline" className="gap-1 text-xs font-normal">
@@ -279,7 +300,7 @@ function DayCard({ day, meetingId, reviewer }: { day: AttendanceDay; meetingId: 
                     <PersonDetails person={person} />
                   </td>
                   <td className="px-2 py-2">
-                    <StatusBadge status={person.status} />
+                    <StatusBadge person={person} />
                   </td>
                   <td className="px-2 py-2 text-right tabular-nums">{clock(person.firstJoinAt)}</td>
                   <td className="px-2 py-2 text-right tabular-nums">{lastLeave(person)}</td>
@@ -307,7 +328,7 @@ function DayCard({ day, meetingId, reviewer }: { day: AttendanceDay; meetingId: 
               <li key={person.userId} className="px-3 py-2 text-sm">
                 <div className="flex items-center justify-between gap-2">
                   <span className="min-w-0 break-anywhere font-medium">{person.name}</span>
-                  <StatusBadge status={person.status} />
+                  <StatusBadge person={person} />
                 </div>
                 <PersonDetails person={person} />
                 {attended(person) && (
@@ -353,10 +374,18 @@ function LeaveDetail({ person }: { person: AttendancePerson }) {
   );
 }
 
-function StatusBadge({ status }: { status: AttendanceStatus }) {
+function StatusBadge({ person }: { person: AttendancePerson }) {
+  // Late is present, said as late so it reads at a glance.
+  const late = person.status === 'present' && person.minutesLate > 0;
   return (
-    <Badge variant="secondary" className={cn('shrink-0 whitespace-nowrap', STATUS_STYLE[status])}>
-      {STATUS_LABEL[status]}
+    <Badge
+      variant="secondary"
+      className={cn(
+        'shrink-0 whitespace-nowrap',
+        late ? 'bg-orange-100 text-orange-800 dark:bg-orange-950 dark:text-orange-200' : STATUS_STYLE[person.status]
+      )}
+    >
+      {late ? 'Late' : STATUS_LABEL[person.status]}
     </Badge>
   );
 }
@@ -385,6 +414,7 @@ function PersonDetails({ person }: { person: AttendancePerson }) {
     <>
       <LeaveDetail person={person} />
       <FieldDetail person={person} />
+      <LateJoinDetail person={person} />
       <CameraDetail person={person} />
       <ReviewDetail person={person} />
     </>
