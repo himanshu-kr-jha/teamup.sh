@@ -22,6 +22,14 @@
 #   --ipv4               TEAMUP_DEPLOY_IPV4=1 ssh over IPv4 only, for networks whose IPv6 route is unreliable
 #   --domain name        point TeamUp at a new address and get it a certificate
 #   --email address      for the new certificate (default: none registered)
+#   --during-calls       deploy even while people are in calls (see below)
+#   --wait minutes       TEAMUP_DEPLOY_WAIT: how long to wait for calls to end (default 30)
+#
+# A deploy builds the new image on the server and restarts the app, which
+# takes CPU from the call server for some minutes and makes everybody in a call
+# reconnect. So it first waits, up to --wait minutes, until nobody is in a call,
+# and gives up rather than cut a call short. --during-calls skips the wait, for a
+# fix that cannot wait.
 #
 # What it does, in order: copies the committed tree of the ref (never your
 # uncommitted changes) to the server, keeps .env, certs/, backups/ and
@@ -59,6 +67,8 @@ IPV4="${TEAMUP_DEPLOY_IPV4:-0}"
 DOMAIN=""
 EMAIL=""
 CHECK=0
+DURING_CALLS=0
+WAIT_MINUTES="${TEAMUP_DEPLOY_WAIT:-30}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -71,6 +81,8 @@ while [ $# -gt 0 ]; do
     --domain) DOMAIN="$2"; shift 2 ;;
     --email) EMAIL="$2"; shift 2 ;;
     --check) CHECK=1; shift ;;
+    --during-calls) DURING_CALLS=1; shift ;;
+    --wait) WAIT_MINUTES="$2"; shift 2 ;;
     --env) shift 2 ;;
     -h|--help) awk 'NR==1{next} /^#/{sub(/^#[[:space:]]?/,""); print; next} {exit}' "$0"; exit 0 ;;
     *) echo "Unknown option: $1 (try --help)" >&2; exit 2 ;;
@@ -122,6 +134,27 @@ if [ "$CHECK" = 1 ]; then
   exit 0
 fi
 
+# ── nobody in a call ─────────────────────────────────────────────────────────
+# People connected to a call right now, by the app's own record of who joined
+# and has not left. A session older than half a day is a leave that never
+# arrived, not somebody still talking.
+in_calls() {
+  "${SSH[@]}" "$HOST" "cd '$DIR' && sudo docker compose exec -T postgres sh -c 'psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -At -c \"SELECT count(DISTINCT s.user_id) FROM call_sessions s JOIN calls c ON c.id = s.call_id WHERE s.left_at IS NULL AND c.status = '\\''active'\\'' AND s.joined_at > now() - interval '\\''12 hours'\\''\"'" 2>/dev/null | tr -d '[:space:]'
+}
+if [ "$DURING_CALLS" = 0 ]; then
+  step "Waiting for calls to end"
+  deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
+  while :; do
+    n="$(in_calls || true)"
+    case "$n" in ''|*[!0-9]*) die "could not tell whether anybody is in a call (is the database up?); rerun with --during-calls to deploy anyway" ;; esac
+    [ "$n" = 0 ] && { echo "  nobody is in a call"; break; }
+    [ "$(date +%s)" -ge "$deadline" ] \
+      && die "$n still in calls after $WAIT_MINUTES minutes; deploy later, or with --during-calls if it cannot wait"
+    echo "  $n in calls at $(date +%H:%M); checking again in a minute"
+    sleep 60
+  done
+fi
+
 # ── copy ──────────────────────────────────────────────────────────────────────
 step "Copying $TAG"
 git archive "$COMMIT" | "${SSH[@]}" "$HOST" 'rm -rf /tmp/teamup-new && mkdir -p /tmp/teamup-new && tar -x -C /tmp/teamup-new'
@@ -160,8 +193,11 @@ fi
 
 echo "== start $(date -u +%T)"
 dc up -d 2>&1 | tail -4
-# nginx reads its config once; LiveKit learns a new public address on restart.
-dc restart nginx >/dev/null 2>&1
+# nginx reads its config once, so it is told to read it again. A reload lets
+# the connections it already has finish, where a restart dropped every call's
+# signalling at once; it falls back to a restart if nginx is not running.
+dc exec -T nginx nginx -s reload >/dev/null 2>&1 || dc restart nginx >/dev/null 2>&1
+# LiveKit learns a new public address on restart.
 if [ -n "$DOMAIN" ]; then
   dc restart livekit >/dev/null 2>&1
   if [ -n "$OLD" ] && [ "$OLD" != "$DOMAIN" ]; then sudo certbot delete --cert-name "$OLD" -n >/dev/null 2>&1 || true; fi
