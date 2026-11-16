@@ -47,6 +47,8 @@ import { useUIStore } from '@/shared/store';
 import { CreateChannelDialog } from './CreateChannelDialog';
 import { usePresence, type PresenceStatus } from '@/features/presence/usePresence';
 import { PresenceDot, presenceLabel } from '@/features/presence/PresenceDot';
+import { OnLeaveBanner, OnLeaveCallDialog } from '@/features/presence/OnLeaveNotice';
+import { backOnText, onLeave } from '@/features/presence/leaveNotice';
 import { mergeOlder, olderPosition } from './history';
 import {
   bumpReplyCount,
@@ -869,9 +871,16 @@ export function ChatPage() {
     }
   };
 
+  // Somebody on leave, in a conversation with them: said above the message box,
+  // and before a call that would not ring them anyway.
+  const counterpartOnLeave = activeChannel?.type === 'dm' ? onLeave(personOf(activeChannel?.counterpartId)) : undefined;
+  const [leaveCallOpen, setLeaveCallOpen] = useState(false);
+
   const channelSubtitle = !channelId
     ? 'Pick a conversation to start reading'
-    : activeChannel?.type === 'dm'
+    : counterpartOnLeave
+      ? `On leave, ${backOnText(counterpartOnLeave.until)}`
+      : activeChannel?.type === 'dm'
       ? presenceLabel(
           statusOf(activeChannel?.counterpartId),
           personOf(activeChannel?.counterpartId)?.note
@@ -1092,10 +1101,18 @@ export function ChatPage() {
                 aria-label="Call"
                 title="Call. Your microphone is on; turn your camera on in the call if you want video."
                 disabled={!activeChannel || startingCall}
-                onClick={startCall}
+                onClick={counterpartOnLeave ? () => setLeaveCallOpen(true) : startCall}
               >
                 <Phone className="h-5 w-5" />
               </Button>
+              {counterpartOnLeave && (
+                <OnLeaveCallDialog
+                  open={leaveCallOpen}
+                  person={counterpartOnLeave}
+                  onClose={() => setLeaveCallOpen(false)}
+                  onWrite={() => composerRef.current?.focus()}
+                />
+              )}
               <NotifyMenu channelId={activeChannel?.id} level={activeChannel?.notifyLevel} />
               <Button
                 variant="ghost"
@@ -1225,6 +1242,7 @@ export function ChatPage() {
           )}
 
           <form onSubmit={handleSend} className="relative p-4 border-t border-border">
+            {counterpartOnLeave && <OnLeaveBanner person={counterpartOnLeave} />}
             <TypingLine names={typists.map((id) => nameOf(id) ?? 'Somebody')} />
             {showFormatting && !recordingVoice && <FormatBar onFormat={formatting.apply} className="mb-1.5 ml-12" />}
             <div className="flex items-end gap-2">
