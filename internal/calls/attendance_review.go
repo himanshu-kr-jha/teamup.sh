@@ -221,7 +221,7 @@ var cellFills = map[string]string{
 
 func (g attendanceGrid) xlsx(title string) ([]byte, error) {
 	f := excelize.NewFile()
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	sheet := "Attendance"
 	if err := f.SetSheetName("Sheet1", sheet); err != nil {
 		return nil, err
