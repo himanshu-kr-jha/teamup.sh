@@ -704,7 +704,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// The policy is worked out once, from the page it protects; a missing page
 	// is reported below, where the frontend is read for serving.
 	page, _ := webFS.ReadFile("web/dist/index.html")
-	router.Use(securityHeaders(contentSecurityPolicy(page, cfg.MinIOEndpoint, cfg.MinIOSecure, cfg.LiveKitURL, cfg.GitHubWebURL)))
+	router.Use(securityHeaders(contentSecurityPolicy(page, filesService.PublicOrigin(), cfg.LiveKitURL, cfg.GitHubWebURL)))
 	router.Use(observability.GinLogger(logger))
 	router.Use(observability.GinMetrics())
 	// Limits per address apply to everything; limits per person once the
