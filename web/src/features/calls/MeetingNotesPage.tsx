@@ -1,3 +1,4 @@
+import { readsNotes } from '@/shared/permissions';
 import { useEffect, useState } from 'react';
 import { PERMS, can } from '@/shared/permissions';
 import { Link } from 'react-router-dom';
@@ -43,7 +44,26 @@ function byDay(items: MeetingNotesItem[]): Array<{ day: string; items: MeetingNo
  * the way back to them once the notification is gone. Administrators can also
  * see everybody's.
  */
+
+/** Meeting notes are only for whoever is given them under Roles (16 November). */
 export function MeetingNotesPage() {
+  const { user } = useAuth();
+  if (!readsNotes(user)) {
+    return (
+      <div className="flex h-full items-center justify-center p-6 text-center">
+        <div className="max-w-sm space-y-1">
+          <p className="font-medium">Meeting notes are not for you to see</p>
+          <p className="text-sm text-muted-foreground">
+            They are for whoever is given Read minutes of their meetings, or Read every meeting&rsquo;s minutes, under Roles.
+          </p>
+        </div>
+      </div>
+    );
+  }
+  return <MeetingNotesPageReadable />;
+}
+
+function MeetingNotesPageReadable() {
   const { user } = useAuth();
   const isAdmin = can(user, PERMS.notesReadAll);
   const [scope, setScope] = useState<'mine' | 'all'>('mine');

@@ -26,6 +26,18 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-16-e',
+    date: '2026-11-16',
+    title: 'Meeting notes are for whoever is given them',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'Meeting notes by permission',
+        body: "Minutes and transcripts are for the owner, admins and whoever is given Read every meeting's minutes, or Read minutes of their meetings, under Roles. Nobody else sees meeting notes, or is sent them, even of a meeting they were in.",
+      },
+    ],
+  },
+  {
     id: '2026-11-16-d',
     date: '2026-11-16',
     title: 'Attendance: a window, cameras, field work, changes and export',

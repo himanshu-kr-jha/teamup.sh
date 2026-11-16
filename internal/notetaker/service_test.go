@@ -147,6 +147,38 @@ func (w *world) router(t *testing.T, userID uuid.UUID, roles ...string) *gin.Eng
 	return r
 }
 
+// reader is somebody signed in who may read the notes of meetings they were in,
+// which since 16 November is a permission and not simply having been there.
+func (w *world) reader(t *testing.T, userID uuid.UUID) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	api := r.Group("/api")
+	api.Use(func(c *gin.Context) {
+		c.Set("org_id", w.orgID.String())
+		c.Set("user_id", userID.String())
+		c.Set("user_roles", []string{"member"})
+		c.Set("user_permissions", []string{"notes.read_own"})
+		c.Next()
+	})
+	RegisterRoutes(api, w.svc)
+	return r
+}
+
+// mayReadOwn gives somebody, in the database, a role that reads the notes of
+// their meetings, which decides who is told the minutes are ready.
+func (w *world) mayReadOwn(t *testing.T, userID uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	var role uuid.UUID
+	if err := w.svc.db.QueryRow(ctx, `INSERT INTO roles (org_id, name, permissions) VALUES ($1, $2, '["notes.read_own"]') RETURNING id`,
+		w.orgID, "reader-"+uuid.NewString()[:8]).Scan(&role); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.svc.db.Exec(ctx, `INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)`, userID, role); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func call(t *testing.T, r *gin.Engine, method, path string, body any) *httptest.ResponseRecorder {
 	var buf bytes.Buffer
 	if body != nil {
@@ -201,11 +233,14 @@ func TestEverybodyWhoWasThereGetsTheMinutesAndNobodyElseCanReadThem(t *testing.T
 		t.Fatal(err)
 	}
 
+	// Ada may read the notes of her meetings; Bo, who was there too, may not.
+	w.mayReadOwn(t, w.ada)
+
 	// Two people joining, perhaps on two servers: one note-taker.
 	w.svc.PersonJoined(ctx, w.orgID, w.callID, "room-1")
 	w.svc.PersonJoined(ctx, w.orgID, w.callID, "room-1")
 
-	ada := w.router(t, w.ada, "member")
+	ada := w.reader(t, w.ada)
 	var notes Notes
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
@@ -233,11 +268,17 @@ func TestEverybodyWhoWasThereGetsTheMinutesAndNobodyElseCanReadThem(t *testing.T
 	w.sent.mu.Lock()
 	notified, mailed := len(w.sent.notified), w.sent.mailed
 	w.sent.mu.Unlock()
-	if notified != 2 || len(mailed) != 2 {
-		t.Errorf("both told and emailed: %d %v", notified, mailed)
+	if notified != 1 || len(mailed) != 1 {
+		t.Errorf("only Ada, who may read them, is told and emailed: %d %v", notified, mailed)
+	}
+	// Bo was there, but without the permission he reads nothing, and no list.
+	for _, path := range []string{"/api/calls/" + w.callID.String() + "/minutes", "/api/meeting-notes"} {
+		if got := call(t, w.router(t, w.bo, "member"), http.MethodGet, path, nil); got.Code != http.StatusForbidden {
+			t.Errorf("%s without the permission: %d", path, got.Code)
+		}
 	}
 
-	if got := call(t, w.router(t, w.carol, "member"), http.MethodGet, "/api/calls/"+w.callID.String()+"/minutes", nil); got.Code != http.StatusNotFound {
+	if got := call(t, w.reader(t, w.carol), http.MethodGet, "/api/calls/"+w.callID.String()+"/minutes", nil); got.Code != http.StatusNotFound {
 		t.Errorf("Carol was not there: %d", got.Code)
 	}
 	if got := call(t, w.router(t, w.carol, "admin"), http.MethodGet, "/api/calls/"+w.callID.String()+"/minutes", nil); got.Code != http.StatusOK {
@@ -249,6 +290,9 @@ func TestEverybodyWhoWasThereGetsTheMinutesAndNobodyElseCanReadThem(t *testing.T
 // though they have no account to receive them.
 func TestAGuestIsHeardAndNamedInTheMinutes(t *testing.T) {
 	w := newWorld(t)
+	// Everybody here may read the notes of their meetings, so is told.
+	w.mayReadOwn(t, w.ada)
+	w.mayReadOwn(t, w.bo)
 	srv := standIns(t)
 	ctx := context.Background()
 	pool := w.svc.db
@@ -266,7 +310,7 @@ func TestAGuestIsHeardAndNamedInTheMinutes(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.svc.PersonJoined(ctx, w.orgID, w.callID, "room-1")
-	notes := w.waitFor(t, w.router(t, w.ada, "member"))
+	notes := w.waitFor(t, w.reader(t, w.ada))
 	if notes.Status != "ready" {
 		t.Fatalf("minutes: %+v", notes)
 	}
@@ -296,7 +340,7 @@ func TestTurnedOffItDoesNotJoin(t *testing.T) {
 	if w.joins != 0 {
 		t.Errorf("off means off")
 	}
-	if got := call(t, w.router(t, w.ada, "member"), http.MethodGet, "/api/calls/"+w.callID.String()+"/minutes", nil); got.Code != http.StatusNotFound {
+	if got := call(t, w.reader(t, w.ada), http.MethodGet, "/api/calls/"+w.callID.String()+"/minutes", nil); got.Code != http.StatusNotFound {
 		t.Errorf("no minutes: %d", got.Code)
 	}
 }
@@ -358,7 +402,7 @@ func TestARetiredNVIDIAModelStillGetsTheMinutesWritten(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.svc.PersonJoined(ctx, w.orgID, w.callID, "room-1")
-	notes := w.waitFor(t, w.router(t, w.ada, "member"))
+	notes := w.waitFor(t, w.reader(t, w.ada))
 	if notes.Status != "ready" || notes.Minutes.Summary != "Agreed to ship." {
 		t.Fatalf("minutes: %+v", notes)
 	}
@@ -377,6 +421,9 @@ func TestARetiredNVIDIAModelStillGetsTheMinutesWritten(t *testing.T) {
 func TestFailedMinutesAreWrittenAgainFromTheTranscriptAndListed(t *testing.T) {
 	quick(t) // the model stays down through every attempt
 	w := newWorld(t)
+	// Everybody here may read the notes of their meetings, so is told.
+	w.mayReadOwn(t, w.ada)
+	w.mayReadOwn(t, w.bo)
 	stt := standIns(t)
 	broken := true
 	var mu sync.Mutex
@@ -397,7 +444,7 @@ func TestFailedMinutesAreWrittenAgainFromTheTranscriptAndListed(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.svc.PersonJoined(ctx, w.orgID, w.callID, "room-1")
-	ada := w.router(t, w.ada, "member")
+	ada := w.reader(t, w.ada)
 	notes := w.waitFor(t, ada)
 	if notes.Status != "failed" || !strings.Contains(notes.Error, "503") || len(notes.Transcript) != 2 {
 		t.Fatalf("failed, with why, and the transcript kept: %+v", notes)
@@ -410,7 +457,7 @@ func TestFailedMinutesAreWrittenAgainFromTheTranscriptAndListed(t *testing.T) {
 	}
 
 	retry := "/api/calls/" + w.callID.String() + "/minutes/retry"
-	if got := call(t, w.router(t, w.carol, "member"), http.MethodPost, retry, nil); got.Code != http.StatusNotFound {
+	if got := call(t, w.reader(t, w.carol), http.MethodPost, retry, nil); got.Code != http.StatusNotFound {
 		t.Errorf("Carol was not there: %d", got.Code)
 	}
 	mu.Lock()
@@ -452,7 +499,7 @@ func TestFailedMinutesAreWrittenAgainFromTheTranscriptAndListed(t *testing.T) {
 	if got := list(ada, "?q=budget"); len(got.Items) != 0 {
 		t.Errorf("not found: %+v", got)
 	}
-	if got := list(w.router(t, w.carol, "member"), "?scope=all"); len(got.Items) != 0 {
+	if got := list(w.reader(t, w.carol), "?scope=all"); len(got.Items) != 0 {
 		t.Errorf("a member sees only meetings they were in: %+v", got)
 	}
 	if got := list(w.router(t, w.carol, "admin"), "?scope=all"); len(got.Items) != 1 || got.Items[0].Attended {

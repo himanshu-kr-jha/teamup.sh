@@ -1,3 +1,5 @@
+import { readsNotes } from '@/shared/permissions';
+import { useAuth } from '@/features/auth/AuthProvider';
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -52,7 +54,26 @@ export function minutesText(m: NonNullable<MeetingMinutes['minutes']>, link?: st
 }
 
 /** The minutes of one call, for whoever was in it. */
+
+/** Meeting notes are only for whoever is given them under Roles (16 November). */
 export function MinutesPage() {
+  const { user } = useAuth();
+  if (!readsNotes(user)) {
+    return (
+      <div className="flex h-full items-center justify-center p-6 text-center">
+        <div className="max-w-sm space-y-1">
+          <p className="font-medium">Meeting notes are not for you to see</p>
+          <p className="text-sm text-muted-foreground">
+            They are for whoever is given Read minutes of their meetings, or Read every meeting&rsquo;s minutes, under Roles.
+          </p>
+        </div>
+      </div>
+    );
+  }
+  return <MinutesPageReadable />;
+}
+
+function MinutesPageReadable() {
   const { callId = '' } = useParams();
   const toast = useToast();
   const queryClient = useQueryClient();

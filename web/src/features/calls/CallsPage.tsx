@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { AlertTriangle, Video, Phone, Users, Search, Loader2, Clock, CheckCircle, XCircle, History, Link2, NotebookPen, ChevronRight, PhoneMissed, PhoneOff, PhoneForwarded, CalendarX } from 'lucide-react';
 import { useAuth } from '@/features/auth/AuthProvider';
+import { readsNotes } from '@/shared/permissions';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Card, CardContent } from '@/shared/components/ui/card';
@@ -78,6 +79,8 @@ function missedMark(reason: NonNullable<Call['missedReason']>, isCaller: boolean
 
 export function CallsPage() {
   const navigate = useNavigate();
+  // Meeting notes are only for whoever is given them (16 November).
+  const notesVisible = readsNotes(useAuth().user);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [createOpen, setCreateOpen] = useState(false);
@@ -131,6 +134,7 @@ export function CallsPage() {
       </div>
 
       {/* The sidebar has it on a computer; a phone's bottom bar has no room. */}
+      {notesVisible && (
       <Link
         to="/meeting-notes"
         className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3 text-sm font-medium transition-colors hover:bg-accent lg:hidden"
@@ -139,6 +143,7 @@ export function CallsPage() {
         <span className="flex-1">Meeting notes</span>
         <ChevronRight className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
       </Link>
+      )}
 
       {/* Calls List */}
       <div className="flex-1 space-y-6 overflow-auto p-4 md:p-6">

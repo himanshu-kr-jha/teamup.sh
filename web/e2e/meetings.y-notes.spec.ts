@@ -95,6 +95,11 @@ test.describe('meeting notes', () => {
     const alice = await apiAs('alice');
     expect(await alice.status('put', '/org/notetaker', { enabled: false })).toBe(403);
 
+    // Meeting notes are for whoever is given them (16 November): Alice may read
+    // the notes of her own meetings.
+    const reader = await owner.post('/roles', { name: `Notes reader ${Date.now()}`, permissions: ['notes.read_own'] });
+    await owner.post(`/users/${idOf('alice')}/roles`, { roleId: reader.id });
+
     const title = `Release sync ${Date.now()}`;
     const call = await createCall(owner, title, [idOf('alice')]);
     const aliceSession = await as('alice');
@@ -200,10 +205,13 @@ test.describe('meeting notes', () => {
     await page.getByLabel('Search meeting notes').fill('nothing like this was said');
     await expect(page.getByTestId('notes-empty')).toContainText('No meeting notes match');
 
-    // Somebody who was not there cannot read them, nor see them listed.
+    // Somebody without the permission reads no notes and has no list.
     const sam = await apiAs('sam');
-    expect(await sam.status('get', `/calls/${call.id}/minutes`)).toBe(404);
-    const samList = (await sam.get('/meeting-notes?scope=all')).items as Array<{ callId: string }>;
-    expect(samList.some((i) => i.callId === call.id)).toBe(false);
+    expect(await sam.status('get', `/calls/${call.id}/minutes`)).toBe(403);
+    expect(await sam.status('get', '/meeting-notes?scope=all')).toBe(403);
+    await sam.dispose();
+
+    await owner.call('delete', `/users/${idOf('alice')}/roles/${reader.id}`);
+    await owner.call('delete', `/roles/${reader.id}`);
   });
 });

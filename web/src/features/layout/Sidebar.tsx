@@ -2,6 +2,7 @@ import { Link, NavLink, useLocation } from 'react-router-dom';
 import { CalendarDays, MessageSquare, Video, CheckSquare, Settings, Users, ChevronLeft, ChevronRight, NotebookPen, FolderGit2 } from 'lucide-react';
 import { useUIStore } from '@/shared/store';
 import { useAuth } from '@/features/auth/AuthProvider';
+import { readsNotes } from '@/shared/permissions';
 import { cn } from '@/shared/utils/cn';
 import { useOrganizationAccess } from './useOrganizationAccess';
 import { BrandMark } from '@/features/branding/BrandMark';
@@ -25,7 +26,7 @@ export function Sidebar() {
   const navItems = [
     { path: '/chat', label: 'Chat', icon: MessageSquare },
     { path: '/calls', label: 'Calls', icon: Video },
-    { path: '/meeting-notes', label: 'Meeting notes', icon: NotebookPen },
+    ...(readsNotes(user) ? [{ path: '/meeting-notes', label: 'Meeting notes', icon: NotebookPen }] : []),
     { path: '/calendar', label: 'Calendar', icon: CalendarDays },
     { path: '/tasks', label: 'Tasks', icon: CheckSquare },
     { path: '/projects', label: 'Projects', icon: FolderGit2 },
