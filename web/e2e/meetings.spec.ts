@@ -745,6 +745,8 @@ const standingId = async (api: Awaited<ReturnType<typeof apiAs>>, name: string):
   (await api.get('/standing-meetings')).standingMeetings.find((m: any) => m.name === name).id;
 
 const attendanceRow = (page: Page, name: string) => page.getByRole('table').first().getByRole('row', { name: new RegExp(name) });
+// The sixth column, by its place: a reviewer has a seventh, Decide, after it.
+const minutesLate = (page: Page, name: string) => attendanceRow(page, name).getByRole('cell').nth(5);
 
 async function joinStandingByCard(page: Page, name: string) {
   await page.goto('/calls');
@@ -845,10 +847,10 @@ test.describe('7. the standing meeting', () => {
     await expect(attendanceRow(olivia.page, NAME('sam'))).toContainText('Present');
     await expect(attendanceRow(olivia.page, NAME('ann'))).toContainText('Absent');
     await expect(attendanceRow(olivia.page, NAME('pat'))).toContainText('Absent');
-    const late = Number(await attendanceRow(olivia.page, NAME('alice')).getByRole('cell').last().innerText());
+    const late = Number(await minutesLate(olivia.page, NAME('alice')).innerText());
     expect(late, 'minutes late, scheduled 30 minutes ago').toBeGreaterThanOrEqual(25);
     expect(late).toBeLessThanOrEqual(40);
-    await expect(attendanceRow(olivia.page, NAME('ann')).getByRole('cell').last()).toHaveText('-');
+    await expect(minutesLate(olivia.page, NAME('ann'))).toHaveText('-');
     const day = (await owner.get(`/standing-meetings/${id}/attendance`)).days.at(-1);
     const row = (name: string) => day.people.find((p: any) => p.name === name);
     expect(row(NAME('alice'))).toMatchObject({ status: 'present' });
@@ -882,7 +884,7 @@ test.describe('7. the standing meeting', () => {
     await olivia.page.goto(`/calls/standing/${eveningId}/attendance?from=${dayParam(at(-1, 0))}&to=${today}`);
     await expect(olivia.page.getByRole('region', { name: `Attendance on ${eveningYesterday.date}` })).toBeVisible();
     await expect(attendanceRow(olivia.page, NAME('alice'))).toContainText('Present');
-    await expect(attendanceRow(olivia.page, NAME('alice')).getByRole('cell').last()).toHaveText('0');
+    await expect(minutesLate(olivia.page, NAME('alice'))).toHaveText('0');
 
     await owner.dispose();
   });
