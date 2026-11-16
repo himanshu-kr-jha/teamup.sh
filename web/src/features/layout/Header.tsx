@@ -68,6 +68,7 @@ export function Header() {
                 the Organization screen on a phone, which no longer has a
                 drawer to hold it. */}
             <DropdownMenuItem onSelect={() => navigate('/settings')}>Profile</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => navigate('/leave')}>Leave</DropdownMenuItem>
             {mayAdminister && (
               <DropdownMenuItem onSelect={() => navigate('/organization')}>Organization</DropdownMenuItem>
             )}

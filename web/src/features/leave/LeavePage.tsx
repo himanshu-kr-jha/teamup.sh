@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { History, Pencil, Plus, Trash2 } from 'lucide-react';
 import { Badge } from '@/shared/components/ui/badge';
@@ -34,12 +35,49 @@ const EVERYBODY = 'all';
 
 /**
  * Your leave, and the leave of whoever you manage, with the organization's
- * holidays. Attendance reads both, so nobody shows as absent while away.
+ * holidays. Attendance reads both, so nobody shows as absent while away. It
+ * opens from your profile menu; administrators keep holidays, and read
+ * everybody's leave, under Organization.
  */
 export function LeavePage() {
   const today = localToday();
   const { user } = useAuth();
   const keepsHolidays = can(user, PERMS.orgSettings);
+  const { data: people = [] } = useLeavePeople();
+  const managesOthers = people.length > 1;
+
+  return (
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto max-w-3xl space-y-6 p-3 md:p-6">
+        <div className="min-w-0">
+          <h1 className="text-xl font-bold">Leave</h1>
+          <p className="text-sm text-muted-foreground">
+            {managesOthers ? 'Your leave and the leave of the people you manage.' : 'Your leave.'} Nobody shows as
+            absent from a stand-up while on leave or on a holiday, and it shows on the calendar.
+          </p>
+        </div>
+        <LeaveBoard />
+        <Holidays today={today} keeps={false} keptUnderOrganization={keepsHolidays} />
+      </div>
+    </div>
+  );
+}
+
+function useLeavePeople() {
+  return useQuery({
+    queryKey: ['leave-people'],
+    queryFn: () => leaveApi.people().then((res) => res.data),
+    staleTime: 60_000,
+  });
+}
+
+/**
+ * The leave somebody may read, coming up and in the past year, with a way to add
+ * and correct it. Whose it covers is the server's rule: your own, the people you
+ * manage, and for an administrator everybody.
+ */
+export function LeaveBoard() {
+  const today = localToday();
   const [person, setPerson] = useState(EVERYBODY);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<LeaveRecord | null>(null);
@@ -47,11 +85,7 @@ export function LeavePage() {
   const [historyOf, setHistoryOf] = useState<LeaveRecord | null>(null);
 
   const range = { from: addDays(today, -365), to: addDays(today, 730) };
-  const { data: people = [] } = useQuery({
-    queryKey: ['leave-people'],
-    queryFn: () => leaveApi.people().then((res) => res.data),
-    staleTime: 60_000,
-  });
+  const { data: people = [] } = useLeavePeople();
   const managesOthers = people.length > 1;
   const { data, error, isPending, refetch } = useQuery({
     queryKey: ['leave', range.from, range.to],
@@ -64,23 +98,9 @@ export function LeavePage() {
   const { upcoming, past } = splitLeave(shown, today);
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-3xl space-y-6 p-3 md:p-6">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0">
-            <h1 className="text-xl font-bold">Leave</h1>
-            <p className="text-sm text-muted-foreground">
-              {managesOthers ? 'Your leave and the leave of the people you manage.' : 'Your leave.'} Nobody shows as
-              absent from a stand-up while on leave or on a holiday.
-            </p>
-          </div>
-          <Button className="shrink-0" onClick={() => setAdding(true)}>
-            <Plus className="mr-1.5 h-4 w-4" aria-hidden="true" />
-            Add leave
-          </Button>
-        </div>
-
-        {managesOthers && (
+    <div className="space-y-6">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        {managesOthers ? (
           <Select value={person} onValueChange={setPerson}>
             <SelectTrigger className="h-9 w-full sm:w-64" aria-label="Show leave for">
               <SelectValue />
@@ -94,39 +114,43 @@ export function LeavePage() {
               ))}
             </SelectContent>
           </Select>
-        )}
-
-        {isPending ? (
-          <LoadingState label="Loading leave" />
-        ) : !data ? (
-          <ErrorState error={error} fallback="Could not load leave." onRetry={() => refetch()} />
         ) : (
-          <>
-            <LeaveSection
-              title="Now and coming up"
-              empty="No leave coming up."
-              records={upcoming}
-              today={today}
-              named={managesOthers}
-              onEdit={setEditing}
-              onRemove={setRemoving}
-              onHistory={setHistoryOf}
-            />
-            <LeaveSection
-              title="Past year"
-              empty="No leave in the past year."
-              records={past}
-              today={today}
-              named={managesOthers}
-              onEdit={setEditing}
-              onRemove={setRemoving}
-              onHistory={setHistoryOf}
-            />
-          </>
+          <span />
         )}
-
-        <Holidays today={today} keeps={keepsHolidays} />
+        <Button className="shrink-0" onClick={() => setAdding(true)}>
+          <Plus className="mr-1.5 h-4 w-4" aria-hidden="true" />
+          Add leave
+        </Button>
       </div>
+
+      {isPending ? (
+        <LoadingState label="Loading leave" />
+      ) : !data ? (
+        <ErrorState error={error} fallback="Could not load leave." onRetry={() => refetch()} />
+      ) : (
+        <>
+          <LeaveSection
+            title="Now and coming up"
+            empty="No leave coming up."
+            records={upcoming}
+            today={today}
+            named={managesOthers}
+            onEdit={setEditing}
+            onRemove={setRemoving}
+            onHistory={setHistoryOf}
+          />
+          <LeaveSection
+            title="Past year"
+            empty="No leave in the past year."
+            records={past}
+            today={today}
+            named={managesOthers}
+            onEdit={setEditing}
+            onRemove={setRemoving}
+            onHistory={setHistoryOf}
+          />
+        </>
+      )}
 
       {adding && <LeaveDialog people={people} today={today} onClose={() => setAdding(false)} />}
       {editing && <LeaveDialog people={people} today={today} record={editing} onClose={() => setEditing(null)} />}
@@ -411,7 +435,17 @@ function HistoryDialog({ record, today, onClose }: { record: LeaveRecord; today:
   );
 }
 
-function Holidays({ today, keeps }: { today: string; keeps: boolean }) {
+export function Holidays({
+  today,
+  keeps,
+  keptUnderOrganization = false,
+}: {
+  today: string;
+  /** Whether this list is where they are added and removed. */
+  keeps: boolean;
+  /** Read here, but this person keeps them under Organization. */
+  keptUnderOrganization?: boolean;
+}) {
   const toast = useToast();
   const queryClient = useQueryClient();
   const year = today.slice(0, 4);
@@ -434,7 +468,20 @@ function Holidays({ today, keeps }: { today: string; keeps: boolean }) {
     <section aria-label="Holidays" className="space-y-2">
       <h2 className="text-sm font-semibold">Holidays</h2>
       <p className="text-sm text-muted-foreground">
-        Days the whole organization is off. {keeps ? 'You keep this list.' : 'An administrator keeps this list.'}
+        Days the whole organization is off.{' '}
+        {keeps ? (
+          'They show on everybody\'s calendar, and nobody is expected at a stand-up on them.'
+        ) : keptUnderOrganization ? (
+          <>
+            You keep this list under{' '}
+            <Link to="/organization?tab=leave" className="underline underline-offset-2 hover:text-foreground">
+              Organization, Leave &amp; holidays
+            </Link>
+            .
+          </>
+        ) : (
+          'An administrator keeps this list.'
+        )}
       </p>
       {keeps && (
         <form

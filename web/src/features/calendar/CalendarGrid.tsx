@@ -23,6 +23,8 @@ import {
 } from './layout';
 import type { DueTask } from '@/shared/api/client';
 import { DueChip, tasksDueOn } from './DueTasks';
+import { DayMarkChip } from './DayMarkChip';
+import { marksOn, type DayMark } from './dayMarks';
 
 /** Pixels per hour. Twenty minutes comes to one readable line of text. */
 const HOUR_HEIGHT = 56;
@@ -71,11 +73,17 @@ export function CalendarGrid({
   onEmptyClick,
   emptyClickLabel,
   dueTasks = [],
+  marks = [],
+  marksOf,
 }: {
   days: Date[];
   items: CalendarItem[];
   /** Work due each day, in a row of its own above the hours: a deadline has no time. */
   dueTasks?: DueTask[];
+  /** Leave and holidays, with the work due, in the row for the whole day. */
+  marks?: DayMark[];
+  /** Whose calendar it is, when it is not yours, for "Ann on leave". */
+  marksOf?: string;
   now: Date;
   view: CalendarView;
   onSelect: (item: CalendarItem) => void;
@@ -99,10 +107,12 @@ export function CalendarGrid({
 
   const columns = `3.25rem repeat(${days.length}, minmax(0, 1fr))`;
   const dueByDay = useMemo(() => days.map((day) => tasksDueOn(dueTasks, day)), [days, dueTasks]);
+  const marksByDay = useMemo(() => days.map((day) => marksOn(marks, day)), [days, marks]);
+  const allDay = dueByDay.some((due) => due.length > 0) || marksByDay.some((m) => m.length > 0);
 
   return (
     <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden" tabIndex={0} aria-label="Hours of the day">
-      {(view === 'week' || dueByDay.some((due) => due.length > 0)) && (
+      {(view === 'week' || allDay) && (
         <div className="sticky top-0 z-20 border-b border-border bg-background">
           {view === 'week' && (
             <div className="grid" style={{ gridTemplateColumns: columns }}>
@@ -126,15 +136,20 @@ export function CalendarGrid({
               })}
             </div>
           )}
-          {dueByDay.some((due) => due.length > 0) && (
+          {allDay && (
             <div
               className={cn('grid', view === 'week' && 'border-t border-border')}
               style={{ gridTemplateColumns: columns }}
               data-testid="due-row"
             >
-              <div className="py-1.5 pr-1.5 text-right text-[11px] text-muted-foreground">Due</div>
+              <div className="py-1.5 pr-1.5 text-right text-[11px] text-muted-foreground">All day</div>
               {days.map((day, i) => (
                 <ul key={dayLabelKey(day)} className="max-h-24 min-w-0 space-y-0.5 overflow-y-auto border-l border-border p-0.5">
+                  {marksByDay[i].map((mark) => (
+                    <li key={`${mark.kind}-${mark.from}`}>
+                      <DayMarkChip mark={mark} whose={marksOf} compact={view === 'week'} />
+                    </li>
+                  ))}
                   {dueByDay[i].map((task) => (
                     <li key={task.id}>
                       <DueChip task={task} now={now} compact={view === 'week'} />
