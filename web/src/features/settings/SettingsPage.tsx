@@ -95,12 +95,12 @@ export function SettingsPage() {
             </CardContent>
           </Card>
 
-          {/* Leave is in the sidebar on a computer; a phone's bottom bar has no room for it. */}
-          <Card className="lg:hidden">
+          {/* Leave is yours, so it lives with your profile, here and in the profile menu. */}
+          <Card>
             <CardHeader><CardTitle>Leave</CardTitle></CardHeader>
             <CardContent className="space-y-3">
               <p className="text-sm text-muted-foreground">
-                Plan time off, or see the leave of the people you manage, and the holidays.
+                Plan time off, or see the leave of the people you manage, and the holidays. Leave shows on the calendar.
               </p>
               <Button variant="outline" asChild>
                 <Link to="/leave">Open Leave</Link>

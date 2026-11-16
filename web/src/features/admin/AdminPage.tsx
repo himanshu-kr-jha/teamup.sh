@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { OrganizationLeave } from './OrganizationLeave';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Users,
@@ -18,6 +19,7 @@ import {
   FolderGit2,
   Plug,
   Gauge,
+  Palmtree,
   X,
 } from 'lucide-react';
 import { MailSettingsTab, mailProblemText } from './MailSettingsTab';
@@ -103,6 +105,9 @@ export function AdminPage() {
           <TabsTrigger value="members"><Users className="mr-2 h-4 w-4" />Members</TabsTrigger>
           <TabsTrigger value="roles"><Shield className="mr-2 h-4 w-4" />Roles</TabsTrigger>
           <TabsTrigger value="teams"><UsersRound className="mr-2 h-4 w-4" />Teams</TabsTrigger>
+          {(may.members || may.settings) && (
+            <TabsTrigger value="leave"><Palmtree className="mr-2 h-4 w-4" />Leave &amp; holidays</TabsTrigger>
+          )}
           {may.settings && <TabsTrigger value="email"><Mail className="mr-2 h-4 w-4" />Email</TabsTrigger>}
           {may.settings && <TabsTrigger value="appearance"><Palette className="mr-2 h-4 w-4" />Appearance</TabsTrigger>}
           {may.notes && <TabsTrigger value="notes"><NotebookPen className="mr-2 h-4 w-4" />Meeting notes</TabsTrigger>}
@@ -127,6 +132,11 @@ export function AdminPage() {
         <TabsContent value="teams" className="p-4 md:p-6">
           <TeamsTab isAdmin={may.teams} managedTeamIds={managedTeamIds} />
         </TabsContent>
+        {(may.members || may.settings) && (
+          <TabsContent value="leave" className="p-4 md:p-6">
+            <OrganizationLeave keepsHolidays={may.settings} readsEverybody={may.members} />
+          </TabsContent>
+        )}
         {may.settings && (
           <TabsContent value="email" className="p-4 md:p-6">
             <MailSettingsTab />

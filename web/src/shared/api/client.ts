@@ -10,6 +10,7 @@ import { signOutLocally } from '@/features/auth/session';
 import { useAuthStore } from '@/shared/store/authStore';
 import type { AvailabilityPerson, CalendarItem, CalendarKind } from '@/features/calendar/layout';
 import type { CalendarGroup } from '@/features/calendar/people';
+import type { DayMark } from '@/features/calendar/dayMarks';
 import type { CallLog } from '@/features/calls/callLog';
 import type { AttendanceDay, AudienceForm, AudienceOptions, StandingForm, StandingMeeting } from '@/features/calls/standing/standing';
 
@@ -657,6 +658,11 @@ export const calendarApi = {
   /** One person's calendar: your own, or somebody you manage. Anybody else is a 403. */
   get: (params: { userId?: string; from: string; to: string }) =>
     getList<CalendarItem>('/calendar', 'items', params),
+  /** The same calendar with its leave and holidays, which have dates rather than times. */
+  getWithDays: async (params: { userId?: string; from: string; to: string }) => {
+    const res = await api.get<{ items?: CalendarItem[]; days?: DayMark[] }>('/calendar', { params });
+    return { items: res.data.items ?? [], days: res.data.days ?? [] };
+  },
   /** Whose calendars besides your own you may open, by team. Empty for somebody who manages nobody. */
   people: () => getList<CalendarGroup>('/calendar/people', 'groups'),
   /** Whether people are free. Never carries a title. */

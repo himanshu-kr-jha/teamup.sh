@@ -196,6 +196,34 @@ func newClient(cfg Config, endpoint string, secure bool) (*minio.Client, error) 
 	return c, nil
 }
 
+// PublicOrigin is the scheme and host the browser is sent to for uploads and
+// downloads, read from a URL the presigner really signs rather than from the
+// configured endpoint. They differ: for an Amazon endpoint minio-go signs for
+// the dualstack host (s3.dualstack.ap-south-1.amazonaws.com for
+// s3.ap-south-1.amazonaws.com), and a Content-Security-Policy that named the
+// configured host blocked every upload on the live site. Signing is offline,
+// since the region is configured.
+func (s *Service) PublicOrigin() string {
+	fallback := func() string {
+		scheme := "http"
+		if s.cfg.Secure {
+			scheme = "https"
+		}
+		if s.cfg.Endpoint == "" {
+			return ""
+		}
+		return scheme + "://" + s.cfg.Endpoint
+	}
+	if s.presigner == nil {
+		return fallback()
+	}
+	u, err := s.presigner.PresignedPutObject(context.Background(), s.bucketName, "origin-probe", time.Minute)
+	if err != nil || u.Host == "" {
+		return fallback()
+	}
+	return u.Scheme + "://" + u.Host
+}
+
 // internalAddr is the address this process itself dials, which is the one worth
 // naming when a server-side call fails.
 func (s *Service) internalAddr() string {
