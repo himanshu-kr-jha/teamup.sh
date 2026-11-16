@@ -544,9 +544,11 @@ func TestAttendanceHasFirstJoinLastLeaveMinutesPresentAndMinutesLate(t *testing.
 		first, last   int
 		present, late int
 	}{
-		{"on a late arrival", w.late, 7, 37, 30, 7},
+		// Inside the window (8:30 to 9:30) nobody is late, the owner's decision of
+		// 16 November; only a reviewer's decision makes somebody late.
+		{"a later arrival, inside the window", w.late, 7, 37, 30, 0},
 		{"early, never negative", w.early, -5, 20, 25, 0},
-		{"dropped and rejoined", w.rejoiner, 7, 37, 20, 7},
+		{"dropped and rejoined", w.rejoiner, 7, 37, 20, 0},
 		{"two overlapping devices", w.twoDevices, 0, 30, 30, 0},
 	} {
 		p, ok := day.person(c.id)

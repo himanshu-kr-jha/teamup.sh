@@ -33,7 +33,7 @@ export const RELEASES: Release[] = [
       {
         area: 'meetings',
         title: 'Attendance counts in a window',
-        body: 'Each stand-up says when joining counts, by default from half an hour before the start to half an hour after: for 9:00, 8:30 to 9:30. Before the start is on time, inside the window is late by the minutes after the start, and joining after it is absent, with when they came.',
+        body: 'Each stand-up says when joining counts, by default from half an hour before the start to half an hour after: for 9:00, 8:30 to 9:30. Joining inside the window is present, and joining after it is absent, with when they came. Only somebody who reviews attendance marks a day late.',
       },
       {
         area: 'meetings',

@@ -237,7 +237,7 @@ func TestAttendanceExportsAsCSVAndExcelWithTotals(t *testing.T) {
 			lena = l
 		}
 	}
-	if abe != "Absent Abe,Field work,0,0,0,0,1,0,0" || lena != "Late Lena,Late 7 min,1,0,0,0,0,0,0" {
+	if abe != "Absent Abe,Field work,0,0,0,0,1,0,0" || lena != "Late Lena,Present,1,0,0,0,0,0,0" {
 		t.Errorf("rows: Abe %q, Lena %q", abe, lena)
 	}
 
@@ -271,8 +271,8 @@ func TestAttendanceExportsAsCSVAndExcelWithTotals(t *testing.T) {
 }
 
 // The window, the owner's decision of 16 November: a 9:00 stand-up counts from
-// 8:30 to 9:30. Early is on time; inside it, late by the minutes after 9:00;
-// after it, absent, with when they came.
+// 8:30 to 9:30. Anywhere inside it is present, and not late; after it, absent,
+// with when they came.
 func TestJoiningCountsOnlyInsideTheDaysWindow(t *testing.T) {
 	w := newScrumWorld(t)
 	var room string
@@ -318,8 +318,8 @@ func TestJoiningCountsOnlyInsideTheDaysWindow(t *testing.T) {
 				t.Errorf("Max was there from 8:20 into the window: on time, got %+v", p)
 			}
 		case w.late.String():
-			if p.Status != "present" || p.MinutesLate != 7 {
-				t.Errorf("Lena at 9:07 is 7 minutes late, got %+v", p)
+			if p.Status != "present" || p.MinutesLate != 0 {
+				t.Errorf("Lena at 9:07 is inside the window: present, not late, got %+v", p)
 			}
 		}
 	}

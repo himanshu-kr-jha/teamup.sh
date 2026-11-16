@@ -320,7 +320,7 @@ export function StandingMeetingDialog({
         </div>
         <p className="text-xs text-muted-foreground" data-testid="attend-window">
           {form.timeOfDay
-            ? `Attendance counts ${describeWindow(form.timeOfDay, form.attendBeforeMinutes, form.attendAfterMinutes)}. Joining before ${form.timeOfDay} is on time; after the window is absent.`
+            ? `Attendance counts ${describeWindow(form.timeOfDay, form.attendBeforeMinutes, form.attendAfterMinutes)}. Joining inside it is present; joining after it is absent.`
             : 'Pick a time first.'}
         </p>
       </fieldset>

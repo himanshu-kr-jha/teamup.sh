@@ -837,8 +837,8 @@ func (s *Service) attendance(ctx context.Context, orgID, meetingID, callerID uui
 		if held && occ.scheduledEnd != nil && occ.scheduledEnd.After(endOfDay) {
 			endOfDay = *occ.scheduledEnd
 		}
-		// Joining counts inside the day's window; somebody who came only after it
-		// closed is absent, with when they came.
+		// Joining counts inside the day's window, and is present, not late;
+		// somebody who came only after it closed is absent, with when they came.
 		var window *[2]time.Time
 		// Only on a day it runs: somebody who comes on another day is on the record
 		// as having come, with nobody absent.
@@ -861,17 +861,16 @@ func (s *Service) attendance(ctx context.Context, orgID, meetingID, callerID uui
 			}
 			a := attendeeFrom(id, list, day.ScheduledStart, occ.endedAt, now, endOfDay)
 			if window != nil {
-				first, inside := firstInWindow(list, window[0], window[1])
+				_, inside := firstInWindow(list, window[0], window[1])
 				if !inside {
 					if a.FirstJoinAt != nil {
 						cameLate[id] = *a.FirstJoinAt
 					}
 					continue
 				}
+				// Inside the window is on time, the owner's decision of 16
+				// November: only a reviewer's decision makes somebody late.
 				a.MinutesLate = 0
-				if first.After(day.ScheduledStart) {
-					a.MinutesLate = int(first.Sub(day.ScheduledStart) / time.Minute)
-				}
 			}
 			attended[id] = true
 			day.People = append(day.People, a)

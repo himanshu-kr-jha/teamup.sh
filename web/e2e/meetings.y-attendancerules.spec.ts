@@ -81,8 +81,8 @@ test.describe('attendance rules', () => {
     await expect(day.getByText('Cameras required')).toBeVisible();
     await expect(row(olivia.page, NAME('alice'))).toContainText('In review');
     await expect(row(olivia.page, NAME('alice'))).toContainText('Camera never turned on');
-    // Pat came ten minutes after the start, inside the window: late.
-    await expect(row(olivia.page, NAME('pat'))).toContainText('Late');
+    // Pat came ten minutes after the start, inside the window: present, not late.
+    await expect(row(olivia.page, NAME('pat'))).toContainText('Present');
     await expect(day.getByText(/^Counts /)).toBeVisible();
     await expect(day).toContainText('in review');
 

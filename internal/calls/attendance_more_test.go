@@ -565,8 +565,9 @@ func TestTheScheduledStartFollowsDaylightSavingInTheMeetingsZone(t *testing.T) {
 	if want := time.Date(2026, 12, 1, 14, 0, 0, 0, time.UTC); !day.ScheduledStart.Equal(want) {
 		t.Errorf("09:00 in winter is 14:00 UTC, got %v", day.ScheduledStart)
 	}
-	if p, ok := day.person(ann); !ok || p.MinutesLate != 5 {
-		t.Errorf("five minutes late, got %+v", p)
+	// 09:05 is inside that day's window, so present, and on time.
+	if p, ok := day.person(ann); !ok || p.Status != "present" || p.MinutesLate != 0 {
+		t.Errorf("present at 09:05, got %+v", p)
 	}
 }
 

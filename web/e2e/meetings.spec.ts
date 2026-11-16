@@ -802,7 +802,7 @@ test.describe('7. the standing meeting', () => {
     await owner.dispose();
   });
 
-  test('everybody joins without knocking; rejoining the same day is the same record; attendance by day shows present, late and absent', async ({ as }) => {
+  test('everybody joins without knocking; rejoining the same day is the same record; attendance by day shows present and absent', async ({ as }) => {
     test.setTimeout(180_000);
     const owner = await apiAs('owner');
     const id = await standingId(owner, MORNING);
@@ -810,6 +810,9 @@ test.describe('7. the standing meeting', () => {
     // People who were in the organization before today, so the days before count them as absent.
     sql(`UPDATE users SET created_at = now() - interval '10 days' WHERE org_id = (SELECT org_id FROM users WHERE email = '${PEOPLE.owner.email}')`);
     sql(`UPDATE standing_meetings SET created_at = now() - interval '3 days'`);
+    // It started half an hour ago, so a window reaching an hour past the start
+    // takes these joins in (the default closes half an hour after it).
+    await owner.patch(`/standing-meetings/${id}`, { attendAfterMinutes: 60 });
 
     const alice = await as('alice');
     const sam = await as('sam');
@@ -847,14 +850,13 @@ test.describe('7. the standing meeting', () => {
     await expect(attendanceRow(olivia.page, NAME('sam'))).toContainText('Present');
     await expect(attendanceRow(olivia.page, NAME('ann'))).toContainText('Absent');
     await expect(attendanceRow(olivia.page, NAME('pat'))).toContainText('Absent');
-    const late = Number(await minutesLate(olivia.page, NAME('alice')).innerText());
-    expect(late, 'minutes late, scheduled 30 minutes ago').toBeGreaterThanOrEqual(25);
-    expect(late).toBeLessThanOrEqual(40);
+    // Inside the window is present and not late (16 November).
+    await expect(minutesLate(olivia.page, NAME('alice'))).toHaveText('0');
     await expect(minutesLate(olivia.page, NAME('ann'))).toHaveText('-');
     const day = (await owner.get(`/standing-meetings/${id}/attendance`)).days.at(-1);
     const row = (name: string) => day.people.find((p: any) => p.name === name);
     expect(row(NAME('alice'))).toMatchObject({ status: 'present' });
-    expect(row(NAME('alice')).minutesLate).toBeGreaterThanOrEqual(25);
+    expect(row(NAME('alice')).minutesLate).toBe(0);
     expect(row(NAME('alice')).minutesPresent).toBeGreaterThanOrEqual(0);
     expect(row(NAME('alice')).firstJoinAt).toBeTruthy();
     expect(row(NAME('ann'))).toMatchObject({ status: 'absent' });
@@ -909,7 +911,7 @@ test.describe('7. the standing meeting', () => {
       await api.dispose();
       const session = await as(who);
       await session.page.goto('/calls');
-      await expect(session.page.getByRole('heading', { name: MORNING })).toBeVisible();
+      await expect(session.page.getByRole('heading', { name: MORNING, exact: true }).first()).toBeVisible();
       await expect(session.page.getByRole('link', { name: `Attendance for ${MORNING}` })).toHaveCount(0);
       await session.page.goto(`/calls/standing/${id}/attendance`);
       await expect(session.page.getByText('Attendance is not for you to see')).toBeVisible();
