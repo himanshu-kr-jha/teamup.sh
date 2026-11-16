@@ -27,7 +27,7 @@ var DefaultRoles = []string{"owner", "admin", "manager", "member"}
 // internal/org keeps the two the same.
 var DefaultRolePermissions = map[string]string{
 	"owner":   `["*"]`,
-	"admin":   `["org.settings","members.manage","roles.manage","teams.manage","tasks.all","channels.all","meetings.all","calls.record","notes.settings","notes.read_all"]`,
+	"admin":   `["org.settings","members.manage","roles.manage","teams.manage","tasks.all","channels.all","meetings.all","calls.record","notes.settings","notes.read_all","attendance.view","attendance.review"]`,
 	"manager": `["calls.record"]`,
 	"member":  `[]`,
 }

@@ -16,6 +16,9 @@ import { standingApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
 import { useActiveCall } from '../ActiveCallProvider';
+import { useAuth } from '@/features/auth/AuthProvider';
+import { PERMS, can } from '@/shared/permissions';
+import { FieldWorkBar } from './FieldWork';
 import { StandingMeetingDialog } from './StandingMeetingDialog';
 import { describeAudience, describeSchedule, type StandingMeeting } from './standing';
 
@@ -43,6 +46,9 @@ export function useJoinStanding() {
 
 /** The permanent rooms, pinned at the top of Calls. */
 export function StandingMeetings() {
+  const { user } = useAuth();
+  // Attendance is for owners, admins and whoever is given it (16 November).
+  const seesAttendance = can(user, PERMS.attendance) || can(user, PERMS.attendanceView) || can(user, PERMS.meetingsAll);
   const queryClient = useQueryClient();
   const toast = useToast();
   const { joinStanding, joining } = useJoinStanding();
@@ -98,6 +104,9 @@ export function StandingMeetings() {
         )}
       </div>
 
+      {/* Whoever a stand-up is for may be out in the field instead. */}
+      {meetings.some((m) => m.inAudience) && <FieldWorkBar />}
+
       {isPending ? (
         <div role="status" className="flex items-center gap-2 py-3 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
@@ -152,12 +161,14 @@ export function StandingMeetings() {
                       </Button>
                     </>
                   )}
-                  <Button variant="outline" size="sm" asChild>
+                  {seesAttendance && (
+<Button variant="outline" size="sm" asChild>
                     <Link to={`/calls/standing/${meeting.id}/attendance`} aria-label={`Attendance for ${meeting.name}`}>
                       <ClipboardList className="mr-1 h-4 w-4" aria-hidden="true" />
                       Attendance
                     </Link>
                   </Button>
+)}
                   {meeting.inAudience !== false ? (
                     <Button
                       size="sm"

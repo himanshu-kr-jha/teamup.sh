@@ -745,6 +745,8 @@ const standingId = async (api: Awaited<ReturnType<typeof apiAs>>, name: string):
   (await api.get('/standing-meetings')).standingMeetings.find((m: any) => m.name === name).id;
 
 const attendanceRow = (page: Page, name: string) => page.getByRole('table').first().getByRole('row', { name: new RegExp(name) });
+// The sixth column, by its place: a reviewer has a seventh, Decide, after it.
+const minutesLate = (page: Page, name: string) => attendanceRow(page, name).getByRole('cell').nth(5);
 
 async function joinStandingByCard(page: Page, name: string) {
   await page.goto('/calls');
@@ -800,7 +802,7 @@ test.describe('7. the standing meeting', () => {
     await owner.dispose();
   });
 
-  test('everybody joins without knocking; rejoining the same day is the same record; attendance by day shows present, late and absent', async ({ as }) => {
+  test('everybody joins without knocking; rejoining the same day is the same record; attendance by day shows present and absent', async ({ as }) => {
     test.setTimeout(180_000);
     const owner = await apiAs('owner');
     const id = await standingId(owner, MORNING);
@@ -808,6 +810,9 @@ test.describe('7. the standing meeting', () => {
     // People who were in the organization before today, so the days before count them as absent.
     sql(`UPDATE users SET created_at = now() - interval '10 days' WHERE org_id = (SELECT org_id FROM users WHERE email = '${PEOPLE.owner.email}')`);
     sql(`UPDATE standing_meetings SET created_at = now() - interval '3 days'`);
+    // It started half an hour ago, so a window reaching an hour past the start
+    // takes these joins in (the default closes half an hour after it).
+    await owner.patch(`/standing-meetings/${id}`, { attendAfterMinutes: 60 });
 
     const alice = await as('alice');
     const sam = await as('sam');
@@ -845,14 +850,13 @@ test.describe('7. the standing meeting', () => {
     await expect(attendanceRow(olivia.page, NAME('sam'))).toContainText('Present');
     await expect(attendanceRow(olivia.page, NAME('ann'))).toContainText('Absent');
     await expect(attendanceRow(olivia.page, NAME('pat'))).toContainText('Absent');
-    const late = Number(await attendanceRow(olivia.page, NAME('alice')).getByRole('cell').last().innerText());
-    expect(late, 'minutes late, scheduled 30 minutes ago').toBeGreaterThanOrEqual(25);
-    expect(late).toBeLessThanOrEqual(40);
-    await expect(attendanceRow(olivia.page, NAME('ann')).getByRole('cell').last()).toHaveText('-');
+    // Inside the window is present and not late (16 November).
+    await expect(minutesLate(olivia.page, NAME('alice'))).toHaveText('0');
+    await expect(minutesLate(olivia.page, NAME('ann'))).toHaveText('-');
     const day = (await owner.get(`/standing-meetings/${id}/attendance`)).days.at(-1);
     const row = (name: string) => day.people.find((p: any) => p.name === name);
     expect(row(NAME('alice'))).toMatchObject({ status: 'present' });
-    expect(row(NAME('alice')).minutesLate).toBeGreaterThanOrEqual(25);
+    expect(row(NAME('alice')).minutesLate).toBe(0);
     expect(row(NAME('alice')).minutesPresent).toBeGreaterThanOrEqual(0);
     expect(row(NAME('alice')).firstJoinAt).toBeTruthy();
     expect(row(NAME('ann'))).toMatchObject({ status: 'absent' });
@@ -882,51 +886,36 @@ test.describe('7. the standing meeting', () => {
     await olivia.page.goto(`/calls/standing/${eveningId}/attendance?from=${dayParam(at(-1, 0))}&to=${today}`);
     await expect(olivia.page.getByRole('region', { name: `Attendance on ${eveningYesterday.date}` })).toBeVisible();
     await expect(attendanceRow(olivia.page, NAME('alice'))).toContainText('Present');
-    await expect(attendanceRow(olivia.page, NAME('alice')).getByRole('cell').last()).toHaveText('0');
+    await expect(minutesLate(olivia.page, NAME('alice'))).toHaveText('0');
 
     await owner.dispose();
   });
 
-  test('who sees whose attendance: admin everybody, manager their people, employee only themself', async ({ as }) => {
+  test('who sees attendance: the owner everybody; a manager and an employee none, until given See attendance', async ({ as }) => {
     const owner = await apiAs('owner');
     const id = await standingId(owner, MORNING);
-    const names = async (who: keyof typeof PEOPLE, query = '') => {
-      const api = await apiAs(who);
-      const res = await api.get(`/standing-meetings/${id}/attendance${query}`);
-      await api.dispose();
-      return res.days.at(-1).people.map((p: any) => p.name).sort();
-    };
-    const everyone = await names('owner');
+    const everyone = (await owner.get(`/standing-meetings/${id}/attendance`)).days.at(-1).people.map((p: any) => p.name);
     for (const n of [NAME('alice'), NAME('sam'), NAME('mia'), NAME('max'), NAME('ann'), NAME('pat')]) expect(everyone).toContain(n);
-    expect(everyone.length).toBeGreaterThanOrEqual(7);
-    // Mia manages Backend and Platform, and sees herself; nobody from Sales, and not the owner.
-    expect(await names('mia')).toEqual([NAME('alice'), NAME('ann'), NAME('mia'), NAME('pat')].sort());
-    expect(await names('alice')).toEqual([NAME('alice')]);
-    expect(await names('sam')).toEqual([NAME('sam')]);
-    // An employee cannot widen it with a team, and a manager cannot ask for a team that is not theirs.
+    // The owner narrows to one team.
     const teams = readState().teams;
-    expect(await names('alice', `?teamId=${teams.sales}`)).toEqual([NAME('alice')]);
-    const mia = await apiAs('mia');
-    expect(await mia.status('get', `/standing-meetings/${id}/attendance?teamId=${teams.sales}`)).toBe(404);
-    // The admin narrows to one team.
-    const sales = await names('owner', `?teamId=${teams.sales}`);
+    const sales = (await owner.get(`/standing-meetings/${id}/attendance?teamId=${teams.sales}`)).days.at(-1).people.map((p: any) => p.name);
     expect(sales).toContain(NAME('sam'));
     expect(sales).not.toContain(NAME('alice'));
-    await mia.dispose();
 
-    // The same through the pages.
-    const miaSession = await as('mia');
-    await miaSession.page.goto(`/calls/standing/${id}/attendance`);
-    await expect(attendanceRow(miaSession.page, NAME('alice'))).toContainText('Present');
-    await expect(attendanceRow(miaSession.page, NAME('ann'))).toContainText('Absent');
-    await expect(miaSession.page.getByRole('cell', { name: NAME('sam') })).toHaveCount(0);
-    const aliceSession = await as('alice');
-    await aliceSession.page.goto(`/calls/standing/${id}/attendance`);
-    await expect(attendanceRow(aliceSession.page, NAME('alice'))).toContainText('Present');
-    await expect(aliceSession.page.getByRole('cell', { name: NAME('ann') })).toHaveCount(0);
-    await expect(aliceSession.page.getByRole('cell', { name: NAME('sam') })).toHaveCount(0);
-    // An employee is not offered a log that would only refuse them.
-    await expect(aliceSession.page.getByRole('button', { name: /Show the call log/ })).toHaveCount(0);
+    // Attendance is for whoever is given it (16 November): Mia manages Backend and
+    // Alice is on it, and neither sees any, their own included.
+    for (const who of ['mia', 'alice'] as const) {
+      const api = await apiAs(who);
+      expect(await api.status('get', `/standing-meetings/${id}/attendance`), `${who} reading attendance`).toBe(403);
+      expect(await api.status('get', `/standing-meetings/${id}/attendance/export?format=csv`), `${who} downloading it`).toBe(403);
+      await api.dispose();
+      const session = await as(who);
+      await session.page.goto('/calls');
+      await expect(session.page.getByRole('heading', { name: MORNING, exact: true }).first()).toBeVisible();
+      await expect(session.page.getByRole('link', { name: `Attendance for ${MORNING}` })).toHaveCount(0);
+      await session.page.goto(`/calls/standing/${id}/attendance`);
+      await expect(session.page.getByText('Attendance is not for you to see')).toBeVisible();
+    }
     // A standing meeting has no members, so being in the room never opened the log (decision 27).
     const alice = await apiAs('alice');
     const callId = (await owner.get(`/standing-meetings/${id}/attendance`)).days.at(-1).callId;
@@ -1199,10 +1188,10 @@ test.describe('10. defects found by this suite, kept fixed', () => {
     const alice = await apiAs('alice');
     await alice.post(`/standing-meetings/${made.standingMeeting.id}/join`);
     expect(await alice.status('get', `/calls/${(await alice.post(`/standing-meetings/${made.standingMeeting.id}/join`)).callId}/log`), 'the server never lets her read it').toBe(404);
+    // Nor, since 16 November, any attendance at all.
     const session = await as('alice');
     await session.page.goto(`/calls/standing/${made.standingMeeting.id}/attendance`);
-    await expect(session.page.getByRole('heading', { level: 1, name: 'Log button room' })).toBeVisible();
-    await expect(session.page.getByRole('region', { name: /^Attendance on / }).first()).toBeVisible();
+    await expect(session.page.getByText('Attendance is not for you to see')).toBeVisible();
     await expect(session.page.getByRole('button', { name: /Show the call log/ }), 'a button whose only answer is "You do not have access"').toHaveCount(0);
 
     // Somebody who can read it is still offered it, and it opens.

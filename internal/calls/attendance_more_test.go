@@ -565,8 +565,9 @@ func TestTheScheduledStartFollowsDaylightSavingInTheMeetingsZone(t *testing.T) {
 	if want := time.Date(2026, 12, 1, 14, 0, 0, 0, time.UTC); !day.ScheduledStart.Equal(want) {
 		t.Errorf("09:00 in winter is 14:00 UTC, got %v", day.ScheduledStart)
 	}
-	if p, ok := day.person(ann); !ok || p.MinutesLate != 5 {
-		t.Errorf("five minutes late, got %+v", p)
+	// 09:05 is inside that day's window, so present, and on time.
+	if p, ok := day.person(ann); !ok || p.Status != "present" || p.MinutesLate != 0 {
+		t.Errorf("present at 09:05, got %+v", p)
 	}
 }
 
@@ -688,15 +689,13 @@ func TestAnAttendanceRangeIsValidated(t *testing.T) {
 	}
 }
 
-func TestAManagerSeesTheirOwnAttendanceWithoutATeamFilter(t *testing.T) {
+func TestAManagerWithoutThePermissionSeesNoAttendanceNorDownloadsIt(t *testing.T) {
 	w := newScrumWorld(t)
-	d := w.day(t, w.mgr, "manager", "")
-	if _, ok := d.person(w.mgr); !ok {
-		t.Error("nobody needs permission to see themself")
-	}
-	d = w.day(t, w.mgr, "manager", "&teamId="+w.backend.String())
-	if _, ok := d.person(w.mgr); ok {
-		t.Error("a team filter asks for that team and nothing else")
+	r := w.as(t, w.mgr, "manager")
+	for _, path := range []string{"/attendance?date=" + w.date, "/attendance/export?format=csv&date=" + w.date} {
+		if code := doJSON(t, r, http.MethodGet, "/api/standing-meetings/"+w.meeting.ID+path, "").Code; code != http.StatusForbidden {
+			t.Errorf("%s: want 403, got %d", path, code)
+		}
 	}
 }
 
