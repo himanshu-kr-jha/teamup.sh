@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/rs/zerolog/log"
 
 	apperrors "github.com/teamup/teamup/pkg/errors"
 )
@@ -43,10 +44,56 @@ var photoTypes = map[string]bool{"image/jpeg": true, "image/png": true, "image/w
 type Service struct {
 	db    *pgxpool.Pool
 	clock func() time.Time
+	geo   *Geocoder
 }
 
 func NewService(db *pgxpool.Pool) *Service {
 	return &Service{db: db, clock: time.Now}
+}
+
+// WithGeocoder has check-ins carry the address around them as well.
+func (s *Service) WithGeocoder(g *Geocoder) *Service {
+	s.geo = g
+	return s
+}
+
+// addressBudget is how long a check-in waits for its address before it is
+// saved without one: the photo and the coordinates are what count.
+const addressBudget = 4 * time.Second
+
+// address is the address around a place, or nothing when it cannot be told.
+func (s *Service) address(ctx context.Context, lat, lon float64) string {
+	if s.geo == nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, addressBudget)
+	defer cancel()
+	a, err := s.geo.Address(ctx, lat, lon)
+	if err != nil {
+		log.Warn().Err(err).Msg("Could not tell the address of a field work check-in")
+		return ""
+	}
+	return a
+}
+
+// Place is the address around where somebody is, for the check-in they are
+// about to send: shown before they send it, and printed on the photo.
+func (s *Service) Place(ctx context.Context, orgID uuid.UUID, lat, lon float64) (string, error) {
+	set, err := s.Settings(ctx, orgID)
+	if err != nil {
+		return "", err
+	}
+	if !set.Enabled {
+		return "", apperrors.New(apperrors.CodeForbidden, "field work check-ins are not turned on for this organization")
+	}
+	if !validPlace(lat, lon) {
+		return "", badRequest("that is not a place")
+	}
+	return s.address(ctx, lat, lon), nil
+}
+
+func validPlace(lat, lon float64) bool {
+	return !math.IsNaN(lat) && !math.IsNaN(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180 && (lat != 0 || lon != 0)
 }
 
 // Settings is the organization's choice.
@@ -105,7 +152,9 @@ type Checkin struct {
 	Latitude  float64   `json:"latitude"`
 	Longitude float64   `json:"longitude"`
 	AccuracyM float64   `json:"accuracyM"`
-	Note      string    `json:"note"`
+	// Address is the address around the place, when it could be told.
+	Address string `json:"address"`
+	Note    string `json:"note"`
 }
 
 func badRequest(message string) error { return apperrors.New(apperrors.CodeBadRequest, message) }
@@ -157,8 +206,7 @@ func (s *Service) CheckIn(ctx context.Context, orgID, userID uuid.UUID, in Input
 	if !set.Enabled {
 		return nil, apperrors.New(apperrors.CodeForbidden, "field work check-ins are not turned on for this organization")
 	}
-	if math.IsNaN(in.Latitude) || math.IsNaN(in.Longitude) || in.Latitude < -90 || in.Latitude > 90 || in.Longitude < -180 || in.Longitude > 180 ||
-		(in.Latitude == 0 && in.Longitude == 0) {
+	if !validPlace(in.Latitude, in.Longitude) {
 		return nil, badRequest("the location is missing; allow the app to use your location and try again")
 	}
 	if math.IsNaN(in.AccuracyM) || in.AccuracyM < 0 || in.AccuracyM > maxAccuracyM {
@@ -173,11 +221,14 @@ func (s *Service) CheckIn(ctx context.Context, orgID, userID uuid.UUID, in Input
 		return nil, err
 	}
 	c := Checkin{UserID: userID, OnDate: today(in.Today, s.clock()), Latitude: in.Latitude, Longitude: in.Longitude, AccuracyM: in.AccuracyM, Note: note}
+	// The server's own lookup, which the phone's preview asked a moment ago, so
+	// it is remembered; what the phone says the address is is not taken.
+	c.Address = s.address(ctx, c.Latitude, c.Longitude)
 	err = s.db.QueryRow(ctx, `
-		INSERT INTO field_checkins (org_id, user_id, on_date, taken_at, latitude, longitude, accuracy_m, note, photo_type, photo)
-		VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9, $10)
+		INSERT INTO field_checkins (org_id, user_id, on_date, taken_at, latitude, longitude, accuracy_m, address, note, photo_type, photo)
+		VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING id, taken_at
-	`, orgID, userID, c.OnDate, s.clock(), c.Latitude, c.Longitude, c.AccuracyM, note, kind, photo).Scan(&c.ID, &c.TakenAt)
+	`, orgID, userID, c.OnDate, s.clock(), c.Latitude, c.Longitude, c.AccuracyM, c.Address, note, kind, photo).Scan(&c.ID, &c.TakenAt)
 	if err != nil {
 		return nil, fmt.Errorf("save field work: %w", err)
 	}
@@ -187,7 +238,7 @@ func (s *Service) CheckIn(ctx context.Context, orgID, userID uuid.UUID, in Input
 // Mine is somebody's own check-ins on a date.
 func (s *Service) Mine(ctx context.Context, orgID, userID uuid.UUID, rawToday string) ([]Checkin, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, user_id, on_date::text, taken_at, latitude, longitude, accuracy_m, note
+		SELECT id, user_id, on_date::text, taken_at, latitude, longitude, accuracy_m, address, note
 		FROM field_checkins WHERE org_id = $1 AND user_id = $2 AND on_date = $3::date
 		ORDER BY taken_at DESC
 	`, orgID, userID, today(rawToday, s.clock()))
@@ -199,7 +250,7 @@ func (s *Service) Mine(ctx context.Context, orgID, userID uuid.UUID, rawToday st
 	for rows.Next() {
 		var c Checkin
 		var accuracy float32
-		if err := rows.Scan(&c.ID, &c.UserID, &c.OnDate, &c.TakenAt, &c.Latitude, &c.Longitude, &accuracy, &c.Note); err != nil {
+		if err := rows.Scan(&c.ID, &c.UserID, &c.OnDate, &c.TakenAt, &c.Latitude, &c.Longitude, &accuracy, &c.Address, &c.Note); err != nil {
 			return nil, fmt.Errorf("scan field work: %w", err)
 		}
 		c.AccuracyM = float64(accuracy)
@@ -258,7 +309,7 @@ func (s *Service) List(ctx context.Context, orgID uuid.UUID, v Viewer, in ListIn
 		who = &v.ID
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT f.id, f.user_id, u.name, f.on_date::text, f.taken_at, f.latitude, f.longitude, f.accuracy_m, f.note
+		SELECT f.id, f.user_id, u.name, f.on_date::text, f.taken_at, f.latitude, f.longitude, f.accuracy_m, f.address, f.note
 		FROM field_checkins f JOIN users u ON u.id = f.user_id
 		WHERE f.org_id = $1 AND f.on_date BETWEEN $2::date AND $3::date AND ($4::uuid IS NULL OR f.user_id = $4)
 		ORDER BY f.taken_at DESC
@@ -272,7 +323,7 @@ func (s *Service) List(ctx context.Context, orgID uuid.UUID, v Viewer, in ListIn
 	for rows.Next() {
 		var c Checkin
 		var accuracy float32
-		if err := rows.Scan(&c.ID, &c.UserID, &c.Name, &c.OnDate, &c.TakenAt, &c.Latitude, &c.Longitude, &accuracy, &c.Note); err != nil {
+		if err := rows.Scan(&c.ID, &c.UserID, &c.Name, &c.OnDate, &c.TakenAt, &c.Latitude, &c.Longitude, &accuracy, &c.Address, &c.Note); err != nil {
 			return nil, fmt.Errorf("scan field work: %w", err)
 		}
 		c.AccuracyM = float64(accuracy)

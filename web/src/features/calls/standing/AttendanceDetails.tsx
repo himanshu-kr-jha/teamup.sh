@@ -74,6 +74,7 @@ export function FieldDetail({ person }: { person: AttendancePerson }) {
             />
           )}
           {field.note && <p className="text-sm">{field.note}</p>}
+          {field.address && <p className="text-sm text-muted-foreground">{field.address}</p>}
           <a
             href={mapLink(field.latitude, field.longitude)}
             target="_blank"

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Camera, Loader2, MapPin, RotateCcw, Trash2 } from 'lucide-react';
+import { Camera, Loader2, MapPin, RotateCcw, SwitchCamera, Trash2 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog';
 import { Label } from '@/shared/components/ui/label';
@@ -8,7 +8,7 @@ import { Textarea } from '@/shared/components/ui/textarea';
 import { fieldWorkApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
-import { formatTime } from '@/shared/utils/cn';
+import { cn, formatTime } from '@/shared/utils/cn';
 import { Link } from 'react-router-dom';
 import { mapLink } from './AttendanceDetails';
 
@@ -22,8 +22,29 @@ export function coordinates(latitude: number, longitude: number): string {
   return `${lat}, ${lng}`;
 }
 
-/** What is printed on the photo: when, where and how closely, and the note. */
-export function stampLines(at: Date, place: { latitude: number; longitude: number; accuracyM: number }, note: string): string[] {
+/** An address in lines that fit across a photo, broken after its commas, at most two. */
+export function addressLines(address: string, width = 64): string[] {
+  const lines: string[] = [];
+  let line = '';
+  for (const part of address.split(',').map((p) => p.trim()).filter(Boolean)) {
+    const next = line ? `${line}, ${part}` : part;
+    if (next.length > width && line) {
+      lines.push(`${line},`);
+      line = part;
+    } else line = next;
+  }
+  if (line) lines.push(line);
+  if (lines.length > 2) return [lines[0], `${lines.slice(1).join(' ').slice(0, width - 1)}…`];
+  return lines.map((l) => (l.length > width ? `${l.slice(0, width - 1)}…` : l));
+}
+
+/** What is printed on the photo: when, where and how closely, the address around it, and the note. */
+export function stampLines(
+  at: Date,
+  place: { latitude: number; longitude: number; accuracyM: number },
+  note: string,
+  address = ''
+): string[] {
   const when = at.toLocaleString('en-IN', {
     day: 'numeric',
     month: 'short',
@@ -32,7 +53,7 @@ export function stampLines(at: Date, place: { latitude: number; longitude: numbe
     minute: '2-digit',
     timeZoneName: 'short',
   });
-  const lines = [when, `${coordinates(place.latitude, place.longitude)}  ±${Math.round(place.accuracyM)} m`];
+  const lines = [when, `${coordinates(place.latitude, place.longitude)}  ±${Math.round(place.accuracyM)} m`, ...addressLines(address)];
   const trimmed = note.trim();
   if (trimmed) lines.push(trimmed.length > 70 ? `${trimmed.slice(0, 69)}…` : trimmed);
   return lines;
@@ -106,6 +127,7 @@ export function FieldWorkBar() {
           <span className="font-medium">In the field today.</span>{' '}
           <span className="text-muted-foreground">
             Checked in at {formatTime(latest.takenAt)}
+            {latest.address ? ` near ${latest.address}` : ''}
             {latest.note ? `: ${latest.note}` : ''}.{' '}
             <a
               href={mapLink(latest.latitude, latest.longitude)}
@@ -149,14 +171,22 @@ export function FieldWorkBar() {
 }
 
 type Place = { latitude: number; longitude: number; accuracyM: number };
+type Facing = 'environment' | 'user';
 
+/**
+ * Checking in: the camera, the place and a note. On a phone it fills the
+ * screen, as a camera app does, with the shutter at the foot and a switch to
+ * the front camera for a photo of yourself at the site.
+ */
 function CheckInDialog({ onClose }: { onClose: () => void }) {
   const queryClient = useQueryClient();
   const toast = useToast();
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [cameraProblem, setCameraProblem] = useState('');
-  // The picture as taken, and as sent: with the time and place printed on it.
+  const [facing, setFacing] = useState<Facing>('environment');
+  const [cameras, setCameras] = useState(0);
+  // The picture as taken, and as sent: with the time, place and address printed on it.
   const [photo, setPhoto] = useState('');
   const [takenAt, setTakenAt] = useState<Date | null>(null);
   const [stamped, setStamped] = useState('');
@@ -164,7 +194,8 @@ function CheckInDialog({ onClose }: { onClose: () => void }) {
   const [placeProblem, setPlaceProblem] = useState('');
   const [note, setNote] = useState('');
 
-  // The back camera, live. Only a photo taken now counts, so there is no file picker.
+  // The camera, live; the back one unless the front is asked for. Only a photo
+  // taken now counts, so there is no file picker.
   useEffect(() => {
     let stopped = false;
     if (photo) return;
@@ -173,7 +204,7 @@ function CheckInDialog({ onClose }: { onClose: () => void }) {
       return;
     }
     navigator.mediaDevices
-      .getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 } }, audio: false })
+      .getUserMedia({ video: { facingMode: { ideal: facing }, width: { ideal: 1920 } }, audio: false })
       .then((stream) => {
         if (stopped) {
           stream.getTracks().forEach((t) => t.stop());
@@ -182,6 +213,11 @@ function CheckInDialog({ onClose }: { onClose: () => void }) {
         streamRef.current = stream;
         if (videoRef.current) videoRef.current.srcObject = stream;
         setCameraProblem('');
+        // Only once the camera is allowed does the browser say how many there are.
+        navigator.mediaDevices
+          .enumerateDevices()
+          .then((all) => !stopped && setCameras(all.filter((d) => d.kind === 'videoinput').length))
+          .catch(() => {});
       })
       .catch(() => setCameraProblem('The camera could not be opened. Allow TeamUp to use it, then try again.'));
     return () => {
@@ -189,7 +225,7 @@ function CheckInDialog({ onClose }: { onClose: () => void }) {
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
     };
-  }, [photo]);
+  }, [photo, facing]);
 
   // Where the phone is, as precisely as it can say, asked for at once.
   const locate = () => {
@@ -206,6 +242,15 @@ function CheckInDialog({ onClose }: { onClose: () => void }) {
   };
   useEffect(locate, []);
 
+  // The address around the place, which the server looks up and keeps with the check-in.
+  const { data: address = '', isFetching: findingAddress } = useQuery({
+    queryKey: ['field-work-place', place?.latitude.toFixed(4), place?.longitude.toFixed(4)],
+    queryFn: () => fieldWorkApi.place(place!.latitude, place!.longitude),
+    enabled: !!place,
+    staleTime: Infinity,
+    retry: false,
+  });
+
   const take = () => {
     const video = videoRef.current;
     if (!video || !video.videoWidth) return;
@@ -218,20 +263,20 @@ function CheckInDialog({ onClose }: { onClose: () => void }) {
     setTakenAt(new Date());
   };
 
-  // Reprinted when the place arrives or the note changes, so the preview is what is sent.
+  // Reprinted when the place or its address arrives or the note changes, so the preview is what is sent.
   useEffect(() => {
-    if (!photo || !place || !takenAt) {
+    if (!photo || !place || !takenAt || findingAddress) {
       setStamped('');
       return;
     }
     let live = true;
-    stampPhoto(photo, stampLines(takenAt, place, note))
+    stampPhoto(photo, stampLines(takenAt, place, note, address))
       .then((url) => live && setStamped(url))
       .catch(() => live && setStamped(''));
     return () => {
       live = false;
     };
-  }, [photo, place, takenAt, note]);
+  }, [photo, place, takenAt, note, address, findingAddress]);
 
   const send = useMutation({
     mutationFn: () => fieldWorkApi.checkIn({ photo: stamped, ...place!, note: note.trim() }),
@@ -244,85 +289,142 @@ function CheckInDialog({ onClose }: { onClose: () => void }) {
     onError: (err) => toast.error(apiErrorMessage(err, 'Could not send your check-in.')),
   });
 
+  const front = facing === 'user';
   return (
     <Dialog open onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
+      <DialogContent
+        className={cn(
+          'sm:max-w-md',
+          // A phone: the whole screen, the camera taking all the room the rest leaves.
+          'max-sm:inset-0 max-sm:left-0 max-sm:top-0 max-sm:flex max-sm:h-[100dvh] max-sm:max-h-none max-sm:max-w-none',
+          'max-sm:translate-x-0 max-sm:translate-y-0 max-sm:flex-col max-sm:gap-0 max-sm:overflow-hidden max-sm:border-0 max-sm:p-0'
+        )}
+      >
+        <DialogHeader className="max-sm:px-4 max-sm:py-3 max-sm:pr-12">
           <DialogTitle>Check in from the field</DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="max-sm:sr-only">
             Take a photo of where you are working. It goes with your location now, and today&rsquo;s stand-ups count
             you as in the field. Your manager and HR can see the photo.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="overflow-hidden rounded-md bg-muted">
+        <div className="relative overflow-hidden rounded-md bg-black max-sm:min-h-0 max-sm:flex-1 max-sm:rounded-none">
           {photo ? (
-            <img src={stamped || photo} alt="The photo you took" className="aspect-[4/3] w-full object-contain" />
+            <img
+              src={stamped || photo}
+              alt="The photo you took"
+              className="aspect-[4/3] w-full object-contain max-sm:aspect-auto max-sm:h-full"
+            />
           ) : cameraProblem ? (
-            <p role="alert" className="flex aspect-[4/3] items-center justify-center p-4 text-center text-sm text-muted-foreground">
+            <p
+              role="alert"
+              className="flex aspect-[4/3] items-center justify-center p-4 text-center text-sm text-white/80 max-sm:aspect-auto max-sm:h-full"
+            >
               {cameraProblem}
             </p>
           ) : (
-            <video ref={videoRef} autoPlay playsInline muted className="aspect-[4/3] w-full object-cover" aria-label="Your camera" />
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted
+              // The front camera is shown as a mirror, as phones do; the photo is not.
+              className={cn('aspect-[4/3] w-full object-cover max-sm:aspect-auto max-sm:h-full', front && '-scale-x-100')}
+              aria-label={front ? 'Your front camera' : 'Your camera'}
+            />
           )}
-        </div>
-        <div className="flex gap-2">
-          {photo ? (
-            <Button variant="outline" className="flex-1" onClick={() => {
-                setPhoto('');
-                setStamped('');
-              }}
->
-              <RotateCcw className="mr-1.5 h-4 w-4" aria-hidden="true" />
-              Take another
-            </Button>
-          ) : (
-            <Button className="flex-1" onClick={take} disabled={!!cameraProblem}>
-              <Camera className="mr-1.5 h-4 w-4" aria-hidden="true" />
-              Take photo
-            </Button>
-          )}
-        </div>
 
-        <p className="flex items-center gap-1.5 text-sm" role="status">
-          <MapPin className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
-          {place ? (
-            <span>Location found, within about {Math.round(place.accuracyM)} m.</span>
-          ) : placeProblem ? (
-            <span className="text-muted-foreground">
-              {placeProblem}{' '}
-              <button type="button" className="underline underline-offset-2" onClick={locate}>
-                Try again
+          {!photo && cameras > 1 && !cameraProblem && (
+            <Button
+              type="button"
+              size="icon"
+              variant="secondary"
+              className="absolute right-3 top-3 h-11 w-11 rounded-full bg-black/50 text-white hover:bg-black/70"
+              onClick={() => setFacing(front ? 'environment' : 'user')}
+              aria-label={front ? 'Switch to the back camera' : 'Switch to the front camera'}
+            >
+              <SwitchCamera className="h-5 w-5" aria-hidden="true" />
+            </Button>
+          )}
+
+          <div className="absolute inset-x-0 bottom-4 flex justify-center">
+            {photo ? (
+              <Button
+                variant="secondary"
+                className="rounded-full bg-black/60 text-white hover:bg-black/75"
+                onClick={() => {
+                  setPhoto('');
+                  setStamped('');
+                }}
+              >
+                <RotateCcw className="mr-1.5 h-4 w-4" aria-hidden="true" />
+                Take another
+              </Button>
+            ) : (
+              <button
+                type="button"
+                onClick={take}
+                disabled={!!cameraProblem}
+                aria-label="Take photo"
+                className="flex h-16 w-16 items-center justify-center rounded-full border-4 border-white bg-white/25 transition active:scale-95 disabled:opacity-40"
+              >
+                <span className="h-11 w-11 rounded-full bg-white" />
               </button>
-            </span>
-          ) : (
-            <span className="flex items-center gap-1.5 text-muted-foreground">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
-              Finding where you are
-            </span>
-          )}
-        </p>
-
-        <div className="space-y-1">
-          <Label htmlFor="fieldNote">Note (optional)</Label>
-          <Textarea
-            id="fieldNote"
-            rows={2}
-            maxLength={500}
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            placeholder="Survey at the Ranchi site, block C"
-          />
+            )}
+          </div>
         </div>
 
-        <div className="flex justify-end gap-2">
-          <Button variant="outline" onClick={onClose}>
-            Cancel
-          </Button>
-          <Button disabled={!stamped || !place || send.isPending} onClick={() => send.mutate()}>
-            {send.isPending ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" aria-hidden="true" /> : null}
-            Send check-in
-          </Button>
+        <div className="space-y-3 max-sm:shrink-0 max-sm:px-4 max-sm:pb-[max(1rem,env(safe-area-inset-bottom))] max-sm:pt-3">
+          <div className="space-y-0.5 text-sm" role="status">
+            <p className="flex items-center gap-1.5">
+              <MapPin className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden="true" />
+              {place ? (
+                <span className="tabular-nums">
+                  {coordinates(place.latitude, place.longitude)}, within about {Math.round(place.accuracyM)} m
+                </span>
+              ) : placeProblem ? (
+                <span className="text-muted-foreground">
+                  {placeProblem}{' '}
+                  <button type="button" className="underline underline-offset-2" onClick={locate}>
+                    Try again
+                  </button>
+                </span>
+              ) : (
+                <span className="flex items-center gap-1.5 text-muted-foreground">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+                  Finding where you are
+                </span>
+              )}
+            </p>
+            {place && (findingAddress || address) && (
+              <p className="pl-[1.375rem] text-muted-foreground" data-testid="field-address">
+                {findingAddress ? 'Finding the address…' : `Near ${address}`}
+              </p>
+            )}
+          </div>
+
+          <div className="space-y-1">
+            <Label htmlFor="fieldNote">Note (optional)</Label>
+            <Textarea
+              id="fieldNote"
+              rows={2}
+              maxLength={500}
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="Survey at the Ranchi site, block C"
+              className="max-sm:min-h-0"
+            />
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" className="max-sm:flex-1" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button className="max-sm:flex-1" disabled={!stamped || !place || send.isPending} onClick={() => send.mutate()}>
+              {send.isPending ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+              Send check-in
+            </Button>
+          </div>
         </div>
       </DialogContent>
     </Dialog>

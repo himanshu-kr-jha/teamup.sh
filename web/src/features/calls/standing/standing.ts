@@ -91,6 +91,7 @@ export interface AttendanceField {
   latitude: number;
   longitude: number;
   accuracyM: number;
+  address?: string;
   note?: string;
 }
 

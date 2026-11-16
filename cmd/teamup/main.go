@@ -235,6 +235,10 @@ type Config struct {
 	// Replaces Google's addresses. For tests only.
 	GCalEndpoint string `env:"TEAMUP_GCAL_ENDPOINT"`
 
+	// Where field work check-ins ask for the address around them:
+	// OpenStreetMap's own (no key) when empty, "off" for coordinates only.
+	GeocoderURL string `env:"TEAMUP_GEOCODER_URL"`
+
 	// Replace GitHub's addresses. For tests only.
 	GitHubWebURL string `env:"TEAMUP_GITHUB_WEB_URL"`
 	GitHubAPIURL string `env:"TEAMUP_GITHUB_API_URL"`
@@ -521,7 +525,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	calendarService := calendar.NewService(dbPool)
 	leaveService := leave.NewService(dbPool, tasksService)
 	// Field work counts somebody working away for the day's stand-ups.
-	fieldWorkService := fieldwork.NewService(dbPool)
+	fieldWorkService := fieldwork.NewService(dbPool).WithGeocoder(fieldwork.NewGeocoder(cfg.GeocoderURL, version))
 	presenceService.SetLeave(leaveService)
 	wizardService := wizard.NewService(dbPool, redisClient, &authCfg, logger)
 

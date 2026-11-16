@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { expect, test } from './support/fixtures';
 import { apiAs, idOf, leaveCall, sql, waitForLog } from './support/meetings';
 import { PEOPLE } from './support/people';
@@ -8,6 +9,19 @@ import { PEOPLE } from './support/people';
 // location, a reviewer decides what is in review, and attendance exports.
 
 const NAME = (k: keyof typeof PEOPLE) => PEOPLE[k].name;
+
+/** OpenStreetMap's reverse search, as TeamUp asks it (run.sh points TEAMUP_GEOCODER_URL here). */
+async function fakeGeocoder() {
+  const asked: string[] = [];
+  const server = createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+    asked.push(`${url.pathname} ${url.searchParams.get('lat')},${url.searchParams.get('lon')} ${req.headers['user-agent']}`);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ display_name: 'Block C, Kanke Road, Ranchi, Jharkhand, 834008, India' }));
+  });
+  await new Promise<void>((done) => server.listen(Number(process.env.E2E_GEOCODER_PORT ?? 18094), '127.0.0.1', done));
+  return { asked, close: () => new Promise((done) => server.close(done)) };
+}
 
 /** A minute of the day, this many minutes from now, in this machine's zone. */
 function timeOfDay(offsetMinutes: number): string {
@@ -144,67 +158,84 @@ test.describe('attendance rules', () => {
 
   test('somebody in the field checks in with a photo and their location, and is in the field, not absent', async ({ as }) => {
     test.setTimeout(120_000);
-    const name = `Field scrum ${Date.now()}`;
-    const id = await standUp(name, false);
+    const geocoder = await fakeGeocoder();
+    try {
+      const name = `Field scrum ${Date.now()}`;
+      const id = await standUp(name, false);
 
-    // Off until the organization turns it on, which is the owner's switch.
-    const ann = await as('ann');
-    await ann.page.goto('/calls');
-    await expect(ann.page.getByRole('heading', { name: 'Standing meetings' })).toBeVisible();
-    await expect(ann.page.getByTestId('field-work-bar')).toHaveCount(0);
-    const olivia = await as('owner');
-    await olivia.page.goto(`/calls/standing/${id}/attendance?from=${today()}&to=${today()}`);
-    await olivia.page.getByRole('switch', { name: /Field work check-ins/ }).click();
-    await expect(olivia.page.getByRole('switch', { name: /Field work check-ins/ })).toHaveAttribute('aria-checked', 'true');
+      // Off until the organization turns it on, which is the owner's switch.
+      // Ann is on her phone, as somebody at a site is.
+      const ann = await as('ann', { phone: 'android' });
+      await ann.page.goto('/calls');
+      await expect(ann.page.getByRole('heading', { name: 'Standing meetings' })).toBeVisible();
+      await expect(ann.page.getByTestId('field-work-bar')).toHaveCount(0);
+      const olivia = await as('owner');
+      await olivia.page.goto(`/calls/standing/${id}/attendance?from=${today()}&to=${today()}`);
+      await olivia.page.getByRole('switch', { name: /Field work check-ins/ }).click();
+      await expect(olivia.page.getByRole('switch', { name: /Field work check-ins/ })).toHaveAttribute('aria-checked', 'true');
 
-    // Ann, at a site: the camera and where she is.
-    await ann.context.grantPermissions(['camera', 'geolocation']);
-    await ann.context.setGeolocation({ latitude: 23.3441, longitude: 85.3096, accuracy: 12 });
-    await ann.page.reload();
-    const bar = ann.page.getByTestId('field-work-bar');
-    await bar.getByRole('button', { name: 'Check in from the field' }).click();
-    const dialog = ann.page.getByRole('dialog');
-    await expect(dialog.getByText('Location found, within about 12 m.')).toBeVisible({ timeout: 20_000 });
-    await expect(dialog.getByRole('button', { name: 'Send check-in' })).toBeDisabled();
-    await dialog.getByRole('button', { name: 'Take photo' }).click();
-    await expect(dialog.getByRole('img', { name: 'The photo you took' })).toBeVisible();
-    await dialog.getByLabel(/Note/).fill('Survey at the Ranchi site, block C');
-    await dialog.getByRole('button', { name: 'Send check-in' }).click();
-    await expect(dialog).toHaveCount(0);
-    await expect(bar).toContainText('In the field today.');
-    await expect(bar).toContainText('Survey at the Ranchi site, block C');
+      // Ann, at a site: the camera and where she is.
+      await ann.context.grantPermissions(['camera', 'geolocation']);
+      await ann.context.setGeolocation({ latitude: 23.3441, longitude: 85.3096, accuracy: 12 });
+      await ann.page.reload();
+      const bar = ann.page.getByTestId('field-work-bar');
+      await bar.getByRole('button', { name: 'Check in from the field' }).click();
+      const dialog = ann.page.getByRole('dialog');
+      // On a phone it is the whole screen, as a camera app is.
+      await expect(dialog).toBeVisible();
+      expect(await dialog.boundingBox()).toEqual({ x: 0, y: 0, width: 390, height: 844 });
+      await expect(dialog.getByText('23.34410° N, 85.30960° E, within about 12 m')).toBeVisible({ timeout: 20_000 });
+      // And the address around her, asked by the server, which names itself.
+      await expect(dialog.getByTestId('field-address')).toHaveText('Near Block C, Kanke Road, Ranchi, Jharkhand, 834008');
+      expect(geocoder.asked.some((a) => a.startsWith('/reverse 23.344100,85.309600 TeamUp/'))).toBe(true);
+      await expect(dialog.getByRole('button', { name: 'Send check-in' })).toBeDisabled();
+      await dialog.getByRole('button', { name: 'Take photo' }).click();
+      await expect(dialog.getByRole('img', { name: 'The photo you took' })).toBeVisible();
+      await dialog.getByLabel(/Note/).fill('Survey at the Ranchi site, block C');
+      await dialog.getByRole('button', { name: 'Send check-in' }).click();
+      await expect(dialog).toHaveCount(0);
+      await expect(bar).toContainText('In the field today.');
+      await expect(bar).toContainText('Survey at the Ranchi site, block C');
+      await expect(bar).toContainText('near Block C, Kanke Road, Ranchi');
+      await ann.page.screenshot({ path: 'test-results/field-checked-in-phone.png' });
 
-    // The owner reads it as field work, with the photo and the place.
-    await olivia.page.reload();
-    const annRow = row(olivia.page, NAME('ann'));
-    await expect(annRow).toContainText('Field work');
-    await expect(annRow.getByRole('link', { name: /on the map/ })).toHaveAttribute('href', /mlat=23\.344/);
-    await annRow.getByRole('button', { name: `Show ${NAME('ann')}'s field work photo` }).click();
-    const photo = olivia.page.getByRole('dialog').getByRole('img', { name: `Field work photo from ${NAME('ann')}` });
-    await expect(photo).toBeVisible();
-    await expect.poll(() => photo.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
+      // The owner reads it as field work, with the photo and the place.
+      await olivia.page.reload();
+      const annRow = row(olivia.page, NAME('ann'));
+      await expect(annRow).toContainText('Field work');
+      await expect(annRow.getByRole('link', { name: /on the map/ })).toHaveAttribute('href', /mlat=23\.344/);
+      await annRow.getByRole('button', { name: `Show ${NAME('ann')}'s field work photo` }).click();
+      const photo = olivia.page.getByRole('dialog').getByRole('img', { name: `Field work photo from ${NAME('ann')}` });
+      await expect(photo).toBeVisible();
+      await expect.poll(() => photo.evaluate((img: HTMLImageElement) => img.naturalWidth)).toBeGreaterThan(0);
+      await expect(olivia.page.getByRole('dialog')).toContainText('Block C, Kanke Road, Ranchi, Jharkhand, 834008');
+      await olivia.page.keyboard.press('Escape');
 
-    // In one place: Ann's own check-ins, and everybody's for the owner.
-    await ann.page.goto('/field-work');
-    await expect(ann.page.getByText('Your check-ins from the field', { exact: false })).toBeVisible();
-    await expect(ann.page.getByTestId('field-checkin')).toHaveCount(1);
-    await expect(ann.page.getByTestId('field-checkin')).toContainText('Survey at the Ranchi site, block C');
-    await expect(ann.page.getByTestId('field-checkin')).toContainText('23.34410° N, 85.30960° E');
-    await olivia.page.goto('/field-work');
-    await expect(olivia.page.getByText('Everybody’s check-ins from the field', { exact: false })).toBeVisible();
-    await expect(olivia.page.getByTestId('field-checkin').filter({ hasText: NAME('ann') })).toHaveCount(1);
-    const samSession = await as('sam');
-    await samSession.page.goto('/field-work');
-    await expect(samSession.page.getByText('No check-ins in these dates')).toBeVisible();
+      // In one place: Ann's own check-ins, and everybody's for the owner.
+      await ann.page.goto('/field-work');
+      await expect(ann.page.getByText('Your check-ins from the field', { exact: false })).toBeVisible();
+      await expect(ann.page.getByTestId('field-checkin')).toHaveCount(1);
+      await expect(ann.page.getByTestId('field-checkin')).toContainText('Survey at the Ranchi site, block C');
+      await expect(ann.page.getByTestId('field-checkin')).toContainText('23.34410° N, 85.30960° E');
+      await expect(ann.page.getByTestId('field-checkin')).toContainText('Block C, Kanke Road, Ranchi, Jharkhand, 834008');
+      await olivia.page.goto('/field-work');
+      await expect(olivia.page.getByText('Everybody’s check-ins from the field', { exact: false })).toBeVisible();
+      await expect(olivia.page.getByTestId('field-checkin').filter({ hasText: NAME('ann') })).toHaveCount(1);
+      const samSession = await as('sam');
+      await samSession.page.goto('/field-work');
+      await expect(samSession.page.getByText('No check-ins in these dates')).toBeVisible();
 
-    // A colleague cannot open the photo.
-    const sam = await apiAs('sam');
-    const checkin = sql(`SELECT id FROM field_checkins WHERE user_id = '${idOf('ann')}' ORDER BY taken_at DESC LIMIT 1`);
-    expect(await sam.status('get', `/field-work/checkins/${checkin}/photo`)).toBe(404);
-    await sam.dispose();
+      // A colleague cannot open the photo.
+      const sam = await apiAs('sam');
+      const checkin = sql(`SELECT id FROM field_checkins WHERE user_id = '${idOf('ann')}' ORDER BY taken_at DESC LIMIT 1`);
+      expect(await sam.status('get', `/field-work/checkins/${checkin}/photo`)).toBe(404);
+      await sam.dispose();
 
-    const owner = await apiAs('owner');
-    await owner.call('delete', `/standing-meetings/${id}`);
-    await owner.dispose();
+      const owner = await apiAs('owner');
+      await owner.call('delete', `/standing-meetings/${id}`);
+      await owner.dispose();
+    } finally {
+      await geocoder.close();
+    }
   });
 });

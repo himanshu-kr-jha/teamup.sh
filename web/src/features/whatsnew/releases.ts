@@ -26,6 +26,23 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-16-f',
+    date: '2026-11-16',
+    title: 'Field check-ins say where, in words',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'The address with every check-in',
+        body: 'A field work check-in now shows the address around you as well as the coordinates, prints both on the photo, and keeps the address for your manager and HR to read.',
+      },
+      {
+        area: 'meetings',
+        title: 'A camera that fills your phone',
+        body: 'On a phone, checking in opens the camera full screen, with the shutter at the bottom and a button to switch to the front camera for a photo of yourself at the site.',
+      },
+    ],
+  },
+  {
     id: '2026-11-16-e',
     date: '2026-11-16',
     title: 'Meeting notes are for whoever is given them',
