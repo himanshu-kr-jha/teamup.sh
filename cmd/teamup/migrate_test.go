@@ -1192,8 +1192,8 @@ func TestRolePermissionsMigrationTranslatesOldNames(t *testing.T) {
 		return out
 	}
 	// Every migration runs, so the admin also has what later ones gave it
-	// (0050: attendance.review).
-	if got := perms("admin"); got != "attendance.review,calls.record,channels.all,meetings.all,members.manage,notes.read_all,notes.settings,org.settings,roles.manage,tasks.all,teams.manage" {
+	// (0050: attendance.review and attendance.view).
+	if got := perms("admin"); got != "attendance.review,attendance.view,calls.record,channels.all,meetings.all,members.manage,notes.read_all,notes.settings,org.settings,roles.manage,tasks.all,teams.manage" {
 		t.Errorf("admin: %s", got)
 	}
 	if got := perms("member"); got != "" {
