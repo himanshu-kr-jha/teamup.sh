@@ -71,6 +71,10 @@ var memberLimits = []ratelimit.Rule{
 	// Things that reach other people.
 	{Name: "send", Method: http.MethodPost, Route: "/api/channels/:id/messages", Limit: per(120, minute), Who: ratelimit.ByUser},
 	{Name: "send", Method: http.MethodPost, Route: "/api/messages/:id/forward", Limit: per(120, minute), Who: ratelimit.ByUser},
+	// Field work photos are up to 2 MB each, and a day needs one or two.
+	{Name: "field-work", Method: http.MethodPost, Route: "/api/field-work/checkins", Limit: per(20, hour), Who: ratelimit.ByUser},
+	// A spreadsheet of up to 92 days of a stand-up is real work for the database.
+	{Name: "attendance-export", Method: http.MethodGet, Route: "/api/standing-meetings/:id/attendance/export", Limit: per(30, hour), Who: ratelimit.ByUser},
 	{Name: "edit", Method: http.MethodPatch, Route: "/api/messages/:id", Limit: per(120, minute), Who: ratelimit.ByUser},
 	{Name: "react", Method: http.MethodPost, Route: "/api/messages/:id/reactions", Limit: per(240, minute), Who: ratelimit.ByUser},
 	{Name: "meeting-chat", Method: http.MethodPost, Route: "/api/calls/:id/chat", Limit: per(120, minute), Who: ratelimit.ByUser},

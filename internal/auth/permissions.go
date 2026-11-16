@@ -36,6 +36,8 @@ const (
 	PermNotesSettings = "notes.settings"
 	PermNotesReadAll  = "notes.read_all"
 	PermNotesReadOwn  = "notes.read_own"
+	PermAttendance    = "attendance.review"
+	PermAttendanceSee = "attendance.view"
 )
 
 // Permission is one entry on the Roles screen.
@@ -59,6 +61,8 @@ var Catalog = []Permission{
 	{PermNotesSettings, "Meetings", "Set up meeting notes", "Turn the note-taker on or off and choose its services and keys."},
 	{PermNotesReadOwn, "Meetings", "Read minutes of their meetings", "Minutes and transcripts of the meetings they were in, and the Meeting notes page. Without this, or the one below, nobody sees meeting notes."},
 	{PermNotesReadAll, "Meetings", "Read every meeting's minutes", "Minutes and transcripts of every meeting, including those they were not in."},
+	{PermAttendanceSee, "Meetings", "See attendance", "Everybody's stand-up attendance and field work photos, and download them. Nobody else sees attendance."},
+	{PermAttendance, "Meetings", "Review attendance", "See attendance, and change anybody's day: present, late, absent, on leave or field work, with a note that is kept. Give it to HR."},
 }
 
 // IsPermission says whether key is on the list.

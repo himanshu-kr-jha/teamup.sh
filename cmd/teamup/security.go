@@ -115,9 +115,10 @@ func securityHeaders(csp string) gin.HandlerFunc {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("X-Frame-Options", "SAMEORIGIN")
 		h.Set("Referrer-Policy", "strict-origin-when-cross-origin")
-		// Calls need the camera, microphone and screen; nothing needs the rest.
+		// Calls need the camera, microphone and screen, and a field work check-in
+		// the camera and where the phone is; nothing needs the rest.
 		h.Set("Permissions-Policy", "camera=(self), microphone=(self), display-capture=(self), fullscreen=(self), "+
-			"geolocation=(), payment=(), usb=(), serial=(), bluetooth=(), hid=(), midi=(), magnetometer=(), gyroscope=(), accelerometer=()")
+			"geolocation=(self), payment=(), usb=(), serial=(), bluetooth=(), hid=(), midi=(), magnetometer=(), gyroscope=(), accelerometer=()")
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
 		c.Next()
 	}

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/livekit/protocol/livekit"
 
@@ -298,7 +299,7 @@ func TestAnOccurrenceCrossingMidnightReopensForItsLinkAndCountsItsWholeLength(t 
 
 	// An open session counts to now, not to midnight.
 	now = time.Date(2026, 11, 10, 1, 0, 0, 0, time.UTC)
-	days := e.attendance(t, ann, "member", m.ID, "date=2026-11-09")
+	days := e.attendance(t, e.org.OwnerID, "owner", m.ID, "date=2026-11-09")
 	if p, ok := days[0].person(ann); !ok || p.MinutesPresent != 80 {
 		t.Errorf("23:40 to 01:00 is 80 minutes, got %+v", p)
 	}
@@ -326,13 +327,13 @@ func TestPressingJoinJustBeforeASlotJustAfterMidnightIsThatSlot(t *testing.T) {
 	e.mustDeliver(t, joinedEv(j.RoomName, ann, "PA_1", now))
 
 	now = time.Date(2026, 11, 10, 0, 30, 0, 0, time.UTC)
-	days := e.attendance(t, ann, "member", m.ID, "date=2026-11-10")
+	days := e.attendance(t, e.org.OwnerID, "owner", m.ID, "date=2026-11-10")
 	p, ok := days[0].person(ann)
 	if !ok || p.Status != "present" || p.MinutesLate != 0 {
 		t.Errorf("present and not late, got %+v", p)
 	}
 	// Today's slot, the 9th, is untouched: a later join today would have been early.
-	if days := e.attendance(t, ann, "member", m.ID, "date=2026-11-09"); len(days) == 1 {
+	if days := e.attendance(t, e.org.OwnerID, "owner", m.ID, "date=2026-11-09"); len(days) == 1 {
 		if p, ok := days[0].person(ann); ok && p.MinutesLate > 0 {
 			t.Errorf("not 1433 minutes late on the 9th, got %+v", p)
 		}
@@ -468,7 +469,7 @@ func TestEditingTheWeekdaysDoesNotRewriteHistory(t *testing.T) {
 	wantCode(t, doJSON(t, e.asOwner(t), http.MethodPatch, "/api/standing-meetings/"+m.ID, `{"weekdays":[6]}`), http.StatusOK)
 
 	read := func(date string) []attendanceDay {
-		return e.attendance(t, ann, "member", m.ID, "date="+date)
+		return e.attendance(t, e.org.OwnerID, "owner", m.ID, "date="+date)
 	}
 	if days := read("2026-02-28"); len(days) != 0 { // a Saturday before the edit
 		t.Errorf("that Saturday it did not run, so nobody was absent, got %+v", days)
@@ -647,8 +648,8 @@ func TestAttendanceSaysWhetherTheReaderMayOpenThatDaysLog(t *testing.T) {
 	j := e.mustJoinStanding(t, ann, "member", m.ID)
 	e.mustDeliver(t, joinedEv(j.RoomName, ann, "PA_1", time.Now()))
 
-	read := func(who uuid.UUID, role string) bool {
-		w := doJSON(t, e.as(t, who, role), http.MethodGet, "/api/standing-meetings/"+m.ID+"/attendance?date="+j.Date, "")
+	read := func(r *gin.Engine) bool {
+		w := doJSON(t, r, http.MethodGet, "/api/standing-meetings/"+m.ID+"/attendance?date="+j.Date, "")
 		wantCode(t, w, http.StatusOK)
 		var body struct {
 			Days []struct {
@@ -660,18 +661,41 @@ func TestAttendanceSaysWhetherTheReaderMayOpenThatDaysLog(t *testing.T) {
 		}
 		return body.Days[0].CanReadLog
 	}
-	if read(ann, "member") {
-		t.Error("an employee is refused, so is not offered it")
-	}
-	if !read(boss, "manager") {
+	// Seeing attendance is not reading call logs: a manager given See attendance
+	// is offered the log of a day somebody they answer for came to, and nobody
+	// else is. Without the permission there is no attendance to read at all.
+	if !read(permitted(t, e, boss, "manager", "attendance.view")) {
 		t.Error("a manager over somebody who came reads it")
 	}
-	if read(bystander, "manager") {
+	if read(permitted(t, e, bystander, "manager", "attendance.view")) {
 		t.Error("a manager over nobody there is refused")
 	}
-	if !read(e.org.OwnerID, "owner") {
+	if read(permitted(t, e, ann, "member", "attendance.view")) {
+		t.Error("an employee is refused, so is not offered it")
+	}
+	if !read(e.asOwner(t)) {
 		t.Error("the owner reads it")
 	}
+	if code := doJSON(t, e.as(t, boss, "manager"), http.MethodGet, "/api/standing-meetings/"+m.ID+"/attendance?date="+j.Date, "").Code; code != http.StatusForbidden {
+		t.Errorf("without the permission, no attendance: %d", code)
+	}
+}
+
+// permitted is somebody signed in with their role and these permissions too.
+func permitted(t *testing.T, e *lkEnv, user uuid.UUID, role string, perms ...string) *gin.Engine {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	api := r.Group("/api")
+	api.Use(func(c *gin.Context) {
+		c.Set("org_id", e.org.ID.String())
+		c.Set("user_id", user.String())
+		c.Set("user_roles", []string{role})
+		c.Set("user_permissions", perms)
+		c.Next()
+	})
+	RegisterRoutes(api, e.svc)
+	return r
 }
 
 func TestTheCallListAndTheCallSayWhetherYouMayOpenTheLog(t *testing.T) {

@@ -38,6 +38,39 @@ export const RELEASES: Release[] = [
     ],
   },
   {
+    id: '2026-11-16-d',
+    date: '2026-11-16',
+    title: 'Attendance: a window, cameras, field work, changes and export',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'Attendance counts in a window',
+        body: 'Each stand-up says when joining counts, by default from half an hour before the start to half an hour after: for 9:00, 8:30 to 9:30. Joining inside the window is present, and joining after it is absent, with when they came. Only somebody who reviews attendance marks a day late.',
+      },
+      {
+        area: 'meetings',
+        title: 'Only whoever is given it sees attendance',
+        body: 'Attendance is for owners, admins and whoever has See attendance or Review attendance under Roles. Reviewers, and so owners and admins, can change anybody\'s day to present, late, absent, on leave or field work, with a note that is kept with their name.',
+      },
+      {
+        area: 'meetings',
+        title: 'A stand-up can require cameras',
+        body: 'Turn on Camera must be on in a stand-up. Whoever joins and never turns their camera on is In review until somebody decides.',
+      },
+      {
+        area: 'meetings',
+        title: 'Check in from the field',
+        body: "When your organization turns on field work, Calls offers Check in from the field: a photo taken in the app with the date, time and place printed on it, and a note. Today's stand-ups count you as in the field, not absent, and Field work lists every check-in with its photo and map.",
+        link: '/field-work',
+      },
+      {
+        area: 'meetings',
+        title: 'Attendance as a spreadsheet',
+        body: 'Every attendance page downloads as Excel or CSV: people down the side, days across, and totals.',
+      },
+    ],
+  },
+  {
     id: '2026-11-16-c',
     date: '2026-11-16',
     title: 'Nobody chases you on leave',

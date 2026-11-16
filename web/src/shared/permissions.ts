@@ -15,6 +15,8 @@ export const PERMS = {
   notesSettings: 'notes.settings',
   notesReadAll: 'notes.read_all',
   notesReadOwn: 'notes.read_own',
+  attendanceView: 'attendance.view',
+  attendance: 'attendance.review',
 } as const;
 
 export type PermissionKey = (typeof PERMS)[keyof typeof PERMS];

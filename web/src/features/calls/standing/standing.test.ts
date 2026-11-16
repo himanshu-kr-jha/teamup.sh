@@ -75,7 +75,15 @@ describe('attendance', () => {
       unknown: 1,
       on_leave: 0,
       holiday: 0,
+      field_work: 0,
+      review: 0,
     });
+  });
+
+  it('names field work and review in a day, and puts review first', () => {
+    const day = { attendanceRecorded: true, holiday: undefined, people: [person('a', 'present'), person('b', 'field_work'), person('c', 'review')] };
+    expect(attendanceSummary(day)).toBe('1 present, 1 in the field, 1 in review');
+    expect(orderAttendance(day.people).map((p) => p.status)).toEqual(['review', 'present', 'field_work']);
   });
 
   it('sums up a day, naming leave and leaving out what is not there', () => {

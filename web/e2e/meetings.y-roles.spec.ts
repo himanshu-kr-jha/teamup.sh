@@ -22,12 +22,12 @@ test.describe('roles', () => {
       await dialog.getByLabel('What it is for').fill('Runs the office');
       await dialog.getByRole('checkbox', { name: /^Change organization settings/ }).check();
       await dialog.getByRole('checkbox', { name: /^Manage members/ }).check();
-      await expect(dialog.getByTestId('permission-count')).toHaveText('2 of 11');
+      await expect(dialog.getByTestId('permission-count')).toHaveText('2 of 13');
       // A whole area at once, and back.
       await dialog.getByRole('group', { name: 'Meetings' }).getByRole('button', { name: 'All' }).click();
-      await expect(dialog.getByTestId('permission-count')).toHaveText('7 of 11');
+      await expect(dialog.getByTestId('permission-count')).toHaveText('9 of 13');
       await dialog.getByRole('group', { name: 'Meetings' }).getByRole('button', { name: 'None' }).click();
-      await expect(dialog.getByTestId('permission-count')).toHaveText('2 of 11');
+      await expect(dialog.getByTestId('permission-count')).toHaveText('2 of 13');
       await dialog.getByRole('button', { name: 'Create role' }).click();
       const row = olivia.page.getByTestId('role').filter({ hasText: roleName });
       await expect(row).toContainText('Change organization settings, Manage members');
@@ -72,7 +72,7 @@ test.describe('roles', () => {
       // Starting from Admin keeps only what Sam holds.
       await samDialog.getByLabel('Start from').click();
       await sam.page.getByRole('option', { name: 'admin', exact: true }).click();
-      await expect(samDialog.getByTestId('permission-count')).toHaveText('2 of 11');
+      await expect(samDialog.getByTestId('permission-count')).toHaveText('2 of 13');
       await sam.page.keyboard.press('Escape');
       // And the admin and owner roles are not offered to hand out.
       await sam.page.getByRole('tab', { name: 'Members' }).click();

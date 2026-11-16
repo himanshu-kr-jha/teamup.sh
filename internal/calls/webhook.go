@@ -120,8 +120,20 @@ func (s *Service) HandleWebhook(ctx context.Context, event *livekit.WebhookEvent
 		return s.recordLeft(ctx, call, userID, participant.GetSid(), participant.GetJoinedAt(), at)
 	}
 
-	// Cameras and microphones are not on the trail.
 	track := event.GetTrack()
+	// A camera turned on is recorded once per track: a stand-up that requires
+	// cameras reads it to tell present from in review. Turning it off is not,
+	// because the browser mutes a camera rather than unpublishing it.
+	if track.GetSource() == livekit.TrackSource_CAMERA && track.GetSid() != "" {
+		if event.GetEvent() != webhook.EventTrackPublished {
+			return nil
+		}
+		if _, err := s.db.Exec(ctx, insertEvent, call.ID, "camera_on", userID, userID, at, "camera_on:"+track.GetSid()); err != nil {
+			return fmt.Errorf("record camera: %w", err)
+		}
+		return nil
+	}
+	// Microphones are not on the trail.
 	if track.GetSource() != livekit.TrackSource_SCREEN_SHARE || track.GetSid() == "" {
 		return nil
 	}
