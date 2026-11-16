@@ -35,6 +35,12 @@ var publicLimits = []ratelimit.Rule{
 	// Turning a refresh token into a session.
 	{Name: "refresh", Method: http.MethodPost, Route: "/api/auth/refresh", Limit: per(120, minute), Who: ratelimit.ByAddress},
 	{Name: "login", Method: http.MethodPost, Route: "/api/auth/login", Limit: per(600, minute), Who: ratelimit.ByAddress},
+	// Forgotten passwords. Each account is also sent at most three links an
+	// hour whoever asks; these stop one address trying address after address,
+	// or guessing at links.
+	{Name: "password-forgot", Method: http.MethodPost, Route: "/api/auth/password/forgot", Limit: per(20, hour), Who: ratelimit.ByAddress},
+	{Name: "password-reset", Method: http.MethodPost, Route: "/api/auth/password/reset/check", Limit: per(60, hour), Who: ratelimit.ByAddress},
+	{Name: "password-reset", Method: http.MethodPost, Route: "/api/auth/password/reset", Limit: per(60, hour), Who: ratelimit.ByAddress},
 
 	// Guests: the link is all they have, so a link guessed or shared too widely
 	// is the thing to slow.

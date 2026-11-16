@@ -30,6 +30,19 @@ export PGPASSWORD="$PG_PASSWORD"
 psql -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" -d postgres -v ON_ERROR_STOP=1 -q \
   -c "DROP DATABASE IF EXISTS \"$DB_NAME\" WITH (FORCE)" -c "CREATE DATABASE \"$DB_NAME\""
 
+# A fresh instance has nothing in Redis either: rate-limit counts, presence and
+# login failures left by the last run would otherwise carry over into this one.
+# Only a numbered database other than 0 is emptied, as only an e2e database is dropped.
+if [[ "$REDIS_URL" =~ ^redis://([^:/@]+):([0-9]+)/([1-9][0-9]*)$ ]]; then
+  if exec 3<>"/dev/tcp/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"; then
+    printf 'SELECT %s\r\nFLUSHDB\r\nQUIT\r\n' "${BASH_REMATCH[3]}" >&3
+    cat <&3 >/dev/null
+    exec 3>&-
+  fi
+else
+  echo "note: not emptying Redis at $REDIS_URL: name a database other than 0, e.g. redis://localhost:6379/9." >&2
+fi
+
 # For specs that need to look at or move rows the UI cannot (psql is already required above).
 export E2E_DATABASE_URL="postgres://$PG_USER:$PG_PASSWORD@$PG_HOST:$PG_PORT/$DB_NAME?sslmode=disable"
 export E2E_PORT="$PORT"

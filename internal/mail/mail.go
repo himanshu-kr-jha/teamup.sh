@@ -325,3 +325,56 @@ already and can be removed.
 		Body:    body,
 	}
 }
+
+// PasswordResetMessage carries the link that lets somebody who forgot their
+// password choose a new one. The token is in the fragment, after #, which a
+// browser never sends to a server, so it stays out of access logs and of any
+// Referer header the reset page might send.
+func (s *Service) PasswordResetMessage(orgName, name, email, token string, validFor time.Duration) Message {
+	link := strings.TrimSuffix(s.baseURL, "/") + "/reset-password#token=" + token
+	minutes := int(validFor.Round(time.Minute) / time.Minute)
+
+	body := fmt.Sprintf(`Hello %s,
+
+Somebody asked to reset the password of your %s account on TeamUp.
+If it was you, choose a new password here:
+
+  %s
+
+The link works once, for the next %d minutes. Using it signs you out
+everywhere you are signed in.
+
+If you did not ask for this, you can ignore this message: your password
+has not changed, and nobody can change it without this link.
+`, name, orgName, link, minutes)
+
+	return Message{
+		To:      email,
+		Subject: fmt.Sprintf("Reset your %s password on TeamUp", orgName),
+		Body:    body,
+	}
+}
+
+// PasswordChangedMessage tells somebody their password was just reset with a
+// link, so that a reset they did not make does not go unnoticed.
+func (s *Service) PasswordChangedMessage(orgName, name, email string) Message {
+	signIn := strings.TrimSuffix(s.baseURL, "/") + "/login"
+
+	body := fmt.Sprintf(`Hello %s,
+
+The password of your %s account on TeamUp was just changed, using a
+reset link sent to this address. Every place you were signed in has been
+signed out.
+
+If that was you, there is nothing to do. Sign in here:  %s
+
+If it was not you, tell whoever runs %s straight away, so they can reset
+your password and look into it.
+`, name, orgName, signIn, orgName)
+
+	return Message{
+		To:      email,
+		Subject: fmt.Sprintf("Your %s password was changed", orgName),
+		Body:    body,
+	}
+}

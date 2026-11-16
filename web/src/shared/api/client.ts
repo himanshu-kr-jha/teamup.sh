@@ -102,6 +102,13 @@ export const authApi = {
   revokeSession: (sessionId: string) => api.delete(`/auth/sessions/${sessionId}`),
   changePassword: (data: { currentPassword: string; newPassword: string }) =>
     api.post('/auth/password', data),
+  /** Asks for a reset link. The answer is the same whether or not there is an account. */
+  forgotPassword: (email: string) => api.post('/auth/password/forgot', { email }),
+  /** Whose account a reset link is for, or a 400 when it no longer works. */
+  checkPasswordReset: (token: string) =>
+    api.post<{ email: string }>('/auth/password/reset/check', { token }),
+  resetPassword: (data: { token: string; newPassword: string }) =>
+    api.post('/auth/password/reset', data),
 };
 
 /** One permission a role can have (internal/auth/permissions.go). */

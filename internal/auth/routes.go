@@ -40,6 +40,10 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.POST("/login", h.LoginWithPassword)
 	rg.POST("/refresh", h.RefreshToken)
 	rg.POST("/logout", h.Logout)
+	// Forgotten passwords: ask for a link, see whose it is, use it.
+	rg.POST("/password/forgot", h.ForgotPassword)
+	rg.POST("/password/reset/check", h.CheckPasswordReset)
+	rg.POST("/password/reset", h.ResetPassword)
 
 	// Protected routes (require auth)
 	protected := rg.Group("/")
@@ -337,4 +341,56 @@ type User struct {
 	// WhatsNewSeen is the newest "What's new" entry they have seen; nil
 	// until they have seen one.
 	WhatsNewSeen *string `json:"whatsNewSeen"`
+}
+
+// ForgotPassword asks for a reset link. The answer is the same whether or not
+// there is an account at the address, and is given before anything is looked
+// up, so neither what it says nor how long it takes tells anybody who has one.
+func (h *Handler) ForgotPassword(c *gin.Context) {
+	var req struct {
+		Email string `json:"email" binding:"required,email,max=255"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "enter the email address you sign in with"})
+		return
+	}
+	h.service.RequestPasswordReset(req.Email, c.ClientIP(), c.Request.UserAgent())
+	c.JSON(http.StatusAccepted, gin.H{"message": "if there is an account at that address, a reset link is on its way"})
+}
+
+// CheckPasswordReset says whose account a link is for, or that it no longer works.
+func (h *Handler) CheckPasswordReset(c *gin.Context) {
+	var req struct {
+		Token string `json:"token" binding:"required,max=128"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		httpx.Error(c, ErrResetLinkInvalid, "")
+		return
+	}
+	email, err := h.service.CheckPasswordReset(c.Request.Context(), req.Token)
+	if err != nil {
+		httpx.Error(c, err, "could not check the reset link")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"email": email})
+}
+
+// ResetPassword sets a new password with a link. It does not sign anybody in:
+// the person signs in with the new password, which proves they know it.
+func (h *Handler) ResetPassword(c *gin.Context) {
+	var req struct {
+		Token       string `json:"token" binding:"required,max=128"`
+		NewPassword string `json:"newPassword" binding:"required,max=1024"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "a reset link and a new password are both needed"})
+		return
+	}
+	if err := h.service.ResetPassword(c.Request.Context(), req.Token, req.NewPassword); err != nil {
+		httpx.Error(c, err, "could not reset the password")
+		return
+	}
+	// Any session this browser had is over too.
+	h.service.ClearAuthCookies(c.Writer)
+	c.JSON(http.StatusOK, gin.H{"message": "password changed; sign in with the new one"})
 }

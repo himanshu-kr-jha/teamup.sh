@@ -2,6 +2,8 @@ import { createBrowserRouter, redirect, Navigate } from 'react-router-dom';
 import { Layout } from '@/features/layout/Layout';
 import { LoginPage } from '@/features/auth/LoginPage';
 import { ChangePasswordPage } from '@/features/auth/ChangePasswordPage';
+import { ForgotPasswordPage } from '@/features/auth/ForgotPasswordPage';
+import { ResetPasswordPage } from '@/features/auth/ResetPasswordPage';
 import { WizardPage } from '@/features/wizard/WizardPage';
 import { ChatPage } from '@/features/chat/ChatPage';
 import { CallsPage } from '@/features/calls/CallsPage';
@@ -63,6 +65,17 @@ export const router = createBrowserRouter([
   {
     path: '/login',
     element: <LoginPage />,
+    errorElement: <ErrorPage />,
+  },
+  // Forgotten passwords: open to anybody, since the person is not signed in.
+  {
+    path: '/forgot-password',
+    element: <ForgotPasswordPage />,
+    errorElement: <ErrorPage />,
+  },
+  {
+    path: '/reset-password',
+    element: <ResetPasswordPage />,
     errorElement: <ErrorPage />,
   },
   // Open to anybody: whether something is down matters most when signing in is

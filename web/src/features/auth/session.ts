@@ -96,7 +96,7 @@ export function endLocalSession(deps: {
 }
 
 /** Pages anyone may be on signed out; sending them to sign in from there would loop. */
-const PUBLIC_PATHS = ['/login', '/wizard', '/status', '/join'];
+const PUBLIC_PATHS = ['/login', '/forgot-password', '/reset-password', '/wizard', '/status', '/join'];
 
 export function onPublicPath(pathname: string): boolean {
   return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p + '/'));
