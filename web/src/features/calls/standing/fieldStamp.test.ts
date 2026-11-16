@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { coordinates, stampLines } from './FieldWork';
+import { addressLines, coordinates, stampLines } from './FieldWork';
 import { describeWindow } from './standing';
 
 describe('describeWindow', () => {
@@ -23,5 +23,19 @@ describe('the stamp on a field work photo', () => {
     expect(lines[2]).toBe('Survey at block C');
     expect(stampLines(new Date(), { latitude: 1, longitude: 1, accuracyM: 5 }, ' ')).toHaveLength(2);
     expect(stampLines(new Date(), { latitude: 1, longitude: 1, accuracyM: 5 }, 'x'.repeat(100))[2]).toHaveLength(70);
+  });
+});
+
+describe('the address on a field work photo', () => {
+  it('goes under the coordinates, broken after commas into at most two lines', () => {
+    const at = new Date(2026, 10, 17, 10, 24);
+    const lines = stampLines(at, { latitude: 23.3441, longitude: 85.3096, accuracyM: 12 }, 'Survey', 'Block C, Kanke Road, Ranchi, Jharkhand, 834008');
+    expect(lines.slice(1)).toEqual(['23.34410° N, 85.30960° E  ±12 m', 'Block C, Kanke Road, Ranchi, Jharkhand, 834008', 'Survey']);
+    const long = 'Plot 14, Sector 5, Industrial Area Phase Two, Near the Water Tank, Electronic City, Bengaluru Urban, Karnataka, 560100';
+    const wrapped = addressLines(long);
+    expect(wrapped).toHaveLength(2);
+    expect(wrapped.every((l) => l.length <= 64)).toBe(true);
+    expect(wrapped[0].endsWith(',')).toBe(true);
+    expect(addressLines('')).toEqual([]);
   });
 });

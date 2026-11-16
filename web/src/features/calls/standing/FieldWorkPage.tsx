@@ -127,6 +127,7 @@ export function FieldWorkPage() {
                       {everybody && c.name && <p className="font-medium">{c.name}</p>}
                       <p className="tabular-nums text-muted-foreground">{formatTime(c.takenAt)}</p>
                       {c.note && <p className="break-anywhere">{c.note}</p>}
+                      {c.address && <p className="break-anywhere text-xs">{c.address}</p>}
                       <a
                         href={mapLink(c.latitude, c.longitude)}
                         target="_blank"
@@ -151,8 +152,8 @@ export function FieldWorkPage() {
             <DialogHeader>
               <DialogTitle>{open.name ? `${open.name}, ` : ''}field work</DialogTitle>
               <DialogDescription>
-                {dayTitle(open.onDate)}, {formatTime(open.takenAt)}. {coordinates(open.latitude, open.longitude)}, within{' '}
-                {Math.round(open.accuracyM)} m.
+                {dayTitle(open.onDate)}, {formatTime(open.takenAt)}. {open.address ? `${open.address}. ` : ''}
+                {coordinates(open.latitude, open.longitude)}, within {Math.round(open.accuracyM)} m.
               </DialogDescription>
             </DialogHeader>
             <img src={fieldWorkApi.photoUrl(open.id)} alt="Field work photo" className="max-h-[65vh] w-full rounded-md bg-muted object-contain" />

@@ -27,6 +27,7 @@ type AttendeeField struct {
 	Latitude  float64   `json:"latitude"`
 	Longitude float64   `json:"longitude"`
 	AccuracyM float64   `json:"accuracyM"`
+	Address   string    `json:"address,omitempty"`
 	Note      string    `json:"note,omitempty"`
 }
 
@@ -83,7 +84,7 @@ func (s *Service) loadAttendanceExtras(ctx context.Context, orgID, meetingID uui
 
 	// The latest check-in of each person's day is the one shown.
 	rows, err = s.db.Query(ctx, `
-		SELECT DISTINCT ON (user_id, on_date) on_date::text, user_id, id, taken_at, latitude, longitude, accuracy_m, note
+		SELECT DISTINCT ON (user_id, on_date) on_date::text, user_id, id, taken_at, latitude, longitude, accuracy_m, address, note
 		FROM field_checkins
 		WHERE org_id = $1 AND user_id = ANY($2) AND on_date BETWEEN $3::date AND $4::date
 		ORDER BY user_id, on_date, taken_at DESC
@@ -96,7 +97,7 @@ func (s *Service) loadAttendanceExtras(ctx context.Context, orgID, meetingID uui
 		var user uuid.UUID
 		var f AttendeeField
 		var accuracy float32
-		if err := rows.Scan(&date, &user, &f.ID, &f.TakenAt, &f.Latitude, &f.Longitude, &accuracy, &f.Note); err != nil {
+		if err := rows.Scan(&date, &user, &f.ID, &f.TakenAt, &f.Latitude, &f.Longitude, &accuracy, &f.Address, &f.Note); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan field work: %w", err)
 		}

@@ -740,6 +740,8 @@ export interface FieldCheckin {
   latitude: number;
   longitude: number;
   accuracyM: number;
+  /** The address around the place, when it could be told; empty when not. */
+  address: string;
   note: string;
 }
 
@@ -747,6 +749,9 @@ export const fieldWorkApi = {
   settings: () => api.get<{ enabled: boolean; mayChange: boolean }>('/field-work/settings'),
   setEnabled: (enabled: boolean) => api.put<{ enabled: boolean; mayChange: boolean }>('/field-work/settings', { enabled }),
   mine: () => getList<FieldCheckin>('/field-work/checkins/mine', 'checkins', { today: localToday() }),
+  /** The address around a place, from the server's geocoder; empty when it cannot tell. */
+  place: (latitude: number, longitude: number) =>
+    api.get<{ address: string }>('/field-work/place', { params: { lat: latitude.toFixed(6), lon: longitude.toFixed(6) } }).then((r) => r.data.address ?? ''),
   /** Your own check-ins, or for whoever sees attendance, anybody's. */
   list: async (params: { from: string; to: string; userId?: string }) => {
     const res = await api.get<{ checkins?: FieldCheckin[]; everybody?: boolean }>('/field-work/checkins', { params });

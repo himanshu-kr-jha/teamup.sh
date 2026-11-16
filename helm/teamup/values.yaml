@@ -236,6 +236,9 @@ config:
   # over.
   maxCallParticipants: 200
 
+  # Where field work check-ins look up the address around them: empty for
+  # OpenStreetMap's own (no key), "off" for coordinates only.
+  geocoderUrl: ""
   # Optional. Without SMTP, invited members are never sent their password.
   smtp:
     host: ""

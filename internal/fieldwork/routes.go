@@ -2,6 +2,7 @@ package fieldwork
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -17,6 +18,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	h := &Handler{service: service}
 	rg.GET("/field-work/settings", h.GetSettings)
 	rg.PUT("/field-work/settings", h.PutSettings)
+	rg.GET("/field-work/place", h.Place)
 	rg.GET("/field-work/checkins/mine", h.Mine)
 	rg.GET("/field-work/checkins", h.List)
 	rg.POST("/field-work/checkins", h.CheckIn)
@@ -97,6 +99,26 @@ func (h *Handler) PutSettings(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"enabled": set.Enabled, "mayChange": true})
+}
+
+// Place is the address around where somebody is, before they check in.
+func (h *Handler) Place(c *gin.Context) {
+	orgID, _, ok := caller(c)
+	if !ok {
+		return
+	}
+	lat, err1 := strconv.ParseFloat(c.Query("lat"), 64)
+	lon, err2 := strconv.ParseFloat(c.Query("lon"), 64)
+	if err1 != nil || err2 != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "lat and lon must be numbers"})
+		return
+	}
+	address, err := h.service.Place(c.Request.Context(), orgID, lat, lon)
+	if err != nil {
+		httpx.Error(c, err, "failed to tell the address")
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"address": address})
 }
 
 func (h *Handler) Mine(c *gin.Context) {
