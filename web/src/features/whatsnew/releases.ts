@@ -45,6 +45,18 @@ export const RELEASES: Release[] = [
     ],
   },
   {
+    id: '2026-11-16-a',
+    date: '2026-11-16',
+    title: 'Forgot your password? Reset it yourself',
+    changes: [
+      {
+        area: 'app',
+        title: 'Reset a forgotten password by email',
+        body: 'Forgot password? on the sign-in page emails you a link to choose a new one. It works once, for 30 minutes, signs you out everywhere, and you get an email saying the password was changed. If your organization has no email set up, its administrators are asked in the app to reset it for you.',
+      },
+    ],
+  },
+  {
     id: '2026-11-15-e',
     date: '2026-11-15',
     title: 'Stand-ups ring, and leave stays quiet',

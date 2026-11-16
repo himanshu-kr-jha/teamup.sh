@@ -79,6 +79,12 @@ type Service struct {
 	cfg         Config
 	providers   map[string]Provider
 	verifier    *oidc.IDTokenVerifier
+
+	// Forgotten passwords: see reset.go.
+	resetMailer  ResetMailer
+	notifyAdmins AdminNotifier
+	resets       resetRequests
+	runReset     func(work func(ctx context.Context))
 }
 
 type Provider interface {
@@ -1049,9 +1055,13 @@ func (s *Service) ChangePassword(ctx context.Context, userID uuid.UUID, currentP
 		return fmt.Errorf("store new password: %w", err)
 	}
 
-	// Anything issued against the old password stops working.
+	// Anything issued against the old password stops working, and so does a
+	// reset link asked for before it.
 	if err := s.revokeAllUserTokens(ctx, userID); err != nil {
 		return fmt.Errorf("revoke sessions after password change: %w", err)
+	}
+	if err := s.retireResetLinks(ctx, userID); err != nil {
+		return fmt.Errorf("retire reset links after password change: %w", err)
 	}
 	return nil
 }

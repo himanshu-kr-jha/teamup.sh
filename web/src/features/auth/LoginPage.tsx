@@ -1,6 +1,6 @@
-import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { useState } from 'react';
-import { AlertCircle, Loader2 } from 'lucide-react';
+import { AlertCircle, CheckCircle2, Loader2 } from 'lucide-react';
 import { BrandMark } from '@/features/branding/BrandMark';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
@@ -14,7 +14,9 @@ export function LoginPage() {
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const setUser = useAuthStore((s) => s.setUser);
-  const [email, setEmail] = useState('');
+  // Back from choosing a new password: say so, and keep the address.
+  const arrived = useLocation().state as { email?: string; notice?: string } | null;
+  const [email, setEmail] = useState(arrived?.email ?? '');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -61,7 +63,16 @@ export function LoginPage() {
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
+              <div className="flex items-baseline justify-between gap-2">
+                <Label htmlFor="password">Password</Label>
+                <Link
+                  to="/forgot-password"
+                  state={{ email }}
+                  className="text-sm text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+                >
+                  Forgot password?
+                </Link>
+              </div>
               <Input
                 id="password"
                 type="password"
@@ -71,10 +82,13 @@ export function LoginPage() {
                 required
                 disabled={loading}
               />
-              <p className="text-sm text-muted-foreground">
-                Forgot your password? Ask an administrator of your organization to reset it.
-              </p>
             </div>
+            {arrived?.notice && !error && (
+              <div className="flex items-center gap-2 text-sm text-emerald-700 dark:text-emerald-400" role="status">
+                <CheckCircle2 className="h-4 w-4 shrink-0" />
+                <span>{arrived.notice}</span>
+              </div>
+            )}
             {error && (
               <div className="flex items-center gap-2 text-sm text-destructive" role="alert">
                 <AlertCircle className="h-4 w-4" />

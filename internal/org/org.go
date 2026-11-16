@@ -1375,6 +1375,11 @@ func (s *Service) ResetMemberPassword(ctx context.Context, orgID, userID uuid.UU
 		`UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = $1 AND revoked_at IS NULL`, userID); err != nil {
 		return "", fmt.Errorf("revoke sessions: %w", err)
 	}
+	// A reset link they asked for before is no longer the way in.
+	if _, err := tx.Exec(ctx,
+		`UPDATE password_resets SET used_at = NOW() WHERE user_id = $1 AND used_at IS NULL`, userID); err != nil {
+		return "", fmt.Errorf("retire reset links: %w", err)
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return "", err
 	}
