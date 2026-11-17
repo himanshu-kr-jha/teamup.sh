@@ -106,6 +106,7 @@ var memberLimits = []ratelimit.Rule{
 	{Name: "upload", Method: http.MethodPost, Route: "/api/files/record", Limit: per(300, hour), Who: ratelimit.ByUser},
 	{Name: "avatar", Method: http.MethodPut, Route: "/api/users/:id/avatar", Limit: per(30, hour), Who: ratelimit.ByUser},
 	{Name: "branding", Method: http.MethodPut, Route: "/api/org/branding", Limit: per(30, hour), Who: ratelimit.ByUser},
+	{Name: "call-background", Method: http.MethodPut, Route: "/api/org/call-backgrounds/:theme", Limit: per(30, hour), Who: ratelimit.ByUser},
 
 	// Reads that make the database work.
 	{Name: "search", Method: http.MethodGet, Route: "/api/search/messages", Limit: per(120, minute), Who: ratelimit.ByUser},

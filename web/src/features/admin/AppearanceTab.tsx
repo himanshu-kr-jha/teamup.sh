@@ -11,6 +11,7 @@ import { useToast } from '@/shared/hooks/useToast';
 import { BRAND_PRESETS, DEFAULT_BRAND_HEX, isHexColor, textOn, tokensFor } from '@/shared/branding';
 import { cn } from '@/shared/utils/cn';
 import { BRANDING_QUERY_KEY, useBranding } from '@/features/branding/useBranding';
+import { CallBackgroundsCard } from './CallBackgroundsCard';
 
 /** The largest logo the server takes. */
 const MAX_LOGO_BYTES = 512 * 1024;
@@ -105,181 +106,184 @@ export function AppearanceTab() {
     : {}) as CSSProperties;
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Appearance</CardTitle>
-        <p className="text-sm text-muted-foreground">
-          Your organization's colour and logo, for everybody, on every page including sign-in.
-        </p>
-      </CardHeader>
-      <CardContent>
-        <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_18rem]">
-          <div className="min-w-0 space-y-6">
-            <fieldset className="space-y-3">
-              <legend className="text-sm font-medium">Colour</legend>
-              <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Colour">
-                {BRAND_PRESETS.map((preset) => {
-                  const selected = color === preset.color;
-                  return (
-                    <button
-                      key={preset.name}
-                      type="button"
-                      role="radio"
-                      aria-checked={selected}
-                      aria-label={preset.name}
-                      title={preset.name}
-                      onClick={() => pick(preset.color)}
-                      className={cn(
-                        'flex h-9 w-9 items-center justify-center rounded-full ring-offset-2 ring-offset-background transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                        selected && 'ring-2 ring-foreground'
-                      )}
-                      style={{ backgroundColor: preset.color || DEFAULT_BRAND_HEX }}
-                    >
-                      {selected && (
-                        <Check
-                          className={cn(
-                            'h-4 w-4',
-                            textOn(preset.color || DEFAULT_BRAND_HEX) === 'light' ? 'text-white' : 'text-slate-900'
-                          )}
-                          aria-hidden="true"
-                        />
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="flex max-w-xs items-end gap-2">
-                <div className="min-w-0 flex-1 space-y-2">
-                  <Label htmlFor="brandHex">Or any colour</Label>
-                  <Input
-                    id="brandHex"
-                    value={hexText}
-                    onChange={typeHex}
-                    placeholder={DEFAULT_BRAND_HEX}
-                    autoComplete="off"
-                    spellCheck={false}
-                    aria-invalid={hexText !== '' && !isHexColor(hexText)}
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Appearance</CardTitle>
+          <p className="text-sm text-muted-foreground">
+            Your organization's colour and logo, for everybody, on every page including sign-in.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_18rem]">
+            <div className="min-w-0 space-y-6">
+              <fieldset className="space-y-3">
+                <legend className="text-sm font-medium">Colour</legend>
+                <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Colour">
+                  {BRAND_PRESETS.map((preset) => {
+                    const selected = color === preset.color;
+                    return (
+                      <button
+                        key={preset.name}
+                        type="button"
+                        role="radio"
+                        aria-checked={selected}
+                        aria-label={preset.name}
+                        title={preset.name}
+                        onClick={() => pick(preset.color)}
+                        className={cn(
+                          'flex h-9 w-9 items-center justify-center rounded-full ring-offset-2 ring-offset-background transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                          selected && 'ring-2 ring-foreground'
+                        )}
+                        style={{ backgroundColor: preset.color || DEFAULT_BRAND_HEX }}
+                      >
+                        {selected && (
+                          <Check
+                            className={cn(
+                              'h-4 w-4',
+                              textOn(preset.color || DEFAULT_BRAND_HEX) === 'light' ? 'text-white' : 'text-slate-900'
+                            )}
+                            aria-hidden="true"
+                          />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="flex max-w-xs items-end gap-2">
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <Label htmlFor="brandHex">Or any colour</Label>
+                    <Input
+                      id="brandHex"
+                      value={hexText}
+                      onChange={typeHex}
+                      placeholder={DEFAULT_BRAND_HEX}
+                      autoComplete="off"
+                      spellCheck={false}
+                      aria-invalid={hexText !== '' && !isHexColor(hexText)}
+                    />
+                  </div>
+                  <input
+                    type="color"
+                    aria-label="Choose a colour"
+                    value={color || DEFAULT_BRAND_HEX}
+                    onChange={(e) => pick(e.target.value)}
+                    className="h-10 w-12 shrink-0 cursor-pointer rounded-md border border-input bg-background p-1"
                   />
                 </div>
-                <input
-                  type="color"
-                  aria-label="Choose a colour"
-                  value={color || DEFAULT_BRAND_HEX}
-                  onChange={(e) => pick(e.target.value)}
-                  className="h-10 w-12 shrink-0 cursor-pointer rounded-md border border-input bg-background p-1"
-                />
-              </div>
-              {hexText !== '' && !isHexColor(hexText) && (
-                <p className="text-xs text-destructive">A colour looks like #4f46e5.</p>
-              )}
-            </fieldset>
-
-            <fieldset className="space-y-3">
-              <legend className="text-sm font-medium">Logo</legend>
-              <p className="text-xs text-muted-foreground">
-                A PNG, JPEG, WebP or GIF up to 512 KB. It is shown about 32 pixels high, so a wide logo on a
-                transparent background works best.
-              </p>
-              <div className="flex flex-wrap items-center gap-3">
-                {shownLogo ? (
-                  <img
-                    src={shownLogo}
-                    alt="Logo"
-                    className="h-12 max-w-[12rem] rounded border border-border bg-muted/40 object-contain p-1"
-                  />
-                ) : (
-                  <span className="flex h-12 w-12 items-center justify-center rounded border border-dashed border-border text-muted-foreground">
-                    <Hash className="h-6 w-6" aria-hidden="true" />
-                  </span>
+                {hexText !== '' && !isHexColor(hexText) && (
+                  <p className="text-xs text-destructive">A colour looks like #4f46e5.</p>
                 )}
-                <input
-                  ref={fileInput}
-                  type="file"
-                  accept={LOGO_TYPES.join(',')}
-                  className="hidden"
-                  onChange={chooseLogo}
-                  aria-label="Logo file"
-                />
-                <Button type="button" variant="outline" size="sm" onClick={() => fileInput.current?.click()}>
-                  <ImagePlus className="mr-2 h-4 w-4" />
-                  {shownLogo ? 'Change logo' : 'Upload logo'}
+              </fieldset>
+
+              <fieldset className="space-y-3">
+                <legend className="text-sm font-medium">Logo</legend>
+                <p className="text-xs text-muted-foreground">
+                  A PNG, JPEG, WebP or GIF up to 512 KB. It is shown about 32 pixels high, so a wide logo on a
+                  transparent background works best.
+                </p>
+                <div className="flex flex-wrap items-center gap-3">
+                  {shownLogo ? (
+                    <img
+                      src={shownLogo}
+                      alt="Logo"
+                      className="h-12 max-w-[12rem] rounded border border-border bg-muted/40 object-contain p-1"
+                    />
+                  ) : (
+                    <span className="flex h-12 w-12 items-center justify-center rounded border border-dashed border-border text-muted-foreground">
+                      <Hash className="h-6 w-6" aria-hidden="true" />
+                    </span>
+                  )}
+                  <input
+                    ref={fileInput}
+                    type="file"
+                    accept={LOGO_TYPES.join(',')}
+                    className="hidden"
+                    onChange={chooseLogo}
+                    aria-label="Logo file"
+                  />
+                  <Button type="button" variant="outline" size="sm" onClick={() => fileInput.current?.click()}>
+                    <ImagePlus className="mr-2 h-4 w-4" />
+                    {shownLogo ? 'Change logo' : 'Upload logo'}
+                  </Button>
+                  {shownLogo && (
+                    <Button type="button" variant="ghost" size="sm" onClick={() => setLogo(null)}>
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Remove
+                    </Button>
+                  )}
+                </div>
+              </fieldset>
+
+              {problem && (
+                <p className="text-sm text-destructive" role="alert">
+                  {problem}
+                </p>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                <Button onClick={save} disabled={!dirty || saving || (hexText !== '' && !isHexColor(hexText))}>
+                  {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Save
                 </Button>
-                {shownLogo && (
-                  <Button type="button" variant="ghost" size="sm" onClick={() => setLogo(null)}>
-                    <Trash2 className="mr-2 h-4 w-4" />
-                    Remove
+                <Button
+                  variant="outline"
+                  disabled={isDefault}
+                  onClick={() => {
+                    pick('');
+                    setLogo(branding.logoUrl ? null : undefined);
+                  }}
+                >
+                  <RotateCcw className="mr-2 h-4 w-4" />
+                  Back to TeamUp's look
+                </Button>
+                {dirty && (
+                  <Button
+                    variant="ghost"
+                    onClick={() => {
+                      pick(branding.color);
+                      setLogo(undefined);
+                    }}
+                  >
+                    Undo changes
                   </Button>
                 )}
               </div>
-            </fieldset>
-
-            {problem && (
-              <p className="text-sm text-destructive" role="alert">
-                {problem}
-              </p>
-            )}
-
-            <div className="flex flex-wrap gap-2">
-              <Button onClick={save} disabled={!dirty || saving || (hexText !== '' && !isHexColor(hexText))}>
-                {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Save
-              </Button>
-              <Button
-                variant="outline"
-                disabled={isDefault}
-                onClick={() => {
-                  pick('');
-                  setLogo(branding.logoUrl ? null : undefined);
-                }}
-              >
-                <RotateCcw className="mr-2 h-4 w-4" />
-                Back to TeamUp's look
-              </Button>
-              {dirty && (
-                <Button
-                  variant="ghost"
-                  onClick={() => {
-                    pick(branding.color);
-                    setLogo(undefined);
-                  }}
-                >
-                  Undo changes
-                </Button>
-              )}
             </div>
-          </div>
 
-          {/* The choices on a small piece of the app, before anybody else sees them. */}
-          <div style={previewStyle} aria-label="Preview" role="group" className="min-w-0">
-            <p className="mb-2 text-sm font-medium">Preview</p>
-            <div className="overflow-hidden rounded-lg border border-border bg-card">
-              <div className="flex h-12 items-center gap-2 border-b border-border px-3">
-                {shownLogo ? (
-                  <img src={shownLogo} alt="" className="h-7 max-w-[7rem] object-contain" />
-                ) : (
-                  <Hash className="h-7 w-7 text-primary" aria-hidden="true" />
-                )}
-                <span className="truncate font-bold">{shownLogo ? branding.name : 'TeamUp'}</span>
-              </div>
-              <div className="space-y-3 p-3">
-                <div className="flex items-center gap-3 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground">
-                  <MessageSquare className="h-4 w-4" aria-hidden="true" />
-                  <span className="flex-1">Chat</span>
-                  <span className="rounded-full bg-primary-foreground/20 px-1.5 text-xs">3</span>
+            {/* The choices on a small piece of the app, before anybody else sees them. */}
+            <div style={previewStyle} aria-label="Preview" role="group" className="min-w-0">
+              <p className="mb-2 text-sm font-medium">Preview</p>
+              <div className="overflow-hidden rounded-lg border border-border bg-card">
+                <div className="flex h-12 items-center gap-2 border-b border-border px-3">
+                  {shownLogo ? (
+                    <img src={shownLogo} alt="" className="h-7 max-w-[7rem] object-contain" />
+                  ) : (
+                    <Hash className="h-7 w-7 text-primary" aria-hidden="true" />
+                  )}
+                  <span className="truncate font-bold">{shownLogo ? branding.name : 'TeamUp'}</span>
                 </div>
-                <div className="flex items-center gap-3 px-3 py-1 text-sm text-muted-foreground">
-                  <Hash className="h-4 w-4" aria-hidden="true" />
-                  <span className="flex-1">general</span>
-                  <span className="rounded-full bg-primary px-1.5 text-xs font-semibold text-primary-foreground">2</span>
+                <div className="space-y-3 p-3">
+                  <div className="flex items-center gap-3 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-primary-foreground">
+                    <MessageSquare className="h-4 w-4" aria-hidden="true" />
+                    <span className="flex-1">Chat</span>
+                    <span className="rounded-full bg-primary-foreground/20 px-1.5 text-xs">3</span>
+                  </div>
+                  <div className="flex items-center gap-3 px-3 py-1 text-sm text-muted-foreground">
+                    <Hash className="h-4 w-4" aria-hidden="true" />
+                    <span className="flex-1">general</span>
+                    <span className="rounded-full bg-primary px-1.5 text-xs font-semibold text-primary-foreground">2</span>
+                  </div>
+                  <Button size="sm" className="w-full" tabIndex={-1}>
+                    Send
+                  </Button>
                 </div>
-                <Button size="sm" className="w-full" tabIndex={-1}>
-                  Send
-                </Button>
               </div>
             </div>
           </div>
-        </div>
-      </CardContent>
-    </Card>
+        </CardContent>
+      </Card>
+      <CallBackgroundsCard />
+    </div>
   );
 }
