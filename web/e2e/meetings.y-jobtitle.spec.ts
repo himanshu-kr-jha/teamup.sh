@@ -46,3 +46,56 @@ test('a company role is set in Settings or by an admin, and shown beside the nam
     await Promise.all([owner.dispose(), aliceApi.dispose()]);
   }
 });
+
+// The owner's request of 17 November 2026: a search on the member list, by
+// name, email, company role or team, and filters for a team and a role.
+test('the member list is searched by what is written about people, and narrowed by team and role', async ({ as }) => {
+  const owner = await apiAs('owner');
+  await owner.patch(`/users/${idOf('alice')}`, { jobTitle: 'AI/ML Engineer' });
+  try {
+    const { page } = await as('owner');
+    await page.goto('/organization');
+    const list = page.getByRole('list', { name: 'Members' });
+    const row = (who: keyof typeof PEOPLE) => list.getByRole('listitem').filter({ hasText: PEOPLE[who].email });
+    await expect(row('alice')).toBeVisible();
+
+    // "/" goes to the search, from anywhere on the page but a field.
+    await page.getByRole('heading', { name: 'Members' }).click();
+    await page.keyboard.press('/');
+    const search = page.getByRole('searchbox', { name: 'Search members' });
+    await expect(search).toBeFocused();
+
+    await search.fill('ml engineer');
+    await expect(row('alice')).toBeVisible();
+    await expect(row('pat')).toBeHidden();
+    await expect(page.getByText(/^1 of \d+ members$/)).toBeVisible();
+
+    await search.fill('platform');
+    await expect(row('pat')).toBeVisible();
+    await expect(row('pat').getByTestId('member-teams')).toContainText('Platform');
+    await expect(row('alice')).toBeHidden();
+
+    await search.fill('nobody-is-called-this');
+    await expect(page.getByText('Nobody matches that.')).toBeVisible();
+    await page.getByRole('button', { name: 'Clear the search' }).click();
+    await expect(search).toHaveValue('');
+    await expect(row('alice')).toBeVisible();
+
+    await page.getByRole('combobox', { name: 'Team' }).click();
+    await page.getByRole('option', { name: 'Sales', exact: true }).click();
+    await expect(row('sam')).toBeVisible();
+    await expect(row('alice')).toBeHidden();
+    await page.getByRole('combobox', { name: 'Team' }).click();
+    await page.getByRole('option', { name: 'All teams' }).click();
+
+    await page.getByRole('combobox', { name: 'Role' }).click();
+    await page.getByRole('option', { name: 'manager', exact: true }).click();
+    await expect(row('mia')).toBeVisible();
+    await expect(row('max')).toBeVisible();
+    await expect(row('alice')).toBeHidden();
+    await page.screenshot({ path: 'test-results/member-search.png' });
+  } finally {
+    await owner.patch(`/users/${idOf('alice')}`, { jobTitle: '' }).catch(() => {});
+    await owner.dispose();
+  }
+});

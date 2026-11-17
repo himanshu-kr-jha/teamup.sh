@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 // The owner's request of 17 November 2026: somebody says what they do at the
@@ -41,5 +43,35 @@ func TestACompanyRoleIsSavedTidiedAndShownToEveryone(t *testing.T) {
 	}
 	if got := send(t, r, http.MethodPatch, path, map[string]string{"jobTitle": ""}); !strings.Contains(got.Body.String(), `"jobTitle":""`) {
 		t.Errorf("it can be cleared: %s", got.Body.String())
+	}
+}
+
+// The member list says which teams each person is in, so it can be searched
+// and filtered by team; a deleted team is not one of them.
+func TestTheMemberListSaysWhichTeamsEachPersonIsIn(t *testing.T) {
+	w := newMailWorld(t)
+	ctx := t.Context()
+	field, err := w.svc.CreateTeam(ctx, w.org, adminActor, "Field Service", "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := w.svc.CreateTeam(ctx, w.org, adminActor, "Old team", "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, team := range []uuid.UUID{field.ID, old.ID} {
+		if err := w.svc.AddTeamMember(ctx, w.org, team, w.admin.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.svc.DeleteTeam(ctx, w.org, old.ID); err != nil {
+		t.Fatal(err)
+	}
+	users, err := w.svc.ListUsers(ctx, w.org)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 1 || len(users[0].Teams) != 1 || users[0].Teams[0] != "Field Service" {
+		t.Fatalf("want only Field Service, got %+v", users)
 	}
 }

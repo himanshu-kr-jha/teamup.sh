@@ -55,7 +55,10 @@ type User struct {
 	// JobTitle is what they do at the company, such as "AI/ML Engineer":
 	// set by them or an administrator, and shown to everyone. Role is about
 	// permissions, not this.
-	JobTitle  string    `json:"jobTitle"`
+	JobTitle string `json:"jobTitle"`
+	// Teams are the names of the teams they are in, given by ListUsers only,
+	// so the member list can be searched and filtered by team.
+	Teams     []string  `json:"teams,omitempty"`
 	Role      string    `json:"role"`
 	Roles     []string  `json:"roles"`
 	IsAdmin   bool      `json:"isAdmin"`
@@ -240,7 +243,39 @@ func (s *Service) ListUsers(ctx context.Context, orgID uuid.UUID) ([]User, error
 		}
 		users = append(users, u)
 	}
-	return users, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return users, s.addTeams(ctx, orgID, users)
+}
+
+// addTeams fills in the teams each person is in, in one query for everybody.
+func (s *Service) addTeams(ctx context.Context, orgID uuid.UUID, users []User) error {
+	rows, err := s.db.Query(ctx, `
+		SELECT tm.user_id, t.name FROM team_members tm
+		JOIN teams t ON t.id = tm.team_id
+		WHERE t.org_id = $1 AND t.deleted_at IS NULL
+		ORDER BY t.name`, orgID)
+	if err != nil {
+		return fmt.Errorf("list teams of users: %w", err)
+	}
+	defer rows.Close()
+	at := make(map[uuid.UUID]int, len(users))
+	for i := range users {
+		at[users[i].ID] = i
+		users[i].Teams = []string{}
+	}
+	for rows.Next() {
+		var id uuid.UUID
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return fmt.Errorf("scan team of user: %w", err)
+		}
+		if i, ok := at[id]; ok {
+			users[i].Teams = append(users[i].Teams, name)
+		}
+	}
+	return rows.Err()
 }
 
 // MaxJobTitle is how long a company role may be, in characters.
