@@ -29,6 +29,8 @@ import {
   useBackgroundsSupported,
   type BackgroundChoice,
 } from './background';
+import { COMPANY_THEMES, composeCompanyBackground, useCompanySource, useCompanyTemplates, type CompanySource, type CompanyTheme } from './companyBackground';
+import { companyCanvasSize } from './nameplate';
 
 // Whether an effect is being put on the camera right now. The first one fetches
 // MediaPipe (about 3 MB), which can take a few seconds; the button says so.
@@ -68,6 +70,10 @@ export function CameraBackground() {
   const live = useCameraLive(track);
   const choice = useBackgroundChoice();
   const look = useLook();
+  // The company background is made from your name and role as well as the
+  // template, so a change to any of them makes it again.
+  const company = useCompanySource(choice.kind === 'company' ? choice.theme : null);
+  const companyKey = company === undefined ? undefined : JSON.stringify(company);
   const toast = useToast();
   const toastRef = useRef(toast.error);
   toastRef.current = toast.error;
@@ -76,13 +82,25 @@ export function CameraBackground() {
   const queue = useRef(Promise.resolve());
 
   useEffect(() => {
-    if (!track || !live) return;
+    // Not until it is known whether there is a company background: taking the
+    // effect off meanwhile would only flash the room behind you.
+    if (!track || !live || companyKey === undefined) return;
+    const source = JSON.parse(companyKey) as CompanySource | null;
     setApplying(1);
     queue.current = queue.current.then(async () => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([
-          applyCameraEffects(track, choice, look),
+          (async () => {
+            let picture: string | null = null;
+            if (source) {
+              // The camera's own size, not that of the picture an effect already on it puts out.
+              const settings = track.getSourceTrackSettings();
+              const size = companyCanvasSize(settings?.width, settings?.height);
+              picture = await composeCompanyBackground(source, size.width, size.height);
+            }
+            await applyCameraEffects(track, choice, look, picture);
+          })(),
           new Promise<void>((resolve) => (timer = setTimeout(resolve, APPLY_TIMEOUT_MS))),
         ]);
       } catch {
@@ -94,7 +112,7 @@ export function CameraBackground() {
         setApplying(-1);
       }
     });
-  }, [track, live, choice, look]);
+  }, [track, live, choice, look, companyKey]);
 
   return null;
 }
@@ -132,9 +150,13 @@ export function BackgroundPicker() {
   const [custom, setCustom] = useState(customPicture);
   const [saving, setSaving] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
+  const templates = useCompanyTemplates();
+  const companyThemes = COMPANY_THEMES.filter((t) => templates?.[t.theme]);
 
   if (supported === null) return null;
-  const on = choice.kind !== 'none' || look !== 'natural';
+  // A company background the organization has since taken away is no background.
+  const gone = choice.kind === 'company' && !!templates && !templates[choice.theme];
+  const on = (choice.kind !== 'none' && !gone) || look !== 'natural';
   const label = supported ? 'Background effects' : 'Background effects are not available in this browser';
 
   const choose = (next: BackgroundChoice) => setBackgroundChoice(next);
@@ -181,7 +203,7 @@ export function BackgroundPicker() {
         >
           <DropdownMenuLabel className="px-1 pb-2 pt-0.5 text-xs font-medium text-muted-foreground">Background</DropdownMenuLabel>
           <div className="grid grid-cols-3 gap-2">
-            <Tile label="None" selected={choice.kind === 'none'} onSelect={() => choose({ kind: 'none' })}>
+            <Tile label="None" selected={choice.kind === 'none' || gone} onSelect={() => choose({ kind: 'none' })}>
               <span className="flex h-full w-full items-center justify-center bg-muted text-muted-foreground">
                 <Ban className="h-5 w-5" aria-hidden="true" />
               </span>
@@ -200,6 +222,16 @@ export function BackgroundPicker() {
             >
               <RoomSample blur={5} />
             </Tile>
+            {companyThemes.map((t) => (
+              <Tile
+                key={t.theme}
+                label={t.label}
+                selected={sameChoice(choice, { kind: 'company', theme: t.theme })}
+                onSelect={() => choose({ kind: 'company', theme: t.theme })}
+              >
+                <CompanyThumb theme={t.theme} />
+              </Tile>
+            ))}
             {PICTURES.map((p) => (
               <Tile
                 key={p.id}
@@ -239,8 +271,7 @@ export function BackgroundPicker() {
             </>
           )}
           <p className="px-1 pt-2 text-[11px] leading-snug text-muted-foreground">
-            Done on this device, before your video is sent. Others see the result.
-          </p>
+            Done on this device, before your video is sent. Others see the result.          </p>
         </DropdownMenuContent>
       </DropdownMenu>
       <input
@@ -255,6 +286,25 @@ export function BackgroundPicker() {
       />
     </>
   );
+}
+
+/** The company background as you would have it, your name included, in small. */
+function CompanyThumb({ theme }: { theme: CompanyTheme }) {
+  const source = useCompanySource(theme);
+  const key = source ? JSON.stringify(source) : '';
+  const [picture, setPicture] = useState<{ key: string; src: string } | null>(null);
+  useEffect(() => {
+    if (!key) return;
+    let live = true;
+    composeCompanyBackground(JSON.parse(key) as CompanySource, 320, 180)
+      .then((src) => live && setPicture({ key, src }))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, [key]);
+  if (!picture || picture.key !== key) return <span className={cn('block h-full w-full', theme === 'dark' ? 'bg-slate-900' : 'bg-slate-100')} />;
+  return <img src={picture.src} alt="" className="h-full w-full object-cover" draggable={false} />;
 }
 
 function Tile({ label, selected, onSelect, children }: { label: string; selected: boolean; onSelect: () => void; children: ReactNode }) {

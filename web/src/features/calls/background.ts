@@ -14,7 +14,9 @@ export type BackgroundChoice =
   | { kind: 'none' }
   | { kind: 'blur'; strength: 'light' | 'strong' }
   | { kind: 'image'; id: string }
-  | { kind: 'custom' };
+  | { kind: 'custom' }
+  /** The organization's template with your own name on it (companyBackground.ts). */
+  | { kind: 'company'; theme: 'dark' | 'light' };
 
 /** The pictures that come with TeamUp, drawn by web/scripts/make-backgrounds.py. */
 export const PICTURES = [
@@ -48,6 +50,9 @@ function read(): BackgroundChoice {
     if (parsed.kind === 'blur' && (parsed.strength === 'light' || parsed.strength === 'strong')) return parsed;
     if (parsed.kind === 'image' && PICTURES.some((p) => p.id === parsed.id)) return parsed;
     if (parsed.kind === 'custom' && readCustom()) return parsed;
+    // Kept even before the organization's templates are known; it is simply not
+    // applied if there turns out to be none.
+    if (parsed.kind === 'company' && (parsed.theme === 'dark' || parsed.theme === 'light')) return parsed;
     return NONE;
   } catch {
     return NONE;
@@ -133,8 +138,12 @@ export async function saveCustomPicture(file: File): Promise<void> {
   }
 }
 
-/** What the processor is told for a choice; null for none, which takes the processor off. */
-export function processorOptions(choice: BackgroundChoice): SwitchBackgroundProcessorOptions | null {
+/**
+ * What the processor is told for a choice; null for none, which takes the
+ * processor off. For the company background, `company` is the picture already
+ * made with your name on it, or null while there is none.
+ */
+export function processorOptions(choice: BackgroundChoice, company?: string | null): SwitchBackgroundProcessorOptions | null {
   switch (choice.kind) {
     case 'blur':
       return { mode: 'background-blur', blurRadius: BLUR_RADIUS[choice.strength] };
@@ -144,6 +153,8 @@ export function processorOptions(choice: BackgroundChoice): SwitchBackgroundProc
       const data = readCustom();
       return data ? { mode: 'virtual-background', imagePath: data } : null;
     }
+    case 'company':
+      return company ? { mode: 'virtual-background', imagePath: company } : null;
     default:
       return null;
   }
@@ -246,8 +257,13 @@ export function supportsLooks(): boolean {
  * nothing. Call it only while the camera is live: a processor set on a camera
  * that is off waits for a picture that is not coming.
  */
-export async function applyCameraEffects(track: LocalVideoTrack, choice: BackgroundChoice, look: LookId): Promise<void> {
-  const options = processorOptions(choice);
+export async function applyCameraEffects(
+  track: LocalVideoTrack,
+  choice: BackgroundChoice,
+  look: LookId,
+  company?: string | null
+): Promise<void> {
+  const options = processorOptions(choice, company);
   const filter = { filter: lookFilter(look), wash: lookWash(look) };
   const plainLook = !filter.filter && !filter.wash;
   const running = track.getProcessor();
