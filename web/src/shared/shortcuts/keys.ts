@@ -108,6 +108,7 @@ export interface KeyEventLike {
   defaultPrevented?: boolean;
   target: EventTarget | null;
   preventDefault: () => void;
+  getModifierState?: (key: string) => boolean;
 }
 
 /** The parts of an element the engine reads. */
@@ -157,6 +158,9 @@ export function chordMatches(combo: Combo & { kind: 'chord' }, e: KeyEventLike, 
   const otherDown = mac ? e.ctrlKey : e.metaKey;
   if (combo.mod !== modDown || otherDown) return false;
   if (combo.alt !== e.altKey || combo.shift !== e.shiftKey) return false;
+  // AltGr reports itself as Ctrl+Alt on Windows, and is how a Polish or
+  // German keyboard types letters such as ć: that is writing, not a shortcut.
+  if (combo.alt && e.getModifierState?.('AltGraph')) return false;
   const key = eventKey(e);
   if (key === combo.key) return true;
   // With Alt or Shift held some layouts change the character a letter types

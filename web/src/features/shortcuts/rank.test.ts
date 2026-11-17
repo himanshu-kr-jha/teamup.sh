@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { rank } from './rank';
-import { nextUnread, stepConversation } from '@/features/chat/conversationKeys';
+import { stepConversation, stepUnread } from '@/features/chat/conversationKeys';
 
 describe('rank', () => {
   const people = [
@@ -45,10 +45,18 @@ describe('moving between conversations', () => {
   });
 
   it('finds the next unread after the open one, going round', () => {
-    expect(nextUnread(list, 'a')).toBe('b');
-    expect(nextUnread(list, 'b')).toBe('d');
-    expect(nextUnread(list, 'd')).toBe('b');
-    expect(nextUnread(list, null)).toBe('b');
-    expect(nextUnread([{ id: 'a' }, { id: 'b' }], 'a')).toBeNull();
+    expect(stepUnread(list, 'a', 1)).toBe('b');
+    expect(stepUnread(list, 'b', 1)).toBe('d');
+    expect(stepUnread(list, 'd', 1)).toBe('b');
+    expect(stepUnread(list, null, 1)).toBe('b');
+    expect(stepUnread([{ id: 'a' }, { id: 'b' }], 'a', 1)).toBeNull();
+  });
+
+  it('finds the previous unread before the open one, going round', () => {
+    expect(stepUnread(list, 'c', -1)).toBe('b');
+    expect(stepUnread(list, 'b', -1)).toBe('d');
+    expect(stepUnread(list, 'a', -1)).toBe('d');
+    expect(stepUnread(list, null, -1)).toBe('d');
+    expect(stepUnread([{ id: 'a' }, { id: 'b' }], 'a', -1)).toBeNull();
   });
 });

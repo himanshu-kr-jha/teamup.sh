@@ -30,7 +30,8 @@ export type ShortcutId =
   | 'task.comment'
   | 'chat.previous'
   | 'chat.next'
-  | 'chat.unread';
+  | 'chat.nextUnread'
+  | 'chat.previousUnread';
 
 export type ShortcutSection = 'Anywhere' | 'Go to' | 'In a call' | 'Tasks' | 'Chat';
 
@@ -59,7 +60,7 @@ export const SHORTCUTS: ShortcutInfo[] = [
   { id: 'call.mic', section: 'In a call', label: 'Turn your microphone on or off', keys: ['mod+d'] },
   { id: 'call.camera', section: 'In a call', label: 'Turn your camera on or off', keys: ['mod+e'] },
   { id: 'call.share', section: 'In a call', label: 'Share your screen, or stop', keys: ['mod+shift+s'] },
-  { id: 'call.chat', section: 'In a call', label: 'Open or close the meeting chat', keys: ['mod+shift+c'] },
+  { id: 'call.chat', section: 'In a call', label: 'Open or close the meeting chat', keys: ['mod+alt+c'] },
   { id: 'call.talk', section: 'In a call', label: 'Hold to talk while muted', keys: ['space'] },
 
   { id: 'task.new', section: 'Tasks', label: 'New task', keys: ['c'] },
@@ -70,7 +71,8 @@ export const SHORTCUTS: ShortcutInfo[] = [
 
   { id: 'chat.previous', section: 'Chat', label: 'Previous conversation', keys: ['alt+arrowup'] },
   { id: 'chat.next', section: 'Chat', label: 'Next conversation', keys: ['alt+arrowdown'] },
-  { id: 'chat.unread', section: 'Chat', label: 'Next unread conversation', keys: ['mod+shift+a'] },
+  { id: 'chat.previousUnread', section: 'Chat', label: 'Previous unread conversation', keys: ['alt+shift+arrowup'] },
+  { id: 'chat.nextUnread', section: 'Chat', label: 'Next unread conversation', keys: ['alt+shift+arrowdown'] },
 ];
 
 export const SECTIONS: { name: ShortcutSection; note?: string }[] = [

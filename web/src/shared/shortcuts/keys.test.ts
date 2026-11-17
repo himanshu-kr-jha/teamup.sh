@@ -166,6 +166,42 @@ describe('chords', () => {
     expect(handler).toHaveBeenCalledTimes(1);
   });
 
+  it('Ctrl+Alt+C opens the meeting chat, Cmd+Option+C on a Mac, where Option changes the letter', () => {
+    const pc = setup({ mac: false });
+    const onPc = pc.bind('mod+alt+c');
+    pc.engine.keyDown(key('c', { ctrlKey: true, altKey: true }));
+    expect(onPc.handler).toHaveBeenCalledTimes(1);
+    pc.engine.keyDown(key('C', { ctrlKey: true, shiftKey: true }));
+    expect(onPc.handler).toHaveBeenCalledTimes(1);
+    const mac = setup({ mac: true });
+    const onMac = mac.bind('mod+alt+c');
+    mac.engine.keyDown(key('\u00e7', { metaKey: true, altKey: true, code: 'KeyC' }));
+    expect(onMac.handler).toHaveBeenCalledTimes(1);
+    expect(comboText(parseCombo('mod+alt+c'), true)).toBe('Cmd+Option+C');
+    expect(comboAria(parseCombo('mod+alt+c'), false)).toBe('Control+Alt+C');
+  });
+
+  it('leaves AltGr alone, which types letters on some keyboards', () => {
+    const t = setup({ mac: false });
+    const { handler } = t.bind('mod+alt+c');
+    const e = key('\u0107', { ctrlKey: true, altKey: true, code: 'KeyC', getModifierState: (k: string) => k === 'AltGraph' });
+    expect(t.engine.keyDown(e)).toBe(false);
+    expect(e.prevented).toBe(false);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it('tells Alt+Down from Alt+Shift+Down', () => {
+    const t = setup();
+    const next = t.bind('alt+arrowdown');
+    const unread = t.bind('alt+shift+arrowdown');
+    t.engine.keyDown(key('ArrowDown', { altKey: true, shiftKey: true, target: textarea as any }));
+    expect(unread.handler).toHaveBeenCalledTimes(1);
+    expect(next.handler).not.toHaveBeenCalled();
+    t.engine.keyDown(key('ArrowDown', { altKey: true }));
+    expect(next.handler).toHaveBeenCalledTimes(1);
+    expect(comboText(parseCombo('alt+shift+arrowup'), true)).toBe('Option+Shift+\u2191');
+  });
+
   it('matches the physical key when Alt changes the character', () => {
     const t = setup();
     const { handler } = t.bind('alt+d');

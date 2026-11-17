@@ -12,11 +12,20 @@ export function stepConversation(order: { id: string }[], current: string | null
   return order[(at + step + order.length) % order.length].id;
 }
 
-/** The next conversation with something unread after the open one, or null when everything is read. */
-export function nextUnread(order: { id: string; unreadCount?: number }[], current: string | null | undefined): string | null {
-  const at = order.findIndex((c) => c.id === current);
+/**
+ * The nearest conversation with something unread below (1) or above (-1) the
+ * open one, going round, or null when everything is read.
+ */
+export function stepUnread(
+  order: { id: string; unreadCount?: number }[],
+  current: string | null | undefined,
+  step: 1 | -1
+): string | null {
+  const found = order.findIndex((c) => c.id === current);
+  // Nothing open: down starts at the top, up at the bottom.
+  const at = found === -1 ? (step === 1 ? -1 : order.length) : found;
   for (let i = 1; i <= order.length; i++) {
-    const c = order[(at + i + order.length) % order.length];
+    const c = order[(((at + step * i) % order.length) + order.length) % order.length];
     if (c.id !== current && (c.unreadCount ?? 0) > 0) return c.id;
   }
   return null;

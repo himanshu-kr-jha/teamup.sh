@@ -118,7 +118,8 @@ export function ShareUnavailableNote() {
 
 /**
  * The call's keys: Ctrl+D for the microphone and Ctrl+E for the camera, as in
- * other meeting apps, Ctrl+Shift+S to share, Ctrl+Shift+C for the chat, and
+ * other meeting apps, Ctrl+Shift+S to share, Ctrl+Alt+C for the chat (as in Google
+ * Meet; the browser keeps Ctrl+Shift+C for inspecting the page), and
  * Space held to talk while muted. Bound only while a call is open, so the
  * browser keeps Ctrl+D for bookmarks the rest of the time.
  */

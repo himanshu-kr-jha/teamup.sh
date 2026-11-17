@@ -16,7 +16,7 @@ const blur = (page: Page) => page.evaluate(() => (document.activeElement as HTML
 const mutedTiles = (page: Page) => page.getByLabel('Microphone off', { exact: true });
 
 test.describe('keyboard shortcuts', () => {
-  test('in a call, Ctrl+D, Ctrl+E, Space and Ctrl+Shift+C work the call, also from the corner window', async ({ as }) => {
+  test('in a call, Ctrl+D, Ctrl+E, Space and Ctrl+Alt+C work the call, also from the corner window', async ({ as }) => {
     test.setTimeout(150_000);
     const owner = await apiAs('owner');
     const call = await createCall(owner, `Keys ${Date.now()}`, [idOf('alice')]);
@@ -66,9 +66,12 @@ test.describe('keyboard shortcuts', () => {
     await expect(mutedTiles(alice.page)).toHaveCount(2, { timeout: 20_000 });
 
     const chatButton = page.getByTestId('meeting-chat-button');
-    await page.keyboard.press('Control+Shift+C');
+    await expect(chatButton).toHaveAttribute('aria-keyshortcuts', 'Control+Alt+C');
+    await page.keyboard.press('Control+Alt+c');
     await expect(chatButton).toHaveAttribute('aria-pressed', 'true');
-    await page.keyboard.press('Control+Shift+C');
+    // From inside the chat's own message box too, which leaves the key alone.
+    await page.getByRole('textbox', { name: 'Message to everyone in the call' }).click();
+    await page.keyboard.press('Control+Alt+c');
     await expect(chatButton).toHaveAttribute('aria-pressed', 'false');
 
     // G then C leaves the call in its corner, where Ctrl+D still works it.
@@ -271,6 +274,27 @@ test.describe('keyboard shortcuts', () => {
     await page.keyboard.press('Alt+ArrowUp');
     await expect(page.getByRole('heading', { name: names[0] })).toBeVisible();
     expect(page.url()).toBe(first);
+
+    // Alt+Shift+Down skips to the nearest conversation with something unread.
+    const alice = await apiAs('alice');
+    const dm = await alice.post('/channels/direct', { userId: idOf('owner') });
+    await alice.post(`/channels/${dm.id}/messages`, { content: 'Unread, for the keys', tempId: `keys-${Date.now()}` });
+    // The count beside a conversation's name; a presence dot is round too, so it is told apart by its width.
+    const badge = 'span[class*="min-w-[1.25rem]"]';
+    const unreadMark = list.filter({ has: page.locator(badge) });
+    await expect(unreadMark.first()).toBeVisible({ timeout: 15_000 });
+    const expected = await list.evaluateAll((buttons, badge) => {
+      const at = buttons.findIndex((b) => b.className.includes('bg-primary'));
+      for (let i = 1; i <= buttons.length; i++) {
+        const b = buttons[(at + i) % buttons.length];
+        if (b.querySelector(badge)) return b.querySelector('span.flex-1')?.textContent?.trim() ?? '';
+      }
+      return '';
+    }, badge);
+    expect(expected).not.toBe('');
+    await page.getByRole('textbox', { name: 'Message' }).click();
+    await page.keyboard.press('Alt+Shift+ArrowDown');
+    await expect(page.getByRole('heading', { name: expected })).toBeVisible();
   });
 
   test('turning single keys off in Settings keeps Ctrl+K but not G or ?', async ({ as }) => {
