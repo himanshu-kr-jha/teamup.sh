@@ -18,7 +18,7 @@ import { callsApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
 import { cn } from '@/shared/utils/cn';
-import { PersonAvatar } from '@/shared/components/UserAvatar';
+import { PersonAvatar, useJobTitles } from '@/shared/components/UserAvatar';
 import {
   MAX_TILES_COMPACT,
   MAX_TILES_PER_PAGE,
@@ -311,6 +311,7 @@ function ParticipantPanel({
   const [removing, setRemoving] = useState(false);
   const viewer = useContext(ViewerContext);
   const guest = isGuest(participant);
+  const jobTitleOf = useJobTitles();
 
   const name = nameOf(track);
   const isLocal = participant.isLocal;
@@ -320,6 +321,8 @@ function ParticipantPanel({
   const hasVideo = isTrackReference(track) && (presenting || !track.publication.isMuted);
   const microphoneOff = !participant.isMicrophoneEnabled;
   const notes = isNotetaker(participant);
+  // What they do at the company, beside their name; a guest has none.
+  const jobTitle = notes || guest || presenting ? '' : jobTitleOf(participant.identity);
 
   const caption = notes
     ? 'Notes, taking the minutes'
@@ -406,7 +409,10 @@ function ParticipantPanel({
               />
             ))}
           {presenting && <MonitorUp className="h-3.5 w-3.5 shrink-0 text-white/80" aria-hidden="true" />}
-          <span className="truncate text-xs font-medium text-white">{caption}</span>
+          <span className="truncate text-xs font-medium text-white">
+            {caption}
+            {jobTitle && <span className="font-normal text-white/70"> · {jobTitle}</span>}
+          </span>
           <span className="ml-auto shrink-0">
             <ConnectionQualityIndicator participant={participant} />
           </span>

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { orgApi } from '@/shared/api/client';
 import { useAuthStore } from '@/shared/store/authStore';
@@ -54,6 +54,23 @@ export function usePictures(): (userId: string | null | undefined) => string | u
     return map;
   }, [data]);
   return (userId) => (userId ? byId.get(userId) : undefined);
+}
+
+/**
+ * What each person does at the company ("AI/ML Engineer"), from the same
+ * query as their pictures. Empty for somebody who has not said.
+ */
+export function useJobTitles(): (userId: string | null | undefined) => string {
+  const signedIn = useAuthStore((s) => s.isAuthenticated);
+  const { data } = useQuery({ queryKey: ['users'], queryFn: () => orgApi.listUsers(), enabled: signedIn });
+  const byId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const u of (data?.data ?? []) as Array<{ id: string; jobTitle?: string }>) {
+      if (u.jobTitle) map.set(u.id, u.jobTitle);
+    }
+    return map;
+  }, [data]);
+  return useCallback((userId) => (userId ? byId.get(userId) ?? '' : ''), [byId]);
 }
 
 /** Somebody's picture, found by who they are, or their initials. */

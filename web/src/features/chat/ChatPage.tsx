@@ -10,7 +10,7 @@ import { FormatBar, FormattedTextarea, useFormatting } from '@/shared/richText/c
 import { canShare, copyFormatted, shareText } from '@/shared/richText/share';
 import { Button } from '@/shared/components/ui/button';
 import { NotifyMenu } from './NotifyMenu';
-import { PersonAvatar } from '@/shared/components/UserAvatar';
+import { PersonAvatar, useJobTitles } from '@/shared/components/UserAvatar';
 import { cn, formatRelativeTime } from '@/shared/utils/cn';
 import {
   DropdownMenu,
@@ -296,6 +296,7 @@ export function ChatPage() {
 
   const activeChannel = channels.find((c) => c.id === channelId);
   const { statusOf, personOf } = usePresence();
+  const jobTitleOf = useJobTitles();
   // A reaction payload only carries user ids. Availability covers everybody in
   // the organization, including people who are not connected, so it can name
   // whoever reacted — and reactionSummary counts anyone it cannot.
@@ -881,12 +882,14 @@ export function ChatPage() {
     : counterpartOnLeave
       ? `On leave, ${backOnText(counterpartOnLeave.until)}`
       : activeChannel?.type === 'dm'
-      ? presenceLabel(
-          statusOf(activeChannel?.counterpartId),
-          personOf(activeChannel?.counterpartId)?.note
-        )
+      ? [
+          jobTitleOf(activeChannel?.counterpartId),
+          presenceLabel(statusOf(activeChannel?.counterpartId), personOf(activeChannel?.counterpartId)?.note),
+        ]
+          .filter(Boolean)
+          .join(' · ')
       : activeChannel?.type === 'announcement'
-        ? 'Announcements — only administrators can post'
+        ? 'Announcements: only administrators can post'
         : `${activeChannel?.memberCount ?? 0} ${activeChannel?.memberCount === 1 ? 'member' : 'members'}`;
 
   const rooms = channels.filter((c: any) => c.type !== 'dm');

@@ -8,6 +8,8 @@ interface User {
   name: string;
   email: string;
   avatarUrl?: string;
+  /** What they do at the company; empty when not set. */
+  jobTitle?: string;
   roles: string[];
   orgId: string;
   mustChangePassword?: boolean;

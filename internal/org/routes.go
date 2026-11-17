@@ -552,6 +552,7 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 	var req struct {
 		Name      *string `json:"name"`
 		AvatarURL *string `json:"avatarUrl"`
+		JobTitle  *string `json:"jobTitle"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -561,7 +562,7 @@ func (h *Handler) UpdateUser(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "a picture address must be an https:// link, or the picture uploaded here"})
 		return
 	}
-	u, err := h.service.UpdateUser(c.Request.Context(), orgID, userID, req.Name, req.AvatarURL)
+	u, err := h.service.UpdateUser(c.Request.Context(), orgID, userID, req.Name, req.AvatarURL, req.JobTitle)
 	if err != nil {
 		httpx.Error(c, err, "failed to update user")
 		return

@@ -30,6 +30,7 @@ export function SettingsPage() {
   const [activeTab, setActiveTab] = useState('profile');
   const [saving, setSaving] = useState(false);
   const [name, setName] = useState(user?.name || '');
+  const [jobTitle, setJobTitle] = useState(user?.jobTitle || '');
   const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'system');
   const [passwordOpen, setPasswordOpen] = useState(false);
 
@@ -38,6 +39,9 @@ export function SettingsPage() {
   useEffect(() => {
     if (user?.name) setName((current) => current || user.name);
   }, [user?.name]);
+  useEffect(() => {
+    if (user?.jobTitle) setJobTitle((current) => current || user.jobTitle || '');
+  }, [user?.jobTitle]);
 
   // The save used to PATCH a path that carried the API prefix twice, against a
   // route that does not exist, and swallow the 404 into the console — so it
@@ -46,7 +50,8 @@ export function SettingsPage() {
     if (!user?.id) return;
     setSaving(true);
     try {
-      await orgApi.updateUser(user.id, { name });
+      await orgApi.updateUser(user.id, { name, jobTitle });
+      await queryClient.invalidateQueries({ queryKey: ['users'] });
       await refreshUser();
       toast.success('Your profile has been saved.');
     } catch (err) {
@@ -84,6 +89,17 @@ export function SettingsPage() {
               <div className="space-y-2">
                 <Label htmlFor="profileName">Display name</Label>
                 <Input id="profileName" value={name} onChange={(e) => setName(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="profileJobTitle">Company role</Label>
+                <Input
+                  id="profileJobTitle"
+                  value={jobTitle}
+                  maxLength={80}
+                  placeholder="For example, AI/ML Engineer"
+                  onChange={(e) => setJobTitle(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">What you do here. Everyone in your organization sees it beside your name.</p>
               </div>
               <div className="space-y-2">
                 <Label htmlFor="profileEmail">Email</Label>

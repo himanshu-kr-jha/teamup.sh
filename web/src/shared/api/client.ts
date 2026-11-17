@@ -335,7 +335,7 @@ export const orgApi = {
   /** The colour and logo. A logo left out is kept; an empty one removes it. */
   saveBranding: (data: { color: string; logo?: string }) => api.put<Branding>('/org/branding', data),
   getUser: (id: string) => api.get(`/users/${id}`),
-  updateUser: (id: string, data: { name?: string; avatarUrl?: string }) => api.patch(`/users/${id}`, data),
+  updateUser: (id: string, data: { name?: string; avatarUrl?: string; jobTitle?: string }) => api.patch(`/users/${id}`, data),
   /** A picture already cut to a small square, as a data URL. */
   setAvatar: (id: string, image: string) => api.put<{ avatarUrl: string }>(`/users/${id}/avatar`, { image }),
   removeAvatar: (id: string) => api.delete(`/users/${id}/avatar`),

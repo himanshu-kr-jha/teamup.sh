@@ -204,6 +204,8 @@ function MembersTab({
   // Deactivating somebody signs them out everywhere, so it is asked once first.
   const [deactivating, setDeactivating] = useState<any | null>(null);
   const [resetFor, setResetFor] = useState<any | null>(null);
+  const [titleFor, setTitleFor] = useState<any | null>(null);
+  const [titleDraft, setTitleDraft] = useState('');
   const [adding, setAdding] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<{ outcomes: ImportOutcome[]; mailProblem?: string } | null>(null);
@@ -256,16 +258,17 @@ function MembersTab({
             </div>
           )}
         </CardHeader>
-        <CardContent className="space-y-2">
+        <CardContent className="space-y-2" role="list" aria-label="Members">
           {users.length === 0 && <p className="text-sm text-muted-foreground">No members yet.</p>}
           {users.map((u: any) => (
-            <div key={u.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border p-3">
+            <div key={u.id} role="listitem" className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border p-3">
               <div className="relative shrink-0">
                 <UserAvatar name={u.name} src={u.avatarUrl} className="h-9 w-9" />
                 <PresenceDot status={statusOf(u.id)} className="absolute -bottom-0.5 -right-0.5" />
               </div>
               <div className="min-w-[10rem] flex-1 basis-full sm:basis-auto">
                 <p className="truncate font-medium">{u.name}</p>
+                {u.jobTitle && <p className="truncate text-sm" data-testid="member-job-title">{u.jobTitle}</p>}
                 <p className="truncate text-sm text-muted-foreground">{u.email}</p>
               </div>
               <div className="flex flex-wrap gap-1">
@@ -295,6 +298,19 @@ function MembersTab({
               </div>
               {(canMembers || canRoles) && (
                 <div className="flex flex-wrap gap-2">
+                  {canMembers && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      aria-label={`Company role of ${u.name}`}
+                      onClick={() => {
+                        setTitleDraft(u.jobTitle ?? '');
+                        setTitleFor(u);
+                      }}
+                    >
+                      Company role
+                    </Button>
+                  )}
                   {canRoles && (
                     <Button variant="outline" size="sm" onClick={() => setAssignFor(u)}>
                       Assign role
@@ -343,6 +359,30 @@ function MembersTab({
           setNewCredentials(credentials);
         }}
       />
+
+      <FormDialog
+        open={!!titleFor}
+        onOpenChange={(o) => !o && setTitleFor(null)}
+        title={`Company role of ${titleFor?.name ?? ''}`}
+        description="What they do here, such as AI/ML Engineer. Everyone in the organization sees it beside their name."
+        submitLabel="Save"
+        onSubmit={async () => {
+          await orgApi.updateUser(titleFor.id, { jobTitle: titleDraft });
+          refresh();
+          toast.success('Company role saved.');
+        }}
+      >
+        <div className="space-y-2">
+          <Label htmlFor="memberJobTitle">Company role</Label>
+          <Input
+            id="memberJobTitle"
+            value={titleDraft}
+            maxLength={80}
+            placeholder="For example, AI/ML Engineer"
+            onChange={(e) => setTitleDraft(e.target.value)}
+          />
+        </div>
+      </FormDialog>
 
       <FormDialog
         open={!!resetFor}
