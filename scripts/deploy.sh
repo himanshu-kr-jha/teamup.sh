@@ -287,9 +287,16 @@ if [ -n "$WHEN" ]; then
   # Booked on the server, replacing any deploy booked earlier: the newest
   # commit of main is the one to ship. The script is copied per commit for the
   # same reason the tree is.
+  #
+  # It runs as the user we sign in as, exactly as a deploy in the window does.
+  # Run as root it could not write its log: /tmp/teamup-deploy.log belongs to
+  # that user from the last deploy, and Linux does not let root write another
+  # user's file in /tmp (fs.protected_regular). The booked deploy of
+  # 17 November 2026 failed at 20:00 on exactly that.
   "${SSH[@]}" "$HOST" "cp /tmp/teamup-deploy.sh /tmp/teamup-deploy-$TAG.sh \
     && for u in \$(systemctl list-units --all --plain --no-legend 'teamup-deploy-*' | awk '{print \$1}'); do sudo systemctl stop \"\$u\" >/dev/null 2>&1 || true; done \
-    && sudo systemd-run --quiet --unit='teamup-deploy-$TAG' --on-calendar='$WHEN' --timer-property=AccuracySec=1s \
+    && sudo systemd-run --quiet --uid=\"\$(id -u)\" --gid=\"\$(id -g)\" --setenv=HOME=\"\$HOME\" \
+         --unit='teamup-deploy-$TAG' --on-calendar='$WHEN' --timer-property=AccuracySec=1s \
          /bin/bash -c \"bash /tmp/teamup-deploy-$TAG.sh $ARGS_Q > /tmp/teamup-deploy.log 2>&1 < /dev/null\"" \
     || die "could not book the deploy on the server"
   step "Booked $TAG for $WHEN"
