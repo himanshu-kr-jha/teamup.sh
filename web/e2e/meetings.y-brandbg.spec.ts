@@ -29,6 +29,32 @@ async function receivedFrame(page: Page, name: string) {
 }
 
 /**
+ * How a person's video is fitted into their tile, and how much of the picture's
+ * width and height can be seen: 1 for all of it, less where covering crops it.
+ */
+async function shown(page: Page, name: string) {
+  return page.evaluate((who) => {
+    const tile = [...document.querySelectorAll<HTMLElement>('.group')].find(
+      (el) => el.querySelector('video') && el.textContent?.includes(who)
+    );
+    const video = tile?.querySelector<HTMLVideoElement>('video:not([data-lk-local-participant="true"])');
+    if (!video || video.videoWidth === 0 || video.clientWidth === 0) return null;
+    const fit = getComputedStyle(video).objectFit;
+    const box = video.clientWidth / video.clientHeight;
+    const picture = video.videoWidth / video.videoHeight;
+    const round = (n: number) => Math.round(n * 1000) / 1000;
+    if (fit !== 'cover') return { fit, widthShown: 1, heightShown: 1 };
+    return { fit, widthShown: round(Math.min(1, box / picture)), heightShown: round(Math.min(1, picture / box)) };
+  }, name);
+}
+
+/** Pins a person's tile to the stage, from the button that shows on hover. */
+async function pinTile(page: Page, name: string) {
+  await page.getByText(name, { exact: false }).first().hover();
+  await page.getByRole('button', { name: `Pin ${name}` }).click();
+}
+
+/**
  * How closely the difference between the frame received and the bare template,
  * where the name and role should be, follows the text as written and the same
  * text mirrored in place. Text that reads the right way round follows the first
@@ -64,8 +90,17 @@ async function orientation(page: Page, name: string, template: string, lines: Re
       text.scale(W / 1280, W / 1280);
       text.textAlign = 'right';
       text.textBaseline = 'alphabetic';
+      // In the same font the sender drew it in, or the same fallback.
+      for (const [family, url] of [['Manrope', '/fonts/manrope-latin.woff2'], ['Space Grotesk', '/fonts/space-grotesk-latin.woff2']]) {
+        try {
+          document.fonts.add(await new FontFace(family, `url(${url})`, { weight: '400 600' }).load());
+        } catch {
+          // The system font, as the sender would have had.
+        }
+      }
       for (const l of lines) {
         text.font = l.font;
+        text.letterSpacing = `${l.tracking}px`;
         text.fillStyle = '#fff';
         text.fillText(l.text, l.x, l.y);
       }
@@ -148,7 +183,7 @@ test('an administrator puts in the company backgrounds, and a person in a call w
     await expect(alice.page.getByText('Your profile has been saved.')).toBeVisible();
 
     // Both in a call; Alice turns her camera on and chooses Company (dark).
-    const call = await createCall(owner, `Company background ${Date.now()}`, [idOf('alice')]);
+    const call = await createCall(owner, `Company background ${Date.now()}`, [idOf('alice'), idOf('pat')]);
     await joinCall(olivia.page, call.id);
     await joinCall(alice.page, call.id);
     await alice.page.getByRole('button', { name: 'Turn your camera on' }).click();
@@ -165,12 +200,13 @@ test('an administrator puts in the company backgrounds, and a person in a call w
     await expect(button).toHaveAttribute('aria-pressed', 'true');
 
     // Olivia receives Alice's video with the name and role in the top right,
-    // reading the right way round.
+    // reading the right way round. In the grid her tile is 16:9, so all of it shows.
     await expect.poll(() => receivedFrame(olivia.page, PEOPLE.alice.name), { timeout: 30_000 }).not.toBeNull();
-    // Pinned, so her tile fills the stage and the full-size video is sent.
-    const pin = olivia.page.getByRole('button', { name: `Pin ${PEOPLE.alice.name}` });
-    await olivia.page.getByText(PEOPLE.alice.name, { exact: false }).first().hover();
-    await pin.click();
+    await expect.poll(async () => (await shown(olivia.page, PEOPLE.alice.name))?.widthShown ?? 0, { timeout: 15_000 }).toBeGreaterThan(0.97);
+    // Pinned, her tile fills the stage, whatever its shape, and the full-size video is sent.
+    await pinTile(olivia.page, PEOPLE.alice.name);
+    // The stage is shown whole, letterboxed, so the sides, and her name, are not cut off.
+    await expect.poll(() => shown(olivia.page, PEOPLE.alice.name), { timeout: 15_000 }).toMatchObject({ fit: 'contain', widthShown: 1, heightShown: 1 });
     const template = await owner.get('/org/call-backgrounds');
     const lines = nameplateLayout(1280, 720, PEOPLE.alice.name, 'AI/ML Engineer', 'dark', () => 0);
     let seen: Awaited<ReturnType<typeof orientation>> | null = null;
@@ -193,8 +229,26 @@ test('an administrator puts in the company backgrounds, and a person in a call w
       () => getComputedStyle(document.querySelector('video[data-lk-local-participant="true"]')!).transform
     );
     expect(ownTransform).toBe('none');
+    // The picture as it will be seen: a busy test machine sometimes sends the
+    // small copy for a few seconds while the segmenter catches up.
+    await expect
+      .poll(async () => (await receivedFrame(olivia.page, PEOPLE.alice.name))?.width ?? 0, { timeout: 20_000 })
+      .toBeGreaterThanOrEqual(1280);
+    await olivia.page.waitForTimeout(500);
     await olivia.page.screenshot({ path: 'test-results/brandbg-olivia-sees-alice.png' });
     await alice.page.screenshot({ path: 'test-results/brandbg-alice-sees-herself.png' });
+
+    // On a phone held upright: Alice's tile in the grid is 16:9 and shows all of
+    // her picture, and pinned it is letterboxed rather than cut to the phone's shape.
+    const pat = await as('pat', { width: 390, height: 844 });
+    await joinCall(pat.page, call.id);
+    await expect.poll(async () => (await shown(pat.page, PEOPLE.alice.name))?.widthShown ?? 0, { timeout: 30_000 }).toBeGreaterThan(0.97);
+    await pat.page.waitForTimeout(1500);
+    await pat.page.screenshot({ path: 'test-results/brandbg-phone-grid.png' });
+    await pinTile(pat.page, PEOPLE.alice.name);
+    await expect.poll(() => shown(pat.page, PEOPLE.alice.name), { timeout: 15_000 }).toMatchObject({ fit: 'contain', widthShown: 1 });
+    await pat.page.waitForTimeout(1500);
+    await pat.page.screenshot({ path: 'test-results/brandbg-phone-pinned.png' });
   } finally {
     await owner.del('/org/call-backgrounds/dark').catch(() => {});
     await owner.del('/org/call-backgrounds/light').catch(() => {});
