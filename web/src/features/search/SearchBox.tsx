@@ -6,6 +6,8 @@ import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { messagesApi } from '@/shared/api/client';
 import { formatRelativeTime, cn } from '@/shared/utils/cn';
+import { useShortcut } from '@/shared/shortcuts/ShortcutsProvider';
+import { shortcutHint } from '@/shared/shortcuts/catalogue';
 
 interface Result {
   id: string;
@@ -56,6 +58,19 @@ export function SearchBox() {
   useEffect(() => {
     if (expanded) inputRef.current?.focus();
   }, [expanded]);
+  // "/" lands here on a page with no search of its own; a page that has one
+  // binds it at a higher priority.
+  useShortcut(
+    'search',
+    () => {
+      if (window.matchMedia('(min-width: 768px)').matches) inputRef.current?.focus();
+      else {
+        setExpanded(true);
+        setOpen(true);
+      }
+    },
+    { priority: -1 }
+  );
   const finish = () => {
     setOpen(false);
     setTerm('');
@@ -133,6 +148,7 @@ export function SearchBox() {
         onFocus={() => setOpen(true)}
         placeholder="Search messages and files…"
         aria-label="Search messages and files"
+        {...shortcutHint('search', 'Search messages and files')}
         className="pl-10"
       />
       {searching && <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-muted-foreground" />}

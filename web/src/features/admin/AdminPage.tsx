@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { OrganizationLeave } from './OrganizationLeave';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -55,6 +55,7 @@ import { PeoplePicker, addEach, addLabel } from '@/shared/components/PeoplePicke
 import { orgApi, tasksApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
+import { useShortcut } from '@/shared/shortcuts/ShortcutsProvider';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { usePresence } from '@/features/presence/usePresence';
 import { PresenceDot } from '@/features/presence/PresenceDot';
@@ -234,19 +235,12 @@ function MembersTab({
     [users],
   );
   const shown = useMemo(() => users.filter((u: any) => memberMatches(u, filter)), [users, filter]);
-  // "/" anywhere on the page, but not while typing, goes to the search.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return;
-      const t = e.target as HTMLElement | null;
-      if (t && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName))) return;
-      if (!searchRef.current) return;
-      e.preventDefault();
-      searchRef.current.focus();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  // "/" anywhere on the page, but not while typing, goes to the member search
+  // rather than the header's.
+  useShortcut('search', () => {
+    if (!searchRef.current) return false;
+    searchRef.current.focus();
+  });
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['users'] });
 

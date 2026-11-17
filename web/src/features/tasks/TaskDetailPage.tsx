@@ -36,6 +36,9 @@ import { useReadTaskWhileOpen } from '@/features/notifications/unreadTasks';
 import { activityLine } from './activityText';
 import { endOfDueDay } from './dueDate';
 import { liveTaskQuery } from './liveQuery';
+import { CreateTaskDialog } from './CreateTaskDialog';
+import { useShortcut } from '@/shared/shortcuts/ShortcutsProvider';
+import { shortcutHint } from '@/shared/shortcuts/catalogue';
 
 interface Task {
   id: string;
@@ -122,6 +125,7 @@ function TaskDetailView() {
   const { on } = useWebSocket();
   const [editing, setEditing] = useState(false);
   const [showCommentForm, setShowCommentForm] = useState(false);
+  const [statusOpen, setStatusOpen] = useState(false);
   const [commentText, setCommentText] = useState('');
   // Uploaded but not yet posted, so a file arrives with the words that explain
   // it rather than on its own the moment it finishes uploading.
@@ -222,6 +226,19 @@ function TaskDetailView() {
 
   return (
     <div className="flex h-full flex-col bg-background">
+      <TaskShortcuts
+        task={task}
+        onEdit={() => setEditing(true)}
+        onStatus={() => setStatusOpen(true)}
+        onAssign={(assigneeId) =>
+          updateTaskMutation.mutate({ assigneeId } as Partial<Task>, { onSuccess: () => toast.success('Assigned to you.') })
+        }
+        onComment={() => {
+          // Open, the box takes the focus itself; already open, it is given it.
+          if (showCommentForm) document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Comment"]')?.focus();
+          else setShowCommentForm(true);
+        }}
+      />
       {/* Header */}
       <div className="flex h-16 items-center justify-between px-4 md:px-6 border-b border-border">
         <Button variant="ghost" size="icon" aria-label="Back" onClick={() => navigate(-1)}>
@@ -235,7 +252,10 @@ function TaskDetailView() {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={() => setEditing(true)}>Edit</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => setEditing(true)}>
+              Edit
+              <kbd className="ml-auto pl-4 font-sans text-xs text-muted-foreground">E</kbd>
+            </DropdownMenuItem>
             <DropdownMenuSeparator />
             {mayDelete ? (
               <DropdownMenuItem
@@ -300,8 +320,12 @@ function TaskDetailView() {
                     )}
                   </div>
                   <div className="flex w-full items-center gap-2 sm:w-auto sm:shrink-0">
-                    <Select value={task.status} onValueChange={handleStatusChange}>
-                      <SelectTrigger className="min-w-0 flex-1 sm:w-[140px] sm:flex-none" aria-label="Status">
+                    <Select value={task.status} onValueChange={handleStatusChange} open={statusOpen} onOpenChange={setStatusOpen}>
+                      <SelectTrigger
+                        className="min-w-0 flex-1 sm:w-[140px] sm:flex-none"
+                        aria-label="Status"
+                        {...shortcutHint('task.status', 'Change the status')}
+                      >
                         <SelectValue placeholder="Status" />
                       </SelectTrigger>
                       <SelectContent>
@@ -467,7 +491,7 @@ function TaskDetailView() {
             <Card>
               <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle>Comments</CardTitle>
-                <Button variant="ghost" size="sm" onClick={() => setShowCommentForm(true)}>
+                <Button variant="ghost" size="sm" onClick={() => setShowCommentForm(true)} {...shortcutHint('task.comment', 'Write a comment')}>
                   <MessageSquare className="mr-2 h-4 w-4" />
                   Add Comment
                 </Button>
@@ -590,6 +614,42 @@ function TaskDetailView() {
 // Labels sort tasks into kinds that cut across projects and people, such as
 // "bug" or "frontend", and the board can be narrowed to one. A label is made by
 // typing its name here; one the organization already has is offered instead.
+/**
+ * A task's single keys: C for a new task, E to edit, A to take it, S for its
+ * status and M to comment. Each is bound only when the server says the action
+ * is allowed, so a key never offers what a button would not.
+ */
+function TaskShortcuts({
+  task,
+  onEdit,
+  onStatus,
+  onAssign,
+  onComment,
+}: {
+  task: Task;
+  onEdit: () => void;
+  onStatus: () => void;
+  onAssign: (userId: string) => void;
+  onComment: () => void;
+}) {
+  const { user } = useAuth();
+  const [creating, setCreating] = useState(false);
+  const mayEdit = task.can?.edit !== false;
+  useShortcut('task.new', () => setCreating(true));
+  useShortcut('task.edit', onEdit, { enabled: mayEdit });
+  useShortcut('task.status', onStatus, { enabled: mayEdit });
+  useShortcut(
+    'task.assign',
+    () => {
+      if (!user || task.assigneeId === user.id) return false;
+      onAssign(user.id);
+    },
+    { enabled: task.can?.reassign !== false }
+  );
+  useShortcut('task.comment', onComment);
+  return <CreateTaskDialog open={creating} onOpenChange={setCreating} />;
+}
+
 function LabelsCard({ taskId, labels }: { taskId: string; labels: { id: string; name: string; color: string }[] }) {
   const toast = useToast();
   const queryClient = useQueryClient();
