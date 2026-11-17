@@ -1,10 +1,13 @@
-import { useState, type ComponentType, type ReactNode } from 'react';
-import { MediaDeviceMenu, useTrackToggle } from '@livekit/components-react';
+import { useRef, useState, type ComponentType, type ReactNode } from 'react';
+import { MediaDeviceMenu, useRoomContext, useTrackToggle } from '@livekit/components-react';
 import { Track } from 'livekit-client';
 import { Mic, MicOff, MonitorOff, MonitorUp, Video, VideoOff } from 'lucide-react';
 import { useToast } from '@/shared/hooks/useToast';
 import { BackgroundPicker } from './BackgroundPicker';
+import { useMeetingChatPanel } from './MeetingChat';
 import { cn } from '@/shared/utils/cn';
+import { shortcutHint, type ShortcutId } from '@/shared/shortcuts/catalogue';
+import { useShortcut } from '@/shared/shortcuts/ShortcutsProvider';
 
 /** Whether this browser can capture a screen at all. Most phone browsers cannot. */
 export function canShareScreen(): boolean {
@@ -15,11 +18,17 @@ type ToggleSource = Track.Source.Microphone | Track.Source.Camera | Track.Source
 
 const CONTROLS: Record<
   ToggleSource,
-  { on: string; off: string; IconOn: ComponentType<{ className?: string }>; IconOff: ComponentType<{ className?: string }> }
+  {
+    on: string;
+    off: string;
+    IconOn: ComponentType<{ className?: string }>;
+    IconOff: ComponentType<{ className?: string }>;
+    shortcut: ShortcutId;
+  }
 > = {
-  [Track.Source.Microphone]: { on: 'Turn your microphone off', off: 'Turn your microphone on', IconOn: Mic, IconOff: MicOff },
-  [Track.Source.Camera]: { on: 'Turn your camera off', off: 'Turn your camera on', IconOn: Video, IconOff: VideoOff },
-  [Track.Source.ScreenShare]: { on: 'Stop sharing your screen', off: 'Share your screen', IconOn: MonitorOff, IconOff: MonitorUp },
+  [Track.Source.Microphone]: { on: 'Turn your microphone off', off: 'Turn your microphone on', IconOn: Mic, IconOff: MicOff, shortcut: 'call.mic' },
+  [Track.Source.Camera]: { on: 'Turn your camera off', off: 'Turn your camera on', IconOn: Video, IconOff: VideoOff, shortcut: 'call.camera' },
+  [Track.Source.ScreenShare]: { on: 'Stop sharing your screen', off: 'Share your screen', IconOn: MonitorOff, IconOff: MonitorUp, shortcut: 'call.share' },
 };
 
 function useToggle(source: ToggleSource) {
@@ -40,7 +49,7 @@ function useToggle(source: ToggleSource) {
 
 function Toggle({ source, compact }: { source: ToggleSource; compact?: boolean }) {
   const { buttonProps, enabled } = useToggle(source);
-  const { on, off, IconOn, IconOff } = CONTROLS[source];
+  const { on, off, IconOn, IconOff, shortcut } = CONTROLS[source];
   const Icon = enabled ? IconOn : IconOff;
   const label = enabled ? on : off;
   return (
@@ -48,7 +57,7 @@ function Toggle({ source, compact }: { source: ToggleSource; compact?: boolean }
       {...buttonProps}
       type="button"
       aria-label={label}
-      title={label}
+      {...shortcutHint(shortcut, label)}
       className={cn(
         compact
           ? cn(
@@ -105,4 +114,57 @@ export function ShareUnavailableNote() {
   const [shareable] = useState(canShareScreen);
   if (shareable) return null;
   return <p className="text-center text-xs text-muted-foreground">This browser cannot share a screen. A computer can.</p>;
+}
+
+/**
+ * The call's keys: Ctrl+D for the microphone and Ctrl+E for the camera, as in
+ * other meeting apps, Ctrl+Shift+S to share, Ctrl+Shift+C for the chat, and
+ * Space held to talk while muted. Bound only while a call is open, so the
+ * browser keeps Ctrl+D for bookmarks the rest of the time.
+ */
+export function CallShortcuts() {
+  const room = useRoomContext();
+  const chat = useMeetingChatPanel();
+  const toast = useToast();
+  // Space turned the microphone on, so letting go of it turns it off again.
+  const talking = useRef(false);
+
+  const deviceFailed = () => toast.error('TeamUp could not use that device. Check the permission in your browser.');
+  const me = () => room.localParticipant;
+
+  useShortcut('call.mic', () => {
+    void me().setMicrophoneEnabled(!me().isMicrophoneEnabled).catch(deviceFailed);
+  });
+  useShortcut('call.camera', () => {
+    void me().setCameraEnabled(!me().isCameraEnabled).catch(deviceFailed);
+  });
+  useShortcut('call.share', () => {
+    if (!canShareScreen()) return false;
+    void me()
+      .setScreenShareEnabled(!me().isScreenShareEnabled)
+      .catch((error: Error) => {
+        // Closing the browser's picker is changing your mind, not a failure.
+        if (error.name !== 'NotAllowedError') toast.error('Could not share your screen.');
+      });
+  });
+  useShortcut('call.chat', () => {
+    if (!chat) return false;
+    chat.setOpen(!chat.open);
+  });
+  useShortcut(
+    'call.talk',
+    () => {
+      if (me().isMicrophoneEnabled) return false;
+      talking.current = true;
+      void me().setMicrophoneEnabled(true).catch(deviceFailed);
+    },
+    {
+      release: () => {
+        if (!talking.current) return;
+        talking.current = false;
+        void me().setMicrophoneEnabled(false);
+      },
+    }
+  );
+  return null;
 }

@@ -19,6 +19,7 @@ import { RichText } from '@/shared/richText/RichText';
 import { useFormatting } from '@/shared/richText/composer';
 import { useToast } from '@/shared/hooks/useToast';
 import { cn, formatDate, formatTime } from '@/shared/utils/cn';
+import { shortcutHint } from '@/shared/shortcuts/catalogue';
 import { MAX_CHAT_MESSAGE, chatFromPacket, mergeChat, startsGroup, unreadCount } from './meetingChat';
 
 /**
@@ -157,6 +158,12 @@ function useChat(): ChatState | null {
   return useContext(ChatContext);
 }
 
+/** Whether the chat is open, and a way to open or close it, for a key to use. */
+export function useMeetingChatPanel(): { open: boolean; setOpen: (open: boolean) => void } | null {
+  const chat = useChat();
+  return chat ? { open: chat.open, setOpen: chat.setOpen } : null;
+}
+
 /** How many messages are waiting, for a mark where the chat itself cannot be seen. */
 export function useMeetingChatUnread(): number {
   return useChat()?.unread ?? 0;
@@ -178,7 +185,7 @@ export function MeetingChatButton() {
       className="lk-button relative"
       aria-label={label}
       aria-pressed={open}
-      title={open ? 'Close the chat' : 'Chat with everyone'}
+      {...shortcutHint('call.chat', open ? 'Close the chat' : 'Chat with everyone')}
       onClick={() => setOpen(!open)}
       data-testid="meeting-chat-button"
     >

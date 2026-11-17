@@ -10,6 +10,18 @@ import { UserAvatar } from '@/shared/components/UserAvatar';
 import { badgeText, useUnreadChatCount } from '@/features/chat/useUnreadChats';
 import { useUnreadTasks } from '@/features/notifications/unreadTasks';
 import { navBadge } from './navBadge';
+import { shortcutHint, type ShortcutId } from '@/shared/shortcuts/catalogue';
+
+/** The G-then-letter key for each place, shown when hovering its link. */
+const GO_KEYS: Record<string, ShortcutId> = {
+  '/chat': 'go.chat',
+  '/meeting-notes': 'go.notes',
+  '/calendar': 'go.calendar',
+  '/tasks': 'go.tasks',
+  '/projects': 'go.projects',
+  '/organization': 'go.organization',
+  '/settings': 'go.settings',
+};
 
 export function Sidebar() {
   const { sidebarOpen, toggleSidebar } = useUIStore();
@@ -72,6 +84,7 @@ export function Sidebar() {
               key={item.path}
               to={item.path}
               data-tour={item.path.slice(1)}
+              title={GO_KEYS[item.path] ? shortcutHint(GO_KEYS[item.path], item.label).title : sidebarOpen ? undefined : item.label}
               className={({ isActive }) =>
                 cn(
                   'flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors',

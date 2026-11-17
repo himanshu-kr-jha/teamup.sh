@@ -1,4 +1,4 @@
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { useState, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { User, Bell, Shield, Palette, Loader2, Save, Monitor } from 'lucide-react';
@@ -22,12 +22,23 @@ import { ProfilePicture } from './ProfilePicture';
 import { ConnectedAccounts } from './ConnectedAccounts';
 import { TourAgain } from '@/features/tour/TourAgain';
 import { InstallCard } from '@/features/install/InstallApp';
+import { Switch } from '@/shared/components/ui/switch';
+import { setSingleKeys, useSingleKeys } from '@/shared/shortcuts/preference';
+import { MOD_NAME } from '@/shared/shortcuts/catalogue';
+import { useShortcutPanels } from '@/shared/shortcuts/ShortcutsProvider';
 
 export function SettingsPage() {
   const { user, refreshUser } = useAuth();
   const toast = useToast();
   const queryClient = useQueryClient();
-  const [activeTab, setActiveTab] = useState('profile');
+  // The cheat sheet links straight to Appearance, where the shortcuts switch is.
+  const [params] = useSearchParams();
+  const asked = params.get('tab') === 'appearance';
+  const [activeTab, setActiveTab] = useState(() => (asked ? 'appearance' : 'profile'));
+  // Followed from the cheat sheet while already here, too.
+  useEffect(() => {
+    if (asked) setActiveTab('appearance');
+  }, [asked, params]);
   const [saving, setSaving] = useState(false);
   const [name, setName] = useState(user?.name || '');
   const [jobTitle, setJobTitle] = useState(user?.jobTitle || '');
@@ -173,6 +184,7 @@ export function SettingsPage() {
               </div>
             </CardContent>
           </Card>
+          <ShortcutSettings />
         </TabsContent>
       </Tabs>
 
@@ -186,6 +198,30 @@ export function SettingsPage() {
         }}
       />
     </div>
+  );
+}
+
+/** The switch for single-key shortcuts, kept on this device. */
+function ShortcutSettings() {
+  const on = useSingleKeys();
+  const showAll = useShortcutPanels((s) => s.setHelp);
+  return (
+    <Card>
+      <CardHeader><CardTitle>Keyboard shortcuts</CardTitle></CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="space-y-1">
+            <Label htmlFor="singleKeys">Single-key shortcuts</Label>
+            <p className="text-sm text-muted-foreground">
+              Keys such as C for a new task, or G then T for tasks, when you are not typing. Shortcuts
+              with {MOD_NAME} stay on either way. This is remembered on this device.
+            </p>
+          </div>
+          <Switch id="singleKeys" checked={on} onCheckedChange={setSingleKeys} className="mt-0.5" />
+        </div>
+        <Button variant="outline" onClick={() => showAll(true)}>See all shortcuts</Button>
+      </CardContent>
+    </Card>
   );
 }
 

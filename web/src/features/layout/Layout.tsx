@@ -18,6 +18,8 @@ import { WelcomeTour } from "@/features/tour/WelcomeTour";
 import { WhatsNewAfterUpdate } from '@/features/whatsnew/WhatsNew';
 import { InstallBanner } from "@/features/install/InstallApp";
 import { useKeepTimeZone } from "@/features/presence/useKeepTimeZone";
+import { ShortcutsProvider } from "@/shared/shortcuts/ShortcutsProvider";
+import { AppShortcuts } from "@/features/shortcuts/AppShortcuts";
 
 export function Layout() {
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
@@ -34,6 +36,9 @@ export function Layout() {
     return <Navigate to="/change-password" replace />;
 
   return (
+    // Outside the call, so a call's own keys are bound in the same registry
+    // as everything else and the cheat sheet can list them all.
+    <ShortcutsProvider>
     <ActiveCallProvider>
       <TopProgress />
       {/* Installed on a phone the app reaches the screen's edges (viewport-fit in
@@ -80,7 +85,10 @@ export function Layout() {
         <WhatsNewAfterUpdate />
         {/* On a phone, a suggestion to put TeamUp on the home screen. */}
         <InstallBanner />
+        {/* Keys for getting around without the mouse, with ? for the list. */}
+        <AppShortcuts />
       </div>
     </ActiveCallProvider>
+    </ShortcutsProvider>
   );
 }

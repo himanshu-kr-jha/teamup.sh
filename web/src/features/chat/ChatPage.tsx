@@ -71,6 +71,8 @@ import { applyReadReceipt, type ReadReceipt } from './readReceipts';
 import { restoreDraft, restoreStaged, whenVisible } from './composerDraft';
 import { focusWhenFree, typesOnOpen } from './composerFocus';
 import { applyDelete, applyEdit, isEditFrame } from './liveChanges';
+import { nextUnread, stepConversation } from './conversationKeys';
+import { useShortcut } from '@/shared/shortcuts/ShortcutsProvider';
 
 interface Message {
   id: string;
@@ -929,6 +931,25 @@ export function ChatPage() {
     // On a phone, picking a conversation is how you get to it.
     if (window.innerWidth < 1024) setShowSidebar(false);
   };
+
+  // Alt+Up and Alt+Down walk the list as it is shown; Ctrl+Shift+A goes to
+  // the next one with anything unread.
+  const listed = [...rooms, ...directMessages];
+  useShortcut('chat.previous', () => {
+    const id = stepConversation(listed, channelId, -1);
+    if (!id) return false;
+    handleChannelClick(id);
+  });
+  useShortcut('chat.next', () => {
+    const id = stepConversation(listed, channelId, 1);
+    if (!id) return false;
+    handleChannelClick(id);
+  });
+  useShortcut('chat.unread', () => {
+    const id = nextUnread(listed, channelId);
+    if (id) handleChannelClick(id);
+    else toast.toast('Everything is read.');
+  });
 
   if (channelsLoading) {
     return <div className="flex h-full items-center justify-center">Loading channels...</div>;
