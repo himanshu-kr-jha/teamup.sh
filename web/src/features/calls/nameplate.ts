@@ -13,26 +13,50 @@ const BASE_HEIGHT = 720;
 
 /** The sample's proportions, on a 1280 x 720 picture. */
 const RIGHT_MARGIN = 64; // 5% of the width
-const NAME_SIZE = 21.6; // 3% of the height
 const NAME_BASELINE = 81.4; // 11.3% of the height
-const ROLE_SIZE = 11.6; // 1.6% of the height
 const ROLE_BASELINE = 105.1; // 14.6% of the height
 /** A name longer than this, as a share of the width, is made smaller to fit. */
 const MAX_TEXT_WIDTH = 0.45;
 
-/** The same sans-serif the rest of TeamUp is written in (index.html). */
-export const NAMEPLATE_FONT = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+/**
+ * The sans-serif the rest of TeamUp is written in (index.html), for when the
+ * nameplate's own font could not be loaded.
+ */
+export const SYSTEM_FONT = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
 
-export const NAMEPLATE_STYLE: Record<CompanyTheme, { name: string; role: string; nameWeight: number; roleWeight: number }> = {
-  dark: { name: '#f2f5fb', role: '#9aa8c3', nameWeight: 600, roleWeight: 400 },
-  light: { name: '#0b1220', role: '#4a5565', nameWeight: 500, roleWeight: 400 },
+/** How one line is written: its weight, its size on a 1280 x 720 picture, and its tracking in ems. */
+interface LineStyle {
+  colour: string;
+  weight: number;
+  size: number;
+  tracking: number;
+}
+
+/**
+ * The samples' type: Manrope on the dark one and Space Grotesk on the light,
+ * both served by TeamUp itself (public/fonts, companyBackground.ts). The name is
+ * set a little tight, as in the samples.
+ */
+export const NAMEPLATE_STYLE: Record<CompanyTheme, { family: string; name: LineStyle; role: LineStyle }> = {
+  dark: {
+    family: 'Manrope',
+    name: { colour: '#f2f5fb', weight: 600, size: 21.6, tracking: -0.02 },
+    role: { colour: '#9aa8c3', weight: 400, size: 12.2, tracking: 0 },
+  },
+  light: {
+    family: 'Space Grotesk',
+    name: { colour: '#0b1220', weight: 500, size: 21.6, tracking: -0.01 },
+    role: { colour: '#4a5565', weight: 400, size: 12, tracking: 0 },
+  },
 };
 
 export interface TextLine {
   text: string;
-  /** A canvas font, such as '600 21.6px system-ui'. */
+  /** A canvas font, such as '600 21.6px "Manrope", system-ui'. */
   font: string;
   size: number;
+  /** Space between letters, in pixels; negative is tighter. */
+  tracking: number;
   colour: string;
   /** The right edge of the text, and its baseline. */
   x: number;
@@ -72,23 +96,32 @@ export function nameplateLayout(
   const style = NAMEPLATE_STYLE[theme];
   const x = width - RIGHT_MARGIN * scale;
   const maxWidth = width * MAX_TEXT_WIDTH;
-  const line = (text: string, size: number, weight: number, colour: string, baseline: number): TextLine => {
-    let fitted = size * scale;
-    const natural = measure(text, fontOf(weight, fitted));
+  const line = (text: string, s: LineStyle, baseline: number): TextLine => {
+    let fitted = s.size * scale;
+    // Measured without the tracking, which only ever makes it narrower.
+    const natural = measure(text, fontOf(style.family, s.weight, fitted));
     // Rounded down, as the font is written to a hundredth of a pixel: never a little over.
     if (natural > maxWidth) fitted = Math.floor(((fitted * maxWidth) / natural) * 100) / 100;
-    return { text, font: fontOf(weight, fitted), size: fitted, colour, x, y: baseline * scale };
+    return {
+      text,
+      font: fontOf(style.family, s.weight, fitted),
+      size: fitted,
+      tracking: Math.round(s.tracking * fitted * 100) / 100,
+      colour: s.colour,
+      x,
+      y: baseline * scale,
+    };
   };
   const lines: TextLine[] = [];
   const cleanName = name.trim();
   const cleanRole = role.trim();
-  if (cleanName) lines.push(line(cleanName, NAME_SIZE, style.nameWeight, style.name, NAME_BASELINE));
-  if (cleanRole) lines.push(line(cleanRole, ROLE_SIZE, style.roleWeight, style.role, ROLE_BASELINE));
+  if (cleanName) lines.push(line(cleanName, style.name, NAME_BASELINE));
+  if (cleanRole) lines.push(line(cleanRole, style.role, ROLE_BASELINE));
   return lines;
 }
 
-function fontOf(weight: number, size: number): string {
-  return `${weight} ${Math.round(size * 100) / 100}px ${NAMEPLATE_FONT}`;
+function fontOf(family: string, weight: number, size: number): string {
+  return `${weight} ${Math.round(size * 100) / 100}px "${family}", ${SYSTEM_FONT}`;
 }
 
 /** Writes the lines on a canvas, as laid out. */
@@ -98,6 +131,8 @@ export function drawNameplate(ctx: CanvasRenderingContext2D | OffscreenCanvasRen
   ctx.textBaseline = 'alphabetic';
   for (const l of lines) {
     ctx.font = l.font;
+    // Not in every browser yet; without it the name is simply a little wider.
+    if ('letterSpacing' in ctx) ctx.letterSpacing = `${l.tracking}px`;
     ctx.fillStyle = l.colour;
     ctx.fillText(l.text, l.x, l.y);
   }

@@ -47,6 +47,16 @@ describe('the name and role on a company background', () => {
     expect(lum(lightRole.colour)).toBeLessThan(300);
   });
 
+  it("are in the samples' fonts, set a little tight, with the system font to fall back on", () => {
+    const [darkName, darkRole] = nameplateLayout(1280, 720, 'A', 'B', 'dark', measure);
+    const [lightName] = nameplateLayout(1280, 720, 'A', 'B', 'light', measure);
+    expect(darkName.font).toMatch(/^600 21\.6px "Manrope", ui-sans-serif, system-ui/);
+    expect(lightName.font).toMatch(/^500 21\.6px "Space Grotesk", ui-sans-serif/);
+    expect(darkName.tracking).toBeCloseTo(-0.43, 2);
+    expect(lightName.tracking).toBeLessThan(0);
+    expect(darkRole.tracking).toBe(0);
+  });
+
   it('make a very long name smaller, so it never runs past the middle', () => {
     const long = 'Maximilian Alexander Konstantin von Habsburg-Lothringen';
     const [name] = nameplateLayout(1280, 720, long, '', 'dark', measure);

@@ -83,7 +83,35 @@ export function composeCompanyBackground(source: CompanySource, width: number, h
   return picture;
 }
 
+/** The nameplate's fonts, served by TeamUp itself: the Latin letters, in the weights used. */
+const FONTS = [
+  { family: 'Manrope', url: '/fonts/manrope-latin.woff2', weight: '400 600' },
+  { family: 'Space Grotesk', url: '/fonts/space-grotesk-latin.woff2', weight: '400 500' },
+];
+let fontsLoaded: Promise<void> | null = null;
+
+/**
+ * Loads the nameplate's fonts once, before the first picture is drawn: a canvas
+ * does not wait for a font, and would draw in the fallback. One that fails to
+ * load is left out, and the name is written in the system's sans-serif instead.
+ */
+function loadFonts(): Promise<void> {
+  fontsLoaded ??= Promise.all(
+    FONTS.map(async (f) => {
+      try {
+        const face = new FontFace(f.family, `url(${f.url}) format("woff2")`, { weight: f.weight });
+        await face.load();
+        document.fonts.add(face);
+      } catch {
+        // The system font stands in.
+      }
+    })
+  ).then(() => undefined);
+  return fontsLoaded;
+}
+
 async function draw(source: CompanySource, width: number, height: number): Promise<string> {
+  await loadFonts();
   const template = await new Promise<HTMLImageElement>((resolve, reject) => {
     const img = new Image();
     img.onload = () => resolve(img);
