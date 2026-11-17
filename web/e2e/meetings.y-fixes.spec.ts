@@ -413,3 +413,39 @@ test.describe('decision 38: adding yourself to a task', () => {
     await owner.dispose();
   });
 });
+
+// Found making the tutorial videos on 17 November 2026: a team made again with
+// a deleted team's name was refused with "Could not create team.", and a name a
+// live team has was refused the same way, without saying why.
+test.describe('a team name', () => {
+  test('a live team’s name is refused with why, and a deleted team’s is free again', async ({ as }) => {
+    const owner = await apiAs('owner');
+    const name = `Installations ${Date.now()}`;
+    const first = await owner.post('/teams', { name });
+    const olivia = await as('owner');
+    const page = olivia.page;
+    await page.goto('/organization');
+    await page.getByRole('tab', { name: 'Teams' }).click();
+    const make = async () => {
+      await page.getByRole('button', { name: 'New team' }).click();
+      const dialog = page.getByRole('dialog', { name: 'New team' });
+      await dialog.getByLabel('Name').fill(name);
+      await dialog.getByRole('button', { name: 'Create team' }).click();
+      return dialog;
+    };
+    const refused = await make();
+    await expect(refused.getByRole('alert')).toContainText(`already a team called "${name}"`);
+    // The refusal is the browser's one expected error: a 409, not a 500.
+    expect(olivia.problems.every((p) => p.includes('409'))).toBe(true);
+    olivia.problems.length = 0;
+    await page.keyboard.press('Escape');
+
+    await owner.call('delete', `/teams/${first.id}`);
+    const made = await make();
+    await expect(made).toBeHidden();
+    await expect(page.getByText(name, { exact: true })).toBeVisible();
+    const teams = (await owner.get('/teams')).teams as Array<{ id: string; name: string }>;
+    for (const t of teams.filter((t) => t.name === name)) await owner.call('delete', `/teams/${t.id}`);
+    await owner.dispose();
+  });
+});

@@ -127,7 +127,7 @@ export function StandingMeetings() {
         <div className="grid gap-2 lg:grid-cols-2">
           {meetings.map((meeting) => (
             <Card key={meeting.id} className="border-primary/30" data-testid="standing-card">
-              <CardContent className="flex flex-col gap-2 p-3 sm:flex-row sm:items-center">
+              <CardContent className="flex flex-col gap-2 p-3 sm:flex-row sm:items-center lg:flex-col lg:items-start 2xl:flex-row 2xl:items-center">
                 <div className="min-w-0 flex-1">
                   <h3 className="break-anywhere font-semibold">{meeting.name}</h3>
                   <p className="text-sm text-muted-foreground">{describeSchedule(meeting)}</p>
