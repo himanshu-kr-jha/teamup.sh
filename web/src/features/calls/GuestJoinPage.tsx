@@ -27,7 +27,8 @@ import { apiErrorMessage } from "@/shared/api/errors";
 import { cn } from "@/shared/utils/cn";
 import { BlockedAudioPrompt, liveKitURL } from "./ActiveCallProvider";
 import { CallStage } from "./CallStage";
-import { CallControls, ShareUnavailableNote } from "./CallControls";
+import { CallControls, CallShortcuts, ShareUnavailableNote } from "./CallControls";
+import { ShortcutsProvider } from "@/shared/shortcuts/ShortcutsProvider";
 import {
   MeetingChatButton,
   MeetingChatProvider,
@@ -473,6 +474,10 @@ function GuestRoom({
       className="flex h-viewport flex-col bg-background text-foreground"
     >
       <MeetingChatProvider transport={chatTransport}>
+        {/* A guest has the same call keys as everybody else, and nothing more. */}
+        <ShortcutsProvider>
+          <CallShortcuts />
+        </ShortcutsProvider>
         <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
           <span className="min-w-0 flex-1 truncate text-sm font-medium">
             {joined.title}

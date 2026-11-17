@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Search, Filter, MoreVertical, Calendar, Lock } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
@@ -33,6 +33,8 @@ import {
 import { ErrorState, LoadingState } from './dashboard/parts';
 import { PersonAvatar } from '@/shared/components/UserAvatar';
 import { BoardDnd, centreOnPointer, DraggableTask, DragOverlay, DropColumn, type DragData } from './boardDrag';
+import { useShortcut } from '@/shared/shortcuts/ShortcutsProvider';
+import { shortcutHint } from '@/shared/shortcuts/catalogue';
 
 interface Task {
   id: string;
@@ -111,6 +113,13 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
   // the wide screen's way of narrowing a board that shows every column at once.
   const [phoneColumn, setPhoneColumn] = useState('todo');
   const [searchOpen, setSearchOpen] = useState(false);
+  const searchRef = useRef<HTMLInputElement>(null);
+  // "/" searches the board rather than messages. On a phone the box is behind
+  // an icon, and opening it focuses it.
+  useShortcut('search', () => {
+    if (searchRef.current?.offsetParent) searchRef.current.focus();
+    else setSearchOpen(true);
+  });
   // One label, by name, or all: labels sort tasks into kinds across projects.
   const [labelFilter, setLabelFilter] = useState('all');
   const { data: labelsData } = useQuery({ queryKey: ['labels'], queryFn: () => tasksApi.listLabels() });
@@ -326,8 +335,10 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
+              ref={searchRef}
               placeholder="Search tasks..."
               aria-label="Search tasks"
+              {...shortcutHint('search', 'Search tasks')}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               className="h-9 w-56 pl-10"

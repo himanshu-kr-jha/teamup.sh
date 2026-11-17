@@ -11,6 +11,7 @@ import { NotificationBell } from '@/features/notifications/NotificationBell';
 import { SearchBox } from '@/features/search/SearchBox';
 import { applyTheme, useIsDark } from '@/shared/theme';
 import { useOrganizationAccess } from './useOrganizationAccess';
+import { useShortcutPanels } from '@/shared/shortcuts/ShortcutsProvider';
 
 export function Header() {
   const { user, logout } = useAuth();
@@ -18,6 +19,7 @@ export function Header() {
   const navigate = useNavigate();
   const { allowed: mayAdminister } = useOrganizationAccess();
   const isDark = useIsDark();
+  const showShortcuts = useShortcutPanels((s) => s.setHelp);
 
   return (
     // z-50, above the channel list: sticky positioning makes this a stacking
@@ -73,6 +75,10 @@ export function Header() {
               <DropdownMenuItem onSelect={() => navigate('/organization')}>Organization</DropdownMenuItem>
             )}
             <DropdownMenuItem onSelect={() => navigate('/whats-new')}>What&rsquo;s new</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => showShortcuts(true)}>
+              Keyboard shortcuts
+              <kbd className="ml-auto pl-4 font-sans text-xs text-muted-foreground">?</kbd>
+            </DropdownMenuItem>
             <DropdownMenuItem onSelect={() => navigate('/status')}>Service status</DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem onSelect={logout} className="text-destructive focus:text-destructive">

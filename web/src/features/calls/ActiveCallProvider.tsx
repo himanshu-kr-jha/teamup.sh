@@ -22,7 +22,7 @@ import { CallStage } from './CallStage';
 import { ROOM_OPTIONS } from './roomOptions';
 import { MeetingChatButton, MeetingChatProvider, StageWithChat, UnreadChatMark, type ChatTransport } from './MeetingChat';
 import { NotesBanner } from './notetaker';
-import { CallControls, CompactCallControls, ShareUnavailableNote } from './CallControls';
+import { CallControls, CallShortcuts, CompactCallControls, ShareUnavailableNote } from './CallControls';
 import { GuestAccess } from './GuestAccess';
 import { CallLogDialog } from './CallLogDialog';
 import { copyCallLink } from './copyLink';
@@ -628,6 +628,8 @@ function CallFrame({
 
   return (
     <MeetingChatProvider transport={chatTransport}>
+      {/* Here rather than with the buttons, so the keys work in the corner window too. */}
+      <CallShortcuts />
       <div
         // text-foreground because LiveKit's theme sets white text on everything
         // inside it, which on a light page made this bar's words and its minimise

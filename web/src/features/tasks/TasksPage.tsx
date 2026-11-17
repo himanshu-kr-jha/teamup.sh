@@ -14,6 +14,8 @@ import { OverviewTab } from './dashboard/OverviewTab';
 import { ScrumTab } from './dashboard/ScrumTab';
 import { useDashboard } from './dashboard/useDashboard';
 import { useTabParams } from './dashboard/useTabParams';
+import { useShortcut } from '@/shared/shortcuts/ShortcutsProvider';
+import { shortcutHint } from '@/shared/shortcuts/catalogue';
 
 /**
  * /tasks. Which tabs somebody gets is decided by the scope the server returns
@@ -23,6 +25,7 @@ export function TasksPage() {
   const params = useTabParams();
   const { data, isPending } = useDashboard(params.team);
   const [createOpen, setCreateOpen] = useState(false);
+  useShortcut('task.new', () => setCreateOpen(true));
 
   const scope = data?.scope;
   const tab = resolveTab(params.tab, scope);
@@ -53,7 +56,7 @@ export function TasksPage() {
             <FolderGit2 className="h-5 w-5" aria-hidden="true" />
           </Link>
         </Button>
-        <Button className="hidden md:ml-0 md:inline-flex lg:ml-auto" size="sm" onClick={() => setCreateOpen(true)}>
+        <Button className="hidden md:ml-0 md:inline-flex lg:ml-auto" size="sm" onClick={() => setCreateOpen(true)} {...shortcutHint('task.new', 'New task')}>
           New Task
         </Button>
         <Button size="icon" className="shrink-0 md:hidden" aria-label="New task" onClick={() => setCreateOpen(true)}>
