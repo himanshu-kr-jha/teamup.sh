@@ -26,6 +26,23 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-17-a',
+    date: '2026-11-17',
+    title: 'Team names, and tidier stand-ups and attendance',
+    changes: [
+      {
+        area: 'app',
+        title: 'A deleted team’s name is free again',
+        body: 'Deleting a team and making another with the same name now works, and a name a team already has is refused with a message that says so.',
+      },
+      {
+        area: 'meetings',
+        title: 'Stand-up cards that fit a laptop',
+        body: 'On a laptop screen, a stand-up’s name no longer squeezes to one word a line beside its buttons, and attendance times stay on one line.',
+      },
+    ],
+  },
+  {
     id: '2026-11-16-f',
     date: '2026-11-16',
     title: 'Field check-ins say where, in words',

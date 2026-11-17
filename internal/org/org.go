@@ -669,12 +669,25 @@ func (s *Service) CreateTeam(ctx context.Context, orgID uuid.UUID, actor Actor, 
 	`, orgID, parentID, name, description, managerID).Scan(
 		&t.ID, &t.OrgID, &t.ParentID, &t.Name, &t.Description, &t.ManagerID, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
+		if nameTaken(err) {
+			return nil, teamNameTaken(name)
+		}
 		return nil, fmt.Errorf("create team: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("create team: %w", err)
 	}
 	return &t, nil
+}
+
+// nameTaken is a live team already having the name (teams_org_id_name_live).
+func nameTaken(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "teams_org_id_name_live"
+}
+
+func teamNameTaken(name string) error {
+	return apperrors.New(apperrors.CodeConflict, fmt.Sprintf("there is already a team called %q", name))
 }
 
 func (s *Service) ListTeams(ctx context.Context, orgID uuid.UUID) ([]Team, error) {
@@ -816,6 +829,9 @@ func (s *Service) UpdateTeam(ctx context.Context, orgID, teamID uuid.UUID, actor
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, apperrors.ErrNotFound
+		}
+		if nameTaken(err) && name != nil {
+			return nil, teamNameTaken(*name)
 		}
 		return nil, fmt.Errorf("update team: %w", err)
 	}

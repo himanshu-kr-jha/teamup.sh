@@ -302,8 +302,8 @@ function DayCard({ day, meetingId, reviewer }: { day: AttendanceDay; meetingId: 
                   <td className="px-2 py-2">
                     <StatusBadge person={person} />
                   </td>
-                  <td className="px-2 py-2 text-right tabular-nums">{clock(person.firstJoinAt)}</td>
-                  <td className="px-2 py-2 text-right tabular-nums">{lastLeave(person)}</td>
+                  <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{clock(person.firstJoinAt)}</td>
+                  <td className="whitespace-nowrap px-2 py-2 text-right tabular-nums">{lastLeave(person)}</td>
                   <td className="px-2 py-2 text-right tabular-nums">{minutes(person, person.minutesPresent)}</td>
                   <td
                     className={cn(
