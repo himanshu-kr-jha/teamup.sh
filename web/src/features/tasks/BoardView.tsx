@@ -17,6 +17,19 @@ import { restrictionNote, type TaskAbilities } from './abilities';
 import { DANGER_TEXT, dueLabel } from './dueDate';
 import { UnreadTaskDot } from '@/features/notifications/UnreadTaskDot';
 import { liveTaskQuery } from './liveQuery';
+import { useAuth } from '@/features/auth/AuthProvider';
+import {
+  MINE_WORDS,
+  matchesDue,
+  matchesPriority,
+  matchesSearch,
+  rememberMineAs,
+  rememberedMineAs,
+  type DueFilter,
+  type Mine,
+  type MineAs,
+  type PriorityFilter,
+} from './boardFilters';
 import { ErrorState, LoadingState } from './dashboard/parts';
 import { PersonAvatar } from '@/shared/components/UserAvatar';
 import { BoardDnd, centreOnPointer, DraggableTask, DragOverlay, DropColumn, type DragData } from './boardDrag';
@@ -40,6 +53,8 @@ interface Task {
   updatedAt: string;
   /** What this caller may do to it, worked out by the server. */
   can?: TaskAbilities;
+  /** How it is the caller's, when they asked for their own. */
+  mine?: Mine[];
 }
 
 const statusColors = {
@@ -81,9 +96,17 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
   const [scope, setScope] = useState<'mine' | 'team' | 'all'>('mine');
   const [teamId, setTeamId] = useState('all');
   const [assigneeId, setAssigneeId] = useState('all');
-  // Which of your own: what is yours to do, what you handed out, or what you
-  // were added to. Kept apart, or a manager's list is their people's work.
-  const [mineAs, setMineAs] = useState<'assigned' | 'created' | 'added'>('assigned');
+  // Which of your own: all of them, each card saying how it is yours (the
+  // owner's request of 17 November 2026), or only what is yours to do, what you
+  // handed out, or what you were added to. The last choice is kept per person.
+  const { user } = useAuth();
+  const [mineAs, setMineAsState] = useState<MineAs>(() => rememberedMineAs(user?.id));
+  const setMineAs = (value: MineAs) => {
+    setMineAsState(value);
+    rememberMineAs(user?.id, value);
+  };
+  const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('any');
+  const [dueFilter, setDueFilter] = useState<DueFilter>('any');
   // Which column a phone is showing. Separate from the status filter, which is
   // the wide screen's way of narrowing a board that shows every column at once.
   const [phoneColumn, setPhoneColumn] = useState('todo');
@@ -130,6 +153,7 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
   });
 
   const tasks = tasksResponse?.data || [];
+  const showMine = scope === 'mine' && mineAs === 'all';
 
   // A status change shows at once, before the server has answered: a card
   // dropped on a column has to land there, not jump back and then reappear a
@@ -159,9 +183,11 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
   const dragData = (task: Task): DragData => ({ taskId: task.id, status: task.status, title: task.title });
 
   const filteredTasks = tasks.filter((task) => {
-    if (searchQuery && !task.title.toLowerCase().includes(searchQuery.toLowerCase())) return false;
+    if (searchQuery && !matchesSearch(task, searchQuery)) return false;
     if (statusFilter !== 'all' && task.status !== statusFilter) return false;
     if (labelFilter !== 'all' && !task.labels.some((l) => l.name === labelFilter)) return false;
+    if (!matchesPriority(task, priorityFilter)) return false;
+    if (!matchesDue(task, dueFilter)) return false;
     return true;
   });
 
@@ -212,10 +238,36 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
       </Select>
     );
 
+  const priorityFilterSelect = (phone: boolean) => (
+    <Select value={priorityFilter} onValueChange={(v) => setPriorityFilter(v as PriorityFilter)}>
+      <SelectTrigger className={phone ? 'h-9 min-w-0 flex-1' : 'h-9 w-36'} aria-label="Filter by priority"><SelectValue /></SelectTrigger>
+      <SelectContent>
+        <SelectItem value="any">Any priority</SelectItem>
+        <SelectItem value="urgent">Urgent</SelectItem>
+        <SelectItem value="high">High</SelectItem>
+        <SelectItem value="medium">Medium</SelectItem>
+        <SelectItem value="low">Low</SelectItem>
+      </SelectContent>
+    </Select>
+  );
+
+  const dueFilterSelect = (phone: boolean) => (
+    <Select value={dueFilter} onValueChange={(v) => setDueFilter(v as DueFilter)}>
+      <SelectTrigger className={phone ? 'h-9 min-w-0 flex-1' : 'h-9 w-36'} aria-label="Filter by due date"><SelectValue /></SelectTrigger>
+      <SelectContent>
+        <SelectItem value="any">Any due date</SelectItem>
+        <SelectItem value="overdue">Overdue</SelectItem>
+        <SelectItem value="week">Due this week</SelectItem>
+        <SelectItem value="none">No due date</SelectItem>
+      </SelectContent>
+    </Select>
+  );
+
   const mineFilter = (phone: boolean) => (
-    <Select value={mineAs} onValueChange={(v) => setMineAs(v as typeof mineAs)}>
+    <Select value={mineAs} onValueChange={(v) => setMineAs(v as MineAs)}>
       <SelectTrigger className={phone ? 'h-9 min-w-0 flex-1' : 'h-9 w-40'} aria-label="Which of my tasks"><SelectValue /></SelectTrigger>
       <SelectContent>
+        <SelectItem value="all">All of mine</SelectItem>
         <SelectItem value="assigned">Assigned to me</SelectItem>
         <SelectItem value="created">Created by me</SelectItem>
         <SelectItem value="added">Added to</SelectItem>
@@ -299,6 +351,8 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
             </DropdownMenuContent>
           </DropdownMenu>
           {labelSelect(false)}
+          {priorityFilterSelect(false)}
+          {dueFilterSelect(false)}
           {scope === 'team' && teamFilters(false)}
           {scope === 'mine' && mineFilter(false)}
         </div>
@@ -309,6 +363,10 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
       {searchOpen && (
         <div className="flex shrink-0 flex-col gap-2 border-b border-border px-3 py-2 md:hidden">
           {labelSelect(true)}
+          <div className="flex gap-2">
+            {priorityFilterSelect(true)}
+            {dueFilterSelect(true)}
+          </div>
           <Input
             autoFocus
             placeholder="Search tasks..."
@@ -402,7 +460,7 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
               ) : (
                 onPhone.map((task) => (
                   <DraggableTask key={task.id} surface="phone" data={dragData(task)} disabled={task.can?.edit === false}>
-                    <TaskCard task={task} onUpdate={updateTaskMutation.mutate} />
+                    <TaskCard task={task} onUpdate={updateTaskMutation.mutate} showMine={showMine} />
                   </DraggableTask>
                 ))
               )}
@@ -427,7 +485,7 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
                     <div className={cn('min-h-[6rem] flex-1 overflow-y-auto rounded-b-lg p-2 space-y-2', column.body)}>
                       {filteredTasks.filter((t) => t.status === column.id).map((task) => (
                         <DraggableTask key={task.id} surface="wide" data={dragData(task)} disabled={task.can?.edit === false}>
-                          <TaskCard task={task} onUpdate={updateTaskMutation.mutate} />
+                          <TaskCard task={task} onUpdate={updateTaskMutation.mutate} showMine={showMine} />
                         </DraggableTask>
                       ))}
                       {countIn(column.id) === 0 && (
@@ -444,7 +502,7 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
             ) : (
               <div className="hidden space-y-4 md:block">
                 {filteredTasks.map((task) => (
-                  <TaskCard key={task.id} task={task} onUpdate={updateTaskMutation.mutate} />
+                  <TaskCard key={task.id} task={task} onUpdate={updateTaskMutation.mutate} showMine={showMine} />
                 ))}
               </div>
             )}
@@ -465,7 +523,16 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
   );
 }
 
-function TaskCard({ task, onUpdate }: { task: Task; onUpdate: (data: { id: string; data: any }) => void }) {
+function TaskCard({
+  task,
+  onUpdate,
+  showMine = false,
+}: {
+  task: Task;
+  onUpdate: (data: { id: string; data: any }) => void;
+  /** Say on the card how it is yours: on "All of mine", where that is the question. */
+  showMine?: boolean;
+}) {
   // The footer used to be drawn whether or not it held anything, so a task with
   // nobody on it and no date ended in an empty bordered strip; on a phone that
   // is a row of the screen spent on nothing.
@@ -553,6 +620,12 @@ function TaskCard({ task, onUpdate }: { task: Task; onUpdate: (data: { id: strin
         {task.labels.map((label) => (
           <LabelBadge key={label.name} name={label.name} color={label.color} className="max-w-[10rem]" />
         ))}
+        {showMine &&
+          (task.mine ?? []).map((m) => (
+            <Badge key={m} variant="outline" className="text-xs font-normal" data-testid="task-mine">
+              {MINE_WORDS[m]}
+            </Badge>
+          ))}
       </div>
 
       {hasFooter && (

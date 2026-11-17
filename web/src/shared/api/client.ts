@@ -335,7 +335,7 @@ export const orgApi = {
   /** The colour and logo. A logo left out is kept; an empty one removes it. */
   saveBranding: (data: { color: string; logo?: string }) => api.put<Branding>('/org/branding', data),
   getUser: (id: string) => api.get(`/users/${id}`),
-  updateUser: (id: string, data: { name?: string; avatarUrl?: string }) => api.patch(`/users/${id}`, data),
+  updateUser: (id: string, data: { name?: string; avatarUrl?: string; jobTitle?: string }) => api.patch(`/users/${id}`, data),
   /** A picture already cut to a small square, as a data URL. */
   setAvatar: (id: string, image: string) => api.put<{ avatarUrl: string }>(`/users/${id}/avatar`, { image }),
   removeAvatar: (id: string) => api.delete(`/users/${id}/avatar`),
@@ -492,9 +492,10 @@ export const tasksApi = {
     scope?: 'mine' | 'team';
     /**
      * With 'mine': assigned to them (the default, with what they raised and
-     * gave to nobody), raised by them for somebody else, or added to.
+     * gave to nobody), raised by them for somebody else, added to, or all of
+     * those, each task then saying which in its `mine`.
      */
-    as?: 'assigned' | 'created' | 'added';
+    as?: 'assigned' | 'created' | 'added' | 'all';
     teamId?: string;
   }) => getList('/tasks', 'tasks', params),
   /** The people this caller may actually assign work to, per the org chart. */

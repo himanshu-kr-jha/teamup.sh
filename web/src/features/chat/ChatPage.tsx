@@ -10,7 +10,7 @@ import { FormatBar, FormattedTextarea, useFormatting } from '@/shared/richText/c
 import { canShare, copyFormatted, shareText } from '@/shared/richText/share';
 import { Button } from '@/shared/components/ui/button';
 import { NotifyMenu } from './NotifyMenu';
-import { PersonAvatar } from '@/shared/components/UserAvatar';
+import { PersonAvatar, useJobTitles } from '@/shared/components/UserAvatar';
 import { cn, formatRelativeTime } from '@/shared/utils/cn';
 import {
   DropdownMenu,
@@ -35,6 +35,7 @@ import { useToast, useToastStore } from '@/shared/hooks/useToast';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { AttachmentChip } from '@/features/files/AttachmentChip';
 import { StagedFiles, type StagedFile } from '@/features/files/StagedFiles';
+import { filesFrom, pastedAttachments } from '@/features/files/pasted';
 import { downloadAttachment } from '@/features/files/download';
 import { ForwardContext, ForwardDialog, useForward, type ForwardableMessage } from './ForwardDialog';
 import { MentionSuggestions, MessageText, useMentionables } from './MentionUI';
@@ -296,6 +297,7 @@ export function ChatPage() {
 
   const activeChannel = channels.find((c) => c.id === channelId);
   const { statusOf, personOf } = usePresence();
+  const jobTitleOf = useJobTitles();
   // A reaction payload only carries user ids. Availability covers everybody in
   // the organization, including people who are not connected, so it can name
   // whoever reacted — and reactionSummary counts anyone it cannot.
@@ -881,12 +883,14 @@ export function ChatPage() {
     : counterpartOnLeave
       ? `On leave, ${backOnText(counterpartOnLeave.until)}`
       : activeChannel?.type === 'dm'
-      ? presenceLabel(
-          statusOf(activeChannel?.counterpartId),
-          personOf(activeChannel?.counterpartId)?.note
-        )
+      ? [
+          jobTitleOf(activeChannel?.counterpartId),
+          presenceLabel(statusOf(activeChannel?.counterpartId), personOf(activeChannel?.counterpartId)?.note),
+        ]
+          .filter(Boolean)
+          .join(' · ')
       : activeChannel?.type === 'announcement'
-        ? 'Announcements — only administrators can post'
+        ? 'Announcements: only administrators can post'
         : `${activeChannel?.memberCount ?? 0} ${activeChannel?.memberCount === 1 ? 'member' : 'members'}`;
 
   const rooms = channels.filter((c: any) => c.type !== 'dm');
@@ -1241,7 +1245,20 @@ export function ChatPage() {
             />
           )}
 
-          <form onSubmit={handleSend} className="relative p-4 border-t border-border">
+          <form
+            onSubmit={handleSend}
+            className="relative p-4 border-t border-border"
+            // Files dragged from a folder onto the message box are attached, as the paperclip would.
+            onDragOver={(e) => {
+              if (channelId && Array.from(e.dataTransfer.types).includes('Files')) e.preventDefault();
+            }}
+            onDrop={(e) => {
+              const files = filesFrom(e.dataTransfer);
+              if (files.length === 0 || !channelId) return;
+              e.preventDefault();
+              void attachFiles(files);
+            }}
+          >
             {counterpartOnLeave && <OnLeaveBanner person={counterpartOnLeave} />}
             <TypingLine names={typists.map((id) => nameOf(id) ?? 'Somebody')} />
             {showFormatting && !recordingVoice && <FormatBar onFormat={formatting.apply} className="mb-1.5 ml-12" />}
@@ -1298,7 +1315,16 @@ export function ChatPage() {
                 <textarea
                   ref={composerRef}
                   rows={1}
-                  onPaste={formatting.onPaste}
+                  onPaste={(e) => {
+                    // A screenshot on the clipboard is attached, ready to send.
+                    const files = pastedAttachments(e.clipboardData);
+                    if (files.length > 0 && channelId) {
+                      e.preventDefault();
+                      void attachFiles(files);
+                      return;
+                    }
+                    formatting.onPaste(e);
+                  }}
                   value={message}
                   onChange={(e) => {
                     setMessage(e.target.value);

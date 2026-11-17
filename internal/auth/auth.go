@@ -797,7 +797,7 @@ func GetAndClearPKCECookie(w http.ResponseWriter, r *http.Request) (string, erro
 // RBAC join table; without them every permission check downstream sees an
 // empty role list.
 const userColumns = `
-	SELECT u.id, u.org_id, u.email, u.name, COALESCE(u.avatar_url, ''),
+	SELECT u.id, u.org_id, u.email, u.name, COALESCE(u.avatar_url, ''), u.job_title,
 	       COALESCE(u.password_hash, ''), COALESCE(u.is_active, true),
 	       COALESCE(u.must_change_password, false), u.tour_completed_at, u.whats_new_seen,
 	       COALESCE(ARRAY_REMOVE(ARRAY_AGG(r.name), NULL), '{}') AS roles
@@ -809,7 +809,7 @@ const userColumns = `
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.OrgID, &u.Email, &u.Name, &u.AvatarURL,
+	err := row.Scan(&u.ID, &u.OrgID, &u.Email, &u.Name, &u.AvatarURL, &u.JobTitle,
 		&u.PasswordHash, &u.IsActive, &u.MustChangePassword, &u.TourCompletedAt, &u.WhatsNewSeen, &u.Roles)
 	if err != nil {
 		if err == pgx.ErrNoRows {

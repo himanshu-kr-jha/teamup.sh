@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -51,6 +52,13 @@ type User struct {
 	Name      string    `json:"name"`
 	Email     string    `json:"email"`
 	AvatarURL *string   `json:"avatarUrl,omitempty"`
+	// JobTitle is what they do at the company, such as "AI/ML Engineer":
+	// set by them or an administrator, and shown to everyone. Role is about
+	// permissions, not this.
+	JobTitle string `json:"jobTitle"`
+	// Teams are the names of the teams they are in, given by ListUsers only,
+	// so the member list can be searched and filtered by team.
+	Teams     []string  `json:"teams,omitempty"`
 	Role      string    `json:"role"`
 	Roles     []string  `json:"roles"`
 	IsAdmin   bool      `json:"isAdmin"`
@@ -172,7 +180,7 @@ func (s *Service) UpdateOrganization(ctx context.Context, id uuid.UUID, name, lo
 // userColumns aggregates RBAC role names alongside the row, so callers see the
 // roles a user actually holds rather than only the legacy single-role column.
 const userColumns = `
-	SELECT u.id, u.org_id, u.name, u.email, u.avatar_url, u.role,
+	SELECT u.id, u.org_id, u.name, u.email, u.avatar_url, u.job_title, u.role,
 	       COALESCE(u.is_admin, false), COALESCE(u.is_active, true),
 	       u.created_at, u.updated_at, COALESCE(u.must_change_password, false),
 	       COALESCE(ARRAY_REMOVE(ARRAY_AGG(r.name), NULL), '{}')
@@ -184,7 +192,7 @@ const userColumns = `
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
-	err := row.Scan(&u.ID, &u.OrgID, &u.Name, &u.Email, &u.AvatarURL, &u.Role,
+	err := row.Scan(&u.ID, &u.OrgID, &u.Name, &u.Email, &u.AvatarURL, &u.JobTitle, &u.Role,
 		&u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.UpdatedAt, &u.MustChangePassword, &u.Roles)
 	if err != nil {
 		if err == pgx.ErrNoRows {
@@ -229,20 +237,63 @@ func (s *Service) ListUsers(ctx context.Context, orgID uuid.UUID) ([]User, error
 	users := []User{}
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.OrgID, &u.Name, &u.Email, &u.AvatarURL, &u.Role,
+		if err := rows.Scan(&u.ID, &u.OrgID, &u.Name, &u.Email, &u.AvatarURL, &u.JobTitle, &u.Role,
 			&u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.UpdatedAt, &u.MustChangePassword, &u.Roles); err != nil {
 			return nil, fmt.Errorf("scan user: %w", err)
 		}
 		users = append(users, u)
 	}
-	return users, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return users, s.addTeams(ctx, orgID, users)
 }
 
-func (s *Service) UpdateUser(ctx context.Context, orgID, userID uuid.UUID, name, avatarURL *string) (*User, error) {
+// addTeams fills in the teams each person is in, in one query for everybody.
+func (s *Service) addTeams(ctx context.Context, orgID uuid.UUID, users []User) error {
+	rows, err := s.db.Query(ctx, `
+		SELECT tm.user_id, t.name FROM team_members tm
+		JOIN teams t ON t.id = tm.team_id
+		WHERE t.org_id = $1 AND t.deleted_at IS NULL
+		ORDER BY t.name`, orgID)
+	if err != nil {
+		return fmt.Errorf("list teams of users: %w", err)
+	}
+	defer rows.Close()
+	at := make(map[uuid.UUID]int, len(users))
+	for i := range users {
+		at[users[i].ID] = i
+		users[i].Teams = []string{}
+	}
+	for rows.Next() {
+		var id uuid.UUID
+		var name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return fmt.Errorf("scan team of user: %w", err)
+		}
+		if i, ok := at[id]; ok {
+			users[i].Teams = append(users[i].Teams, name)
+		}
+	}
+	return rows.Err()
+}
+
+// MaxJobTitle is how long a company role may be, in characters.
+const MaxJobTitle = 80
+
+func (s *Service) UpdateUser(ctx context.Context, orgID, userID uuid.UUID, name, avatarURL, jobTitle *string) (*User, error) {
+	if jobTitle != nil {
+		t := strings.Join(strings.Fields(*jobTitle), " ")
+		if utf8.RuneCountInString(t) > MaxJobTitle {
+			return nil, apperrors.New(apperrors.CodeValidation, fmt.Sprintf("a company role is at most %d characters", MaxJobTitle))
+		}
+		jobTitle = &t
+	}
 	tag, err := s.db.Exec(ctx, `
-		UPDATE users SET name = COALESCE($3, name), avatar_url = COALESCE($4, avatar_url), updated_at = NOW()
+		UPDATE users SET name = COALESCE($3, name), avatar_url = COALESCE($4, avatar_url),
+		       job_title = COALESCE($5, job_title), updated_at = NOW()
 		WHERE id = $1 AND org_id = $2 AND deleted_at IS NULL
-	`, userID, orgID, name, avatarURL)
+	`, userID, orgID, name, avatarURL, jobTitle)
 	if err != nil {
 		return nil, fmt.Errorf("update user: %w", err)
 	}
@@ -1122,7 +1173,7 @@ func (s *Service) RemoveTeamMember(ctx context.Context, orgID, teamID, userID uu
 
 func (s *Service) ListTeamMembers(ctx context.Context, orgID, teamID uuid.UUID) ([]User, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT u.id, u.org_id, u.name, u.email, u.avatar_url, u.role,
+		SELECT u.id, u.org_id, u.name, u.email, u.avatar_url, u.job_title, u.role,
 		       COALESCE(u.is_admin, false), COALESCE(u.is_active, true), u.created_at, u.updated_at
 		FROM team_members tm
 		JOIN users u ON u.id = tm.user_id
@@ -1138,7 +1189,7 @@ func (s *Service) ListTeamMembers(ctx context.Context, orgID, teamID uuid.UUID) 
 	members := []User{}
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.OrgID, &u.Name, &u.Email, &u.AvatarURL, &u.Role,
+		if err := rows.Scan(&u.ID, &u.OrgID, &u.Name, &u.Email, &u.AvatarURL, &u.JobTitle, &u.Role,
 			&u.IsAdmin, &u.IsActive, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan team member: %w", err)
 		}

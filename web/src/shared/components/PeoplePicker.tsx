@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Check, Search, X } from 'lucide-react';
 import { Input } from '@/shared/components/ui/input';
-import { UserAvatar } from '@/shared/components/UserAvatar';
+import { UserAvatar, useJobTitles } from '@/shared/components/UserAvatar';
 import { cn } from '@/shared/utils/cn';
 
 export interface Pickable {
@@ -34,12 +34,18 @@ export function PeoplePicker({
   listClassName?: string;
 }) {
   const [query, setQuery] = useState('');
+  const jobTitleOf = useJobTitles();
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
     const sorted = [...people].sort((a, b) => a.name.localeCompare(b.name));
     if (!q) return sorted;
-    return sorted.filter((p) => p.name.toLowerCase().includes(q) || p.email?.toLowerCase().includes(q));
-  }, [people, query]);
+    return sorted.filter(
+      (p) =>
+        p.name.toLowerCase().includes(q) ||
+        p.email?.toLowerCase().includes(q) ||
+        jobTitleOf(p.id).toLowerCase().includes(q),
+    );
+  }, [people, query, jobTitleOf]);
   const chosen = people.filter((p) => selected.includes(p.id));
 
   const toggle = (id: string) =>
@@ -112,7 +118,11 @@ export function PeoplePicker({
                 <UserAvatar name={p.name} src={p.avatarUrl} className="h-7 w-7" />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-medium">{p.name}</span>
-                  {p.email && <span className="block truncate text-xs text-muted-foreground">{p.email}</span>}
+                  {(jobTitleOf(p.id) || p.email) && (
+                    <span className="block truncate text-xs text-muted-foreground">
+                      {[jobTitleOf(p.id), p.email].filter(Boolean).join(' · ')}
+                    </span>
+                  )}
                 </span>
               </label>
             </li>

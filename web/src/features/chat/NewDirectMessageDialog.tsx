@@ -46,7 +46,8 @@ export function NewDirectMessageDialog({
     .filter((u: any) =>
       !term ||
       (u.name ?? '').toLowerCase().includes(term) ||
-      (u.email ?? '').toLowerCase().includes(term)
+      (u.email ?? '').toLowerCase().includes(term) ||
+      (u.jobTitle ?? '').toLowerCase().includes(term)
     );
 
   const start = async (userId: string) => {
@@ -105,7 +106,9 @@ export function NewDirectMessageDialog({
                 <PersonAvatar userId={person.id} name={person.name} src={person.avatarUrl} fallbackClassName="bg-primary/10 font-medium text-primary" />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{person.name}</p>
-                  <p className="truncate text-xs text-muted-foreground">{person.email}</p>
+                  <p className="truncate text-xs text-muted-foreground">
+                    {[person.jobTitle, person.email].filter(Boolean).join(' · ')}
+                  </p>
                 </div>
                 {opening === person.id && (
                   <span className="text-xs text-muted-foreground">Opening…</span>

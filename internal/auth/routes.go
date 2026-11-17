@@ -330,7 +330,9 @@ type User struct {
 	Roles        []string  `json:"roles"`
 	AuthProvider string    `json:"-"`
 	AvatarURL    string    `json:"avatarUrl,omitempty"`
-	IsActive     bool      `json:"-"`
+	// JobTitle is what they do at the company; see org.User.
+	JobTitle string `json:"jobTitle"`
+	IsActive bool   `json:"-"`
 	// Never serialized: this is the bcrypt hash used by VerifyPassword.
 	PasswordHash string `json:"-"`
 	// True while the user is still on a password an administrator generated.

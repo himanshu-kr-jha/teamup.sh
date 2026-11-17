@@ -29,6 +29,7 @@ import { ShowMoreButton, useShowMore } from '@/shared/components/ShowMore';
 import { PeoplePicker, addEach, addLabel } from '@/shared/components/PeoplePicker';
 import { useUpload } from '@/features/files/useUpload';
 import { StagedFiles, type StagedFile } from '@/features/files/StagedFiles';
+import { filesFrom, pastedAttachments } from '@/features/files/pasted';
 import { cn } from '@/shared/utils/cn';
 import { restrictionNote, type TaskAbilities } from './abilities';
 import { useReadTaskWhileOpen } from '@/features/notifications/unreadTasks';
@@ -127,6 +128,13 @@ function TaskDetailView() {
   const [staged, setStaged] = useState<StagedFile[]>([]);
   const commentFileRef = useRef<HTMLInputElement>(null);
   const { upload, progress: uploadProgress, error: uploadError } = useUpload('tasks', taskId ?? '');
+  /** Uploads one file after another, each with its own progress, and stages them for the comment. */
+  const attachToComment = async (files: File[]) => {
+    for (const file of files) {
+      const uploaded = await upload(file);
+      if (uploaded) setStaged((all) => [...all, { ...uploaded, local: file }]);
+    }
+  };
 
   const { data: taskResponse, isLoading } = useQuery({
     queryKey: ['task', taskId],
@@ -480,6 +488,22 @@ function TaskDetailView() {
                     <MentionTextarea
                       value={commentText}
                       onValueChange={setCommentText}
+                      onPaste={(e) => {
+                        // A screenshot on the clipboard is attached to the comment.
+                        const files = pastedAttachments(e.clipboardData);
+                        if (files.length === 0) return;
+                        e.preventDefault();
+                        void attachToComment(files);
+                      }}
+                      onDragOver={(e) => {
+                        if (Array.from(e.dataTransfer.types).includes('Files')) e.preventDefault();
+                      }}
+                      onDrop={(e) => {
+                        const files = filesFrom(e.dataTransfer);
+                        if (files.length === 0) return;
+                        e.preventDefault();
+                        void attachToComment(files);
+                      }}
                       placeholder="Write a comment… Type @ to mention someone."
                       aria-label="Comment"
                       rows={3}
@@ -506,11 +530,7 @@ function TaskDetailView() {
                       onChange={async (e) => {
                         const files = Array.from(e.target.files ?? []);
                         e.target.value = '';
-                        // One after another, each with its own progress.
-                        for (const file of files) {
-                          const uploaded = await upload(file);
-                          if (uploaded) setStaged((all) => [...all, { ...uploaded, local: file }]);
-                        }
+                        await attachToComment(files);
                       }}
                     />
 

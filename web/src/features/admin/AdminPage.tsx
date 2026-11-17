@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { OrganizationLeave } from './OrganizationLeave';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -20,8 +20,10 @@ import {
   Plug,
   Gauge,
   Palmtree,
+  Search,
   X,
 } from 'lucide-react';
+import { filtering, memberMatches, type MemberFilter } from './memberSearch';
 import { MailSettingsTab, mailProblemText } from './MailSettingsTab';
 import { AppearanceTab } from './AppearanceTab';
 import { NotetakerTab } from './NotetakerTab';
@@ -204,6 +206,8 @@ function MembersTab({
   // Deactivating somebody signs them out everywhere, so it is asked once first.
   const [deactivating, setDeactivating] = useState<any | null>(null);
   const [resetFor, setResetFor] = useState<any | null>(null);
+  const [titleFor, setTitleFor] = useState<any | null>(null);
+  const [titleDraft, setTitleDraft] = useState('');
   const [adding, setAdding] = useState(false);
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState<{ outcomes: ImportOutcome[]; mailProblem?: string } | null>(null);
@@ -214,8 +218,35 @@ function MembersTab({
 
   const { data: usersData, isLoading } = useQuery({ queryKey: ['users'], queryFn: () => orgApi.listUsers() });
   const { data: rolesData } = useQuery({ queryKey: ['roles'], queryFn: () => orgApi.listRoles() });
-  const users = usersData?.data ?? [];
+  const users = useMemo(() => usersData?.data ?? [], [usersData]);
   const roles = rolesData?.data ?? [];
+
+  // Finding somebody in a long list: type, or narrow by a team or a role.
+  const ANY = 'any';
+  const [filter, setFilter] = useState<MemberFilter>({ query: '', team: '', role: '' });
+  const searchRef = useRef<HTMLInputElement>(null);
+  const teamNames = useMemo(
+    () => [...new Set<string>(users.flatMap((u: any) => u.teams ?? []))].sort((a, b) => a.localeCompare(b)),
+    [users],
+  );
+  const roleNames = useMemo(
+    () => [...new Set<string>(users.flatMap((u: any) => u.roles ?? []))].sort((a, b) => a.localeCompare(b)),
+    [users],
+  );
+  const shown = useMemo(() => users.filter((u: any) => memberMatches(u, filter)), [users, filter]);
+  // "/" anywhere on the page, but not while typing, goes to the search.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== '/' || e.ctrlKey || e.metaKey || e.altKey) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName))) return;
+      if (!searchRef.current) return;
+      e.preventDefault();
+      searchRef.current.focus();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ['users'] });
 
@@ -257,15 +288,81 @@ function MembersTab({
           )}
         </CardHeader>
         <CardContent className="space-y-2">
+          {users.length > 0 && (
+            <div className="flex flex-col gap-2 pb-2 sm:flex-row sm:items-center">
+              <div className="relative min-w-0 flex-1">
+                <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
+                <Input
+                  ref={searchRef}
+                  type="search"
+                  value={filter.query}
+                  onChange={(e) => setFilter((f) => ({ ...f, query: e.target.value }))}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') setFilter((f) => ({ ...f, query: '' }));
+                  }}
+                  placeholder="Search by name, email, company role or team"
+                  aria-label="Search members"
+                  aria-keyshortcuts="/"
+                  className="pl-9"
+                />
+              </div>
+              <div className="flex gap-2">
+                {teamNames.length > 0 && (
+                  <Select value={filter.team || ANY} onValueChange={(v) => setFilter((f) => ({ ...f, team: v === ANY ? '' : v }))}>
+                    <SelectTrigger className="w-full sm:w-44" aria-label="Team">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value={ANY}>All teams</SelectItem>
+                      {teamNames.map((t) => (
+                        <SelectItem key={t} value={t}>{t}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+                <Select value={filter.role || ANY} onValueChange={(v) => setFilter((f) => ({ ...f, role: v === ANY ? '' : v }))}>
+                  <SelectTrigger className="w-full sm:w-36" aria-label="Role">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={ANY}>All roles</SelectItem>
+                    {roleNames.map((r) => (
+                      <SelectItem key={r} value={r}>{r}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          )}
+          {users.length > 0 && (
+            <p className="text-xs text-muted-foreground" aria-live="polite">
+              {filtering(filter)
+                ? `${shown.length} of ${users.length} ${users.length === 1 ? 'member' : 'members'}`
+                : `${users.length} ${users.length === 1 ? 'member' : 'members'}`}
+            </p>
+          )}
           {users.length === 0 && <p className="text-sm text-muted-foreground">No members yet.</p>}
-          {users.map((u: any) => (
-            <div key={u.id} className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border p-3">
+          {users.length > 0 && shown.length === 0 && (
+            <div className="flex flex-col items-start gap-2 py-6 text-sm text-muted-foreground">
+              <p>Nobody matches that.</p>
+              <Button variant="outline" size="sm" onClick={() => setFilter({ query: '', team: '', role: '' })}>
+                Clear the search
+              </Button>
+            </div>
+          )}
+          <div role="list" aria-label="Members" className="space-y-2">
+          {shown.map((u: any) => (
+            <div key={u.id} role="listitem" className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-border p-3">
               <div className="relative shrink-0">
                 <UserAvatar name={u.name} src={u.avatarUrl} className="h-9 w-9" />
                 <PresenceDot status={statusOf(u.id)} className="absolute -bottom-0.5 -right-0.5" />
               </div>
               <div className="min-w-[10rem] flex-1 basis-full sm:basis-auto">
                 <p className="truncate font-medium">{u.name}</p>
+                {u.jobTitle && <p className="truncate text-sm" data-testid="member-job-title">{u.jobTitle}</p>}
+                {(u.teams ?? []).length > 0 && (
+                  <p className="truncate text-xs text-muted-foreground" data-testid="member-teams">{u.teams.join(', ')}</p>
+                )}
                 <p className="truncate text-sm text-muted-foreground">{u.email}</p>
               </div>
               <div className="flex flex-wrap gap-1">
@@ -295,6 +392,19 @@ function MembersTab({
               </div>
               {(canMembers || canRoles) && (
                 <div className="flex flex-wrap gap-2">
+                  {canMembers && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      aria-label={`Company role of ${u.name}`}
+                      onClick={() => {
+                        setTitleDraft(u.jobTitle ?? '');
+                        setTitleFor(u);
+                      }}
+                    >
+                      Company role
+                    </Button>
+                  )}
                   {canRoles && (
                     <Button variant="outline" size="sm" onClick={() => setAssignFor(u)}>
                       Assign role
@@ -321,6 +431,7 @@ function MembersTab({
               )}
             </div>
           ))}
+          </div>
         </CardContent>
       </Card>
 
@@ -343,6 +454,30 @@ function MembersTab({
           setNewCredentials(credentials);
         }}
       />
+
+      <FormDialog
+        open={!!titleFor}
+        onOpenChange={(o) => !o && setTitleFor(null)}
+        title={`Company role of ${titleFor?.name ?? ''}`}
+        description="What they do here, such as AI/ML Engineer. Everyone in the organization sees it beside their name."
+        submitLabel="Save"
+        onSubmit={async () => {
+          await orgApi.updateUser(titleFor.id, { jobTitle: titleDraft });
+          refresh();
+          toast.success('Company role saved.');
+        }}
+      >
+        <div className="space-y-2">
+          <Label htmlFor="memberJobTitle">Company role</Label>
+          <Input
+            id="memberJobTitle"
+            value={titleDraft}
+            maxLength={80}
+            placeholder="For example, AI/ML Engineer"
+            onChange={(e) => setTitleDraft(e.target.value)}
+          />
+        </div>
+      </FormDialog>
 
       <FormDialog
         open={!!resetFor}
