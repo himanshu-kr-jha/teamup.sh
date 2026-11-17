@@ -26,6 +26,28 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-18-a',
+    date: '2026-11-18',
+    title: 'Keyboard shortcuts',
+    changes: [
+      {
+        area: 'app',
+        title: 'Use TeamUp from the keyboard',
+        body: 'Press ? to see every shortcut. Ctrl+K searches people, channels, tasks and pages, / searches the page you are on, and G then a letter goes to a page: G C for chat, G T for tasks. Single keys can be turned off in Settings, Appearance.',
+      },
+      {
+        area: 'meetings',
+        title: 'Shortcuts in a call',
+        body: 'Ctrl+D turns your microphone on or off, Ctrl+E your camera, Ctrl+Shift+S shares your screen and Ctrl+Alt+C opens the meeting chat. Hold Space to talk while you are muted.',
+      },
+      {
+        area: 'tasks',
+        title: 'Shortcuts for tasks and chat',
+        body: 'C makes a new task, and on a task E edits it, A assigns it to you, S changes its status and M writes a comment. In chat, Alt with the arrow keys moves between conversations, and Alt+Shift with them between unread ones.',
+      },
+    ],
+  },
+  {
     id: '2026-11-17-b',
     date: '2026-11-17',
     title: 'Company roles, finding people, pasted screenshots and all your tasks',
