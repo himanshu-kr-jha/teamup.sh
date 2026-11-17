@@ -26,6 +26,36 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-17-b',
+    date: '2026-11-17',
+    title: 'Company roles, finding people, pasted screenshots and all your tasks',
+    changes: [
+      {
+        area: 'app',
+        title: 'Say what you do here',
+        body: 'Add your company role, such as AI/ML Engineer, in Settings. Everyone sees it beside your name: among the members, in a conversation with you and on your tile in a call. An admin can set it from the member list too.',
+        link: '/settings',
+      },
+      {
+        area: 'app',
+        title: 'Search the members',
+        body: 'Find anybody on Organization by name, email, company role or team, and narrow the list to one team or one role. Press / to jump to the search.',
+        link: '/organization',
+      },
+      {
+        area: 'chat',
+        title: 'Paste a screenshot',
+        body: 'Take a screenshot and press Ctrl+V in a message or a task comment: it is attached, ready to send. Dropping a file on the box works too.',
+      },
+      {
+        area: 'tasks',
+        title: 'All of your tasks in one place',
+        body: 'My tasks now shows everything that is yours: assigned to you, created by you and the ones you were added to, each marked so you know which. Filter by priority or by due date, and TeamUp remembers which of your tasks you last chose.',
+        link: '/tasks?tab=board',
+      },
+    ],
+  },
+  {
     id: '2026-11-17-a',
     date: '2026-11-17',
     title: 'Team names, and tidier stand-ups and attendance',
