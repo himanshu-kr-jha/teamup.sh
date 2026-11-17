@@ -26,6 +26,23 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-18-b',
+    date: '2026-11-18',
+    title: 'Your company background in calls',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'A company background with your name',
+        body: 'Once an admin has put in the company backgrounds on Organization, Appearance, pick Company (dark) or Company (light) under Background in a call. It carries your own name and company role, and everyone sees it the right way round.',
+      },
+      {
+        area: 'meetings',
+        title: 'A pinned camera shown whole',
+        body: 'Pinning somebody now shows their whole picture instead of cutting off its sides, so nothing at the edge of their background is lost.',
+      },
+    ],
+  },
+  {
     id: '2026-11-17-b',
     date: '2026-11-17',
     title: 'Company roles, finding people, pasted screenshots and all your tasks',
