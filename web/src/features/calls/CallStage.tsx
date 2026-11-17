@@ -370,8 +370,13 @@ function ParticipantPanel({
         {isTrackReference(track) && hasVideo ? (
           <VideoTrack
             trackRef={track}
-            className={cn('h-full w-full', presenting ? 'object-contain' : 'object-cover')}
-          />
+            // A grid tile is 16:9 already, so covering it crops little. The stage
+            // takes whatever shape the window leaves, and covering it would cut
+            // the sides off: a company background's name, top right, with them.
+            // So a screen or a camera on stage is shown whole, letterboxed. It
+            // has to be important: LiveKit's own stylesheet covers any landscape
+            // video with a more specific rule.
+            className={cn('h-full w-full', presenting || pinned ? '!object-contain' : 'object-cover')}          />
         ) : (
           // A camera that is off should show the person, not a black rectangle.
           <div className="flex h-full w-full items-center justify-center">

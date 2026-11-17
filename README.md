@@ -452,6 +452,7 @@ blocks, `POST|PATCH|DELETE /api/meetings/:id`, standing meetings and attendance
 
 **Organization** — users, roles, teams, `GET|PUT /api/org/mail`,
 `POST /api/org/mail/test`, `PUT /api/org/branding`,
+`GET /api/org/call-backgrounds`, `GET|PUT|DELETE /api/org/call-backgrounds/:theme`,
 `GET|PUT|DELETE /api/users/:id/avatar`
 
 **Public, no session** — `GET /api/status`, `GET /api/branding`,

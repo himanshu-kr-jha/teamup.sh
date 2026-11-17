@@ -60,6 +60,11 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service, options ...func(*Hand
 
 	rg.PUT("/org/branding", h.require(auth.PermOrgSettings), h.UpdateBranding)
 
+	rg.GET("/org/call-backgrounds", h.ListCallBackgrounds)
+	rg.GET("/org/call-backgrounds/:theme", h.GetCallBackground)
+	rg.PUT("/org/call-backgrounds/:theme", h.require(auth.PermOrgSettings), h.SetCallBackground)
+	rg.DELETE("/org/call-backgrounds/:theme", h.require(auth.PermOrgSettings), h.RemoveCallBackground)
+
 	rg.GET("/users", h.ListUsers)
 	rg.POST("/users", h.require(auth.PermMembers), h.AddMember)
 	rg.POST("/users/import", h.require(auth.PermMembers), h.ImportMembers)

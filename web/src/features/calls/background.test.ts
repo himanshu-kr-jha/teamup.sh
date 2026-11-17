@@ -45,6 +45,21 @@ describe('background choice', () => {
     expect(m.processorOptions({ kind: 'custom' })).toEqual({ mode: 'virtual-background', imagePath: 'data:image/jpeg;base64,AAAA' });
   });
 
+  it('keeps a company background, and gives the processor the picture made with your name, once there is one', async () => {
+    let m = await load();
+    m.setBackgroundChoice({ kind: 'company', theme: 'dark' });
+    m = await load();
+    expect(m.currentBackgroundChoice()).toEqual({ kind: 'company', theme: 'dark' });
+    expect(m.processorOptions({ kind: 'company', theme: 'dark' })).toBeNull();
+    expect(m.processorOptions({ kind: 'company', theme: 'dark' }, 'data:image/jpeg;base64,BBBB')).toEqual({
+      mode: 'virtual-background',
+      imagePath: 'data:image/jpeg;base64,BBBB',
+    });
+    localStorage.setItem('teamup.call.background', '{"kind":"company","theme":"sepia"}');
+    m = await load();
+    expect(m.currentBackgroundChoice()).toEqual({ kind: 'none' });
+  });
+
   it('refuses a file that is not a picture', async () => {
     const m = await load();
     await expect(m.saveCustomPicture(new File(['x'], 'notes.txt', { type: 'text/plain' }))).rejects.toThrow(/Choose a picture/);

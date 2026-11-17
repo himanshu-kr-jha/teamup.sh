@@ -148,6 +148,12 @@ export const brandingApi = {
   get: () => api.get<Branding>('/branding'),
 };
 
+/** The organization's call backgrounds, by address; empty for none. */
+export interface CallBackgrounds {
+  dark: string;
+  light: string;
+}
+
 export type ServiceState = 'operational' | 'outage';
 
 export interface StatusReport {
@@ -334,6 +340,14 @@ export const orgApi = {
   testMail: () => api.post<{ sent: boolean; sentTo: string; problem?: string }>('/org/mail/test'),
   /** The colour and logo. A logo left out is kept; an empty one removes it. */
   saveBranding: (data: { color: string; logo?: string }) => api.put<Branding>('/org/branding', data),
+  /** The call backgrounds everybody can choose, with their own name written on. */
+  callBackgrounds: () => api.get<CallBackgrounds>('/org/call-backgrounds'),
+  /** Puts in or replaces one, sent as the picture itself. */
+  setCallBackground: (theme: 'dark' | 'light', picture: Blob) =>
+    api.put<CallBackgrounds>(`/org/call-backgrounds/${theme}`, picture, {
+      headers: { 'Content-Type': picture.type || 'application/octet-stream' },
+    }),
+  removeCallBackground: (theme: 'dark' | 'light') => api.delete<CallBackgrounds>(`/org/call-backgrounds/${theme}`),
   getUser: (id: string) => api.get(`/users/${id}`),
   updateUser: (id: string, data: { name?: string; avatarUrl?: string; jobTitle?: string }) => api.patch(`/users/${id}`, data),
   /** A picture already cut to a small square, as a data URL. */

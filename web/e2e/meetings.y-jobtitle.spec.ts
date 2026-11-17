@@ -15,7 +15,7 @@ test('a company role is set in Settings or by an admin, and shown beside the nam
     await alice.page.goto('/settings');
     await alice.page.getByLabel('Company role').fill('AI/ML Engineer');
     await alice.page.getByRole('button', { name: 'Save Changes' }).click();
-    await expect(alice.page.getByText('Your profile has been saved.')).toBeVisible();
+    await expect(alice.page.getByText('Your profile has been saved.').first()).toBeVisible();
     await alice.page.reload();
     await expect(alice.page.getByLabel('Company role')).toHaveValue('AI/ML Engineer');
 

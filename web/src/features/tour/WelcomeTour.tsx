@@ -225,7 +225,7 @@ function Tour({ name, onDone }: { name: string; onDone: () => void }) {
       {/* The page dimmed, with a light on the place being shown. The light moves
           from one place to the next rather than jumping. */}
       <div
-        className={cn('pointer-events-none absolute rounded-xl', motion && 'transition-all duration-500 ease-[cubic-bezier(0.22,1,0.36,1)]')}
+        className={cn('pointer-events-none absolute rounded-xl', motion && 'transition-all duration-500 [transition-timing-function:cubic-bezier(0.22,1,0.36,1)]')}
         style={{ ...hole, boxShadow: '0 0 0 9999px rgb(2 6 23 / 0.62)' }}
         aria-hidden="true"
       >
