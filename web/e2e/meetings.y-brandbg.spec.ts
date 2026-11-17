@@ -180,7 +180,7 @@ test('an administrator puts in the company backgrounds, and a person in a call w
     await alice.page.goto('/settings');
     await alice.page.getByLabel('Company role').fill('AI/ML Engineer');
     await alice.page.getByRole('button', { name: 'Save Changes' }).click();
-    await expect(alice.page.getByText('Your profile has been saved.')).toBeVisible();
+    await expect(alice.page.getByText('Your profile has been saved.').first()).toBeVisible();
 
     // Both in a call; Alice turns her camera on and chooses Company (dark).
     const call = await createCall(owner, `Company background ${Date.now()}`, [idOf('alice'), idOf('pat')]);
