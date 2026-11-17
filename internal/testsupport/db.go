@@ -17,6 +17,7 @@ package testsupport
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,8 +26,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -159,11 +162,30 @@ func openPackageDB(templateDSN, pkg string) (*pgxpool.Pool, error) {
 
 // Truncate empties every stateful table, returning the database to the state a
 // freshly migrated instance is in.
+//
+// Work a previous test started in the background (a notification being
+// written, a call event being recorded) can still be finishing when the next
+// test empties the tables, and Postgres may then pick the TRUNCATE as the
+// victim of a deadlock: main's CI failed on exactly that on 17 November 2026.
+// The other side finishes in milliseconds, so a deadlock is tried again.
 func Truncate(t *testing.T, p *pgxpool.Pool) {
 	t.Helper()
 
 	stmt := "TRUNCATE TABLE " + strings.Join(tablesToClean, ", ") + " RESTART IDENTITY CASCADE"
-	if _, err := p.Exec(context.Background(), stmt); err != nil {
+	var err error
+	for attempt := 0; attempt < 5; attempt++ {
+		if _, err = p.Exec(context.Background(), stmt); err == nil || !isDeadlock(err) {
+			break
+		}
+		time.Sleep(time.Duration(50*(attempt+1)) * time.Millisecond)
+	}
+	if err != nil {
 		t.Fatalf("truncate test database: %v", err)
 	}
+}
+
+// isDeadlock says whether Postgres gave up on a statement to break a deadlock.
+func isDeadlock(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "40P01"
 }
