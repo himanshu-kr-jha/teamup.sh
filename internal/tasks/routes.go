@@ -142,11 +142,12 @@ func (h *Handler) ListTasks(c *gin.Context) {
 	case "team":
 		filters.ManagedBy = &cl.UserID
 	case "mine":
-		// Of your own tasks, which: assigned (the default), created or added.
+		// Of your own tasks, which: assigned (the default), created, added,
+		// or all of them.
 		filters.Mine = &cl.UserID
 		switch c.Query("as") {
 		case "", "assigned":
-		case MineCreated, MineAdded:
+		case MineCreated, MineAdded, MineAll:
 			filters.MineAs = c.Query("as")
 		default:
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid as"})

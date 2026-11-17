@@ -85,6 +85,9 @@ type Task struct {
 	Labels       []Label    `json:"labels"`
 	CreatedAt    time.Time  `json:"createdAt"`
 	UpdatedAt    time.Time  `json:"updatedAt"`
+	// Mine says how the task is the caller's, when they asked for their own:
+	// any of assigned, created and added. Absent otherwise.
+	Mine []string `json:"mine,omitempty"`
 	// Can says what the caller who asked for this task may do to it. Nil when
 	// nobody asked in particular — an internal read rather than a board.
 	Can *Abilities `json:"can,omitempty"`
@@ -158,9 +161,12 @@ type Filters struct {
 	//     raised by them and not handed to anybody yet, which would otherwise
 	//     vanish from their list the moment they created it;
 	//   "created": work they raised and handed to somebody else;
-	//   "added": tasks they were put on to follow.
+	//   "added": tasks they were put on to follow;
+	//   "all": every one of those at once (the owner's request of 17 November
+	//     2026), each task saying which it is in Task.Mine.
 	// These were one list, so a manager's "My tasks" filled up with the work
-	// they had handed out, under their own name.
+	// they had handed out, under their own name; "all" is that list again, but
+	// with every card saying how it is theirs.
 	Mine   *uuid.UUID
 	MineAs string
 	// Viewer is who the board is being drawn for. Not a filter: it narrows
@@ -174,6 +180,15 @@ type Filters struct {
 const (
 	MineCreated = "created"
 	MineAdded   = "added"
+	MineAll     = "all"
+)
+
+// How a task is somebody's, in Task.Mine. Assigned means theirs to do, which
+// includes work they raised and have not handed to anybody yet.
+const (
+	MineIsAssigned = "assigned"
+	MineIsCreated  = "created"
+	MineIsAdded    = "added"
 )
 
 func NewService(db *pgxpool.Pool) *Service {
@@ -255,6 +270,10 @@ func (s *Service) ListTasks(ctx context.Context, orgID uuid.UUID, f Filters) ([]
 		case MineAdded:
 			where = append(where, fmt.Sprintf(
 				`EXISTS (SELECT 1 FROM task_watchers tw WHERE tw.task_id = t.id AND tw.user_id = $%d)`, n))
+		case MineAll:
+			where = append(where, fmt.Sprintf(
+				`(t.assignee_id = $%d OR t.reporter_id = $%d
+				  OR EXISTS (SELECT 1 FROM task_watchers tw WHERE tw.task_id = t.id AND tw.user_id = $%d))`, n, n, n))
 		default:
 			where = append(where, fmt.Sprintf(
 				`(t.assignee_id = $%d OR (t.reporter_id = $%d AND t.assignee_id IS NULL))`, n, n))
@@ -356,7 +375,63 @@ func (s *Service) ListTasks(ctx context.Context, orgID uuid.UUID, f Filters) ([]
 			return nil, err
 		}
 	}
+	if f.Mine != nil {
+		if err := s.attachMine(ctx, *f.Mine, tasks); err != nil {
+			return nil, err
+		}
+	}
 	return tasks, nil
+}
+
+// attachMine says, on each task, how it is this person's: assigned to them
+// (or raised by them and not handed out), created by them for somebody else,
+// and added to follow. One query for who follows what.
+func (s *Service) attachMine(ctx context.Context, me uuid.UUID, tasks []Task) error {
+	if len(tasks) == 0 {
+		return nil
+	}
+	ids := make([]uuid.UUID, len(tasks))
+	for i := range tasks {
+		ids[i] = tasks[i].ID
+	}
+	rows, err := s.db.Query(ctx,
+		`SELECT task_id FROM task_watchers WHERE user_id = $1 AND task_id = ANY($2)`, me, ids)
+	if err != nil {
+		return fmt.Errorf("tasks followed: %w", err)
+	}
+	defer rows.Close()
+	followed := map[uuid.UUID]bool{}
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return fmt.Errorf("scan task followed: %w", err)
+		}
+		followed[id] = true
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range tasks {
+		t := &tasks[i]
+		t.Mine = mineOf(t, me, followed[t.ID])
+	}
+	return nil
+}
+
+// mineOf is how one task is somebody's, in the order a card shows them.
+func mineOf(t *Task, me uuid.UUID, followed bool) []string {
+	mine := []string{}
+	assigned := t.AssigneeID != nil && *t.AssigneeID == me
+	if assigned || (t.AssigneeID == nil && t.ReporterID == me) {
+		mine = append(mine, MineIsAssigned)
+	}
+	if t.ReporterID == me && !assigned && t.AssigneeID != nil {
+		mine = append(mine, MineIsCreated)
+	}
+	if followed {
+		mine = append(mine, MineIsAdded)
+	}
+	return mine
 }
 
 // AssignableUsers lists the people this caller may put work on: themselves,

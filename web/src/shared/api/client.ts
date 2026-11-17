@@ -492,9 +492,10 @@ export const tasksApi = {
     scope?: 'mine' | 'team';
     /**
      * With 'mine': assigned to them (the default, with what they raised and
-     * gave to nobody), raised by them for somebody else, or added to.
+     * gave to nobody), raised by them for somebody else, added to, or all of
+     * those, each task then saying which in its `mine`.
      */
-    as?: 'assigned' | 'created' | 'added';
+    as?: 'assigned' | 'created' | 'added' | 'all';
     teamId?: string;
   }) => getList('/tasks', 'tasks', params),
   /** The people this caller may actually assign work to, per the org chart. */
