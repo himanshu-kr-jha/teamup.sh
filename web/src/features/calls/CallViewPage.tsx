@@ -6,7 +6,7 @@ import { Button } from '@/shared/components/ui/button';
 import { callsApi } from '@/shared/api/client';
 import { formatDate, formatTime } from '@/shared/utils/cn';
 import { useAuth } from '@/features/auth/AuthProvider';
-import { dayLabelKey } from '@/features/calendar/layout';
+import { dayLabelKey, meetingStillOn } from '@/features/calendar/layout';
 import { useNow } from '@/shared/hooks/useNow';
 import { useActiveCall, type JoinOptions } from './ActiveCallProvider';
 import { KnockScreen } from './KnockScreen';
@@ -109,9 +109,12 @@ function CallRoute({ callId }: { callId: string }) {
       else if (call.callType === 'audio') go(rememberedDevices(user?.id));
       // Somebody who could only ask to come in goes to the door, which opens nothing.
       else if (call.canKnock === true) go();
+      // Nothing to set up for a call that is over or a meeting that was cancelled:
+      // joining says which, in the words for it.
+      else if (call.status === 'cancelled' || (call.status === 'ended' && !meetingStillOn(call, now))) go();
       else setPhase('prejoin');
     }
-  }, [phase, error, isFetchedAfterMount, call, lobby, go, user?.id]);
+  }, [phase, error, isFetchedAfterMount, call, lobby, go, user?.id, now]);
 
   const joinFromScreen = (choice: JoinChoice) => {
     const options: JoinOptions = {

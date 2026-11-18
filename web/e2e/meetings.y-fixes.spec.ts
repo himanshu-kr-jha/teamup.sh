@@ -234,7 +234,9 @@ test.describe('ticket 26: somebody deactivated', () => {
 test.describe('ticket 28: a browser that will not play the call', () => {
   test('says so, and a click starts the sound', async ({ as }) => {
     const owner = await apiAs('owner');
-    const call = await createCall(owner, 'Blocked audio', [idOf('alice')]);
+    // A voice call, which a link walks straight into. A video call stops at the
+    // screen before it, and pressing Join there is the click a browser waits for.
+    const call = await owner.post('/calls', { title: 'Blocked audio', callType: 'audio', invitees: [idOf('alice')] });
     const alice = await as('alice');
     // What a browser with no engagement for this site does until it has had a click.
     await alice.context.addInitScript(() => {
@@ -249,7 +251,8 @@ test.describe('ticket 28: a browser that will not play the call', () => {
     });
     const olivia = await as('owner');
     await joinCall(olivia.page, call.id);
-    await olivia.page.getByRole('button', { name: 'Turn your microphone on' }).click();
+    // A call's microphone is on from the start: there is something to hear.
+    await expect(olivia.page.getByRole('button', { name: 'Turn your microphone off' }).first()).toBeVisible({ timeout: 20_000 });
     await joinCall(alice.page, call.id);
 
     const button = alice.page.getByRole('button', { name: 'Turn on sound' });

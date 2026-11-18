@@ -18,6 +18,15 @@ const drawing = (page: Page) =>
 /** Nothing focused, as after clicking on an empty part of the page. */
 const blur = (page: Page) => page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 
+/**
+ * Ends a test's call, so nobody it invited is still being rung when the next spec
+ * signs them in: somebody who only looked at the screen before it never answered.
+ */
+const endAndForget = async (api: Awaited<ReturnType<typeof apiAs>>, id: string) => {
+  await api.post(`/calls/${id}/end`).catch(() => undefined);
+  await api.dispose();
+};
+
 /** Whether this page has a horizontal scroll, which a phone layout must not. */
 const scrollsSideways = (page: Page) =>
   page.evaluate(() => {
@@ -127,6 +136,7 @@ test.describe('the screen before a call', () => {
     await page.getByRole('button', { name: 'Back', exact: true }).click();
     await expect(page).toHaveURL(/\/calls$/);
     await expect(page.getByRole('button', { name: 'Leave the call' })).toHaveCount(0);
+    await owner.dispose();
   });
 
   test('on a phone, in the dark: the preview on top, everything else below, nothing sideways', async ({ as }) => {
@@ -146,6 +156,7 @@ test.describe('the screen before a call', () => {
     expect(camera!.width).toBeGreaterThan(300);
     expect(await scrollsSideways(page)).toBe(false);
     await page.screenshot({ path: `${SHOTS}/phone-dark.png`, fullPage: true });
+    await endAndForget(owner, call.id);
   });
 
   test('a refused camera says so, and you can still join', async ({ as }) => {
@@ -169,15 +180,17 @@ test.describe('the screen before a call', () => {
     await lobbyJoin(page).click();
     await expect(page.getByRole('button', { name: 'Leave the call' })).toBeVisible({ timeout: 30_000 });
     await expect(page.getByRole('button', { name: 'Turn your camera on' }).first()).toBeVisible();
+    await owner.dispose();
   });
 
   test('a voice call goes straight in, microphone on, like a phone', async ({ as }) => {
     const owner = await apiAs('owner');
-    const call = await owner.post('/calls', { title: `Voice ${Date.now()}`, callType: 'audio', invitees: [idOf('pat')] });
+    const call = await owner.post('/calls', { title: `Voice ${Date.now()}`, callType: 'audio', invitees: [idOf('max')] });
     const olivia = await as('owner');
     await olivia.page.goto(`/calls/${call.id}`);
     await expect(olivia.page.getByRole('button', { name: 'Leave the call' })).toBeVisible({ timeout: 30_000 });
     await expect(prejoinScreen(olivia.page)).toHaveCount(0);
     await expect(olivia.page.getByRole('button', { name: 'Turn your microphone off' }).first()).toBeVisible({ timeout: 20_000 });
+    await owner.dispose();
   });
 });
