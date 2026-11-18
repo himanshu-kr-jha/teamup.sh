@@ -648,7 +648,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}, cfg.BaseURL, logger)
 	notetakerService.SetNotifier(notificationsService)
 	notetakerService.SetMailer(mailService)
+	// Notes turned on or off reach the note-taker on whichever server has it.
+	notetakerService.UseRedis(redisClient)
 	callsService.SetJoinHook(notetakerService.PersonJoined)
+	// Notes on or off in one call, and paused and resumed during it.
+	callsService.SetNotesHooks(notetakerService.Available, notetakerService.NotesChanged)
 	tasksService.SetNotifier(notificationsService)
 	integrationsService.SetNotifier(notificationsService)
 	calendarService.SetNotifier(notificationsService)
@@ -974,6 +978,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// Meeting notes another server left off, on its way out or because it died:
 	// carried on in the call, or written up if the call has ended.
 	go notetakerService.RunResume(sweepCtx, 20*time.Second)
+	go notetakerService.ListenForSwitches(sweepCtx)
 
 	// Graceful shutdown.
 	//

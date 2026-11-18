@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/pion/webrtc/v4"
+	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 
 	"github.com/teamup/teamup/internal/mail"
@@ -71,8 +72,13 @@ type Service struct {
 	logger   zerolog.Logger
 
 	// For tests: the clock, and what joins a room.
-	now  func() time.Time
-	join func(s *session) error
+	now    func() time.Time
+	join   func(s *session) error
+	listen func(s *session, on bool)
+
+	// redis tells the other servers when notes are turned on or off; see
+	// switchbus.go.
+	redis *redis.Client
 
 	// GracePeriod is how long it waits in an empty room for somebody to come
 	// back before it writes the minutes.
@@ -116,6 +122,7 @@ func NewService(db *pgxpool.Pool, config ConfigStore, lk LiveKit, baseURL string
 		sessions:     map[uuid.UUID]*session{},
 		transcribing: make(chan struct{}, MaxTranscribing), writing: make(chan struct{}, MaxWriting)}
 	s.join = s.joinRoom
+	s.listen = s.listenAll
 	return s
 }
 
@@ -143,6 +150,14 @@ func (s *Service) PersonJoined(ctx context.Context, orgID, callID uuid.UUID, roo
 	if ok, _ := set.Ready(); !ok {
 		return
 	}
+	// Notes off in this call, from the start or since: nobody joins until
+	// somebody turns them on, which tells this again.
+	if on, err := s.notesOn(ctx, callID, set); err != nil {
+		s.logger.Warn().Err(err).Msg("notetaker: could not read whether notes are on in a call")
+		return
+	} else if !on {
+		return
+	}
 	tag, err := s.db.Exec(ctx, `INSERT INTO meeting_notes (call_id, org_id) VALUES ($1, $2) ON CONFLICT (call_id) DO NOTHING`, callID, orgID)
 	if err != nil {
 		s.logger.Warn().Err(err).Msg("notetaker: could not claim the call")
@@ -167,7 +182,9 @@ func (s *Service) start(orgID, callID uuid.UUID, roomName string, set Settings) 
 		return
 	}
 	sess := &session{svc: s, orgID: orgID, callID: callID, roomName: roomName, settings: set,
-		recorders: map[string]*recorder{}, clips: make(chan Clip, 512), done: make(chan struct{})}
+		recorders: map[string]*recorder{}, listening: map[string]bool{}, clips: make(chan Clip, 512), done: make(chan struct{})}
+	// Paused until it has read whether notes are on: not knowing is not listening.
+	sess.paused.Store(true)
 	s.sessions[callID] = sess
 	s.running.Add(1)
 	go func() {
@@ -192,6 +209,8 @@ type session struct {
 	mu        sync.Mutex
 	room      *lksdk.Room
 	recorders map[string]*recorder
+	// listening is the microphones (by track) it has asked the media server for.
+	listening map[string]bool
 	grace     *time.Timer
 	clips     chan Clip
 	failures  int
@@ -199,6 +218,12 @@ type session struct {
 	lastError string
 	// dropped is clips thrown away because transcription was too far behind.
 	dropped atomic.Int64
+	// paused is notes turned off in the call for now (switch.go). pauseMu
+	// keeps one pause or resume at a time.
+	paused  atomic.Bool
+	pauseMu sync.Mutex
+	// subMu keeps one subscribe or unsubscribe at a time; see want.
+	subMu sync.Mutex
 
 	finishOnce sync.Once
 	done       chan struct{}
@@ -209,6 +234,9 @@ type session struct {
 
 func (sess *session) run() {
 	log := sess.svc.logger.With().Str("call", sess.callID.String()).Logger()
+	// Paused before it joined, or before the server it carries on from
+	// stopped: it joins, and does not listen.
+	sess.refresh()
 	if err := sess.svc.join(sess); err != nil {
 		log.Warn().Err(err).Msg("notetaker: could not join the call")
 		sess.svc.markFailed(sess.callID, "The note-taker could not join the call: "+err.Error())
@@ -247,6 +275,8 @@ loop:
 			sess.mu.Unlock()
 		case <-beat.C:
 			sess.svc.beat(sess.callID)
+			// In case the room's message that notes were paused was lost.
+			sess.refresh()
 		case <-limit.C:
 			sess.finish()
 		case <-sess.done:
@@ -288,8 +318,13 @@ func (s *Service) joinRoom(sess *session) error {
 	cb.OnTrackPublished = func(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
 		sess.listenTo(pub, rp)
 	}
-	cb.OnTrackSubscribed = func(track *webrtc.TrackRemote, _ *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+	cb.OnTrackSubscribed = func(track *webrtc.TrackRemote, pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
 		if track.Kind() != webrtc.RTPCodecTypeAudio || rp.Kind() == lksdk.ParticipantAgent {
+			return
+		}
+		// Asked for just before notes were paused: not listened to.
+		if sess.isPaused() {
+			sess.stopListening(pub, rp)
 			return
 		}
 		rec := sess.recorderFor(rp.Identity(), rp.Name())
@@ -301,7 +336,7 @@ func (s *Service) joinRoom(sess *session) error {
 					rec.Flush()
 					return
 				}
-				rec.Packet(pkt)
+				sess.hear(rec, pkt)
 			}
 		}()
 	}
@@ -318,6 +353,14 @@ func (s *Service) joinRoom(sess *session) error {
 		}
 		s.logger.Debug().Str("who", p.Name()).Bool("speaking", p.IsSpeaking()).Msg("notetaker: speaking")
 		sess.recorderFor(p.Identity(), p.Name()).Speaking(p.IsSpeaking())
+	}
+	// Somebody paused or resumed the notes. The message only says to look:
+	// the state is read from the database, so nobody can pause them by
+	// sending one.
+	cb.OnDataPacket = func(data lksdk.DataPacket, _ lksdk.DataReceiveParams) {
+		if p, ok := data.(*lksdk.UserDataPacket); ok && p.Topic == NotesTopic {
+			go sess.refresh()
+		}
 	}
 	cb.OnParticipantConnected = func(*lksdk.RemoteParticipant) { sess.checkEmpty() }
 	cb.OnParticipantDisconnected = func(*lksdk.RemoteParticipant) { sess.checkEmpty() }
@@ -351,13 +394,53 @@ func (s *Service) joinRoom(sess *session) error {
 }
 
 // listenTo subscribes to a person's microphone, and to nothing else.
+//
+// What it asked for is kept here rather than read from the publication: the
+// SDK's IsSubscribed says only whether a track ever arrived, and stays true
+// after unsubscribing, so resumed notes were never heard again.
 func (sess *session) listenTo(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
-	if pub.Kind() != lksdk.TrackKindAudio || rp.Kind() == lksdk.ParticipantAgent || pub.IsSubscribed() {
+	if pub.Kind() != lksdk.TrackKindAudio || rp.Kind() == lksdk.ParticipantAgent {
 		return
 	}
-	if err := pub.SetSubscribed(true); err != nil {
+	if err := sess.want(pub.SID(), true, pub.SetSubscribed); err != nil {
 		sess.svc.logger.Warn().Err(err).Str("call", sess.callID.String()).Str("who", rp.Name()).Msg("notetaker: could not listen to somebody")
 	}
+}
+
+// stopListening unsubscribes from one microphone it asked for.
+func (sess *session) stopListening(pub *lksdk.RemoteTrackPublication, rp *lksdk.RemoteParticipant) {
+	if err := sess.want(pub.SID(), false, pub.SetSubscribed); err != nil {
+		sess.svc.logger.Warn().Err(err).Str("call", sess.callID.String()).Str("who", rp.Name()).Msg("notetaker: could not stop listening to somebody")
+	}
+}
+
+// want asks the media server for one microphone, or lets it go, and records
+// what it asked for. One at a time, and paused is read inside: a pause that
+// lands while a microphone is being asked for waits, then lets it go, so what
+// is recorded always matches what was asked and a resume asks again.
+func (sess *session) want(sid string, on bool, set func(bool) error) error {
+	sess.subMu.Lock()
+	defer sess.subMu.Unlock()
+	if on && sess.isPaused() {
+		return nil
+	}
+	sess.mu.Lock()
+	asked := sess.listening[sid]
+	sess.mu.Unlock()
+	if asked == on {
+		return nil
+	}
+	if err := set(on); err != nil {
+		return err
+	}
+	sess.mu.Lock()
+	if on {
+		sess.listening[sid] = true
+	} else {
+		delete(sess.listening, sid)
+	}
+	sess.mu.Unlock()
+	return nil
 }
 
 func (sess *session) recorderFor(identity, name string) *recorder {
@@ -380,6 +463,9 @@ func (sess *session) recorderFor(identity, name string) *recorder {
 			sess.svc.logger.Warn().Msg("notetaker: transcription is behind; a clip was dropped")
 		}
 	}, sess.svc.now)
+	// Somebody who first speaks while notes are paused is not heard until
+	// they are resumed.
+	r.off = sess.isPaused()
 	sess.recorders[identity] = r
 	return r
 }
@@ -433,6 +519,11 @@ func (sess *session) finish() {
 func (sess *session) transcribe(stt Transcriber, clip Clip) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
+	// Paused while it was being said, perhaps on another server that had not
+	// told this one yet: never sent, never kept.
+	if sess.heardWhilePaused(ctx, clip) {
+		return
+	}
 	sess.mu.Lock()
 	sess.clipCount++
 	sess.mu.Unlock()
@@ -446,6 +537,10 @@ func (sess *session) transcribe(stt Transcriber, clip Clip) {
 		return
 	}
 	if text == "" {
+		return
+	}
+	// And again, for a pause recorded while it was being written down.
+	if sess.heardWhilePaused(ctx, clip) {
 		return
 	}
 	var userID *uuid.UUID
@@ -491,6 +586,14 @@ func (s *Service) compose(ctx context.Context, orgID, callID uuid.UUID, set Sett
 		s.markFailed(callID, "Could not read the transcript.")
 		return
 	}
+	// Whatever was said or written while notes were paused stays out of the
+	// minutes, and the minutes say where the gaps were.
+	pauses, err := s.pauses(ctx, callID)
+	if err != nil {
+		s.markFailed(callID, "Could not read when notes were paused.")
+		return
+	}
+	segments = outside(segments, pauses)
 	if len(segments) == 0 {
 		why := "Nothing was said that could be transcribed."
 		if sttProblem != "" {
@@ -523,7 +626,7 @@ func (s *Service) compose(ctx context.Context, orgID, callID uuid.UUID, set Sett
 	if err != nil {
 		s.logger.Warn().Err(err).Msg("notetaker: could not read the meeting chat")
 	}
-	segments = withChat(segments, chat)
+	segments = withPauses(withChat(segments, outside(chat, pauses)), pauses, time.UTC)
 	w := set.writer()
 	if nv, ok := w.(NVIDIA); ok {
 		// Which model was asked, and how it went: the first thing to know when
@@ -546,6 +649,7 @@ func (s *Service) compose(ctx context.Context, orgID, callID uuid.UUID, set Sett
 	}
 	minutes, err := Write(ctx, w, title, startedAt, names, segments, time.UTC)
 	done(s.writing)
+	minutes.Pauses = pauses
 	if err != nil {
 		log := s.logger.Warn().Err(err).Str("call", callID.String())
 		// What the model said instead, so the next failure can be understood.
@@ -678,6 +782,7 @@ func (s *Service) chatLines(ctx context.Context, callID uuid.UUID) ([]Segment, e
 		if err := rows.Scan(&seg.Speaker, &seg.StartedAt, &seg.Text); err != nil {
 			return nil, err
 		}
+		seg.EndedAt = seg.StartedAt
 		out = append(out, seg)
 	}
 	return out, rows.Err()
@@ -704,7 +809,7 @@ func withChat(spoken, chat []Segment) []Segment {
 }
 
 func (s *Service) segments(ctx context.Context, callID uuid.UUID) ([]Segment, error) {
-	rows, err := s.db.Query(ctx, `SELECT speaker_name, started_at, text FROM meeting_note_segments WHERE call_id = $1 ORDER BY started_at, id`, callID)
+	rows, err := s.db.Query(ctx, `SELECT speaker_name, started_at, ended_at, text FROM meeting_note_segments WHERE call_id = $1 ORDER BY started_at, id`, callID)
 	if err != nil {
 		return nil, err
 	}
@@ -712,7 +817,7 @@ func (s *Service) segments(ctx context.Context, callID uuid.UUID) ([]Segment, er
 	var out []Segment
 	for rows.Next() {
 		var seg Segment
-		if err := rows.Scan(&seg.Speaker, &seg.StartedAt, &seg.Text); err != nil {
+		if err := rows.Scan(&seg.Speaker, &seg.StartedAt, &seg.EndedAt, &seg.Text); err != nil {
 			return nil, err
 		}
 		out = append(out, seg)
@@ -751,6 +856,8 @@ type Notes struct {
 	Error      string    `json:"error,omitempty"`
 	Minutes    *Minutes  `json:"minutes,omitempty"`
 	Transcript []Segment `json:"transcript"`
+	// Pauses is when notes were not taken, so far.
+	Pauses []Pause `json:"pauses"`
 }
 
 // mayRead says whether somebody may read a call's notes: they read every
@@ -795,10 +902,21 @@ func (s *Service) NotesFor(ctx context.Context, orgID, callID, userID uuid.UUID,
 		}
 	}
 	n.Transcript, err = s.segments(ctx, callID)
+	if err != nil {
+		return nil, err
+	}
 	if n.Transcript == nil {
 		n.Transcript = []Segment{}
 	}
-	return &n, err
+	if n.Pauses, err = s.pauses(ctx, callID); err != nil {
+		return nil, err
+	}
+	// Nothing from a pause is shown, whatever was kept before it was known.
+	n.Transcript = outside(n.Transcript, n.Pauses)
+	if n.Pauses == nil {
+		n.Pauses = []Pause{}
+	}
+	return &n, nil
 }
 
 // sttPause is the first wait before asking speech to text again about a clip

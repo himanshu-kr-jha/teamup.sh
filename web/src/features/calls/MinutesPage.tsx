@@ -12,6 +12,7 @@ import { useToast } from '@/shared/hooks/useToast';
 import { canShare, copyFormatted, shareText } from '@/shared/richText/share';
 import { RichText } from '@/shared/richText/RichText';
 import { ForwardDialog } from '@/features/chat/ForwardDialog';
+import { pauseText } from './notetaker';
 
 const WAITING: Partial<Record<MeetingMinutes['status'], string>> = {
   taking: 'Notes are still being taken: the call has not ended.',
@@ -49,6 +50,7 @@ export function minutesText(m: NonNullable<MeetingMinutes['minutes']>, link?: st
   if (m.actionItems.length)
     parts.push(['*Action items*', ...m.actionItems.map((a) => `- *${a.owner}:* ${a.task}${a.due ? ` _(by ${a.due})_` : ''}`)].join('\n'));
   if (m.openQuestions.length) parts.push(['*Open questions*', ...m.openQuestions.map((q) => `- ${q}`)].join('\n'));
+  if (m.pauses?.length) parts.push(['*Not written down*', ...m.pauses.map((p) => `- ${pauseText(p)}`)].join('\n'));
   if (link) parts.push(`Full minutes and transcript: ${link}`);
   return parts.join('\n\n');
 }
@@ -202,6 +204,17 @@ function MinutesPageReadable() {
                 <ul className="list-disc space-y-1 pl-5">
                   {m.openQuestions.map((q, i) => (
                     <li key={i}>{q}</li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
+            {(m.pauses?.length ?? 0) > 0 && (
+              <section data-testid="minutes-pauses">
+                <h2 className="mb-2 font-semibold">Not written down</h2>
+                <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
+                  {m.pauses!.map((p, i) => (
+                    <li key={i}>{pauseText(p)}</li>
                   ))}
                 </ul>
               </section>

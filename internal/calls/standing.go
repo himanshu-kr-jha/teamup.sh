@@ -53,6 +53,9 @@ type StandingMeeting struct {
 	// AttendAfterMinutes after it; after that it is absent.
 	AttendBeforeMinutes int `json:"attendBeforeMinutes"`
 	AttendAfterMinutes  int `json:"attendAfterMinutes"`
+	// TakeNotes is whether the note-taker takes notes in each day's call;
+	// empty is the organization's default.
+	TakeNotes *bool `json:"takeNotes,omitempty"`
 	// Audience is who it is for. InAudience and CanManage are for whoever asked:
 	// whether they may join it, and change or archive it.
 	Audience   *Audience `json:"audience,omitempty"`
@@ -62,11 +65,11 @@ type StandingMeeting struct {
 	audienceKind string
 }
 
-const standingColumns = `id, name, time_of_day, time_zone, weekdays, duration_minutes, created_by, archived_at, created_at, audience, camera_required, attend_before_min, attend_after_min`
+const standingColumns = `id, name, time_of_day, time_zone, weekdays, duration_minutes, created_by, archived_at, created_at, audience, camera_required, attend_before_min, attend_after_min, notes_on`
 
 func scanStanding(row pgx.Row) (*StandingMeeting, error) {
 	var m StandingMeeting
-	err := row.Scan(&m.ID, &m.Name, &m.TimeOfDay, &m.TimeZone, &m.Weekdays, &m.DurationMinutes, &m.CreatedBy, &m.ArchivedAt, &m.CreatedAt, &m.audienceKind, &m.CameraRequired, &m.AttendBeforeMinutes, &m.AttendAfterMinutes)
+	err := row.Scan(&m.ID, &m.Name, &m.TimeOfDay, &m.TimeZone, &m.Weekdays, &m.DurationMinutes, &m.CreatedBy, &m.ArchivedAt, &m.CreatedAt, &m.audienceKind, &m.CameraRequired, &m.AttendBeforeMinutes, &m.AttendAfterMinutes, &m.TakeNotes)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, apperrors.ErrNotFound
 	}
@@ -206,6 +209,7 @@ type standingFields struct {
 	CameraRequired  *bool        `json:"cameraRequired"`
 	AttendBefore    *int         `json:"attendBeforeMinutes"`
 	AttendAfter     *int         `json:"attendAfterMinutes"`
+	TakeNotes       *bool        `json:"takeNotes"`
 }
 
 // audienceSent is the audience asked for, if any part of it was sent.
@@ -232,6 +236,10 @@ func badRequest(message string) error { return apperrors.New(apperrors.CodeBadRe
 func (f standingFields) applyTo(m *StandingMeeting) error {
 	if f.CameraRequired != nil {
 		m.CameraRequired = *f.CameraRequired
+	}
+	if f.TakeNotes != nil {
+		on := *f.TakeNotes
+		m.TakeNotes = &on
 	}
 	// A new meeting counts from half an hour before to half an hour after.
 	if m.AttendBeforeMinutes == 0 && m.AttendAfterMinutes == 0 {
@@ -333,11 +341,11 @@ func (s *Service) CreateStandingMeeting(ctx context.Context, orgID uuid.UUID, a 
 	defer tx.Rollback(ctx)
 	created, err := scanStanding(tx.QueryRow(ctx, `
 		INSERT INTO standing_meetings (org_id, name, time_of_day, time_zone, weekdays, duration_minutes, created_by, camera_required,
-		                               attend_before_min, attend_after_min)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+		                               attend_before_min, attend_after_min, notes_on)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING `+standingColumns,
 		orgID, m.Name, m.TimeOfDay, m.TimeZone, m.Weekdays, m.DurationMinutes, createdBy, m.CameraRequired,
-		m.AttendBeforeMinutes, m.AttendAfterMinutes))
+		m.AttendBeforeMinutes, m.AttendAfterMinutes, m.TakeNotes))
 	if err != nil {
 		return nil, err
 	}
@@ -474,11 +482,11 @@ func (s *Service) UpdateStandingMeeting(ctx context.Context, orgID, id uuid.UUID
 	updated, err := scanStanding(tx.QueryRow(ctx, `
 		UPDATE standing_meetings
 		SET name = $3, time_of_day = $4, time_zone = $5, weekdays = $6, duration_minutes = $7,
-		    camera_required = $8, attend_before_min = $9, attend_after_min = $10, updated_at = NOW()
+		    camera_required = $8, attend_before_min = $9, attend_after_min = $10, notes_on = $11, updated_at = NOW()
 		WHERE id = $1 AND org_id = $2 AND archived_at IS NULL
 		RETURNING `+standingColumns,
 		id, orgID, m.Name, m.TimeOfDay, m.TimeZone, m.Weekdays, m.DurationMinutes, m.CameraRequired,
-		m.AttendBeforeMinutes, m.AttendAfterMinutes))
+		m.AttendBeforeMinutes, m.AttendAfterMinutes, m.TakeNotes))
 	if err != nil {
 		return nil, err
 	}
@@ -592,14 +600,14 @@ func (s *Service) openOccurrence(ctx context.Context, orgID uuid.UUID, m *Standi
 	err := s.db.QueryRow(ctx, `
 		INSERT INTO calls (org_id, room_name, title, call_type, status, started_at, created_by,
 		                   scheduled_start, scheduled_end, standing_meeting_id, occurrence_date, join_requested_at,
-		                   camera_required, attend_before_min, attend_after_min)
-		VALUES ($1, $2, $3, 'video', 'active', $4, $5, $6, $7, $8, $9::date, $10, $11, $12, $13)
+		                   camera_required, attend_before_min, attend_after_min, notes_on)
+		VALUES ($1, $2, $3, 'video', 'active', $4, $5, $6, $7, $8, $9::date, $10, $11, $12, $13, $14)
 		ON CONFLICT (standing_meeting_id, occurrence_date) WHERE standing_meeting_id IS NOT NULL
 		DO UPDATE SET status = 'active', ended_at = NULL, duration_seconds = NULL, updated_at = NOW(),
 		              join_requested_at = COALESCE(calls.join_requested_at, EXCLUDED.join_requested_at)
 		RETURNING id, room_name
 	`, orgID, "standing-"+uuid.NewString(), m.Name, now, creator, start, end, m.ID, date, requested, m.CameraRequired,
-		m.AttendBeforeMinutes, m.AttendAfterMinutes).Scan(&callID, &room)
+		m.AttendBeforeMinutes, m.AttendAfterMinutes, m.TakeNotes).Scan(&callID, &room)
 	if err != nil {
 		return uuid.Nil, "", fmt.Errorf("find or make occurrence: %w", err)
 	}

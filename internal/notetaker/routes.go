@@ -99,18 +99,19 @@ func caller(c *gin.Context) (orgID, userID uuid.UUID, isAdmin, ok bool) {
 
 // settingsView is the settings without the keys, which never go back to a page.
 type settingsView struct {
-	Enabled     bool   `json:"enabled"`
-	STTProvider string `json:"sttProvider"`
-	STTModel    string `json:"sttModel"`
-	STTLanguage string `json:"sttLanguage"`
-	STTBaseURL  string `json:"sttBaseUrl"`
-	STTKeySet   bool   `json:"sttKeySet"`
-	LLMProvider string `json:"llmProvider"`
-	LLMModel    string `json:"llmModel"`
-	LLMBaseURL  string `json:"llmBaseUrl"`
-	LLMKeySet   bool   `json:"llmKeySet"`
-	Ready       bool   `json:"ready"`
-	NotReady    string `json:"notReady,omitempty"`
+	Enabled       bool   `json:"enabled"`
+	OnlyWhenAsked bool   `json:"onlyWhenAsked"`
+	STTProvider   string `json:"sttProvider"`
+	STTModel      string `json:"sttModel"`
+	STTLanguage   string `json:"sttLanguage"`
+	STTBaseURL    string `json:"sttBaseUrl"`
+	STTKeySet     bool   `json:"sttKeySet"`
+	LLMProvider   string `json:"llmProvider"`
+	LLMModel      string `json:"llmModel"`
+	LLMBaseURL    string `json:"llmBaseUrl"`
+	LLMKeySet     bool   `json:"llmKeySet"`
+	Ready         bool   `json:"ready"`
+	NotReady      string `json:"notReady,omitempty"`
 }
 
 func viewOf(s Settings) settingsView {
@@ -120,7 +121,7 @@ func viewOf(s Settings) settingsView {
 		provider = "anthropic"
 	}
 	return settingsView{
-		Enabled: s.Enabled, STTProvider: "sarvam", STTModel: s.STTModel, STTLanguage: s.STTLanguage, STTBaseURL: s.STTBaseURL,
+		Enabled: s.Enabled, OnlyWhenAsked: s.OnlyWhenAsked, STTProvider: "sarvam", STTModel: s.STTModel, STTLanguage: s.STTLanguage, STTBaseURL: s.STTBaseURL,
 		STTKeySet: s.STTKey != "", LLMProvider: provider, LLMModel: s.LLMModel, LLMBaseURL: s.LLMBaseURL,
 		LLMKeySet: s.LLMKey != "", Ready: ready, NotReady: why,
 	}
@@ -163,16 +164,17 @@ func (s *Service) putSettings(c *gin.Context) {
 	llmKey := keepFor(req.LLMKey, saved.LLMKey,
 		strings.TrimSpace(req.LLMBaseURL) == saved.LLMBaseURL && strings.TrimSpace(req.LLMProvider) == saved.LLMProvider)
 	next := Settings{
-		Enabled:     req.Enabled,
-		STTProvider: "sarvam",
-		STTKey:      sttKey,
-		STTModel:    strings.TrimSpace(req.STTModel),
-		STTLanguage: strings.TrimSpace(req.STTLanguage),
-		STTBaseURL:  strings.TrimSpace(req.STTBaseURL),
-		LLMProvider: strings.TrimSpace(req.LLMProvider),
-		LLMKey:      llmKey,
-		LLMModel:    strings.TrimSpace(req.LLMModel),
-		LLMBaseURL:  strings.TrimSpace(req.LLMBaseURL),
+		Enabled:       req.Enabled,
+		OnlyWhenAsked: req.OnlyWhenAsked,
+		STTProvider:   "sarvam",
+		STTKey:        sttKey,
+		STTModel:      strings.TrimSpace(req.STTModel),
+		STTLanguage:   strings.TrimSpace(req.STTLanguage),
+		STTBaseURL:    strings.TrimSpace(req.STTBaseURL),
+		LLMProvider:   strings.TrimSpace(req.LLMProvider),
+		LLMKey:        llmKey,
+		LLMModel:      strings.TrimSpace(req.LLMModel),
+		LLMBaseURL:    strings.TrimSpace(req.LLMBaseURL),
 	}
 	if err := next.Validate(); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})

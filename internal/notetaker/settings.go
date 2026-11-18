@@ -13,6 +13,9 @@ type Settings struct {
 	// Enabled is the administrator's switch. When on and set up, the
 	// note-taker joins every call and meeting.
 	Enabled bool `json:"enabled"`
+	// OnlyWhenAsked leaves the notes off in a call until somebody in it, or
+	// whoever made it, turns them on. Unset is every call, as it always was.
+	OnlyWhenAsked bool `json:"onlyWhenAsked"`
 
 	STTProvider string `json:"sttProvider"` // "sarvam"
 	STTKey      string `json:"sttKey"`

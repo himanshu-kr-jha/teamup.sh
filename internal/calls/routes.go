@@ -38,6 +38,9 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.DELETE("/calls/:id/record", h.StopRecording)
 
 	rg.GET("/calls/:id/log", h.GetCallLog)
+	rg.GET("/calls/:id/notes", h.getNotes)
+	rg.PUT("/calls/:id/notes", h.putNotes)
+	rg.GET("/notes-default", h.notesDefault)
 	rg.GET("/calls/:id/chat", h.listChat)
 	rg.POST("/calls/:id/chat", h.sendChat)
 	rg.POST("/calls/:id/knock", h.Knock)
@@ -136,6 +139,8 @@ func (h *Handler) CreateCall(c *gin.Context) {
 		ChannelID *string  `json:"channelId"`
 		CallType  string   `json:"callType" binding:"required,oneof=video audio"`
 		Invitees  []string `json:"invitees"`
+		// TakeNotes is the switch in the dialog; left out, the organization's default.
+		TakeNotes *bool `json:"takeNotes"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -184,6 +189,10 @@ func (h *Handler) CreateCall(c *gin.Context) {
 
 	call, err := h.service.CreateCall(ctx, orgID, userID, req.Title, req.CallType, channelID, invitees)
 	if err != nil {
+		httpx.Error(c, err, "failed to create call")
+		return
+	}
+	if err := h.service.ChooseNotes(ctx, orgID, call.ID, req.TakeNotes); err != nil {
 		httpx.Error(c, err, "failed to create call")
 		return
 	}

@@ -9,6 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { calendarApi, callsApi, meetingsApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { splitEmails } from '@/features/calls/GuestAccess';
+import { TakeNotesSwitch, useNotesDefault } from '@/features/calls/notetaker';
 import { useToast } from '@/shared/hooks/useToast';
 import { cn } from '@/shared/utils/cn';
 import { useAuth } from '@/features/auth/AuthProvider';
@@ -76,6 +77,9 @@ export function ScheduleDialog({
   // People from outside, by email: emailed an invitation with the guest links.
   const [guests, setGuests] = useState<string[]>([]);
   const [guestDraft, setGuestDraft] = useState('');
+  // Notes in the meeting: the organization's default until changed here.
+  const notesDefault = useNotesDefault(open && !item);
+  const [takeNotes, setTakeNotes] = useState<boolean | null>(null);
   const editingId = open && item?.callId ? item.callId : undefined;
   const { data: guestLink } = useQuery({
     queryKey: ['guest-link', editingId],
@@ -93,6 +97,7 @@ export function ScheduleDialog({
     setSearch('');
     setGuestDraft('');
     setGuests([]);
+    setTakeNotes(null);
     // startWith is a new array on every render; it matters only on opening.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, item, slot]);
@@ -164,7 +169,7 @@ export function ScheduleDialog({
         };
         const { data: result } = item?.callId
           ? await meetingsApi.update(item.callId, body)
-          : await meetingsApi.create(body);
+          : await meetingsApi.create({ ...body, takeNotes: notesDefault?.available ? (takeNotes ?? notesDefault.everyCall) : undefined });
         // Anything still typed in the guests box counts, as if added.
         const wanted = [...new Set([...guests, ...splitEmails(guestDraft).map((e) => e.toLowerCase())])];
         const meetingId = item?.callId ?? result.meeting.id;
@@ -338,6 +343,10 @@ export function ScheduleDialog({
           </ul>
         )}
       </div>
+
+      {!item && notesDefault?.available && (
+        <TakeNotesSwitch id="meetingNotes" checked={takeNotes ?? notesDefault.everyCall} onCheckedChange={setTakeNotes} />
+      )}
 
       {conflicts.length > 0 && (
         <div role="status" className="flex items-start gap-2 rounded-md border border-amber-500/50 bg-amber-50 p-2 text-sm text-amber-950 dark:bg-amber-950/40 dark:text-amber-100">

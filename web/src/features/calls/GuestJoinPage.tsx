@@ -35,7 +35,7 @@ import {
   StageWithChat,
   type ChatTransport,
 } from "./MeetingChat";
-import { NotesBanner, isNotetaker } from "./notetaker";
+import { NotesBanner, guestNotes, isNotetaker } from "./notetaker";
 import { CameraBackground } from "./BackgroundPicker";
 import { ROOM_OPTIONS } from './roomOptions';
 
@@ -455,6 +455,7 @@ function GuestRoom({
     }),
     [joined.link, joined.key],
   );
+  const notes = useMemo(() => guestNotes(joined.link, joined.key), [joined.link, joined.key]);
   return (
     <LiveKitRoom
       token={joined.token}
@@ -489,7 +490,7 @@ function GuestRoom({
           <LeaveButton />
         </div>
         <BlockedAudioPrompt compact={false} />
-        <NotesBanner asGuest />
+        <NotesBanner asGuest source={notes} />
         {problem && (
           <p className="border-b border-border bg-destructive/10 p-2 text-center text-sm text-destructive">
             {problem}

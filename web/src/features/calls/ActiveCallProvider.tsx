@@ -21,7 +21,7 @@ import { useQuery } from '@tanstack/react-query';
 import { CallStage } from './CallStage';
 import { ROOM_OPTIONS } from './roomOptions';
 import { MeetingChatButton, MeetingChatProvider, StageWithChat, UnreadChatMark, type ChatTransport } from './MeetingChat';
-import { NotesBanner } from './notetaker';
+import { NotesBanner, NotesButton, memberNotes } from './notetaker';
 import { CallControls, CallShortcuts, CompactCallControls, ShareUnavailableNote } from './CallControls';
 import { GuestAccess } from './GuestAccess';
 import { AddPeopleButton, RingingStrip, useAddedRings } from './AddPeople';
@@ -704,6 +704,8 @@ function CallFrame({
                 >
                   <Link2 className="h-4 w-4" />
                 </Button>
+                {/* On a phone the controls under the call have no room for it. */}
+                <NotesButton callId={callId} compact />
                 <AddPeopleButton rings={rings} />
                 <Button
                   variant="ghost"
@@ -829,7 +831,7 @@ function CallTiles({ callId, compact }: { callId: string; compact: boolean }) {
         </div>
       )}
 
-      {!compact && <NotesBanner />}
+      {!compact && <NotesBanner source={memberNotes(callId)} />}
 
       <div className="min-h-0 flex-1">
         {compact ? (
@@ -847,6 +849,7 @@ function CallTiles({ callId, compact }: { callId: string; compact: boolean }) {
         <div ref={controls} className="flex shrink-0 flex-col items-center gap-1 border-t border-border p-2 sm:p-3">
           <CallControls>
             <MeetingChatButton />
+            <NotesButton callId={callId} />
           </CallControls>
           <ShareUnavailableNote />
         </div>

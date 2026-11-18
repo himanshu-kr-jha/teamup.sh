@@ -912,6 +912,16 @@ func (s *Service) ScheduleMeeting(ctx context.Context, orgID, organizer uuid.UUI
 	return m, conflicts, nil
 }
 
+// ChooseNotes keeps whether the note-taker takes notes in a meeting, as its
+// organizer chose. Nil leaves the organization's default.
+func (s *Service) ChooseNotes(ctx context.Context, orgID, id uuid.UUID, on *bool) error {
+	if on == nil {
+		return nil
+	}
+	_, err := s.db.Exec(ctx, `UPDATE calls SET notes_on = $3, updated_at = NOW() WHERE id = $1 AND org_id = $2`, id, orgID, *on)
+	return err
+}
+
 // conflicts finds who is taken: an overlapping focus block or meeting, a standing
 // meeting being one. An open slot is the opposite of a conflict, and touching end
 // to start is not overlapping.

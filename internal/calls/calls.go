@@ -85,6 +85,10 @@ type Service struct {
 	// note-taker uses it to join.
 	joined func(ctx context.Context, orgID, callID uuid.UUID, roomName string)
 	clock  func() time.Time
+	// notesPolicy and notesChanged are the note-taker's side of turning a
+	// call's notes on and off; see notes.go.
+	notesPolicy  NotesPolicy
+	notesChanged func(ctx context.Context, orgID, callID uuid.UUID)
 
 	// How often a call's notification is put up again, and for how long; see
 	// keepRinging. A zero ringEvery rings once.
