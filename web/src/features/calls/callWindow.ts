@@ -61,3 +61,27 @@ export function viewport(): Size {
 function clamp(value: number, min: number, max: number) {
   return Math.min(Math.max(value, min), Math.max(min, max));
 }
+
+/** How wide the column of toasts is from a tablet up (toaster.tsx); below that it is the whole width. */
+export const TOAST_COLUMN = 420;
+/** The room a toast needs to be read: one short toast and the space around it. */
+export const TOAST_ROOM = 120;
+
+/**
+ * Where toasts should start, in pixels from the bottom of the screen, so they
+ * do not cover the minimised call window; null when they do not meet it.
+ *
+ * Toasts run up the right edge from just above the bottom navigation (none on
+ * a wide screen). The window covers them only if it is over that column and
+ * low enough to be in their way: dragged to the left, or up to the top, it is
+ * not, and they stay where they always are. Over them, they go just above it,
+ * but never so high that a toast would leave the screen.
+ */
+export function toastLift(position: Position, size: Size, screen: Size): number | null {
+  const column = screen.width >= 768 ? Math.min(TOAST_COLUMN, screen.width) : screen.width;
+  const base = screen.width >= 1024 ? 0 : 56;
+  const overColumn = position.x < column;
+  const inTheWay = position.y < base + TOAST_ROOM;
+  if (!overColumn || !inTheWay) return null;
+  return Math.min(position.y + size.height, Math.max(base, screen.height - TOAST_ROOM));
+}

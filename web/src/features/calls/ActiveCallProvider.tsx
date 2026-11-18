@@ -59,7 +59,7 @@ import { useUIStore } from '@/shared/store';
 import { useWebSocket } from '@/features/websocket/WSProvider';
 import { cn } from '@/shared/utils/cn';
 import { CameraBackground } from './BackgroundPicker';
-import { RESIZE_STEP, fitCallWindow, keepSize, savedSize, viewport } from './callWindow';
+import { RESIZE_STEP, fitCallWindow, keepSize, savedSize, toastLift, viewport } from './callWindow';
 
 interface ActiveCall {
   callId: string;
@@ -521,14 +521,17 @@ function CallFrame({
   // Toasts appear in the same corner as the minimised window, and covered it: a
   // hand going up, or somebody joining, hid the very call it was about. They sit
   // just above it instead, measured from the bottom of the screen as it is.
+  // Only when the window is in their way, and never off the top (toastLift).
   useEffect(() => {
     if (expanded) return;
+    const lift = toastLift(position, size, viewport());
+    if (lift === null) return;
     const root = document.documentElement;
-    root.style.setProperty('--toast-window', `calc(${position.y + size.height}px - var(--toast-bottom, 0px))`);
+    root.style.setProperty('--toast-window', `calc(${lift}px - var(--toast-bottom, 0px))`);
     return () => {
       root.style.removeProperty('--toast-window');
     };
-  }, [expanded, position.y, size.height]);
+  }, [expanded, position, size]);
 
   // Turning a phone, or narrowing a browser, must not leave the window off screen.
   useEffect(() => {
