@@ -46,6 +46,10 @@ fi
 # For specs that need to look at or move rows the UI cannot (psql is already required above).
 export E2E_DATABASE_URL="postgres://$PG_USER:$PG_PASSWORD@$PG_HOST:$PG_PORT/$DB_NAME?sslmode=disable"
 export E2E_PORT="$PORT"
+# Seed ids for the specs to read, one file per database and port: a run against
+# another database once overwrote a shared file under a run in progress, whose
+# specs then used people that were not in its organization.
+export E2E_STATE_FILE="${E2E_STATE_FILE:-${TMPDIR:-/tmp}/teamup-e2e-state-$DB_NAME-$PORT.json}"
 export TEAMUP_OUTBOUND_ALLOW="127.0.0.1,::1,localhost"
 export TEAMUP_PORT="$PORT" TEAMUP_BASE_URL="http://localhost:$PORT" TEAMUP_ENV=development TEAMUP_LOG_LEVEL=${E2E_LOG_LEVEL:-info}
 export TEAMUP_DATABASE_URL="postgres://$PG_USER:$PG_PASSWORD@$PG_HOST:$PG_PORT/$DB_NAME?sslmode=disable"
