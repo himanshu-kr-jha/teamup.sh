@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { incomingWording, namesList, outcomeMessage, withRinging, withoutRinging } from './addPeople';
+import { endsTheCallForYou, incomingWording, namesList, outcomeMessage, withRinging, withoutRinging } from './addPeople';
 
 describe('ringing people into a call', () => {
   it('names who else is there, briefly', () => {
@@ -36,5 +36,15 @@ describe('ringing people into a call', () => {
     expect(withoutRinging(list, ['r'])).toEqual([sam]);
     // Nothing to take away is the same list, so nothing renders again.
     expect(withoutRinging(list, ['x'])).toBe(list);
+  });
+
+  it('drops you from a call only when the call itself is over', () => {
+    expect(endsTheCallForYou('ended')).toBe(true);
+    expect(endsTheCallForYou(undefined)).toBe(true);
+    // Your own ring into it stopped as you were coming in.
+    expect(endsTheCallForYou('ring_cancelled')).toBe(false);
+    expect(endsTheCallForYou('ring_no_answer')).toBe(false);
+    expect(endsTheCallForYou('cancelled')).toBe(false);
+    expect(endsTheCallForYou('declined')).toBe(false);
   });
 });

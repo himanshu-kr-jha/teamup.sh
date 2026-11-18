@@ -51,6 +51,11 @@ var (
 	ErrNotRinging = apperrors.New(apperrors.CodeConflict, "they are not being rung")
 )
 
+// RingStoppedPrefix starts the reason a rung person's own tabs are given when
+// their ring stops ("ring_cancelled", "ring_no_answer"): it takes the ring away
+// and never means the call itself is over.
+const RingStoppedPrefix = "ring_"
+
 // Ring outcomes, as call.ring.result says them.
 const (
 	RingAnswered  = "answered"
@@ -286,13 +291,22 @@ func (s *Service) CancelRing(ctx context.Context, orgID, callID, byID, userID uu
 // call itself changes: it goes on for whoever is in it.
 func (s *Service) endAddedRing(ctx context.Context, call *CallModel, userID uuid.UUID, outcome string, ringAt *time.Time) bool {
 	now := s.clock()
+	// Somebody who has picked up since this ring began, or is connected now, has
+	// answered it, whatever else arrives a moment later: they are not marked as
+	// gone, and the call is not told they did not answer. Decided in the same
+	// statement that ends the ring, so nothing can come in between.
 	tag, err := s.db.Exec(ctx, `
-		UPDATE call_participants
+		UPDATE call_participants p
 		SET ring_ended_at = $3,
-		    left_at = CASE WHEN joined_at IS NULL THEN COALESCE(left_at, $3) ELSE left_at END
-		WHERE call_id = $1 AND user_id = $2 AND rung_at IS NOT NULL AND ring_ended_at IS NULL
-		  AND ($4::timestamptz IS NULL OR rung_at = $4)
-	`, call.ID, userID, now, ringAt)
+		    left_at = CASE WHEN p.joined_at IS NULL THEN COALESCE(p.left_at, $3) ELSE p.left_at END
+		WHERE p.call_id = $1 AND p.user_id = $2 AND p.rung_at IS NOT NULL AND p.ring_ended_at IS NULL
+		  AND ($4::timestamptz IS NULL OR p.rung_at = $4)
+		  AND ($5 OR NOT (
+		      (p.answered_at IS NOT NULL AND p.answered_at >= p.rung_at)
+		      OR EXISTS (SELECT 1 FROM call_sessions cs
+		                 WHERE cs.call_id = p.call_id AND cs.user_id = p.user_id
+		                   AND cs.joined_at IS NOT NULL AND cs.left_at IS NULL)))
+	`, call.ID, userID, now, ringAt, outcome == RingAnswered)
 	if err != nil {
 		s.logger.Warn().Err(err).Msg("could not stop a ring into a call")
 		return false
@@ -306,7 +320,7 @@ func (s *Service) endAddedRing(ctx context.Context, call *CallModel, userID uuid
 		s.stopRinging(ctx, call.ID, []uuid.UUID{userID})
 		if s.broadcaster != nil {
 			s.broadcaster.BroadcastToUser(userID.String(), protocol.NewMessage(protocol.TypeCallEnded, protocol.CallEndedPayload{
-				CallID: call.ID.String(), RoomName: call.RoomName, Reason: outcome,
+				CallID: call.ID.String(), RoomName: call.RoomName, Reason: RingStoppedPrefix + outcome,
 			}))
 		}
 	}
@@ -317,7 +331,7 @@ func (s *Service) endAddedRing(ctx context.Context, call *CallModel, userID uuid
 // tellRingResult tells everybody in the call, and whoever rang, how a ring
 // into it ended.
 func (s *Service) tellRingResult(ctx context.Context, call *CallModel, userID uuid.UUID, outcome string) {
-	if s.broadcaster == nil {
+	if s.broadcaster == nil || call.Status != "active" {
 		return
 	}
 	var rungBy *uuid.UUID
@@ -371,7 +385,7 @@ func (s *Service) beingRung(ctx context.Context, call *CallModel, userID uuid.UU
 		SELECT EXISTS (
 			SELECT 1 FROM call_participants p JOIN calls c ON c.id = p.call_id
 			WHERE p.call_id = $1 AND p.user_id = $2 AND (
-			    (p.rung_at IS NOT NULL AND p.ring_ended_at IS NULL)
+			    (p.rung_at IS NOT NULL AND p.ring_ended_at IS NULL AND p.rung_at > $3)
 			 OR (p.rung_at IS NULL AND p.user_id <> c.created_by AND c.scheduled_start IS NULL
 			     AND p.joined_at IS NULL AND p.answered_at IS NULL AND p.left_at IS NULL
 			     AND c.started_at > $3)))
@@ -537,4 +551,61 @@ func (h *Handler) CancelRing(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "stopped ringing"})
+}
+
+// EndExpiredRings ends every ring into a call that has rung for longer than
+// RingWindow, as "did not answer", and returns how many. The timer started with
+// a ring does this while the server stays up; a restart or a deploy loses that
+// timer, and this is what ends those rings instead. Every replica runs it, and
+// a ring ends once whichever gets there first.
+func (s *Service) EndExpiredRings(ctx context.Context) (int, error) {
+	type expired struct {
+		orgID, callID, userID uuid.UUID
+		rungAt                time.Time
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT c.org_id, p.call_id, p.user_id, p.rung_at
+		FROM call_participants p JOIN calls c ON c.id = p.call_id
+		WHERE p.rung_at IS NOT NULL AND p.ring_ended_at IS NULL AND p.rung_at <= $1
+	`, s.clock().Add(-RingWindow))
+	if err != nil {
+		return 0, fmt.Errorf("find rings that have run out: %w", err)
+	}
+	found, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (expired, error) {
+		var e expired
+		err := row.Scan(&e.orgID, &e.callID, &e.userID, &e.rungAt)
+		return e, err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("find rings that have run out: %w", err)
+	}
+	ended := 0
+	for _, e := range found {
+		call, err := s.GetCall(ctx, e.orgID, e.callID)
+		if err != nil {
+			s.logger.Warn().Err(err).Msg("could not read a call to end a ring into it")
+			continue
+		}
+		rungAt := e.rungAt
+		if s.endAddedRing(ctx, call, e.userID, RingNoAnswer, &rungAt) {
+			ended++
+		}
+	}
+	return ended, nil
+}
+
+// RunExpiredRingSweep ends rings that have run out until ctx ends.
+func (s *Service) RunExpiredRingSweep(ctx context.Context, every time.Duration) {
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := s.EndExpiredRings(ctx); err != nil && ctx.Err() == nil {
+				s.logger.Warn().Err(err).Msg("could not end rings that have run out")
+			}
+		}
+	}
 }

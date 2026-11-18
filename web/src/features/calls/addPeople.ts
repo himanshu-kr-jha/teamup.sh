@@ -59,3 +59,13 @@ export function withoutRinging(list: Ringing[], userIds: Iterable<string>): Ring
   const kept = list.filter((p) => !gone.has(p.userId));
   return kept.length === list.length ? list : kept;
 }
+
+/**
+ * Whether a call.ended frame about the call you are in means it is over for you.
+ * Only the call ending does. Somebody turning down or missing a ring is told and
+ * the call goes on, and a ring of yours into it stopping ("ring_cancelled",
+ * "ring_no_answer") only takes the ring away: it can arrive just as you come in.
+ */
+export function endsTheCallForYou(reason?: string): boolean {
+  return !reason || reason === 'ended';
+}

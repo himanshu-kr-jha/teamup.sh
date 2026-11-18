@@ -241,7 +241,7 @@ func TestCancellingARingStopsItForEverybody(t *testing.T) {
 	wantCode(t, doJSON(t, w.as(t, w.ravi), http.MethodDelete, cancel, ""), http.StatusOK)
 
 	ended := w.sent(sam, "call.ended")
-	if len(ended) != 1 || ended[0].Payload["reason"] != RingCancelled || ended[0].Payload["callId"] != w.call.ID.String() {
+	if len(ended) != 1 || ended[0].Payload["reason"] != RingStoppedPrefix+RingCancelled || ended[0].Payload["callId"] != w.call.ID.String() {
 		t.Errorf("Sam's ring should stop, got %v", ended)
 	}
 	if got := w.outcomes(w.asha, sam); len(got) != 1 || got[0] != RingCancelled {
@@ -308,6 +308,151 @@ func TestIntoCallWording(t *testing.T) {
 	for want, c := range cases {
 		if got := intoCallBody(c.kind, c.with); got != want {
 			t.Errorf("got %q, want %q", got, want)
+		}
+	}
+}
+
+// restart stands in for a deploy: the server goes away, taking every timer with
+// it, and a new one starts on the same database.
+func (e *lkEnv) restart(t *testing.T, media *fakeMedia, notes *lockedNotes) {
+	t.Helper()
+	e.svc.Close()
+	svc := NewService(e.pool, Config{LiveKitAPIKey: lkKey, LiveKitAPISecret: lkSecret})
+	t.Cleanup(svc.Close)
+	svc.media = media
+	svc.SetBroadcaster(e.frames)
+	svc.SetNotifier(e.push)
+	if notes != nil {
+		svc.SetChatRecorder(notes)
+	}
+	svc.ringEvery = 0
+	e.svc = svc
+}
+
+// ageRing moves when somebody was rung into the past.
+func (e *lkEnv) ageRing(t *testing.T, callID, who uuid.UUID, by time.Duration) {
+	t.Helper()
+	e.exec(t, `UPDATE call_participants SET rung_at = rung_at - ($3::float8 * interval '1 second') WHERE call_id = $1 AND user_id = $2`,
+		callID, who, by.Seconds())
+}
+
+// A ring cut short by a restart has lost its timer. It must not stay "ringing"
+// for ever: in a call between two people, the one first called turning it down
+// still ends it and leaves the note, and the sweep says the added person did not
+// answer.
+func TestAnAddedRingCutShortByARestartStillEnds(t *testing.T) {
+	e := newLK(t)
+	media := &fakeMedia{present: map[string]bool{}}
+	e.svc.media = media
+	e.svc.ringEvery = 0
+	notes := &lockedNotes{}
+	e.svc.SetChatRecorder(notes)
+	ctx := context.Background()
+	asha := e.person(t, "Asha Caller", "member")
+	ravi := e.person(t, "Ravi Callee", "member")
+	sam := e.person(t, "Sam Added", "member")
+	// Asha calls Ravi, who has not picked up, and rings Sam in while she waits.
+	w := &talking{lkEnv: e, media: media, asha: asha, ravi: ravi, call: e.call(t, asha, ravi)}
+	w.enter(t, asha)
+	if code, body := w.ring(t, asha, sam); code != http.StatusOK {
+		t.Fatalf("ring: %d %s", code, body)
+	}
+
+	e.restart(t, media, notes)
+	e.ageRing(t, w.call.ID, sam, time.Minute)
+
+	// Before any sweep, everything already reads the ring as over.
+	model, err := e.svc.GetCall(ctx, e.org.ID, w.call.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ringing, err := e.svc.beingRung(ctx, model, sam, time.Now()); err != nil || ringing {
+		t.Errorf("a ring past its time is still ringing: %v %v", ringing, err)
+	}
+	if still, err := e.svc.stillRinging(ctx, w.call.ID, []uuid.UUID{sam}); err != nil || len(still) != 0 {
+		t.Errorf("a ring past its time is still rung on Sam's phone: %v %v", still, err)
+	}
+	wantCode(t, doJSON(t, e.as(t, ravi), http.MethodPost, w.path("/decline"), `{"reason":"declined"}`), http.StatusOK)
+	if e.status(t, w.call.ID) != "ended" {
+		t.Fatal("Ravi turning the call down did not end it, because of Sam's lost ring")
+	}
+	eventually(t, "the conversation says Ravi declined", func() bool { return notes.count() > 0 })
+	if got := notes.all(); len(got) == 0 || got[0] != "Call declined" {
+		t.Errorf("the note says %v", got)
+	}
+
+	// The sweep closes the ring itself.
+	if n, err := e.svc.EndExpiredRings(ctx); err != nil || n != 1 {
+		t.Errorf("the sweep should end Sam's ring: %d %v", n, err)
+	}
+	if n, _ := e.svc.EndExpiredRings(ctx); n != 0 {
+		t.Errorf("a ring ends once, swept again %d", n)
+	}
+}
+
+func TestTheSweepTellsAGoingCallARingRanOut(t *testing.T) {
+	w := newTalking(t)
+	sam := w.person(t, "Sam Added", "member")
+	if code, body := w.ring(t, w.asha, sam); code != http.StatusOK {
+		t.Fatalf("ring: %d %s", code, body)
+	}
+	w.restart(t, w.media, nil)
+	w.ageRing(t, w.call.ID, sam, time.Minute)
+
+	if n, err := w.svc.EndExpiredRings(context.Background()); err != nil || n != 1 {
+		t.Fatalf("sweep: %d %v", n, err)
+	}
+	for _, who := range []uuid.UUID{w.asha, w.ravi} {
+		if got := w.outcomes(who, sam); len(got) != 1 || got[0] != RingNoAnswer {
+			t.Errorf("everybody in the call should hear Sam did not answer, got %v", got)
+		}
+	}
+	if w.status(t, w.call.ID) != "active" {
+		t.Fatal("the sweep ended the call")
+	}
+	if code, body := w.ring(t, w.asha, sam); code != http.StatusOK {
+		t.Errorf("ringing again after the ring ran out: %d %s", code, body)
+	}
+}
+
+// Somebody who picked up, or is already connected, is not then marked as not
+// answering by a cancel or the timer landing a moment later.
+func TestAnAnsweredRingIsNotEndedAsAnythingElse(t *testing.T) {
+	w := newTalking(t)
+	ctx := context.Background()
+	model, err := w.svc.GetCall(ctx, w.org.ID, w.call.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, how := range []string{"picked up", "connected"} {
+		sam := w.person(t, "Sam "+how, "member")
+		if code, body := w.ring(t, w.asha, sam); code != http.StatusOK {
+			t.Fatalf("ring: %d %s", code, body)
+		}
+		// Halfway through answering: the token is out and the ring not yet ended.
+		if how == "picked up" {
+			w.exec(t, `UPDATE call_participants SET answered_at = NOW() + interval '1 second' WHERE call_id = $1 AND user_id = $2`, w.call.ID, sam)
+		} else {
+			w.mustDeliver(t, joinedEv(w.call.RoomName, sam, "PA_"+sam.String()[:8], time.Now()))
+		}
+		wantCode(t, doJSON(t, w.as(t, w.ravi), http.MethodDelete, w.path("/ring/"+sam.String()), ""), http.StatusConflict)
+		if w.svc.endAddedRing(ctx, model, sam, RingNoAnswer, nil) {
+			t.Errorf("%s: the timer ended a ring that was answered", how)
+		}
+		if len(w.sent(sam, "call.ended")) > 0 {
+			t.Errorf("%s: Sam was told the ring stopped while coming in", how)
+		}
+		var gone bool
+		if err := w.pool.QueryRow(ctx, `SELECT left_at IS NOT NULL FROM call_participants WHERE call_id = $1 AND user_id = $2`, w.call.ID, sam).Scan(&gone); err != nil || gone {
+			t.Errorf("%s: Sam was marked as gone: %v %v", how, gone, err)
+		}
+		if got := w.outcomes(w.asha, sam); len(got) != 0 {
+			t.Errorf("%s: the call was told %v", how, got)
+		}
+		// Picking up, when it lands, ends the ring as answered.
+		w.svc.answeredAddedRing(ctx, model, sam)
+		if got := w.outcomes(w.asha, sam); len(got) != 1 || got[0] != RingAnswered {
+			t.Errorf("%s: want answered, got %v", how, got)
 		}
 	}
 }

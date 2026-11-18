@@ -25,6 +25,7 @@ import { NotesBanner } from './notetaker';
 import { CallControls, CallShortcuts, CompactCallControls, ShareUnavailableNote } from './CallControls';
 import { GuestAccess } from './GuestAccess';
 import { AddPeopleButton, RingingStrip, useAddedRings } from './AddPeople';
+import { endsTheCallForYou } from './addPeople';
 import { CallLogDialog } from './CallLogDialog';
 import { copyCallLink } from './copyLink';
 import { classifyJoinError, type JoinFailure } from './knock';
@@ -346,6 +347,9 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
         sayBusy(payload.callId, payload.declinedBy, payload.reason);
         return;
       }
+      // Only the call itself ending takes you out: a ring of yours into it being
+      // stopped, as you come in, is not that.
+      if (!endsTheCallForYou(payload.reason)) return;
       toast.toast('The call has ended.');
       setActiveCall(null);
     });

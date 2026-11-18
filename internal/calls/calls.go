@@ -1291,9 +1291,9 @@ func (s *Service) stillRinging(ctx context.Context, callID uuid.UUID, people []u
 		SELECT user_id FROM call_participants
 		WHERE call_id = $1 AND user_id = ANY($2)
 		  AND ((rung_at IS NULL AND joined_at IS NULL AND answered_at IS NULL AND left_at IS NULL)
-		    -- Rung into the call while it was going (add_people.go).
-		    OR (rung_at IS NOT NULL AND ring_ended_at IS NULL))
-	`, callID, people)
+		    -- Rung into the call while it was going, and not yet rung out (add_people.go).
+		    OR (rung_at IS NOT NULL AND ring_ended_at IS NULL AND rung_at > $3))
+	`, callID, people, s.clock().Add(-RingWindow))
 	if err != nil {
 		return nil, fmt.Errorf("read who is still being rung: %w", err)
 	}
@@ -1375,9 +1375,13 @@ func (s *Service) NoteIfMissed(ctx context.Context, callID uuid.UUID, reason str
 		return
 	}
 
-	rows, err := s.db.Query(ctx,
-		`SELECT user_id FROM call_participants WHERE call_id = $1 AND user_id <> $2`,
-		callID, createdBy)
+	// Somebody rung into the call who never came does not make it a group call:
+	// it was still between the two of them.
+	rows, err := s.db.Query(ctx, `
+		SELECT user_id FROM call_participants
+		WHERE call_id = $1 AND user_id <> $2
+		  AND NOT (rung_at IS NOT NULL AND joined_at IS NULL AND answered_at IS NULL)
+	`, callID, createdBy)
 	if err != nil {
 		s.logger.Warn().Err(err).Msg("could not work out who was called")
 		return
@@ -1673,7 +1677,11 @@ func (s *Service) AnybodyLeftToAnswer(ctx context.Context, callID, callerID uuid
 	err := s.db.QueryRow(ctx, `
 		SELECT COUNT(*) FROM call_participants
 		WHERE call_id = $1 AND user_id <> $2 AND left_at IS NULL
-	`, callID, callerID).Scan(&outstanding)
+		  -- Somebody rung into the call whose ring has run out is not going to
+		  -- answer, even before the sweep has said so (add_people.go).
+		  AND NOT (rung_at IS NOT NULL AND joined_at IS NULL AND answered_at IS NULL
+		           AND (ring_ended_at IS NOT NULL OR rung_at <= $3))
+	`, callID, callerID, s.clock().Add(-RingWindow)).Scan(&outstanding)
 	if err != nil {
 		return false, fmt.Errorf("count outstanding participants: %w", err)
 	}

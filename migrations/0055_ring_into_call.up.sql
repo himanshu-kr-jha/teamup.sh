@@ -9,7 +9,10 @@ ALTER TABLE call_participants
 
 -- Who rang whom is on the call's trail, which is also how ringing the same
 -- person over and over is limited.
+-- Added NOT VALID and then validated, so the check of the existing rows does not
+-- hold an exclusive lock on the table while it reads every one of them.
 ALTER TABLE call_events DROP CONSTRAINT IF EXISTS call_events_type_check;
 ALTER TABLE call_events ADD CONSTRAINT call_events_type_check CHECK (type IN (
     'knocked', 'admitted', 'denied', 'joined', 'left',
-    'screen_share_started', 'screen_share_stopped', 'camera_on', 'rung'));
+    'screen_share_started', 'screen_share_stopped', 'camera_on', 'rung')) NOT VALID;
+ALTER TABLE call_events VALIDATE CONSTRAINT call_events_type_check;
