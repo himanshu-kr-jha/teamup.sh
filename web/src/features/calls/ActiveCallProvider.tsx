@@ -77,6 +77,9 @@ import { MediaErrorBanner } from './MediaErrorBanner';
 import { forgetCall, recallCall, type CallMemory } from './callMemory';
 import { RememberCall, isLeavingPage, useBackStaysInApp } from './CallContinuity';
 import { currentBackgroundChoice, sameChoice, setBackgroundChoice } from './background';
+import { useAuthStore } from '@/shared/store/authStore';
+import { withNoiseCapture } from './noiseCancellation';
+import { NoiseCancellation } from './NoiseControls';
 
 interface ActiveCall {
   callId: string;
@@ -525,6 +528,10 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
   // Full size on that call's own page; a corner window everywhere else.
   const expanded = !!activeCall && location.pathname === `/calls/${activeCall.callId}`;
 
+  // The microphone captured for the noise cancellation chosen as the call starts;
+  // changing it during the call is NoiseCancellation's to do, not a new room.
+  const callOptions = useMemo(() => withNoiseCapture(roomOptions, useAuthStore.getState().user?.id), [roomOptions]);
+
   const value = useMemo(
     () => ({ activeCall, join, enter, leave, joining, failure, clearFailure, watchedDoor, watchDoor, resuming }),
     [activeCall, join, enter, leave, joining, failure, clearFailure, watchedDoor, resuming]
@@ -539,7 +546,7 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
           token={activeCall.token}
           serverUrl={liveKitURL()}
           connect
-          options={roomOptions}
+          options={callOptions}
           // Joining a meeting or a video call as chosen on the screen before it,
           // which starts with the camera and microphone off for somebody who has
           // never joined: you turn them on when you are ready, rather than finding
@@ -564,6 +571,7 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
           <RoomAudioRenderer />
           <CameraBackground />
           <RememberCall userId={user?.id} callId={activeCall.callId} standing={!!activeCall.standing} />
+          <NoiseCancellation />
         </LiveKitRoom>
       )}
       {resuming && !activeCall && location.pathname !== `/calls/${resuming}` && <ReconnectingNote />}
