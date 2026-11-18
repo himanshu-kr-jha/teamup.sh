@@ -325,12 +325,11 @@ test.describe('the new call features together', () => {
       await expect(sam.page.getByRole('button', { name: 'Turn your microphone off' }).first()).toBeVisible({ timeout: 20_000 });
       await expect(notesBanner(sam.page)).toHaveText(PAUSED_BY_ALICE, { timeout: 20_000 });
       await expect(bars(olivia.page, SAM)).toHaveAttribute('data-speaking', 'true', { timeout: 20_000 });
-      // His raised hand does not survive the reload: see 'a raised hand keeps its place through a reload' below.
-      // Whatever the hands are, Sam sees the same queue as everybody else.
-      await sam.page.waitForTimeout(3_000);
-      const queue = (page: Page) => page.getByTestId('participant-tile').getByTestId('hand-badge').allTextContents();
-      const theirs = await queue(olivia.page);
-      for (const page of [alice.page, zoe.page, sam.page]) expect(await queue(page)).toEqual(theirs);
+      // His raised hand comes back with him, still first in the queue, for everybody.
+      for (const page of [olivia.page, alice.page, zoe.page, sam.page]) {
+        await expect(badge(page, SAM)).toHaveText('1', { timeout: 20_000 });
+        await expect(badge(page, zoeId)).toHaveText('2');
+      }
       for (const page of [olivia.page, alice.page, zoe.page]) expect(await arrivals(page), 'no join or leave toast for a reload').toEqual([]);
       await still(sam.page);
       await sam.page.screenshot({ path: `${SHOTS}/2-sam-after-reload-phone-dark.png` });
@@ -469,8 +468,8 @@ test.describe('the new call features together', () => {
       await alice.page.goBack();
       await expect(alice.page).toHaveURL(/\/tasks/);
       await expect(callWindow(alice.page)).toBeVisible();
-      // Alice, Olivia, and the note-taker, which the window counts as one of the people in the call.
-      await expect(callWindow(alice.page).getByText('3 in call')).toBeVisible({ timeout: 20_000 });
+      // Alice and Olivia; the note-taker is not one of the people.
+      await expect(callWindow(alice.page).getByText('2 in call')).toBeVisible({ timeout: 20_000 });
       const box = (await callWindow(alice.page).boundingBox())!;
       expect(box.x).toBeGreaterThanOrEqual(0);
       expect(box.x + box.width).toBeLessThanOrEqual(390);
@@ -494,8 +493,9 @@ test.describe('the new call features together', () => {
       const callId = new URL(olivia.page.url()).pathname.split('/').pop()!;
       await leaveCall(olivia.page);
       await expect(leaveButton(olivia.page)).toHaveCount(0);
-      // Leaving is only leaving (ActiveCallProvider.hangUp): the call stays open for whoever is still in it.
-      await expect(callWindow(alice.page).getByText('2 in call')).toBeVisible({ timeout: 20_000 });
+      // Leaving is only leaving (ActiveCallProvider.hangUp): the call stays open for whoever is still in it,
+      // and alone with the note-taker is alone.
+      await expect(callWindow(alice.page).getByText('Waiting for others')).toBeVisible({ timeout: 20_000 });
       await still(alice.page);
       await alice.page.screenshot({ path: `${SHOTS}/3-alone-phone-dark.png` });
       await callWindow(alice.page).getByRole('button', { name: 'Leave the call' }).click();
