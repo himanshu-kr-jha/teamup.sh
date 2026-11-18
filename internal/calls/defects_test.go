@@ -35,6 +35,42 @@ type fakeMedia struct {
 	// delivered to a room.
 	present map[string]bool
 	sent    []sentData
+	// attrs is each participant's attributes, keyed as present is.
+	attrs map[string]map[string]string
+}
+
+func (f *fakeMedia) Attributes(_ context.Context, room, identity string) (map[string]string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := room + "/" + identity
+	if !f.present[key] {
+		return nil, false, nil
+	}
+	out := map[string]string{}
+	for k, v := range f.attrs[key] {
+		out[k] = v
+	}
+	return out, true, nil
+}
+
+func (f *fakeMedia) SetAttributes(_ context.Context, room, identity string, attrs map[string]string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	key := room + "/" + identity
+	if f.attrs == nil {
+		f.attrs = map[string]map[string]string{}
+	}
+	if f.attrs[key] == nil {
+		f.attrs[key] = map[string]string{}
+	}
+	for k, v := range attrs {
+		if v == "" {
+			delete(f.attrs[key], k)
+		} else {
+			f.attrs[key][k] = v
+		}
+	}
+	return nil
 }
 
 type sentData struct {

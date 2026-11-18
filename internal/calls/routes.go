@@ -33,6 +33,7 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.POST("/calls/:id/end", h.EndCall)
 	rg.POST("/calls/:id/decline", h.DeclineCall)
 	rg.POST("/calls/:id/mute/:userId", h.MuteParticipant)
+	rg.PUT("/calls/:id/hand", h.putHand)
 	rg.DELETE("/calls/:id/record", h.StopRecording)
 
 	rg.GET("/calls/:id/log", h.GetCallLog)
