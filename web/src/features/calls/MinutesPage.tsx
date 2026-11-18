@@ -28,7 +28,7 @@ function Transcript({ lines, pauses }: { lines: MeetingMinutes['transcript']; pa
       {transcriptWithGaps(lines, pauses).map((e, i) =>
         e.kind === 'gap' ? (
           <p key={i} className="italic text-muted-foreground" data-testid="transcript-gap">
-            <span className="tabular-nums">{format(new Date(e.at), 'HH:mm')}</span> {e.text}
+            {e.text}
           </p>
         ) : (
           <p key={i}>

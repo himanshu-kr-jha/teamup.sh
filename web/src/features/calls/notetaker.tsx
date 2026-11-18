@@ -1,4 +1,5 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
+import { format } from 'date-fns';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useParticipants, useRemoteParticipants, useRoomContext } from '@livekit/components-react';
 import { RoomEvent, type RemoteParticipant } from 'livekit-client';
@@ -73,7 +74,8 @@ export function notesFromPacket(
 
 /** A time of day as the person reading it keeps time: 10:05. */
 export function clockTime(at: string): string {
-  return new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  // As the minutes and the transcript write times, on the reader's own clock.
+  return format(new Date(at), 'HH:mm');
 }
 
 export type NotesBannerState = { tone: 'on' | 'paused'; text: string } | null;

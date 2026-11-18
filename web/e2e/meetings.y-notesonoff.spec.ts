@@ -16,7 +16,7 @@ const heard: number[] = [];
 const asked: string[] = [];
 
 const banner = (page: Page) => page.getByTestId('notes-banner');
-const PAUSED = /^Notes paused by Alice Archer at \d{1,2}:\d{2}( [AP]M)?\. Nothing said now is written down\.$/;
+const PAUSED = /^Notes paused by Alice Archer at \d{2}:\d{2}\. Nothing said now is written down\.$/;
 
 async function say(page: Page, text: string) {
   const box = page.getByTestId('meeting-chat').getByLabel('Message to everyone in the call');
