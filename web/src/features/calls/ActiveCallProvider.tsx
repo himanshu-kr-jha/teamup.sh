@@ -290,12 +290,14 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
       setJoining(true);
       try {
         const res = await callsApi.getToken(callId);
+        const voice = res.data.callType === 'audio';
         setActiveCall({
           callId,
           token: res.data.token,
-          voice: res.data.callType === 'audio',
+          voice,
           standing: options?.standing,
-          media: options,
+          // A voice call starts with the camera off, whatever a video call last chose.
+          media: voice && options ? { ...options, camera: false } : options,
         });
       } catch (err) {
         setFailure(classifyJoinError(err));

@@ -19,6 +19,7 @@ import { CreateCallDialog } from './CreateCallDialog';
 import { copyCallLink } from './copyLink';
 import { PersonAvatar } from '@/shared/components/UserAvatar';
 import { StandingMeetings } from './standing/StandingMeetings';
+import type { RingState } from './CallViewPage';
 
 interface Call {
   id: string;
@@ -173,7 +174,8 @@ export function CallsPage() {
       <CreateCallDialog
         open={createOpen}
         onOpenChange={setCreateOpen}
-        onCreated={(id) => navigate(`/calls/${id}`)}
+        // Starting a call rings whoever is on it, so its caller goes straight in to hear it ring.
+        onCreated={(id) => navigate(`/calls/${id}`, { state: { ring: 'placed' } satisfies RingState })}
       />
     </div>
   );

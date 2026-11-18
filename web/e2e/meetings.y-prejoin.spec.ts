@@ -183,6 +183,36 @@ test.describe('the screen before a call', () => {
     await owner.dispose();
   });
 
+  test('a ringing video call goes straight in, answered or placed: microphone on, camera as last chosen', async ({ as }) => {
+    test.setTimeout(120_000);
+    // Alice chose her camera on last time, on the screen before a call.
+    const alice = await as('alice');
+    await alice.page.evaluate((id) => localStorage.setItem(`teamup.call.join.${id}`, JSON.stringify({ mic: false, camera: true })), idOf('alice'));
+
+    // The caller starts a video call from Calls and is in it at once, to hear it ring.
+    const olivia = await as('owner');
+    await olivia.page.goto('/calls');
+    await olivia.page.getByRole('button', { name: 'New Call' }).click();
+    const dialog = olivia.page.getByRole('dialog');
+    await dialog.getByLabel('Title (optional)').fill(`Ring ${Date.now()}`);
+    await dialog.locator('label', { hasText: 'Alice Archer' }).getByRole('checkbox').check();
+    await dialog.getByRole('button', { name: 'Start call' }).click();
+    await expect(olivia.page.getByRole('button', { name: 'Leave the call' })).toBeVisible({ timeout: 30_000 });
+    await expect(prejoinScreen(olivia.page)).toHaveCount(0);
+    await expect(olivia.page.getByRole('button', { name: 'Turn your microphone off' }).first()).toBeVisible({ timeout: 20_000 });
+    // A first-timer's camera is off.
+    await expect(olivia.page.getByRole('button', { name: 'Turn your camera on' }).first()).toBeVisible();
+
+    const ring = alice.page.getByRole('dialog').filter({ hasText: /^Incoming video call/ });
+    await expect(ring).toBeVisible({ timeout: 20_000 });
+    await ring.getByRole('button', { name: 'Answer' }).click();
+    await expect(alice.page.getByRole('button', { name: 'Leave the call' })).toBeVisible({ timeout: 30_000 });
+    await expect(prejoinScreen(alice.page)).toHaveCount(0);
+    // Answering is talking: the microphone on whatever the screen last had, the camera as chosen.
+    await expect(alice.page.getByRole('button', { name: 'Turn your microphone off' }).first()).toBeVisible({ timeout: 20_000 });
+    await expect(alice.page.getByRole('button', { name: 'Turn your camera off' }).first()).toBeVisible({ timeout: 20_000 });
+  });
+
   test('a voice call goes straight in, microphone on, like a phone', async ({ as }) => {
     const owner = await apiAs('owner');
     const call = await owner.post('/calls', { title: `Voice ${Date.now()}`, callType: 'audio', invitees: [idOf('max')] });

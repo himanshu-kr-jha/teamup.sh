@@ -676,7 +676,6 @@ test.describe('6. calendar', () => {
     await joinCall(olivia.page, call.id);
     // Alice is rung, and answers.
     await alice.page.getByRole('button', { name: 'Answer' }).click({ timeout: 20_000 });
-    await passPrejoin(alice.page);
     await expect(alice.page.getByRole('button', { name: 'Leave the call' })).toBeVisible({ timeout: 30_000 });
     await alice.page.waitForTimeout(4000);
     await leaveCall(alice.page);

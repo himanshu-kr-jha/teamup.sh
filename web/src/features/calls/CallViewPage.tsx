@@ -38,10 +38,34 @@ function standingTokenOf(state: unknown): StandingJoinState['standingToken'] | u
   return given && typeof given.token === 'string' && typeof given.at === 'number' ? given : undefined;
 }
 
+/**
+ * How a ringing call brought you to its page: you answered it, or you placed it.
+ * Either way you have decided, and somebody is waiting on the other end, so there
+ * is no screen before it.
+ */
+export interface RingState {
+  ring: 'answered' | 'placed';
+}
+
+function ringOf(state: unknown): RingState['ring'] | undefined {
+  const ring = (state as Partial<RingState> | null)?.ring;
+  return ring === 'answered' || ring === 'placed' ? ring : undefined;
+}
+
 /** The devices you used last, for a call that goes straight in. */
 function rememberedDevices(userId: string | undefined): JoinOptions {
   const { audioInput, videoInput, audioOutput } = readJoinChoice(userId);
   return { audioInput, videoInput, audioOutput };
+}
+
+/**
+ * A ringing call, answered or placed: the microphone on, as on a phone, the camera
+ * as you last chose it on the screen before a call (off until you have), and your
+ * devices. A voice call keeps its camera off whatever was chosen (ActiveCallProvider).
+ */
+function ringingOptions(userId: string | undefined): JoinOptions {
+  const last = readJoinChoice(userId);
+  return { ...rememberedDevices(userId), mic: true, camera: last.camera };
 }
 
 /**
@@ -51,8 +75,10 @@ function rememberedDevices(userId: string | undefined): JoinOptions {
  * the call on screen, or show the door when coming in was refused.
  *
  * A video call or a meeting stops first at the screen before it (PreJoinScreen),
- * where you set up your camera, microphone and background and see who is there;
- * a call goes straight in, as a phone does. The screen also stands where the
+ * where you set up your camera, microphone and background and see who is there.
+ * A voice call goes straight in, as a phone does, and so does any ringing call you
+ * answered or placed (RingState): somebody is waiting on the other end. The
+ * screen also stands where the
  * lobby of a scheduled meeting nobody has started used to: asking for a token is
  * what opens such a meeting, so nothing asks for one until you press Join.
  */
@@ -97,9 +123,13 @@ function CallRoute({ callId }: { callId: string }) {
     [callId, join]
   );
 
+  const ring = ringOf(location.state);
   useEffect(() => {
     if (phase !== 'deciding') return;
-    if (error) {
+    if (ring) {
+      // Answered or placed: straight in, without waiting for the call's details.
+      go(ringingOptions(user?.id));
+    } else if (error) {
       // Joining is what says why it cannot be read, in the words for that: the door
       // of a call you are not in, or that it is over.
       go(rememberedDevices(user?.id));
@@ -114,7 +144,7 @@ function CallRoute({ callId }: { callId: string }) {
       else if (call.status === 'cancelled' || (call.status === 'ended' && !meetingStillOn(call, now))) go();
       else setPhase('prejoin');
     }
-  }, [phase, error, isFetchedAfterMount, call, lobby, go, user?.id, now]);
+  }, [phase, ring, error, isFetchedAfterMount, call, lobby, go, user?.id, now]);
 
   const joinFromScreen = (choice: JoinChoice) => {
     const options: JoinOptions = {

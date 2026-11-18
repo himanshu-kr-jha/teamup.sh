@@ -14,6 +14,7 @@ import { useWebSocket } from '@/features/websocket/WSProvider';
 import { playSound, preloadSounds, type StopSound } from '@/shared/sounds';
 import { callsApi } from '@/shared/api/client';
 import { useActiveCall } from './ActiveCallProvider';
+import type { RingState } from './CallViewPage';
 
 interface IncomingCall {
   callId: string;
@@ -128,8 +129,12 @@ export function IncomingCallDialog() {
 
   const answer = () => {
     const id = call!.callId;
+    const standing = call!.standing;
     dismiss(id);
-    navigate(`/calls/${id}`);
+    // Answering is deciding, and somebody is waiting: straight in. A stand-up
+    // starting is a meeting, so it stops at the screen before it like any other.
+    if (standing) navigate(`/calls/${id}`);
+    else navigate(`/calls/${id}`, { state: { ring: 'answered' } satisfies RingState });
   };
 
   const decline = () => {
