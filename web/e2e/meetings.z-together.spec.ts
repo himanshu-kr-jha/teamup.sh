@@ -377,7 +377,7 @@ test.describe('the new call features together', () => {
   // connection without it. The proof that would put it back (Hands.tsx, kept) lives
   // only in memory and is used only on RoomEvent.Reconnected, so after a reload the
   // hand is silently gone for everybody, whatever the microphone is doing.
-  test.fixme('a raised hand keeps its place through a reload (lost: PR #142 rejoin does not carry the hand of PR #139)', async ({ as }) => {
+  test('a raised hand keeps its place through a reload', async ({ as }) => {
     const owner = await apiAs('owner');
     const call = await createCall(owner, `Hand reload ${Date.now()}`, [idOf('sam')]);
     const olivia = await as('owner');
