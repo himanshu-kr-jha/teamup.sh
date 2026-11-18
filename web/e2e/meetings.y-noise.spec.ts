@@ -135,6 +135,58 @@ test.describe('noise cancellation', () => {
     expect(olivia.problems).toEqual([]);
   });
 
+  test('leaving while it is still starting leaves no microphone open and no audio running', async ({ as }) => {
+    test.setTimeout(120_000);
+    const owner = await apiAs('owner');
+    const call = await createCall(owner, `Quick exit ${Date.now()}`, [idOf('alice')]);
+    const alice = await as('alice');
+    const page = alice.page;
+    // Every microphone and every 48 kHz audio context the page opens, to see they are let go.
+    await alice.context.addInitScript(() => {
+      const w = window as unknown as { __mics: MediaStreamTrack[]; __contexts: AudioContext[] };
+      w.__mics = [];
+      w.__contexts = [];
+      const gum = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      navigator.mediaDevices.getUserMedia = async (c) => {
+        const stream = await gum(c);
+        w.__mics.push(...stream.getAudioTracks());
+        return stream;
+      };
+      const Original = window.AudioContext;
+      window.AudioContext = class extends Original {
+        constructor(options?: AudioContextOptions) {
+          super(options);
+          if (options?.sampleRate === 48000) w.__contexts.push(this);
+        }
+      } as typeof AudioContext;
+    });
+    // The processor's code held back, so leaving happens while it is still on its way.
+    const gate: { open?: () => void } = {};
+    const opened = new Promise<void>((r) => (gate.open = r));
+    await page.route(/\/assets\/rnnoise-[^/]+\.js$/, async (route) => {
+      await opened;
+      await route.continue();
+    });
+    await page.goto(`/calls/${call.id}`);
+    await expect(prejoinScreen(page)).toBeVisible({ timeout: 20_000 });
+    await page.getByRole('button', { name: 'Turn your microphone on' }).click();
+    await lobbyJoin(page).click();
+    await expect(page.getByRole('button', { name: 'Leave the call' }).first()).toBeVisible({ timeout: 30_000 });
+    await expect(micMenu(page)).toHaveAttribute('data-noise-cancellation', 'starting');
+    await leaveCall(page);
+    await expect(page).toHaveURL(/\/calls$/);
+    gate.open!();
+    await page.waitForTimeout(3000);
+    const left = await page.evaluate(() => {
+      const w = window as unknown as { __mics: MediaStreamTrack[]; __contexts: AudioContext[] };
+      return { mics: w.__mics.filter((t) => t.readyState === 'live').length, contexts: w.__contexts.filter((c) => c.state !== 'closed').length };
+    });
+    expect(left).toEqual({ mics: 0, contexts: 0 });
+    await owner.post(`/calls/${call.id}/end`).catch(() => undefined);
+    await owner.dispose();
+    expect(alice.problems).toEqual([]);
+  });
+
   test('the switch on a phone, in light and dark', async ({ as }) => {
     const owner = await apiAs('owner');
     const call = await createCall(owner, `Phone noise ${Date.now()}`, [idOf('alice')]);

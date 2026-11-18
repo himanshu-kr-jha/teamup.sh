@@ -15,9 +15,9 @@ import { useAuth } from '@/features/auth/AuthProvider';
 import { useToast } from '@/shared/hooks/useToast';
 import { cn } from '@/shared/utils/cn';
 import { deviceLabel } from './prejoin';
+import { RNNOISE, applyNoiseCancellation } from './noiseApply';
 import {
   UNAVAILABLE_TEXT,
-  captureFor,
   markNoiseUnavailable,
   noiseCancellationPossible,
   noiseStatus,
@@ -26,9 +26,6 @@ import {
   useNoiseChoice,
   type NoiseStatus,
 } from './noiseCancellation';
-
-/** The processor's name (rnnoise.ts), here so this file does not load it. */
-const RNNOISE = 'teamup-rnnoise';
 
 /** Whether a track has RNNoise on it now, following it as that changes. */
 function useAttached(track: LocalAudioTrack | undefined): boolean {
@@ -42,18 +39,6 @@ function useAttached(track: LocalAudioTrack | undefined): boolean {
     };
   }, [track]);
   return attached;
-}
-
-/**
- * Asks the microphone again, with the browser's own noise suppression on or off.
- * Always with the device it is on: LiveKit drops the other settings when asked
- * again without one.
- */
-async function recapture(track: LocalAudioTrack, rnnoise: boolean) {
-  const settings = track.mediaStreamTrack.getSettings();
-  if (settings.noiseSuppression === !rnnoise) return;
-  const deviceId = settings.deviceId || (track.constraints.deviceId as string | undefined) || 'default';
-  await track.restartTrack({ deviceId, ...captureFor(rnnoise) });
 }
 
 /** The call's microphone track, while it has one. */
@@ -88,41 +73,61 @@ export function NoiseCancellation() {
   const queue = useRef(Promise.resolve());
   // Asked again once you next press or type, where the browser would not start audio yet.
   const [retry, setRetry] = useState(0);
+  const [waitingForTap, setWaitingForTap] = useState(false);
+  // The listener waiting for that tap, while there is one.
+  const armed = useRef<(() => void) | null>(null);
+  useEffect(
+    () => () => {
+      if (!armed.current) return;
+      window.removeEventListener('pointerdown', armed.current, true);
+      window.removeEventListener('keydown', armed.current, true);
+    },
+    []
+  );
 
   useEffect(() => {
     if (!track) return;
     const want = wanted && possible;
+    // Each change counts only until the next, or until the call ends.
+    let current = true;
     queue.current = queue.current.then(async () => {
-      const has = track.getProcessor()?.name === RNNOISE;
-      try {
-        if (want && !has) {
-          const { createRnnoiseProcessor } = await import('./rnnoise');
-          await recapture(track, true);
-          await track.setProcessor(createRnnoiseProcessor());
-        } else if (!want) {
-          if (has) await track.stopProcessor();
-          await recapture(track, false);
-        }
-      } catch (err) {
-        // The microphone let go of meanwhile, as on leaving, is no reason to give up on it.
-        if (track.mediaStreamTrack?.readyState === 'ended') return;
-        await track.stopProcessor().catch(() => undefined);
-        await recapture(track, false).catch(() => undefined);
-        if ((err as Error)?.name === 'NotAllowedError' && (err as Error).message === 'suspended') {
-          // Not the device: the page has not been touched since it loaded (a reload
-          // straight back into the call), and audio waits for that.
-          const again = () => setRetry((n) => n + 1);
-          window.addEventListener('pointerdown', again, { once: true, capture: true });
-          window.addEventListener('keydown', again, { once: true, capture: true });
-          return;
-        }
+      const outcome = await applyNoiseCancellation(track, want, () => current);
+      if (!current) return;
+      setWaitingForTap(outcome === 'suspended');
+      if (outcome === 'suspended') {
+        // Not the device: the page has not been touched since it loaded (a reload
+        // straight back into the call), and audio waits for that. Asked again on
+        // the next tap or key, listened for once however often this happens.
+        if (armed.current) return;
+        const again = () => {
+          window.removeEventListener('pointerdown', again, true);
+          window.removeEventListener('keydown', again, true);
+          armed.current = null;
+          setRetry((n) => n + 1);
+        };
+        armed.current = again;
+        window.addEventListener('pointerdown', again, true);
+        window.addEventListener('keydown', again, true);
+      } else if (outcome === 'failed') {
         if (noiseCancellationPossible()) toastRef.current(UNAVAILABLE_TEXT);
         markNoiseUnavailable();
       }
     });
+    return () => {
+      current = false;
+    };
   }, [track, wanted, possible, retry]);
 
-  return null;
+  if (!waitingForTap) return null;
+  return (
+    <div
+      role="status"
+      data-testid="noise-tap-hint"
+      className="pointer-events-none fixed left-1/2 top-[calc(env(safe-area-inset-top)+0.75rem)] z-[60] max-w-[calc(100vw-2rem)] -translate-x-1/2 rounded-full border border-border bg-background px-3 py-1.5 text-center text-xs text-foreground shadow-lg"
+    >
+      Tap anywhere to turn noise cancellation back on
+    </div>
+  );
 }
 
 /** "Noise cancellation" and its switch, on the screen before a call and in the call's microphone menu. */
