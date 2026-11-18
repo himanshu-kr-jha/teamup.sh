@@ -154,6 +154,10 @@ test.describe('meeting notes on and off', () => {
     await olivia.page.goto(`/calls/${call.id}/minutes`);
     await expect(olivia.page.getByTestId('minutes')).toContainText('They talked about the release.', { timeout: 30_000 });
     await expect(olivia.page.getByTestId('minutes-pauses')).toContainText(/Notes were paused from .+ to .+ by Alice Archer\./);
+    // The transcript says where the gap was, in its place.
+    await olivia.page.getByRole('button', { name: 'Show the transcript' }).click();
+    await expect(olivia.page.getByTestId('transcript-gap')).toContainText(/Notes were paused from .+ to .+ by Alice Archer\./);
+    await olivia.page.screenshot({ path: 'test-results/notes-transcript-gap.png', fullPage: true });
   });
 
   test('a call made with notes off has no note-taker until somebody starts them', async ({ as }) => {
