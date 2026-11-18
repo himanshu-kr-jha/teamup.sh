@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type ComponentProps } from 'react';
+import { useLayoutEffect, useMemo, useRef, useState, type ComponentProps } from 'react';
 import { Textarea } from '@/shared/components/ui/textarea';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { insertMention, mentionQuery, suggestPeople, type Mentionable } from './mentions';
@@ -38,11 +38,18 @@ export function MentionTextarea({
     const next = insertMention(value, mention.start, caret, person);
     onValueChange(next.text);
     setMention(null);
-    requestAnimationFrame(() => {
-      ref.current?.focus();
-      ref.current?.setSelectionRange(next.caret, next.caret);
-    });
+    caretAfter.current = next.caret;
   };
+  // The caret goes after the name as soon as the new text is in the box, before
+  // the next key; a frame later, a fast typist's next letter landed first.
+  const caretAfter = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const caret = caretAfter.current;
+    if (caret === null || !ref.current) return;
+    caretAfter.current = null;
+    ref.current.focus();
+    ref.current.setSelectionRange(caret, caret);
+  }, [value]);
 
   return (
     <div className="relative">
