@@ -60,11 +60,13 @@ export function PreJoinScreen({
   lobby,
   onJoin,
 }: {
-  callId: string;
+  /** The call, once there is one: a standing meeting's day is opened only by Join. */
+  callId?: string;
   call: PreJoinCall | undefined;
   /** Whether joining would start a scheduled meeting, and whether early. */
   lobby: Exclude<LobbyKind, 'missed'>;
-  onJoin: (choice: JoinChoice) => void;
+  /** A promise that rejects puts the screen back as it was, to try again. */
+  onJoin: (choice: JoinChoice) => void | Promise<void>;
 }) {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -73,9 +75,15 @@ export function PreJoinScreen({
 
   // Somebody at the door of a meeting nobody is in yet can be let in from here.
   useEffect(() => {
+    if (!callId) return;
     watchDoor(callId);
     return () => watchDoor(null);
   }, [callId, watchDoor]);
+
+  // In another call, that call has the camera and microphone. Opening them again
+  // here can take them from it (iOS Safari) or fail as in use (Android), so they
+  // are not tried until joining this one has left that one.
+  const elsewhere = !!activeCall && activeCall.callId !== callId;
 
   const [choice, setChoice] = useState<JoinChoice>(() => readJoinChoice(userId));
   const change = useCallback(
@@ -96,11 +104,11 @@ export function PreJoinScreen({
   const { devices, known, refresh } = useDevices();
   const [releasing, setReleasing] = useState(false);
 
-  const camera = useCameraPreview(choice.camera && !releasing, choice.videoInput, (problem) => {
+  const camera = useCameraPreview(choice.camera && !releasing && !elsewhere, choice.videoInput, (problem) => {
     setCamProblem(problem);
     setChoice((c) => ({ ...c, camera: false }));
   });
-  const mic = useMicrophone(choice.mic && !releasing, choice.audioInput, (problem) => {
+  const mic = useMicrophone(choice.mic && !releasing && !elsewhere, choice.audioInput, (problem) => {
     setMicProblem(problem);
     setChoice((c) => ({ ...c, mic: false }));
   });
@@ -136,7 +144,7 @@ export function PreJoinScreen({
     mic.stop();
     setReleasing(true);
     saveJoinChoice(userId, { mic: choice.mic, camera: choice.camera });
-    onJoin(choice);
+    void Promise.resolve(onJoin(choice)).catch(() => setReleasing(false));
   };
 
   // Who came to a call is what its log's rule protects (callAsSeenBy), so somebody
@@ -146,7 +154,6 @@ export function PreJoinScreen({
   const started = call?.status === 'active';
   const start = call?.scheduledStart;
   const title = call?.title?.trim() || (start ? 'Scheduled meeting' : 'Video call');
-  const elsewhere = !!activeCall && activeCall.callId !== callId;
 
   const micLabel = choice.mic ? 'Turn your microphone off' : 'Turn your microphone on';
   const camLabel = choice.camera ? 'Turn your camera off' : 'Turn your camera on';
@@ -161,7 +168,7 @@ export function PreJoinScreen({
               <PreviewVideo track={camera.track} />
             ) : (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-4 text-center text-slate-200">
-                {choice.camera ? (
+                {choice.camera && !elsewhere ? (
                   <>
                     <Loader2 className="h-7 w-7 animate-spin" aria-hidden="true" />
                     <p className="text-sm">Starting your camera…</p>
@@ -175,7 +182,9 @@ export function PreJoinScreen({
                       fallbackClassName="bg-slate-700 text-lg text-white sm:text-xl"
                       decorative
                     />
-                    <p className="text-sm">Your camera is off</p>
+                    <p className="text-sm">
+                      {elsewhere && choice.camera ? 'Your camera comes on when you join' : 'Your camera is off'}
+                    </p>
                   </>
                 )}
               </div>
@@ -234,7 +243,12 @@ export function PreJoinScreen({
                   : 'Nobody has started it yet. Joining starts it for everybody.'}
             </p>
           )}
-          {elsewhere && <p className="mt-3 text-sm text-muted-foreground">Joining leaves the call you are in now.</p>}
+          {elsewhere && (
+            <p role="note" className="mt-3 text-sm text-muted-foreground">
+              You are in another call. Joining this one leaves it. Your camera and microphone stay with that call until then, so
+              they are not shown here.
+            </p>
+          )}
 
           <div className="mt-6 flex flex-wrap gap-2">
             <Button size="lg" className="min-w-32 flex-1 px-6 sm:flex-none" onClick={join} disabled={releasing}>

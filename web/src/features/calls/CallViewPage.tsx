@@ -18,30 +18,10 @@ import { readJoinChoice, type JoinChoice } from './prejoin';
 const WHO_IS_HERE_RECHECK_MS = 5_000;
 
 /**
- * A standing meeting's token is good for fifteen minutes (memberTokenTTL); one
- * older than this is not trusted to last until the room is reached, and joining
- * asks for a new one instead.
- */
-const STANDING_TOKEN_FRESH_MS = 10 * 60_000;
-
-/**
- * What a Join button for a standing meeting hands the page: opening the day's
- * room gave a token already (useJoinStanding), kept until you press Join here.
- */
-export interface StandingJoinState {
-  join: true;
-  standingToken: { token: string; at: number };
-}
-
-function standingTokenOf(state: unknown): StandingJoinState['standingToken'] | undefined {
-  const given = (state as Partial<StandingJoinState> | null)?.standingToken;
-  return given && typeof given.token === 'string' && typeof given.at === 'number' ? given : undefined;
-}
-
-/**
  * How a ringing call brought you to its page: you answered it, or you placed it.
  * Either way you have decided, and somebody is waiting on the other end, so there
- * is no screen before it.
+ * is no screen before it. Read once: the page takes it out of the history entry,
+ * so coming back to it later with Back or Forward stops at the screen.
  */
 export interface RingState {
   ring: 'answered' | 'placed';
@@ -59,13 +39,12 @@ function rememberedDevices(userId: string | undefined): JoinOptions {
 }
 
 /**
- * A ringing call, answered or placed: the microphone on, as on a phone, the camera
- * as you last chose it on the screen before a call (off until you have), and your
- * devices. A voice call keeps its camera off whatever was chosen (ActiveCallProvider).
+ * A ringing call, answered or placed: the microphone on, as on a phone, and your
+ * devices. The camera is off: nobody is on camera without having seen themselves
+ * first, and it is one click away in the call.
  */
 function ringingOptions(userId: string | undefined): JoinOptions {
-  const last = readJoinChoice(userId);
-  return { ...rememberedDevices(userId), mic: true, camera: last.camera };
+  return { ...rememberedDevices(userId), mic: true, camera: false };
 }
 
 /**
@@ -94,11 +73,12 @@ function CallRoute({ callId }: { callId: string }) {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
-  const { activeCall, join, enter, joining, failure, clearFailure } = useActiveCall();
+  const { activeCall, join, joining, failure, clearFailure } = useActiveCall();
   const inCall = activeCall?.callId === callId;
   // Already in it, there is nothing to set up: back to the call.
   const [phase, setPhase] = useState<Phase>(() => (inCall ? 'join' : 'deciding'));
-  const standingToken = standingTokenOf(location.state);
+  // Kept from the first render, since the history entry is cleared of it below.
+  const [ring] = useState(() => ringOf(location.state));
 
   const { data: call, error, isFetchedAfterMount, refetch } = useQuery({
     queryKey: ['call', callId],
@@ -123,7 +103,11 @@ function CallRoute({ callId }: { callId: string }) {
     [callId, join]
   );
 
-  const ring = ringOf(location.state);
+  // Answering once is not answering every time this entry is visited again.
+  useEffect(() => {
+    if (ringOf(location.state)) navigate(location.pathname, { replace: true, state: null });
+  }, [location.state, location.pathname, navigate]);
+
   useEffect(() => {
     if (phase !== 'deciding') return;
     if (ring) {
@@ -147,20 +131,14 @@ function CallRoute({ callId }: { callId: string }) {
   }, [phase, ring, error, isFetchedAfterMount, call, lobby, go, user?.id, now]);
 
   const joinFromScreen = (choice: JoinChoice) => {
-    const options: JoinOptions = {
+    go({
       mic: choice.mic,
       camera: choice.camera,
       audioInput: choice.audioInput,
       videoInput: choice.videoInput,
       audioOutput: choice.audioOutput,
       standing: !!call?.standingMeetingId,
-    };
-    if (standingToken && Date.now() - standingToken.at < STANDING_TOKEN_FRESH_MS) {
-      setPhase('join');
-      enter(callId, standingToken.token, options);
-    } else {
-      go(options);
-    }
+    });
   };
 
   if (phase === 'missed' || (phase === 'prejoin' && lobby === 'missed')) {
@@ -185,8 +163,9 @@ function CallRoute({ callId }: { callId: string }) {
           if (fresh && lobbyFor(fresh, user?.id, new Date()) === 'early') {
             setPhase('prejoin');
           } else {
+            // The camera off, as for a ringing call: nobody is on camera unseen.
             const last = readJoinChoice(user?.id);
-            void join(callId, fresh?.callType === 'audio' ? rememberedDevices(user?.id) : last);
+            void join(callId, fresh?.callType === 'audio' ? rememberedDevices(user?.id) : { ...last, camera: false });
           }
         }}
       />

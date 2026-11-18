@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 import { expect, test } from './support/fixtures';
-import { apiAs, createCall, idOf, joinCall, leaveCall, lobbyJoin, prejoinScreen } from './support/meetings';
+import { apiAs, createCall, idOf, joinCall, leaveCall, lobbyJoin, prejoinScreen, sql } from './support/meetings';
 
 // Asked for (18 November): pressing Join on a call first shows a screen to test
 // and set up your camera, microphone and background, and to see who is already
@@ -183,9 +183,10 @@ test.describe('the screen before a call', () => {
     await owner.dispose();
   });
 
-  test('a ringing video call goes straight in, answered or placed: microphone on, camera as last chosen', async ({ as }) => {
+  test('a ringing video call goes straight in, answered or placed: microphone on, camera off, and only the once', async ({ as }) => {
     test.setTimeout(120_000);
-    // Alice chose her camera on last time, on the screen before a call.
+    // Alice chose her camera on last time, on the screen before a call. Answering a
+    // ring still starts it off: nobody is on camera without having seen themselves.
     const alice = await as('alice');
     await alice.page.evaluate((id) => localStorage.setItem(`teamup.call.join.${id}`, JSON.stringify({ mic: false, camera: true })), idOf('alice'));
 
@@ -208,9 +209,85 @@ test.describe('the screen before a call', () => {
     await ring.getByRole('button', { name: 'Answer' }).click();
     await expect(alice.page.getByRole('button', { name: 'Leave the call' })).toBeVisible({ timeout: 30_000 });
     await expect(prejoinScreen(alice.page)).toHaveCount(0);
-    // Answering is talking: the microphone on whatever the screen last had, the camera as chosen.
+    // Answering is talking: the microphone on whatever the screen last had, the camera off.
     await expect(alice.page.getByRole('button', { name: 'Turn your microphone off' }).first()).toBeVisible({ timeout: 20_000 });
-    await expect(alice.page.getByRole('button', { name: 'Turn your camera off' }).first()).toBeVisible({ timeout: 20_000 });
+    await expect(alice.page.getByRole('button', { name: 'Turn your camera on' }).first()).toBeVisible();
+
+    // Placing it was deciding once. Olivia moves on, leaves from the corner window,
+    // and comes back to the call's page with Back: that is a visit, so the screen.
+    const callUrl = olivia.page.url();
+    await olivia.page.getByRole('navigation').getByRole('link', { name: 'Chat' }).first().click();
+    await expect(olivia.page).toHaveURL(/\/chat/);
+    await olivia.page.getByTestId('call-window').getByRole('button', { name: 'Leave the call' }).click();
+    await expect(olivia.page.getByRole('button', { name: 'Leave the call' })).toHaveCount(0);
+    await olivia.page.goBack();
+    await expect(olivia.page).toHaveURL(callUrl);
+    await expect(prejoinScreen(olivia.page)).toBeVisible({ timeout: 20_000 });
+    await expect(olivia.page.getByRole('button', { name: 'Leave the call' })).toHaveCount(0);
+  });
+
+  test('a stand-up card Join opens nothing until Join is pressed on the screen', async ({ as }) => {
+    const owner = await apiAs('owner');
+    // Hours away, so its own start does not open the room meanwhile.
+    const at = new Date(Date.now() + 3 * 60 * 60_000);
+    const timeOfDay = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`;
+    const name = `Green room stand-up ${Date.now()}`;
+    const made = await owner.post('/standing-meetings', { name, timeOfDay, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone, weekdays: [1, 2, 3, 4, 5, 6, 7] });
+    const id = made.standingMeeting.id as string;
+    const opened = () => sql(`SELECT count(*) FROM calls WHERE standing_meeting_id = '${id}'`);
+    try {
+      const alice = await as('alice');
+      const page = alice.page;
+      await page.goto('/calls');
+      await page.getByRole('button', { name: `Join ${name}` }).click();
+      await expect(prejoinScreen(page)).toBeVisible({ timeout: 20_000 });
+      await expect(page.getByRole('heading', { name })).toBeVisible();
+      await page.getByRole('button', { name: 'Back', exact: true }).click();
+      await expect(page).toHaveURL(/\/calls$/);
+      expect(opened(), 'looking is not starting it').toBe('0');
+
+      await page.getByRole('button', { name: `Join ${name}` }).click();
+      await lobbyJoin(page).click();
+      await expect(page.getByRole('button', { name: 'Leave the call' })).toBeVisible({ timeout: 30_000 });
+      expect(opened()).toBe('1');
+      await expect(page).toHaveURL(/\/calls\/[0-9a-f-]{36}$/);
+      await leaveCall(page);
+    } finally {
+      await owner.del(`/standing-meetings/${id}`);
+      await owner.dispose();
+    }
+  });
+
+  test('while in another call, the screen leaves the camera and microphone to it', async ({ as }) => {
+    const owner = await apiAs('owner');
+    const current = await createCall(owner, `The one I am in ${Date.now()}`, [idOf('max')]);
+    const next = await createCall(owner, `The next one ${Date.now()}`, [idOf('max')]);
+    const olivia = await as('owner');
+    const page = olivia.page;
+    await joinCall(page, current.id);
+    // Something to take from the call, were the screen to open the devices again.
+    await page.getByRole('button', { name: 'Turn your camera on' }).first().click();
+    await expect(page.getByRole('button', { name: 'Turn your camera off' }).first()).toBeVisible({ timeout: 20_000 });
+
+    // A link inside the app, so the call carries on in its corner.
+    await page.evaluate((id) => {
+      history.pushState({}, '', `/calls/${id}`);
+      dispatchEvent(new PopStateEvent('popstate'));
+    }, next.id);
+    await expect(prejoinScreen(page)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByTestId('call-window')).toBeVisible();
+    await expect(page.getByRole('note').filter({ hasText: 'You are in another call. Joining this one leaves it.' })).toBeVisible();
+    const screen = page.getByRole('region', { name: 'Your camera' });
+    await screen.getByRole('button', { name: 'Turn your camera on' }).click();
+    await expect(screen.getByText('Your camera comes on when you join')).toBeVisible();
+    await expect(preview(page)).toHaveCount(0);
+    await screen.getByRole('button', { name: 'Turn your microphone on' }).click();
+    await expect(screen.getByRole('button', { name: 'Turn your microphone off' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByRole('meter', { name: 'Microphone level' })).toHaveAttribute('data-level', '0');
+    await page.mouse.move(0, 0);
+    await page.waitForTimeout(300); // colours settle
+    await page.screenshot({ path: `${SHOTS}/in-another-call.png` });
+    await owner.dispose();
   });
 
   test('a voice call goes straight in, microphone on, like a phone', async ({ as }) => {
