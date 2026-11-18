@@ -26,6 +26,18 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-19-c',
+    date: '2026-11-19',
+    title: 'A fix for the camera warning in calls',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'No false camera warning',
+        body: 'The warning that TeamUp could not use your camera or microphone no longer shows while both work, and no longer appears when you close the screen-sharing picker. When something is wrong it says whether it is the camera or the microphone and why, goes away as soon as that device comes on, and can be dismissed.',
+      },
+    ],
+  },
+  {
     id: '2026-11-18-b',
     date: '2026-11-18',
     title: 'Your company background in calls',

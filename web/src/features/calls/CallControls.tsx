@@ -8,6 +8,7 @@ import { useMeetingChatPanel } from './MeetingChat';
 import { cn } from '@/shared/utils/cn';
 import { shortcutHint, type ShortcutId } from '@/shared/shortcuts/catalogue';
 import { useShortcut } from '@/shared/shortcuts/ShortcutsProvider';
+import { deviceProblem, inCallText, wasReported, type InputDevice } from './mediaErrors';
 
 /** Whether this browser can capture a screen at all. Most phone browsers cannot. */
 export function canShareScreen(): boolean {
@@ -31,18 +32,26 @@ const CONTROLS: Record<
   [Track.Source.ScreenShare]: { on: 'Stop sharing your screen', off: 'Share your screen', IconOn: MonitorOff, IconOff: MonitorUp, shortcut: 'call.share' },
 };
 
+/**
+ * A camera or microphone that would not come on. The first time it is turned on
+ * the banner over the call says why (MediaErrorBanner); turning it back on after
+ * it was off fails only here, so that is a toast in the same words.
+ */
+function deviceFailed(say: (text: string) => void, error: unknown, device: InputDevice) {
+  if (!wasReported(error)) say(inCallText(deviceProblem(error), device));
+}
+
 function useToggle(source: ToggleSource) {
   const toast = useToast();
   return useTrackToggle({
     source,
     onDeviceError: (error: Error) => {
-      // Closing the browser's picker is changing your mind, not a failure.
-      if (error.name === 'NotAllowedError' && source === Track.Source.ScreenShare) return;
-      toast.error(
-        source === Track.Source.ScreenShare
-          ? 'Could not share your screen.'
-          : 'TeamUp could not use that device. Check the permission in your browser.'
-      );
+      if (source === Track.Source.ScreenShare) {
+        // Closing the browser's picker is changing your mind, not a failure.
+        if (error.name !== 'NotAllowedError') toast.error('Could not share your screen.');
+        return;
+      }
+      deviceFailed(toast.error, error, source === Track.Source.Camera ? 'camera' : 'microphone');
     },
   });
 }
@@ -130,14 +139,16 @@ export function CallShortcuts() {
   // Space turned the microphone on, so letting go of it turns it off again.
   const talking = useRef(false);
 
-  const deviceFailed = () => toast.error('TeamUp could not use that device. Check the permission in your browser.');
+  const micFailed = (error: unknown) => deviceFailed(toast.error, error, 'microphone');
   const me = () => room.localParticipant;
 
   useShortcut('call.mic', () => {
-    void me().setMicrophoneEnabled(!me().isMicrophoneEnabled).catch(deviceFailed);
+    void me().setMicrophoneEnabled(!me().isMicrophoneEnabled).catch(micFailed);
   });
   useShortcut('call.camera', () => {
-    void me().setCameraEnabled(!me().isCameraEnabled).catch(deviceFailed);
+    void me()
+      .setCameraEnabled(!me().isCameraEnabled)
+      .catch((error: unknown) => deviceFailed(toast.error, error, 'camera'));
   });
   useShortcut('call.share', () => {
     if (!canShareScreen()) return false;
@@ -157,7 +168,7 @@ export function CallShortcuts() {
     () => {
       if (me().isMicrophoneEnabled) return false;
       talking.current = true;
-      void me().setMicrophoneEnabled(true).catch(deviceFailed);
+      void me().setMicrophoneEnabled(true).catch(micFailed);
     },
     {
       release: () => {
