@@ -8,6 +8,7 @@ import { callsApi, orgApi } from '@/shared/api/client';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { usePresence } from '@/features/presence/usePresence';
 import { backOnText, onLeave } from '@/features/presence/leaveNotice';
+import { TakeNotesSwitch, useNotesDefault } from './notetaker';
 
 interface Props {
   open: boolean;
@@ -23,6 +24,9 @@ export function CreateCallDialog({ open, onOpenChange, onCreated }: Props) {
   const [title, setTitle] = useState('');
   const [callType, setCallType] = useState<'video' | 'audio'>('video');
   const [invitees, setInvitees] = useState<string[]>([]);
+  // Notes in the call: the organization's default until changed here.
+  const notesDefault = useNotesDefault(open);
+  const [takeNotes, setTakeNotes] = useState<boolean | null>(null);
 
   const { data } = useQuery({ queryKey: ['users'], queryFn: () => orgApi.listUsers(), enabled: open });
   const members = (data?.data ?? []).filter((u: any) => u.id !== user?.id);
@@ -31,6 +35,7 @@ export function CreateCallDialog({ open, onOpenChange, onCreated }: Props) {
     setTitle('');
     setCallType('video');
     setInvitees([]);
+    setTakeNotes(null);
   };
 
   const toggle = (id: string) =>
@@ -51,6 +56,7 @@ export function CreateCallDialog({ open, onOpenChange, onCreated }: Props) {
           title: title.trim() || undefined,
           callType,
           invitees,
+          takeNotes: notesDefault?.available ? (takeNotes ?? notesDefault.everyCall) : undefined,
         });
         await queryClient.invalidateQueries({ queryKey: ['calls'] });
         onCreated(res.data.id);
@@ -103,6 +109,10 @@ export function CreateCallDialog({ open, onOpenChange, onCreated }: Props) {
           ))}
         </div>
       </div>
+
+      {notesDefault?.available && (
+        <TakeNotesSwitch id="callNotes" checked={takeNotes ?? notesDefault.everyCall} onCheckedChange={setTakeNotes} />
+      )}
     </FormDialog>
   );
 }

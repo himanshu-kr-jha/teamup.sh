@@ -7,6 +7,7 @@ import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
 import { Switch } from '@/shared/components/ui/switch';
 import { standingApi } from '@/shared/api/client';
+import { TakeNotesSwitch, useNotesDefault } from '../notetaker';
 import { cn } from '@/shared/utils/cn';
 import {
   WEEKDAY_OPTIONS,
@@ -52,6 +53,7 @@ export function StandingMeetingDialog({
   const [form, setForm] = useState<StandingForm>(blank);
   const [lengthText, setLengthText] = useState('30');
   const [audience, setAudience] = useState<AudienceForm>({ everyone: false, teamIds: [], personIds: [] });
+  const notesDefault = useNotesDefault(open);
 
   // What this person may choose from: everybody only for an admin, otherwise the
   // teams they manage and the people under them. The server checks it again.
@@ -74,6 +76,7 @@ export function StandingMeetingDialog({
       cameraRequired: !!start.cameraRequired,
       attendBeforeMinutes: start.attendBeforeMinutes ?? 30,
       attendAfterMinutes: start.attendAfterMinutes ?? 30,
+      takeNotes: start.takeNotes,
     });
     setLengthText(String(start.durationMinutes));
     const a = meeting?.audience;
@@ -340,6 +343,14 @@ export function StandingMeetingDialog({
           </span>
         </Label>
       </div>
+
+      {notesDefault?.available && (
+        <TakeNotesSwitch
+          id="standingNotes"
+          checked={form.takeNotes ?? notesDefault.everyCall}
+          onCheckedChange={(on) => setForm({ ...form, takeNotes: on })}
+        />
+      )}
     </FormDialog>
   );
 }

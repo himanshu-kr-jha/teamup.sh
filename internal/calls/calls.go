@@ -85,6 +85,10 @@ type Service struct {
 	// note-taker uses it to join.
 	joined func(ctx context.Context, orgID, callID uuid.UUID, roomName string)
 	clock  func() time.Time
+	// notesPolicy and notesChanged are the note-taker's side of turning a
+	// call's notes on and off; see notes.go.
+	notesPolicy  NotesPolicy
+	notesChanged func(ctx context.Context, orgID, callID uuid.UUID)
 
 	// How often a call's notification is put up again, and for how long; see
 	// keepRinging. A zero ringEvery rings once.
@@ -1666,9 +1670,13 @@ func (s *Service) StillOccupiedBySomebodyElse(ctx context.Context, roomName, ide
 		return false, fmt.Errorf("list call participants: %w", err)
 	}
 	for _, participant := range res.GetParticipants() {
-		if participant.GetIdentity() != identity {
-			return true, nil
+		id := participant.GetIdentity()
+		// The note-taker is not somebody, and somebody already on the way out
+		// is not still here.
+		if id == identity || strings.HasPrefix(id, NoteTakerIdentityPrefix) || participant.GetState() == livekit.ParticipantInfo_DISCONNECTED {
+			continue
 		}
+		return true, nil
 	}
 	return false, nil
 }

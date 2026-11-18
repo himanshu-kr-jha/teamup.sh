@@ -13,6 +13,7 @@ import { useToast } from '@/shared/hooks/useToast';
 
 interface Form {
   enabled: boolean;
+  onlyWhenAsked: boolean;
   sttKey: string;
   sttModel: string;
   sttLanguage: string;
@@ -26,6 +27,7 @@ interface Form {
 function formOf(s?: NotetakerSettings): Form {
   return {
     enabled: s?.enabled ?? false,
+    onlyWhenAsked: s?.onlyWhenAsked ?? false,
     sttKey: '',
     sttModel: s?.sttModel ?? '',
     sttLanguage: s?.sttLanguage || 'en-IN',
@@ -73,6 +75,7 @@ export function NotetakerTab() {
     try {
       const res = await notetakerApi.save({
         enabled: next.enabled,
+        onlyWhenAsked: next.onlyWhenAsked,
         sttKey: next.sttKey || undefined,
         sttModel: next.sttModel,
         sttLanguage: next.sttLanguage,
@@ -84,7 +87,13 @@ export function NotetakerTab() {
       });
       queryClient.setQueryData(['notetaker-settings'], res);
       setForm(formOf(res.data));
-      toast.success(res.data.ready ? 'Saved. Notes are taken in every call and meeting.' : 'Saved.');
+      toast.success(
+        !res.data.ready
+          ? 'Saved.'
+          : res.data.onlyWhenAsked
+            ? 'Saved. Notes are taken in calls where somebody turns them on.'
+            : 'Saved. Notes are taken in every call and meeting.'
+      );
     } catch (err) {
       setProblem(apiErrorMessage(err, 'Could not save the note-taker settings.'));
     } finally {
@@ -105,9 +114,9 @@ export function NotetakerTab() {
           Meeting notes
         </CardTitle>
         <p className="text-sm text-muted-foreground">
-          A participant called Notes joins every call and meeting, visibly, and writes down what is said. When it
+          A participant called Notes joins calls and meetings, visibly, and writes down what is said. When one
           ends, everybody who was there gets the minutes: a summary, decisions, action items and open questions.
-          Only administrators can turn it off.
+          Anybody in a call can pause the notes, and whoever makes a call or meeting can leave them off.
         </p>
       </CardHeader>
       <CardContent>
@@ -144,6 +153,29 @@ export function NotetakerTab() {
                 void save(next);
               }}
             />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="notesWhen">Which calls</Label>
+            <Select
+              value={form.onlyWhenAsked ? 'asked' : 'every'}
+              disabled={saving}
+              onValueChange={(v) => {
+                const next = { ...form, onlyWhenAsked: v === 'asked' };
+                setForm(next);
+                void save(next);
+              }}
+            >
+              <SelectTrigger id="notesWhen"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="every">Take notes in every call</SelectItem>
+                <SelectItem value="asked">Only when someone turns them on</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              The default for a new call or meeting. Whoever makes one can change it, and anybody in a call can pause,
+              resume or start the notes.
+            </p>
           </div>
 
           <fieldset className="space-y-4">

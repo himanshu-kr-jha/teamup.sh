@@ -13,7 +13,6 @@ import {
   LiveKitRoom,
   RoomAudioRenderer,
   useAudioPlayback,
-  useRemoteParticipants,
   useRoomContext,
 } from '@livekit/components-react';
 import { ConnectionState, RoomEvent, type RoomOptions } from 'livekit-client';
@@ -21,7 +20,7 @@ import { useQuery } from '@tanstack/react-query';
 import { CallStage } from './CallStage';
 import { ROOM_OPTIONS } from './roomOptions';
 import { MeetingChatButton, MeetingChatProvider, StageWithChat, UnreadChatMark, type ChatTransport } from './MeetingChat';
-import { NotesBanner } from './notetaker';
+import { NotesBanner, NotesButton, isNotetaker, memberNotes, useOtherPeople } from './notetaker';
 import { CallControls, CallShortcuts, CompactCallControls, ShareUnavailableNote } from './CallControls';
 import { GuestAccess } from './GuestAccess';
 import { HandsProvider } from './Hands';
@@ -180,10 +179,11 @@ function useJoinAnnouncements() {
       toastRef.current(message);
       if (document.visibilityState !== 'visible') notify({ title: 'TeamUp call', body: message, tag: 'call-joined' });
     };
-    const presentNow = () => [...room.remoteParticipants.values()].map((p) => p.identity);
+    // The note-taker is not somebody joining: no sound, no toast.
+    const presentNow = () => [...room.remoteParticipants.values()].filter((p) => !isNotetaker(p)).map((p) => p.identity);
     const onConnected = () => tracker.connected(presentNow(), Date.now());
-    const onJoined = (participant: { identity: string; name?: string }) => {
-      if (!tracker.joined(participant.identity, Date.now())) return;
+    const onJoined = (participant: { identity: string; name?: string; isAgent?: boolean }) => {
+      if (isNotetaker(participant) || !tracker.joined(participant.identity, Date.now())) return;
       pending.push(participant.name || participant.identity);
       clearTimeout(timer);
       timer = setTimeout(flush, BURST_WINDOW_MS);
@@ -544,8 +544,16 @@ function CallFrame({
   const navigate = useNavigate();
   const toast = useToast();
   const room = useRoomContext();
-  const remote = useRemoteParticipants();
+  // People, not the note-taker: alone with it is alone.
+  const remote = useOtherPeople();
   const alone = remote.length === 0;
+  // Once somebody has been in, being alone again is waiting, not ringing: the
+  // ring that started the call is long over.
+  const [somebodyCame, setSomebodyCame] = useState(false);
+  useEffect(() => {
+    if (!alone) setSomebodyCame(true);
+  }, [alone]);
+  const reachNow = somebodyCame ? null : reachable;
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   useJoinAnnouncements();
   const rings = useAddedRings(callId);
@@ -645,7 +653,7 @@ function CallFrame({
 
   // While their phone rings, the caller hears it ring, as on a phone: only when
   // it really is ringing ("Ringing\u2026"), and only until somebody comes in.
-  const ringing = alone && reachable === true;
+  const ringing = alone && reachNow === true;
   useEffect(() => {
     if (!ringing) return;
     const stop = playSound('ringback', { loop: true });
@@ -785,12 +793,12 @@ function CallFrame({
               <span className="min-w-0 flex-1 leading-tight" data-testid="call-heading">
                 <span className="block truncate text-sm font-medium">{shownTitle}</span>
                 <span className="block truncate text-xs text-muted-foreground">
-                  {alone ? waitingLabel(reachable) : compactCount(remote.length + 1, expanded)}
+                  {alone ? waitingLabel(reachNow) : compactCount(remote.length + 1, expanded)}
                 </span>
               </span>
             ) : (
               <span className="min-w-0 flex-1 truncate text-sm font-medium" data-testid="call-heading">
-                {alone ? waitingLabel(reachable) : `${compactCount(remote.length + 1, expanded)}`}
+                {alone ? waitingLabel(reachNow) : `${compactCount(remote.length + 1, expanded)}`}
               </span>
             )}
             {expanded ? (
@@ -824,6 +832,8 @@ function CallFrame({
                 >
                   <Link2 className="h-4 w-4" />
                 </Button>
+                {/* On a phone the controls under the call have no room for it. */}
+                <NotesButton callId={callId} compact />
                 <AddPeopleButton rings={rings} />
                 <Button
                   variant="ghost"
@@ -931,7 +941,7 @@ function CallTiles({ callId, compact }: { callId: string; compact: boolean }) {
       {/* Mounted in the corner window too, so a failure there is still known when it grows. */}
       <MediaErrorBanner hidden={compact} />
 
-      {!compact && <NotesBanner />}
+      {!compact && <NotesBanner source={memberNotes(callId)} />}
 
       <div className="min-h-0 flex-1">
         {compact ? (
@@ -949,6 +959,7 @@ function CallTiles({ callId, compact }: { callId: string; compact: boolean }) {
         <div ref={setControls} className="flex shrink-0 flex-col items-center gap-1 border-t border-border p-2 sm:p-3">
           <CallControls>
             <MeetingChatButton />
+            <NotesButton callId={callId} />
           </CallControls>
           <ShareUnavailableNote />
         </div>

@@ -38,6 +38,23 @@ export const RELEASES: Release[] = [
     ],
   },
   {
+    id: '2026-11-18-f',
+    date: '2026-11-18',
+    title: 'Meeting notes on and off, and paused in a call',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'Pause the notes in a call',
+        body: 'Anybody in a call can pause the notes with the notebook button under the call, and resume them later. Everybody sees who paused them and when, nothing said while they are paused is written down, and the minutes say where the gap was.',
+      },
+      {
+        area: 'meetings',
+        title: 'Take notes, or not, from the start',
+        body: 'Starting a call, scheduling a meeting or setting up a stand-up has a Take notes switch. Admins choose under Organization, Meeting notes whether notes are taken in every call or only when someone turns them on.',
+      },
+    ],
+  },
+  {
     id: '2026-11-18-e',
     date: '2026-11-18',
     title: 'Add people to a call',

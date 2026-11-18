@@ -12,7 +12,7 @@ import {
 import { Track } from 'livekit-client';
 import type { TrackReferenceOrPlaceholder } from '@livekit/components-react';
 import { ChevronLeft, ChevronRight, MicOff, MonitorUp, NotebookPen, Pin, PinOff, UserX } from 'lucide-react';
-import { isNotetaker } from './notetaker';
+import { isNotetaker, useNotesPaused } from './notetaker';
 import { HandBadge, HandsStrip } from './Hands';
 import { SpeakingBars } from './SpeakingBars';
 import { Button } from '@/shared/components/ui/button';
@@ -325,6 +325,7 @@ function ParticipantPanel({
   const viewer = useContext(ViewerContext);
   const guest = isGuest(participant);
   const jobTitleOf = useJobTitles();
+  const notesPaused = useNotesPaused();
 
   const name = nameOf(track);
   const isLocal = participant.isLocal;
@@ -341,7 +342,9 @@ function ParticipantPanel({
   const shownName = compact ? firstNameOf(name) : name;
 
   const fullCaption = notes
-    ? 'Notes, taking the minutes'
+    ? notesPaused
+      ? 'Notes, paused'
+      : 'Notes, taking the minutes'
     : presenting
     ? isLocal
       ? 'You are presenting'
