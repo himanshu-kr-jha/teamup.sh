@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  DROP_GRACE_MS,
   REJOIN_WITHIN_MS,
-  createDropWatch,
   forgetCall,
   parseCallMemory,
   recallCall,
@@ -104,28 +102,5 @@ describe('the call kept across a reload', () => {
     expect(() => rememberCall(call, refusing)).not.toThrow();
     expect(() => forgetCall(refusing)).not.toThrow();
     expect(recallCall('u1', NOW, { reloaded: true, storage: refusing })).toBeNull();
-  });
-});
-
-describe('telling a leave from a drop', () => {
-  it('waits a moment for somebody who dropped out without saying so', () => {
-    const watch = createDropWatch();
-    watch.left('ravi', NOW);
-    expect(watch.awaited(NOW + 1_000)).toBe(true);
-    expect(watch.awaited(NOW + DROP_GRACE_MS + 1)).toBe(false);
-  });
-
-  it('does not wait for somebody who said they were leaving', () => {
-    const watch = createDropWatch();
-    watch.saidLeaving('ravi');
-    watch.left('ravi', NOW);
-    expect(watch.awaited(NOW + 1_000)).toBe(false);
-  });
-
-  it('stops waiting once they are back', () => {
-    const watch = createDropWatch();
-    watch.left('ravi', NOW);
-    watch.joined('ravi');
-    expect(watch.awaited(NOW + 1_000)).toBe(false);
   });
 });

@@ -64,7 +64,7 @@ import { saveJoinChoice } from './prejoin';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { RESIZE_STEP, fitCallWindow, keepSize, savedSize, viewport } from './callWindow';
 import { forgetCall, recallCall, type CallMemory } from './callMemory';
-import { RememberCall, isLeavingPage, sayLeaving, useBackStaysInApp, useDropWatch } from './CallContinuity';
+import { RememberCall, isLeavingPage, useBackStaysInApp } from './CallContinuity';
 import { currentBackgroundChoice, sameChoice, setBackgroundChoice } from './background';
 
 interface ActiveCall {
@@ -579,12 +579,12 @@ function CallFrame({
   const connection = useConnectionState(room);
   const reconnecting = resumed && connection !== ConnectionState.Connected;
   // Somebody came, so being alone again is somebody gone, perhaps only reloading:
-  // the phone is not ringing any more and the caller does not hear it ring.
-  const [someoneCame, setSomeoneCame] = useState(false);
+  // the phone is not ringing any more and the caller does not hear it ring. Nor
+  // does somebody back after a reload, whose call was answered long before.
+  const [someoneCame, setSomeoneCame] = useState(resumed);
   useEffect(() => {
     if (!alone) setSomeoneCame(true);
   }, [alone]);
-  const awaitingSomebody = useDropWatch(room);
   useBackStaysInApp(expanded && connection === ConnectionState.Connected);
 
   // A device picked during the call is the one the next call's screen starts on.
@@ -641,12 +641,11 @@ function CallFrame({
   // the call itself is closed only by whoever turns out to be last out - there
   // is deliberately no way to hang up on everybody else.
   const hangUp = useCallback(async () => {
-    // Somebody who dropped out a moment ago without saying they were leaving is
-    // probably reloading, and coming straight back; ending the call would shut
-    // them out of it. Left open, the room closes itself if they do not.
-    const lastOut = remote.length === 0 && !awaitingSomebody();
+    // Whoever hangs up alone ends the call, even if somebody else dropped out a
+    // moment ago and may be reloading: they come back to "This call has ended",
+    // which is the truth, rather than to a room the server may never close.
+    const lastOut = remote.length === 0;
     try {
-      await sayLeaving(room);
       if (lastOut) {
         // Nobody is left, so the call is over rather than merely empty. Left
         // open it would sit "active" in everybody's history until the room
@@ -659,7 +658,7 @@ function CallFrame({
     } finally {
       onLeave();
     }
-  }, [room, onLeave, remote.length, callId, awaitingSomebody]);
+  }, [room, onLeave, remote.length, callId]);
 
   // While their phone rings, the caller hears it ring, as on a phone: only when
   // it really is ringing ("Ringing\u2026"), and only until somebody comes in.

@@ -100,7 +100,7 @@ test.describe('a call that survives a refresh', () => {
     expect(olivia.problems).toEqual([]);
   });
 
-  test('the person left behind does not end a call somebody is only reloading back into', async ({ as }) => {
+  test('somebody who hangs up alone while the other reloads ends the call, and the one reloading is told so, without ringing', async ({ as }) => {
     test.setTimeout(150_000);
     const owner = await apiAs('owner');
     const call = await createCall(owner, `Refresh alone ${Date.now()}`, [idOf('alice')]);
@@ -110,23 +110,66 @@ test.describe('a call that survives a refresh', () => {
     await joinCall(olivia.page, call.id);
     await expect(alice.page.getByText('Olivia Owner', { exact: true }).first()).toBeVisible({ timeout: 20_000 });
 
-    // Olivia reloads, slowly, and Alice hangs up while she is away.
-    await slowToken(olivia.page, 4000);
+    // Olivia reloads, slowly, and Alice, alone meanwhile, hangs up.
+    await slowToken(olivia.page, 6000);
     await olivia.page.reload();
     await expect(reconnecting(olivia.page)).toBeVisible();
     await expect(alice.page.getByText('Olivia Owner', { exact: true })).toHaveCount(0, { timeout: 20_000 });
     await leaveCall(alice.page);
+    await expect.poll(async () => (await owner.get(`/calls/${call.id}`)).status, { timeout: 15_000 }).toBe('ended');
 
-    // Alice looked like the last one out, but the call is still on and Olivia is back in it.
-    await expect(leaveButton(olivia.page)).toBeVisible({ timeout: 30_000 });
-    await expect(olivia.page.getByText('Waiting for others')).toBeVisible({ timeout: 20_000 });
-    expect((await owner.get(`/calls/${call.id}`)).status).toBe('active');
-
-    // Leaving for real, as the last one, ends it.
-    await leaveCall(olivia.page);
-    await expect.poll(async () => (await owner.get(`/calls/${call.id}`)).status, { timeout: 30_000 }).toBe('ended');
+    // Olivia comes back to the truth, not to an empty room that rings.
+    await expect(olivia.page.getByText('This call has ended.', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(leaveButton(olivia.page)).toHaveCount(0);
+    await expect(olivia.page.getByText(/Ringing/)).toHaveCount(0);
+    await olivia.page.screenshot({ path: `${SHOTS}/ended-while-reloading.png` });
+    // And a reload after that starts afresh.
+    await olivia.page.unroute(/\/api\/calls\/[^/]+\/token$/);
+    await olivia.page.reload();
+    await expect(reconnecting(olivia.page)).toHaveCount(0);
+    await expect(olivia.page.getByText('This call has ended.', { exact: true })).toBeVisible({ timeout: 30_000 });
     await owner.dispose();
     expect(alice.problems).toEqual([]);
+    expect(olivia.problems).toEqual([]);
+  });
+
+  test('choosing Stay when the page asks keeps you in the call', async ({ as }) => {
+    test.setTimeout(120_000);
+    const owner = await apiAs('owner');
+    const call = await createCall(owner, `Stay ${Date.now()}`, [idOf('alice')]);
+    const alice = await as('alice');
+    await joinCall(alice.page, call.id);
+    const olivia = await as('owner');
+    const page = olivia.page;
+    await joinCall(page, call.id);
+    await expect(alice.page.getByText('Olivia Owner', { exact: true }).first()).toBeVisible({ timeout: 20_000 });
+    await alice.page.waitForTimeout(2500);
+    await watchArrivals(alice.page);
+
+    // Answer the browser's question with Stay this once, instead of the fixtures' Leave.
+    page.removeAllListeners('dialog');
+    const asked = new Promise<string>((resolve) =>
+      page.once('dialog', (d) => {
+        resolve(d.type());
+        void d.dismiss();
+      })
+    );
+    await page.evaluate(() => {
+      window.location.href = '/chat';
+    });
+    expect(await asked).toBe('beforeunload');
+
+    // Still on the call's page, still in the call, and Alice saw nothing.
+    await page.waitForTimeout(4000);
+    await expect(page).toHaveURL(new RegExp(`/calls/${call.id}$`));
+    await expect(leaveButton(page)).toBeVisible();
+    await expect(page.getByText('Alice Archer', { exact: true }).first()).toBeVisible();
+    await expect(alice.page.getByText('Olivia Owner', { exact: true }).first()).toBeVisible();
+    expect(await arrivals(alice.page)).toEqual([]);
+
+    page.on('dialog', (d) => void (d.type() === 'beforeunload' ? d.accept() : d.dismiss()).catch(() => undefined));
+    for (const s of [alice, olivia]) await leaveCall(s.page);
+    await owner.dispose();
     expect(olivia.problems).toEqual([]);
   });
 

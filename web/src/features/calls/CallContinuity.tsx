@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useEffect } from 'react';
 import { useRoomContext } from '@livekit/components-react';
-import { ConnectionState, RoomEvent, type Room } from 'livekit-client';
+import { ConnectionState, RoomEvent } from 'livekit-client';
 import { currentBackgroundChoice } from './background';
-import { LEAVING_TOPIC, REMEMBER_EVERY_MS, createDropWatch, rememberCall } from './callMemory';
+import { REMEMBER_EVERY_MS, rememberCall } from './callMemory';
+import { putCallsListUnderneath } from './historyGuard';
 
 // What keeps a call going through a reload, the Back button and a tab about to
 // close (callMemory.ts holds the part that is not React).
@@ -105,64 +106,11 @@ export function RememberCall({ userId, callId, standing }: { userId: string | un
  * back is only another page. Where the call's page is the first this tab opened,
  * Back would leave the site, or on a phone close the app, and the call with it.
  * An entry for the calls list is put underneath it instead, so Back goes there.
- *
- * Written into the browser's history directly, in the form React Router writes
- * its own (it reads its position back from there on every change), so the page
- * on screen does not change meanwhile.
+ * The entry is written by hand (historyGuard.ts), so the page on screen does not
+ * change meanwhile.
  */
 export function useBackStaysInApp(onCallPage: boolean) {
   useEffect(() => {
-    if (!onCallPage) return;
-    const state = window.history.state as { usr?: unknown; key?: string; idx?: number } | null;
-    if (!state || state.idx !== 0) return;
-    const here = window.location.pathname + window.location.search + window.location.hash;
-    try {
-      window.history.replaceState({ usr: null, key: Math.random().toString(36).slice(2, 10), idx: 0 }, '', '/calls');
-      window.history.pushState({ ...state, idx: 1 }, '', here);
-    } catch {
-      // A browser limiting history writes: Back then leaves, as it always did.
-    }
+    if (onCallPage) putCallsListUnderneath();
   }, [onCallPage]);
-}
-
-/**
- * Who dropped out of the call without saying they were leaving, and so may be
- * about to come back from a reload (createDropWatch). Leaving deliberately says
- * so first (sayLeaving).
- */
-export function useDropWatch(room: Room) {
-  const watch = useRef(createDropWatch());
-  useEffect(() => {
-    const w = watch.current;
-    const onData = (_payload: Uint8Array, from?: { identity: string }, _kind?: unknown, topic?: string) => {
-      if (topic === LEAVING_TOPIC && from) w.saidLeaving(from.identity);
-    };
-    const onLeft = (p: { identity: string }) => w.left(p.identity, Date.now());
-    const onJoined = (p: { identity: string }) => w.joined(p.identity);
-    room.on(RoomEvent.DataReceived, onData);
-    room.on(RoomEvent.ParticipantDisconnected, onLeft);
-    room.on(RoomEvent.ParticipantConnected, onJoined);
-    return () => {
-      room.off(RoomEvent.DataReceived, onData);
-      room.off(RoomEvent.ParticipantDisconnected, onLeft);
-      room.off(RoomEvent.ParticipantConnected, onJoined);
-    };
-  }, [room]);
-  return useCallback(() => watch.current.awaited(Date.now()), []);
-}
-
-/**
- * Tells the others you are leaving on purpose, so they do not wait on you as on
- * somebody reloading. Never holds up leaving for more than a moment.
- */
-export async function sayLeaving(room: Room): Promise<void> {
-  if (room.state !== ConnectionState.Connected || room.remoteParticipants.size === 0) return;
-  try {
-    await Promise.race([
-      room.localParticipant.publishData(new Uint8Array([1]), { reliable: true, topic: LEAVING_TOPIC }),
-      new Promise((resolve) => setTimeout(resolve, 500)),
-    ]);
-  } catch {
-    // Not allowed to send data, or already disconnected: they wait a moment longer.
-  }
 }
