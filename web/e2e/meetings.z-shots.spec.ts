@@ -195,8 +195,8 @@ for (const viewport of VIEWPORTS) {
       await dialog.getByLabel('Starts', { exact: true }).fill(`${today}T14:00`);
       await dialog.getByLabel('Duration', { exact: true }).click();
       await mia.page.getByRole('option', { name: '1 hour', exact: true }).click();
-      await dialog.getByLabel('People', { exact: true }).fill('Alice');
-      await dialog.getByRole('button', { name: PEOPLE.alice.name }).click();
+      await dialog.getByLabel('Find people').fill('Alice');
+      await dialog.getByLabel('Find people').press('Enter');
       await expect(dialog.getByRole('status').filter({ hasText: 'You can still go ahead' })).toBeVisible();
       await shoot(mia, 'manager', 'calendar-schedule-conflict');
       await mia.page.keyboard.press('Escape');

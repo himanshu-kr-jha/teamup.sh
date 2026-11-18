@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { addHours, addMinutes, startOfDay } from 'date-fns';
-import { AlertTriangle, Loader2, Mail, Search, X } from 'lucide-react';
+import { AlertTriangle, Loader2, Mail, X } from 'lucide-react';
 import { FormDialog } from '@/shared/components/FormDialog';
+import { PeoplePicker } from '@/shared/components/PeoplePicker';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
@@ -72,7 +73,6 @@ export function ScheduleDialog({
   const [start, setStart] = useState('');
   const [duration, setDuration] = useState(30);
   const [invited, setInvited] = useState<string[]>([]);
-  const [search, setSearch] = useState('');
   // People from outside, by email: emailed an invitation with the guest links.
   const [guests, setGuests] = useState<string[]>([]);
   const [guestDraft, setGuestDraft] = useState('');
@@ -90,7 +90,6 @@ export function ScheduleDialog({
     setStart(toInputValue(slot.start));
     setDuration(initialDuration(slot.start, slot.end, !!item));
     setInvited((item?.inviteeIds ?? startWith).filter((id) => id !== (item?.organizerId ?? user?.id)));
-    setSearch('');
     setGuestDraft('');
     setGuests([]);
     // startWith is a new array on every render; it matters only on opening.
@@ -138,10 +137,7 @@ export function ScheduleDialog({
   const nameOf = (id: string) => (id === user?.id ? 'You' : people.find((p) => p.id === id)?.name ?? 'Somebody');
   const hours = timesOk ? timelineWindow(startDate!, endDate!) : null;
 
-  const filter = search.trim().toLowerCase();
-  const choices = people.filter(
-    (p) => p.id !== user?.id && !invited.includes(p.id) && (!filter || (p.name ?? '').toLowerCase().includes(filter))
-  );
+  const choices = useMemo(() => people.filter((p) => p.id !== user?.id), [people, user?.id]);
 
   return (
     <FormDialog
@@ -230,38 +226,15 @@ export function ScheduleDialog({
 
       <div className="space-y-2">
         <Label htmlFor="meetingPeople">People</Label>
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-          <Input
-            id="meetingPeople"
-            className="pl-9"
-            placeholder="Add somebody by name"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-        </div>
-        {(filter !== '' || invited.length === 0) && (
-          <ul className="max-h-32 space-y-0.5 overflow-y-auto rounded-md border border-border p-1">
-            {choices.length === 0 ? (
-              <li className="px-2 py-1 text-sm text-muted-foreground">Nobody to add.</li>
-            ) : (
-              choices.map((person) => (
-                <li key={person.id}>
-                  <button
-                    type="button"
-                    className="w-full rounded px-2 py-1 text-left text-sm hover:bg-accent"
-                    onClick={() => {
-                      setInvited((current) => [...current, person.id]);
-                      setSearch('');
-                    }}
-                  >
-                    {person.name}
-                  </button>
-                </li>
-              ))
-            )}
-          </ul>
-        )}
+        <PeoplePicker
+          inputId="meetingPeople"
+          people={choices}
+          selected={invited}
+          onChange={setInvited}
+          empty="Nobody else is in this organization yet."
+          listClassName="max-h-40"
+          listOnlyWhileSearching
+        />
       </div>
 
       <div className="space-y-2">

@@ -76,7 +76,7 @@ test('the member list is searched by what is written about people, and narrowed 
     await expect(row('alice')).toBeHidden();
 
     await search.fill('nobody-is-called-this');
-    await expect(page.getByText('Nobody matches that.')).toBeVisible();
+    await expect(page.getByText('No one matches “nobody-is-called-this”.')).toBeVisible();
     await page.getByRole('button', { name: 'Clear the search' }).click();
     await expect(search).toHaveValue('');
     await expect(row('alice')).toBeVisible();

@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
 import { FormDialog } from '@/shared/components/FormDialog';
+import { PeoplePicker, type Pickable } from '@/shared/components/PeoplePicker';
 import { callsApi, orgApi } from '@/shared/api/client';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { usePresence } from '@/features/presence/usePresence';
@@ -25,16 +26,19 @@ export function CreateCallDialog({ open, onOpenChange, onCreated }: Props) {
   const [invitees, setInvitees] = useState<string[]>([]);
 
   const { data } = useQuery({ queryKey: ['users'], queryFn: () => orgApi.listUsers(), enabled: open });
-  const members = (data?.data ?? []).filter((u: any) => u.id !== user?.id);
+  const members = useMemo(
+    () =>
+      ((data?.data ?? []) as Array<Pickable & { isActive?: boolean }>).filter(
+        (u) => u.id !== user?.id && u.isActive !== false
+      ),
+    [data, user?.id]
+  );
 
   const reset = () => {
     setTitle('');
     setCallType('video');
     setInvitees([]);
   };
-
-  const toggle = (id: string) =>
-    setInvitees((current) => (current.includes(id) ? current.filter((x) => x !== id) : [...current, id]));
 
   return (
     <FormDialog
@@ -64,7 +68,6 @@ export function CreateCallDialog({ open, onOpenChange, onCreated }: Props) {
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="Sprint planning"
-          autoFocus
         />
       </div>
 
@@ -80,28 +83,23 @@ export function CreateCallDialog({ open, onOpenChange, onCreated }: Props) {
       </div>
 
       <div className="space-y-2">
-        <Label>Invite</Label>
-        {members.length === 0 && (
-          <p className="text-sm text-muted-foreground">Nobody else is in this organization yet.</p>
-        )}
-        <div className="max-h-40 space-y-1 overflow-y-auto">
-          {members.map((m: any) => (
-            <label key={m.id} className="flex cursor-pointer items-center gap-2 rounded p-1 hover:bg-accent">
-              <input
-                type="checkbox"
-                checked={invitees.includes(m.id)}
-                onChange={() => toggle(m.id)}
-                className="h-4 w-4"
-              />
-              <span className="text-sm">{m.name}</span>
-              {onLeave(personOf(m.id)) && (
-                <span className="ml-auto text-xs text-muted-foreground">
-                  On leave, {backOnText(personOf(m.id)?.until)}; will not be rung
-                </span>
-              )}
-            </label>
-          ))}
-        </div>
+        <Label htmlFor="callInvite">Invite</Label>
+        <PeoplePicker
+          inputId="callInvite"
+          people={members}
+          selected={invitees}
+          onChange={setInvitees}
+          empty="Nobody else is in this organization yet."
+          listClassName="max-h-56"
+          autoFocus
+          note={(m) =>
+            onLeave(personOf(m.id)) && (
+              <span className="block text-xs text-amber-700 dark:text-amber-400">
+                On leave, {backOnText(personOf(m.id)?.until)}; will not be rung
+              </span>
+            )
+          }
+        />
       </div>
     </FormDialog>
   );

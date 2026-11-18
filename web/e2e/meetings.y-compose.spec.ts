@@ -48,7 +48,7 @@ test.describe('writing a message', () => {
     // Started from the new-chat dialog, which hands focus back to its button as it closes.
     await page.getByRole('button', { name: 'New chat' }).click();
     const dialog = page.getByRole('dialog');
-    await dialog.getByRole('button', { name: new RegExp(PEOPLE.sam.name) }).click();
+    await dialog.getByRole('option', { name: new RegExp(PEOPLE.sam.name) }).click();
     await expect(dialog).toBeHidden();
     await expect(messageBox(page)).toHaveAttribute('placeholder', `Message ${PEOPLE.sam.name}`);
     await expect.poll(() => isFocused(page), { message: 'started from the new-chat dialog' }).toBe(true);

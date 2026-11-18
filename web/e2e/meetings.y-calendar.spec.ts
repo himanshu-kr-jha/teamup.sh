@@ -54,8 +54,8 @@ test.describe('scheduling by length', () => {
     const options = olivia.page.getByRole('option');
     await expect(options).toHaveText(['5 min', '10 min', '15 min', '30 min', '45 min', '1 hour']);
     await olivia.page.getByRole('option', { name: '15 min', exact: true }).click();
-    await dialog.getByLabel('People', { exact: true }).fill('Alice');
-    await dialog.getByRole('button', { name: /Alice/ }).first().click();
+    await dialog.getByLabel('Find people').fill('Alice');
+    await dialog.getByRole('checkbox', { name: /Alice/ }).first().check();
     await dialog.getByRole('button', { name: /^Schedule( anyway)?$/ }).click();
     await expect(event(olivia.page, new RegExp(`${title}, 10:00 AM to 10:15 AM`))).toBeVisible();
 
