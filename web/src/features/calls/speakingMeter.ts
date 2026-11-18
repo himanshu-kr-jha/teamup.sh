@@ -57,25 +57,61 @@ export function ease(shown: Bands, heard: Bands): Bands {
 // ── one audio context and one analyser per microphone ──────────────────────
 
 let audio: AudioContext | null = null;
+let wake: (() => void) | null = null;
+let closing: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * How long the audio context outlives its last meter. Tiles come and go as the
+ * layout changes, and this keeps that from opening and closing it each time;
+ * once the call is over it closes, and its listeners go with it.
+ */
+export const CLOSE_AFTER_MS = 2_000;
 
 function context(): AudioContext | null {
+  clearTimeout(closing);
+  closing = undefined;
   if (audio) return audio;
   if (typeof window === 'undefined') return null;
   const Ctor = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
   if (!Ctor) return null;
+  let made: AudioContext;
   try {
-    audio = new Ctor();
+    made = new Ctor();
   } catch {
     return null;
   }
+  audio = made;
   // Suspended until the page has been touched; any touch will do.
-  const wake = () => {
-    if (audio?.state === 'suspended') void audio.resume().catch(() => {});
+  wake = () => {
+    if (made.state === 'suspended') void made.resume().catch(() => {});
   };
   window.addEventListener('pointerdown', wake, { capture: true });
   window.addEventListener('keydown', wake, { capture: true });
   wake();
-  return audio;
+  return made;
+}
+
+/** Closes the audio context once nothing is listening, and stops waiting for a touch. */
+function closeWhenUnused() {
+  if (analysers.size > 0 || !audio) return;
+  clearTimeout(closing);
+  closing = setTimeout(() => {
+    closing = undefined;
+    if (analysers.size > 0 || !audio) return;
+    const done = audio;
+    audio = null;
+    if (wake) {
+      window.removeEventListener('pointerdown', wake, { capture: true });
+      window.removeEventListener('keydown', wake, { capture: true });
+      wake = null;
+    }
+    void done.close().catch(() => {});
+  }, CLOSE_AFTER_MS);
+}
+
+/** Whether the shared audio context is open now; for tests. */
+export function audioOpen(): boolean {
+  return audio !== null;
 }
 
 interface Shared {
@@ -98,6 +134,11 @@ export function meterFor(track: MediaStreamTrack): Meter | null {
   const ctx = context();
   if (!ctx) return null;
   let shared = analysers.get(track);
+  // An analyser from a context that has since closed is no use.
+  if (shared && shared.analyser.context !== ctx) {
+    analysers.delete(track);
+    shared = undefined;
+  }
   if (!shared) {
     try {
       const analyser = ctx.createAnalyser();
@@ -111,6 +152,7 @@ export function meterFor(track: MediaStreamTrack): Meter | null {
       shared = { analyser, source, spectrum: new Uint8Array(analyser.frequencyBinCount), users: 0 };
       analysers.set(track, shared);
     } catch {
+      closeWhenUnused();
       return null;
     }
   }
@@ -128,12 +170,13 @@ export function meterFor(track: MediaStreamTrack): Meter | null {
       released = true;
       mine.users--;
       if (mine.users > 0) return;
-      analysers.delete(track);
+      if (analysers.get(track) === mine) analysers.delete(track);
       try {
         mine.source.disconnect();
       } catch {
         // Already gone.
       }
+      closeWhenUnused();
     },
   };
 }
