@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useRoomContext } from '@livekit/components-react';
-import { ConnectionState, RoomEvent } from 'livekit-client';
+import { ConnectionState, DisconnectReason, RoomEvent } from 'livekit-client';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, Hand } from 'lucide-react';
 import { callsApi } from '@/shared/api/client';
@@ -34,6 +34,7 @@ import {
   raisedMessage,
   type RaisedHand,
 } from './handQueue';
+import { forgetCallHands, forgetHand, loadHand, saveHand, tabStorage } from './handProofStore';
 
 /**
  * Raised hands in a call. The hand itself lives on the media server, as a
@@ -96,21 +97,33 @@ export function HandsProvider({ callId, asGuest = false, children }: { callId: s
   const [pending, setPending] = useState(false);
   // Why your own hand is coming down, so its coming down can be explained.
   const lowering = useRef<'self' | 'auto' | null>(null);
-  // Your hand while it is up, kept through a lost connection so it can be put back.
+  // Your hand while it is up, kept through a lost connection so it can be put
+  // back; with its proof, it is kept in this tab's storage too, for a reload.
   const kept = useRef<Kept | null>(null);
+  const keep = useCallback(
+    (next: Kept | null) => {
+      kept.current = next;
+      const storage = tabStorage();
+      const me = room.localParticipant.identity;
+      if (!next) forgetHand(storage, callId, me);
+      else if (next.proof) saveHand(storage, callId, me, next);
+      else if (loadHand(storage, callId, me)?.raisedAt !== next.raisedAt) forgetHand(storage, callId, me);
+    },
+    [callId, room]
+  );
 
   const restore = useCallback(async () => {
     const was = kept.current;
     if (!was || asGuest) return;
     try {
       const res = await callsApi.setHand(callId, true, was.proof ? { restore: { raisedAt: was.raisedAt, proof: was.proof } } : {});
-      kept.current = res.data.raisedAt ? { raisedAt: res.data.raisedAt, proof: res.data.proof } : null;
+      keep(res.data.raised && res.data.raisedAt ? { raisedAt: res.data.raisedAt, proof: res.data.proof } : null);
       if (!res.data.restored) toastRef.current.toast(RESTORED_AS_NEW_MESSAGE);
     } catch {
-      kept.current = null;
+      keep(null);
       toastRef.current.toast(NOT_RESTORED_MESSAGE);
     }
-  }, [asGuest, callId]);
+  }, [asGuest, callId, keep]);
 
   useEffect(() => {
     let before = read();
@@ -136,7 +149,7 @@ export function HandsProvider({ callId, asGuest = false, children }: { callId: s
       const isUp = after.some((h) => h.identity === me);
       if (isUp) {
         const at = ownAttribute() ?? '';
-        if (kept.current?.raisedAt !== at) kept.current = { raisedAt: at };
+        if (kept.current?.raisedAt !== at) keep({ raisedAt: at });
       } else if (wasUp && connected) {
         // Taken down while connected: by you, by speaking, or by the organizer.
         if (primed) {
@@ -144,31 +157,60 @@ export function HandsProvider({ callId, asGuest = false, children }: { callId: s
           else if (lowering.current === null) toastRef.current.toast(LOWERED_FOR_YOU_MESSAGE);
         }
         lowering.current = null;
-        kept.current = null;
+        keep(null);
       }
       before = after;
       setQueue(after);
     };
+    const settled = (what: () => void) => {
+      clearTimeout(settle);
+      settle = setTimeout(what, SETTLE_AFTER_RECONNECT_MS);
+    };
+    // The first connection in this tab may follow a reload, which is a new
+    // connection with no hand on it: a hand kept from before goes back up.
     const connected = () => {
       before = read();
       primed = true;
       setQueue(before);
+      if (asGuest) return;
+      settled(() => {
+        if (kept.current) return;
+        const stored = loadHand(tabStorage(), callId, room.localParticipant.identity);
+        if (!stored) return;
+        kept.current = stored;
+        if (needsRestore(stored, ownAttribute())) void restore();
+      });
     };
     // A connection made again from scratch starts with no attributes if the room
     // was lost with it: put your hand back if it went.
     const reconnected = () => {
-      connected();
-      clearTimeout(settle);
-      settle = setTimeout(() => {
+      before = read();
+      primed = true;
+      setQueue(before);
+      settled(() => {
         if (needsRestore(kept.current, ownAttribute())) void restore();
-      }, SETTLE_AFTER_RECONNECT_MS);
+      });
     };
+    // Over for you: the call ended, or you were taken out of it. A reload also
+    // disconnects, as you leaving would, so that keeps the hand for the next page.
+    const disconnected = (reason?: DisconnectReason) => {
+      if (
+        reason === DisconnectReason.ROOM_DELETED ||
+        reason === DisconnectReason.PARTICIPANT_REMOVED ||
+        reason === DisconnectReason.DUPLICATE_IDENTITY
+      ) {
+        kept.current = null;
+        forgetCallHands(tabStorage(), callId);
+      }
+    };
+    if (primed) connected();
 
     room.on(RoomEvent.ParticipantAttributesChanged, look);
     room.on(RoomEvent.ParticipantConnected, look);
     room.on(RoomEvent.ParticipantDisconnected, look);
     room.on(RoomEvent.Connected, connected);
     room.on(RoomEvent.Reconnected, reconnected);
+    room.on(RoomEvent.Disconnected, disconnected);
     return () => {
       clearTimeout(settle);
       room.off(RoomEvent.ParticipantAttributesChanged, look);
@@ -176,8 +218,9 @@ export function HandsProvider({ callId, asGuest = false, children }: { callId: s
       room.off(RoomEvent.ParticipantDisconnected, look);
       room.off(RoomEvent.Connected, connected);
       room.off(RoomEvent.Reconnected, reconnected);
+      room.off(RoomEvent.Disconnected, disconnected);
     };
-  }, [room, read, chime, restore]);
+  }, [room, read, chime, restore, keep, asGuest, callId]);
 
   // Its audio context otherwise runs until the tab closes.
   useEffect(() => closeChime, [closeChime]);
@@ -191,13 +234,13 @@ export function HandsProvider({ callId, asGuest = false, children }: { callId: s
       const own = !identity || identity === room.localParticipant.identity;
       try {
         const res = await callsApi.setHand(callId, raised, own ? {} : { userId: identity });
-        if (own && res.data.raised && res.data.raisedAt) kept.current = { raisedAt: res.data.raisedAt, proof: res.data.proof };
+        if (own && res.data.raised && res.data.raisedAt) keep({ raisedAt: res.data.raisedAt, proof: res.data.proof });
         return true;
       } catch {
         return false;
       }
     },
-    [callId, room]
+    [callId, room, keep]
   );
 
   /** What a click asks for, with a word if it could not be done. */
@@ -210,7 +253,7 @@ export function HandsProvider({ callId, asGuest = false, children }: { callId: s
       }
       try {
         const res = await callsApi.setHand(callId, raised, own ? {} : { userId: identity });
-        if (own && res.data.raised && res.data.raisedAt) kept.current = { raisedAt: res.data.raisedAt, proof: res.data.proof };
+        if (own && res.data.raised && res.data.raisedAt) keep({ raisedAt: res.data.raisedAt, proof: res.data.proof });
       } catch (err) {
         if (own && !raised) lowering.current = null;
         toastRef.current.error(
@@ -220,7 +263,7 @@ export function HandsProvider({ callId, asGuest = false, children }: { callId: s
         if (own) setPending(false);
       }
     },
-    [callId, room]
+    [callId, room, keep]
   );
 
   // Your hand comes down by itself once you have been speaking for a while; if
@@ -266,7 +309,7 @@ export function HandsProvider({ callId, asGuest = false, children }: { callId: s
         .setHand(callId, true, { refresh: true })
         .then((res) => {
           if (res.data.raised && res.data.raisedAt && kept.current?.raisedAt === res.data.raisedAt) {
-            kept.current = { raisedAt: res.data.raisedAt, proof: res.data.proof };
+            keep({ raisedAt: res.data.raisedAt, proof: res.data.proof });
           }
         })
         .catch(() => {
@@ -274,7 +317,7 @@ export function HandsProvider({ callId, asGuest = false, children }: { callId: s
         });
     }, PROOF_REFRESH_MS);
     return () => clearInterval(timer);
-  }, [upAt, asGuest, callId]);
+  }, [upAt, asGuest, callId, keep]);
 
   const value = useMemo<HandsValue>(
     () => ({
@@ -339,7 +382,18 @@ export function HandBadge({ identity, small }: { identity: string; small: boolea
   );
 }
 
-/** "2 hands raised" over the stage, opening the queue. */
+/** The row above the people that holds the chip, there only while a hand is up. */
+export function HandsStrip() {
+  const hands = useHands();
+  if (!hands || hands.queue.length === 0) return null;
+  return (
+    <div className="flex shrink-0 justify-center bg-muted/30 px-2 pt-2" data-testid="hands-strip">
+      <HandsChip />
+    </div>
+  );
+}
+
+/** "2 hands raised" above the stage, opening the queue. */
 export function HandsChip() {
   const hands = useHands();
   if (!hands || hands.queue.length === 0) return null;
@@ -349,7 +403,7 @@ export function HandsChip() {
       <DropdownMenuTrigger asChild>
         <button
           type="button"
-          className="pointer-events-auto inline-flex h-8 items-center gap-1.5 rounded-full border border-border bg-background/95 px-3 text-sm font-medium text-foreground shadow-md backdrop-blur hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="inline-flex h-8 items-center gap-1.5 rounded-full border border-border bg-background/95 px-3 text-sm font-medium text-foreground shadow-md backdrop-blur hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           data-testid="hands-chip"
         >
           <Hand className="h-4 w-4 text-amber-500" aria-hidden="true" />

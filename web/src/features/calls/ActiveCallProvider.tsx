@@ -25,6 +25,7 @@ import { NotesBanner } from './notetaker';
 import { CallControls, CallShortcuts, CompactCallControls, ShareUnavailableNote } from './CallControls';
 import { GuestAccess } from './GuestAccess';
 import { HandsProvider } from './Hands';
+import { forgetCallHands, tabStorage } from './handProofStore';
 import { CallLogDialog } from './CallLogDialog';
 import { copyCallLink } from './copyLink';
 import { classifyJoinError, type JoinFailure } from './knock';
@@ -206,10 +207,13 @@ export function BlockedAudioPrompt({ compact }: { compact: boolean }) {
 /**
  * Keeps toasts above the call's controls while it fills the screen, however tall they
  * are: they wrap on a phone, and gain a note where a browser cannot share a screen.
+ *
+ * It takes the element itself (from a callback ref) rather than a ref object: the
+ * controls can appear after the first render, as on a guest's page, and a ref
+ * read once in an effect then never saw them.
  */
-function useToastsAbove(bar: React.RefObject<HTMLElement>, active: boolean) {
+export function useToastsAbove(element: HTMLElement | null, active: boolean) {
   useEffect(() => {
-    const element = bar.current;
     if (!active || !element) return;
     const root = document.documentElement;
     const place = () => root.style.setProperty('--toast-bottom', `${element.offsetHeight}px`);
@@ -220,7 +224,7 @@ function useToastsAbove(bar: React.RefObject<HTMLElement>, active: boolean) {
       observer.disconnect();
       root.style.removeProperty('--toast-bottom');
     };
-  }, [bar, active]);
+  }, [element, active]);
 }
 
 /**
@@ -556,6 +560,8 @@ function CallFrame({
       }
       await room.disconnect();
     } finally {
+      // Leaving on purpose: a raised hand is not to come back on the way in again.
+      forgetCallHands(tabStorage(), callId);
       onLeave();
     }
   }, [room, onLeave, remote.length, callId]);
@@ -814,7 +820,7 @@ function compactCount(people: number, expanded: boolean) {
 function CallTiles({ callId, compact }: { callId: string; compact: boolean }) {
   const room = useRoomContext();
   const [mediaError, setMediaError] = useState('');
-  const controls = useRef<HTMLDivElement>(null);
+  const [controls, setControls] = useState<HTMLDivElement | null>(null);
   useToastsAbove(controls, !compact);
 
   // Camera and microphone permission is the most common thing to go wrong;
@@ -855,7 +861,7 @@ function CallTiles({ callId, compact }: { callId: string; compact: boolean }) {
       {/* The controls need room; the corner window keeps only leave, which
           lives in its title bar. */}
       {!compact && (
-        <div ref={controls} className="flex shrink-0 flex-col items-center gap-1 border-t border-border p-2 sm:p-3">
+        <div ref={setControls} className="flex shrink-0 flex-col items-center gap-1 border-t border-border p-2 sm:p-3">
           <CallControls>
             <MeetingChatButton />
           </CallControls>
