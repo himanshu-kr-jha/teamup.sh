@@ -48,7 +48,7 @@ func (s *Service) ListenForSwitches(ctx context.Context) {
 		return
 	}
 	sub := s.redis.Subscribe(ctx, SwitchChannel)
-	defer sub.Close()
+	defer func() { _ = sub.Close() }()
 	messages := sub.Channel()
 	for {
 		select {
