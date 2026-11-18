@@ -98,19 +98,27 @@ test.describe('speaking and raised hands', () => {
     expect(still).toEqual([8, 12, 8]);
     await olivia.page.emulateMedia({ reducedMotion: 'no-preference' });
 
-    // ── raising a hand while talking: it comes down by itself ──────────────
+    // ── a hand raised mid-sentence stays up; speaking after a pause lowers it ──
     const raise = alice.page.getByRole('button', { name: 'Raise your hand' });
     await expect(raise).toHaveAttribute('title', 'Raise your hand (Ctrl+Shift+H)');
     await raise.click();
     await expect(olivia.page.getByText('Alice Archer raised their hand', { exact: true }).first()).toBeVisible();
-    await expect(alice.page.getByText('Your hand was lowered because you started speaking.', { exact: true })).toBeVisible({ timeout: 15_000 });
-    await expect(badge(olivia.page, 'alice')).toHaveCount(0);
-    await expect(alice.page.getByRole('button', { name: 'Raise your hand' })).toBeVisible();
+    // The fake microphone never pauses, so this is one long sentence that was
+    // already going when the hand went up: it does not count.
+    await alice.page.waitForTimeout(5_000);
+    await expect(badge(olivia.page, 'alice')).toHaveText('1');
 
-    // Muted again: no bars.
+    // Muted: no bars, and the quiet that lets her next words count.
     await aliceMic.click();
     await expect(tile(olivia.page, 'alice').getByLabel('Microphone off')).toBeVisible();
     await expect(bars(olivia.page, 'alice')).toHaveCount(0);
+    await alice.page.waitForTimeout(1_500);
+    await alice.page.getByRole('button', { name: 'Turn your microphone on' }).click();
+    await expect(alice.page.getByText('Your hand was lowered because you started speaking.', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(badge(olivia.page, 'alice')).toHaveCount(0);
+    await expect(alice.page.getByRole('button', { name: 'Raise your hand' })).toBeVisible();
+    await aliceMic.click();
+    await expect(tile(olivia.page, 'alice').getByLabel('Microphone off')).toBeVisible();
 
     // ── a queue of hands ───────────────────────────────────────────────────
     await alice.page.getByRole('button', { name: 'Raise your hand' }).click();
@@ -181,7 +189,80 @@ test.describe('speaking and raised hands', () => {
     expect(toastBox.y + toastBox.height).toBeLessThanOrEqual(cornerBox.y);
     await corner.screenshot({ path: 'test-results/hands-call-window-dark.png' });
     await olivia.page.screenshot({ path: 'test-results/hands-call-window-page-dark.png' });
+
+    // Dragged up to the top, the window is out of the toasts' way, and they stay
+    // at the bottom of the screen rather than being pushed off its top.
+    const grab = corner.getByText('2 in call');
+    const g = (await grab.boundingBox())!;
+    await olivia.page.mouse.move(g.x + g.width / 2, g.y + g.height / 2);
+    await olivia.page.mouse.down();
+    await olivia.page.mouse.move(g.x + g.width / 2, 5, { steps: 10 });
+    await olivia.page.mouse.up();
+    expect((await corner.boundingBox())!.y).toBeLessThan(20);
+    await alice.page.getByRole('button', { name: 'Lower your hand' }).click();
+    await alice.page.getByRole('button', { name: 'Raise your hand' }).click();
+    const topToast = olivia.page.getByText('Alice Archer raised their hand', { exact: true }).last();
+    await expect(topToast).toBeInViewport({ ratio: 1 });
+    const topBox = (await topToast.boundingBox())!;
+    expect(topBox.y).toBeGreaterThan(800 - 150);
+    await olivia.page.screenshot({ path: 'test-results/hands-call-window-top-dark.png' });
     await olivia.page.getByRole('button', { name: 'Expand the call' }).click();
+
+    await olivia.page.getByRole('button', { name: 'Leave the call' }).click();
+    await alice.page.getByRole('button', { name: 'Leave the call' }).click();
+    await expect(alice.page.getByRole('button', { name: 'Leave the call' })).toHaveCount(0);
+    await allGone(owner, call.id);
+    expect(olivia.problems).toEqual([]);
+    expect(alice.problems).toEqual([]);
+    await owner.dispose();
+  });
+
+  // A full reconnect is a new connection to LiveKit, which starts with no
+  // attributes. The hand used to vanish then, without a word.
+  test('a hand stays up, in its place, through a full reconnect', async ({ as }) => {
+    test.setTimeout(120_000);
+    const owner = await apiAs('owner');
+    const call = await createCall(owner, `Hands reconnect ${Date.now()}`, [idOf('alice')]);
+    const olivia = await as('owner');
+    await joinCall(olivia.page, call.id);
+
+    // Alice's signalling goes through here, so LiveKit can be made to tell her to
+    // reconnect from scratch, as it does when one of its servers goes away.
+    const alice = await as('alice');
+    const port = new URL(process.env.E2E_LIVEKIT_URL ?? 'http://localhost:55464').port;
+    const signals: { send: (m: Buffer) => void }[] = [];
+    await alice.page.routeWebSocket(new RegExp(`:${port}/rtc`), (ws) => {
+      const server = ws.connectToServer();
+      server.onMessage((m) => ws.send(m));
+      signals.push(ws);
+    });
+    await joinCall(alice.page, call.id);
+    await expect(tile(olivia.page, 'alice')).toBeVisible({ timeout: 20_000 });
+
+    const raised = alice.page.waitForResponse((r) => r.url().endsWith(`/calls/${call.id}/hand`) && r.request().method() === 'PUT');
+    await alice.page.getByRole('button', { name: 'Raise your hand' }).click();
+    const firstUp: string = (await (await raised).json()).raisedAt;
+    await expect(badge(olivia.page, 'alice')).toHaveText('1');
+    await olivia.page.keyboard.press('Control+Shift+H');
+    await expect(badge(olivia.page, 'owner')).toHaveText('2');
+
+    // SignalResponse { leave (8): LeaveRequest { action (3): RECONNECT (2) } }
+    const before = signals.length;
+    signals[before - 1].send(Buffer.from([0x42, 0x02, 0x18, 0x02]));
+    await expect.poll(() => signals.length, { message: 'Alice to connect again', timeout: 20_000 }).toBeGreaterThan(before);
+    // Long enough for the new connection to settle, and for everyone to hear about it.
+    await alice.page.waitForTimeout(4_000);
+
+    // Still up, still first, on both screens, and nobody was told it came down.
+    await expect(badge(olivia.page, 'alice')).toHaveText('1', { timeout: 20_000 });
+    await expect(badge(olivia.page, 'owner')).toHaveText('2');
+    await expect(badge(alice.page, 'alice')).toHaveText('1');
+    await expect(alice.page.getByRole('button', { name: 'Lower your hand' })).toBeVisible();
+    await expect(alice.page.getByText('Your hand was lowered.', { exact: true })).toHaveCount(0);
+    // And on the server: asking again gives back the time it first went up.
+    const again = await alice.page.request.put(`/api/calls/${call.id}/hand`, { data: { raised: true } });
+    expect(again.ok()).toBe(true);
+    expect((await again.json()).raisedAt).toBe(firstUp);
 
     await olivia.page.getByRole('button', { name: 'Leave the call' }).click();
     await alice.page.getByRole('button', { name: 'Leave the call' }).click();

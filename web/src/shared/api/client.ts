@@ -631,9 +631,20 @@ export const callsApi = {
   /**
    * Raises or lowers a hand: your own, or, for the organizer or an admin,
    * lowers somebody else's. The server writes it on the person in the room.
+   *
+   * A raised hand comes back with a proof of its place. `restore` hands that
+   * back to put a hand the room lost where it was; `refresh` only asks for a
+   * fresh proof of a hand that is up, and never raises one.
    */
-  setHand: (callId: string, raised: boolean, userId?: string) =>
-    api.put<{ userId: string; raised: boolean; raisedAt?: string }>(`/calls/${callId}/hand`, userId ? { raised, userId } : { raised }),
+  setHand: (
+    callId: string,
+    raised: boolean,
+    options: { userId?: string; restore?: { raisedAt: string; proof: string }; refresh?: boolean } = {}
+  ) =>
+    api.put<{ userId: string; raised: boolean; raisedAt?: string; proof?: string; restored?: boolean }>(
+      `/calls/${callId}/hand`,
+      { raised, ...options }
+    ),
   /** Turns a call down and tells whoever started it why. */
   decline: (id: string, reason: 'declined' | 'no_answer' = 'declined') =>
     api.post(`/calls/${id}/decline`, { reason }),

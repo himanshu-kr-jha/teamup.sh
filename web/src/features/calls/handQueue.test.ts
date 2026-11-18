@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   AUTO_LOWER_AFTER_MS,
   SPEAKING_GAP_MS,
+  LOWER_RETRY_DELAYS_MS,
   createAutoLower,
   handQueue,
+  needsRestore,
   handsLabel,
   newlyRaised,
   positionOf,
@@ -71,9 +73,13 @@ describe('the queue of raised hands', () => {
 });
 
 describe('lowering your hand once you speak', () => {
-  /** Ticks every 250ms through a list of [from, to, speaking] stretches; returns when it said lower. */
-  function run(stretches: [number, number, boolean][]) {
+  /**
+   * Ticks every 250ms through a list of [from, to, speaking] stretches; returns
+   * when it said lower. Unless told otherwise, the hand went up in a quiet room.
+   */
+  function run(stretches: [number, number, boolean][], quietFirst = true) {
     const auto = createAutoLower();
+    if (quietFirst) for (let t = -1_500; t < 0; t += 250) auto.update(false, t);
     for (const [from, to, speaking] of stretches) {
       for (let t = from; t <= to; t += 250) {
         if (auto.update(speaking, t)) return t;
@@ -118,12 +124,55 @@ describe('lowering your hand once you speak', () => {
     ).toBe(4_250 + AUTO_LOWER_AFTER_MS);
   });
 
-  it('does not count speaking from before the hand went up', () => {
+  it('does not count a sentence that was already going when the hand went up', () => {
+    // Raised mid-sentence and still talking: no real pause, so nothing counts.
+    expect(run([[0, 10_000, true]], false)).toBeNull();
+    // Breaths shorter than a real pause do not count as one either.
+    expect(
+      run(
+        [
+          [0, 2_000, true],
+          [2_250, 2_500, false],
+          [2_750, 10_000, true],
+        ],
+        false
+      )
+    ).toBeNull();
+  });
+
+  it('counts speaking that starts after a real pause once the hand is up', () => {
+    expect(
+      run(
+        [
+          [0, 2_000, true],
+          [2_250, 3_250, false],
+          [3_500, 10_000, true],
+        ],
+        false
+      )
+    ).toBe(3_500 + AUTO_LOWER_AFTER_MS);
+  });
+
+  it('starts again from nothing when the hand goes up again', () => {
     const auto = createAutoLower();
-    auto.update(true, 0);
-    auto.update(true, 2_500);
+    for (let t = 0; t <= 1_000; t += 250) auto.update(false, t);
+    for (let t = 1_250; t <= 3_000; t += 250) auto.update(true, t);
     auto.reset();
-    for (let t = 2_750; t < 5_750; t += 250) expect(auto.update(true, t)).toBe(false);
-    expect(auto.update(true, 5_750)).toBe(true);
+    for (let t = 3_250; t < 10_000; t += 250) expect(auto.update(true, t)).toBe(false);
+  });
+
+  it('knows when a hand lost to a reconnection needs putting back', () => {
+    expect(needsRestore({ raisedAt: '2026-11-18T09:30:00.000Z' }, undefined)).toBe(true);
+    expect(needsRestore({ raisedAt: '2026-11-18T09:30:00.000Z' }, '')).toBe(true);
+    expect(needsRestore({ raisedAt: '2026-11-18T09:30:00.000Z' }, '2026-11-18T09:30:00.000Z')).toBe(false);
+    expect(needsRestore(null, undefined)).toBe(false);
+  });
+
+  it('retries lowering a few times, less and less often', () => {
+    expect(LOWER_RETRY_DELAYS_MS.length).toBeGreaterThan(2);
+    expect(LOWER_RETRY_DELAYS_MS.length).toBeLessThan(10);
+    for (let i = 1; i < LOWER_RETRY_DELAYS_MS.length; i++) {
+      expect(LOWER_RETRY_DELAYS_MS[i]).toBeGreaterThan(LOWER_RETRY_DELAYS_MS[i - 1]);
+    }
   });
 });

@@ -86,15 +86,31 @@ export const LOWERED_FOR_YOU_MESSAGE = 'Your hand was lowered.';
 
 /**
  * Watches whether you are speaking and says when your hand should come down:
- * once you have been speaking for a while without a real break. Speaking from
- * before your hand went up does not count; call reset when it goes up.
+ * once you have been speaking for a while without a real break.
+ *
+ * Only speaking that starts after the hand went up counts. Somebody who raises
+ * their hand while still finishing a sentence is asking to speak next, so it
+ * waits for a real pause (as long as a breath that ends a stretch) before it
+ * starts to count. Make a new one, or call reset, when the hand goes up.
  */
 export function createAutoLower(afterMs = AUTO_LOWER_AFTER_MS, gapMs = SPEAKING_GAP_MS) {
   let since: number | null = null;
   let lastSpoke: number | null = null;
+  // When the quiet began that lets it start counting; null while not yet quiet.
+  let quietFrom: number | null = null;
+  let armed = false;
   return {
     /** Tell it what you are doing now; true means it is time to lower your hand. */
     update(speaking: boolean, now: number): boolean {
+      if (!armed) {
+        if (speaking) {
+          quietFrom = null;
+          return false;
+        }
+        if (quietFrom === null) quietFrom = now;
+        if (now - quietFrom >= gapMs) armed = true;
+        return false;
+      }
       if (speaking) {
         if (since === null || lastSpoke === null || now - lastSpoke > gapMs) since = now;
         lastSpoke = now;
@@ -109,6 +125,34 @@ export function createAutoLower(afterMs = AUTO_LOWER_AFTER_MS, gapMs = SPEAKING_
     reset() {
       since = null;
       lastSpoke = null;
+      quietFrom = null;
+      armed = false;
     },
   };
+}
+
+/**
+ * How long to wait before each try at lowering your hand again, when the server
+ * could not be reached: soon, then less and less often, and then give up and say so.
+ */
+export const LOWER_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000];
+
+/** Said when your hand could not be lowered by itself, after every retry. */
+export const AUTO_LOWER_FAILED_MESSAGE = 'Your hand is still up: TeamUp could not lower it. Lower it yourself when you can.';
+
+/** Said when a hand lost to a reconnection went back up, but at the back of the line. */
+export const RESTORED_AS_NEW_MESSAGE = 'The call reconnected. Your hand is up again, at the back of the line.';
+
+/** Said when a hand lost to a reconnection could not be put back. */
+export const NOT_RESTORED_MESSAGE = 'The call reconnected and your hand came down. Raise it again if you still want to speak.';
+
+/** How often the browser holding a raised hand asks for a fresh proof of its place. */
+export const PROOF_REFRESH_MS = 60_000;
+
+/**
+ * After the connection comes back: whether your hand needs putting back up. It
+ * does when you had one up, nobody took it down, and the room has lost it.
+ */
+export function needsRestore(kept: { raisedAt: string } | null, attributeNow: string | undefined): boolean {
+  return !!kept && !attributeNow;
 }

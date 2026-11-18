@@ -19,10 +19,17 @@ import {
 } from '@/shared/components/ui/dropdown-menu';
 import {
   AUTO_LOWERED_MESSAGE,
+  AUTO_LOWER_FAILED_MESSAGE,
+  HAND_ATTRIBUTE,
   LOWERED_FOR_YOU_MESSAGE,
+  LOWER_RETRY_DELAYS_MS,
+  NOT_RESTORED_MESSAGE,
+  PROOF_REFRESH_MS,
+  RESTORED_AS_NEW_MESSAGE,
   createAutoLower,
   handQueue,
   handsLabel,
+  needsRestore,
   newlyRaised,
   raisedMessage,
   type RaisedHand,
@@ -56,6 +63,15 @@ export function useHands(): HandsValue | null {
 /** How often your own speaking is checked while your hand is up. */
 const AUTO_LOWER_TICK_MS = 250;
 
+/** How long after the connection comes back to look at your own hand: its attributes arrive with it. */
+const SETTLE_AFTER_RECONNECT_MS = 500;
+
+/** Your own hand as this tab last saw it up, and the server's proof of its place. */
+interface Kept {
+  raisedAt: string;
+  proof?: string;
+}
+
 export function HandsProvider({ callId, asGuest = false, children }: { callId: string; asGuest?: boolean; children: ReactNode }) {
   const room = useRoomContext();
   const toast = useToast();
@@ -80,28 +96,55 @@ export function HandsProvider({ callId, asGuest = false, children }: { callId: s
   const [pending, setPending] = useState(false);
   // Why your own hand is coming down, so its coming down can be explained.
   const lowering = useRef<'self' | 'auto' | null>(null);
+  // Your hand while it is up, kept through a lost connection so it can be put back.
+  const kept = useRef<Kept | null>(null);
+
+  const restore = useCallback(async () => {
+    const was = kept.current;
+    if (!was || asGuest) return;
+    try {
+      const res = await callsApi.setHand(callId, true, was.proof ? { restore: { raisedAt: was.raisedAt, proof: was.proof } } : {});
+      kept.current = res.data.raisedAt ? { raisedAt: res.data.raisedAt, proof: res.data.proof } : null;
+      if (!res.data.restored) toastRef.current.toast(RESTORED_AS_NEW_MESSAGE);
+    } catch {
+      kept.current = null;
+      toastRef.current.toast(NOT_RESTORED_MESSAGE);
+    }
+  }, [asGuest, callId]);
 
   useEffect(() => {
     let before = read();
     // Hands already up when you arrive are not news.
     let primed = room.state === ConnectionState.Connected;
+    let settle: ReturnType<typeof setTimeout> | undefined;
     setQueue(before);
+
+    const ownAttribute = () => room.localParticipant.attributes?.[HAND_ATTRIBUTE];
 
     const look = () => {
       const after = read();
-      if (primed) {
-        const me = room.localParticipant.identity;
+      const me = room.localParticipant.identity;
+      // While the connection is being made again, people and hands come and go
+      // as the room is rebuilt: none of that is news.
+      const connected = room.state === ConnectionState.Connected;
+      if (primed && connected) {
         const raised = newlyRaised(before, after).filter((h) => h.identity !== me);
         raised.forEach((h) => toastRef.current.toast(raisedMessage(h.name)));
         if (raised.length > 0) chime();
-
-        const wasUp = before.some((h) => h.identity === me);
-        const isUp = after.some((h) => h.identity === me);
-        if (wasUp && !isUp) {
+      }
+      const wasUp = before.some((h) => h.identity === me);
+      const isUp = after.some((h) => h.identity === me);
+      if (isUp) {
+        const at = ownAttribute() ?? '';
+        if (kept.current?.raisedAt !== at) kept.current = { raisedAt: at };
+      } else if (wasUp && connected) {
+        // Taken down while connected: by you, by speaking, or by the organizer.
+        if (primed) {
           if (lowering.current === 'auto') toastRef.current.toast(AUTO_LOWERED_MESSAGE);
           else if (lowering.current === null) toastRef.current.toast(LOWERED_FOR_YOU_MESSAGE);
-          lowering.current = null;
         }
+        lowering.current = null;
+        kept.current = null;
       }
       before = after;
       setQueue(after);
@@ -111,20 +154,30 @@ export function HandsProvider({ callId, asGuest = false, children }: { callId: s
       primed = true;
       setQueue(before);
     };
+    // A connection made again from scratch starts with no attributes if the room
+    // was lost with it: put your hand back if it went.
+    const reconnected = () => {
+      connected();
+      clearTimeout(settle);
+      settle = setTimeout(() => {
+        if (needsRestore(kept.current, ownAttribute())) void restore();
+      }, SETTLE_AFTER_RECONNECT_MS);
+    };
 
     room.on(RoomEvent.ParticipantAttributesChanged, look);
     room.on(RoomEvent.ParticipantConnected, look);
     room.on(RoomEvent.ParticipantDisconnected, look);
     room.on(RoomEvent.Connected, connected);
-    room.on(RoomEvent.Reconnected, connected);
+    room.on(RoomEvent.Reconnected, reconnected);
     return () => {
+      clearTimeout(settle);
       room.off(RoomEvent.ParticipantAttributesChanged, look);
       room.off(RoomEvent.ParticipantConnected, look);
       room.off(RoomEvent.ParticipantDisconnected, look);
       room.off(RoomEvent.Connected, connected);
-      room.off(RoomEvent.Reconnected, connected);
+      room.off(RoomEvent.Reconnected, reconnected);
     };
-  }, [room, read, chime]);
+  }, [room, read, chime, restore]);
 
   // Its audio context otherwise runs until the tab closes.
   useEffect(() => closeChime, [closeChime]);
@@ -132,15 +185,32 @@ export function HandsProvider({ callId, asGuest = false, children }: { callId: s
   const me = room.localParticipant.identity;
   const mine = queue.find((h) => h.identity === me) ?? null;
 
+  /** Asks the server; true if it was done. Says nothing either way. */
+  const send = useCallback(
+    async (raised: boolean, identity?: string): Promise<boolean> => {
+      const own = !identity || identity === room.localParticipant.identity;
+      try {
+        const res = await callsApi.setHand(callId, raised, own ? {} : { userId: identity });
+        if (own && res.data.raised && res.data.raisedAt) kept.current = { raisedAt: res.data.raisedAt, proof: res.data.proof };
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [callId, room]
+  );
+
+  /** What a click asks for, with a word if it could not be done. */
   const change = useCallback(
-    async (raised: boolean, identity?: string, why: 'self' | 'auto' = 'self') => {
+    async (raised: boolean, identity?: string) => {
       const own = !identity || identity === room.localParticipant.identity;
       if (own) {
         setPending(true);
-        if (!raised) lowering.current = why;
+        if (!raised) lowering.current = 'self';
       }
       try {
-        await callsApi.setHand(callId, raised, own ? undefined : identity);
+        const res = await callsApi.setHand(callId, raised, own ? {} : { userId: identity });
+        if (own && res.data.raised && res.data.raisedAt) kept.current = { raisedAt: res.data.raisedAt, proof: res.data.proof };
       } catch (err) {
         if (own && !raised) lowering.current = null;
         toastRef.current.error(
@@ -153,20 +223,58 @@ export function HandsProvider({ callId, asGuest = false, children }: { callId: s
     [callId, room]
   );
 
-  // Your hand comes down by itself once you have been speaking for a while.
+  // Your hand comes down by itself once you have been speaking for a while; if
+  // the server cannot be reached it tries again, less and less often, and then
+  // says so rather than leaving the hand up without a word.
   const upAt = mine?.at;
   useEffect(() => {
     if (upAt === undefined || asGuest) return;
     const auto = createAutoLower();
+    let retry: ReturnType<typeof setTimeout> | undefined;
+    let cancelled = false;
+    const attempt = async (n: number) => {
+      lowering.current = 'auto';
+      if (await send(false)) return;
+      if (cancelled) return;
+      if (n < LOWER_RETRY_DELAYS_MS.length) {
+        retry = setTimeout(() => void attempt(n + 1), LOWER_RETRY_DELAYS_MS[n]);
+        return;
+      }
+      lowering.current = null;
+      toastRef.current.toast(AUTO_LOWER_FAILED_MESSAGE);
+    };
     const timer = setInterval(() => {
       const p = room.localParticipant;
       if (auto.update(p.isSpeaking && p.isMicrophoneEnabled, Date.now())) {
         clearInterval(timer);
-        void change(false, undefined, 'auto');
+        void attempt(0);
       }
     }, AUTO_LOWER_TICK_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+      clearTimeout(retry);
+    };
+  }, [upAt, asGuest, room, send]);
+
+  // While your hand is up, keep a fresh proof of its place, in case the room
+  // loses it. A refresh never raises a hand that has come down meanwhile.
+  useEffect(() => {
+    if (upAt === undefined || asGuest) return;
+    const timer = setInterval(() => {
+      void callsApi
+        .setHand(callId, true, { refresh: true })
+        .then((res) => {
+          if (res.data.raised && res.data.raisedAt && kept.current?.raisedAt === res.data.raisedAt) {
+            kept.current = { raisedAt: res.data.raisedAt, proof: res.data.proof };
+          }
+        })
+        .catch(() => {
+          // The next one, or the proof already held, will do.
+        });
+    }, PROOF_REFRESH_MS);
     return () => clearInterval(timer);
-  }, [upAt, asGuest, room, change]);
+  }, [upAt, asGuest, callId]);
 
   const value = useMemo<HandsValue>(
     () => ({
