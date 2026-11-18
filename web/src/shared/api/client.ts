@@ -628,6 +628,12 @@ export const callsApi = {
    *  it is one way - nobody turns another person's microphone back on. */
   muteParticipant: (callId: string, identity: string) =>
     api.post(`/calls/${callId}/mute/${identity}`),
+  /**
+   * Raises or lowers a hand: your own, or, for the organizer or an admin,
+   * lowers somebody else's. The server writes it on the person in the room.
+   */
+  setHand: (callId: string, raised: boolean, userId?: string) =>
+    api.put<{ userId: string; raised: boolean; raisedAt?: string }>(`/calls/${callId}/hand`, userId ? { raised, userId } : { raised }),
   /** Turns a call down and tells whoever started it why. */
   decline: (id: string, reason: 'declined' | 'no_answer' = 'declined') =>
     api.post(`/calls/${id}/decline`, { reason }),

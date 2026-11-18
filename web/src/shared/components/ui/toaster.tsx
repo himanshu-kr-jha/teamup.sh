@@ -19,7 +19,8 @@ const ToastViewport = React.forwardRef<
       // Above whatever controls the page keeps at the bottom (--toast-bottom in
       // globals.css), and never catching a click itself: toasts are a passing remark,
       // and a member has to be able to press Admit, or leave a call, past one.
-      'pointer-events-none fixed bottom-[calc(var(--toast-bottom,0px)_+_var(--toast-lift,0px))] right-[var(--toast-right,0px)] z-[100] flex max-h-screen w-full flex-col p-4 md:max-w-[420px]',
+      // --toast-window lifts them over the minimised call window in the corner.
+      'pointer-events-none fixed bottom-[calc(var(--toast-bottom,0px)_+_var(--toast-lift,0px)_+_var(--toast-window,0px))] right-[var(--toast-right,0px)] z-[100] flex max-h-screen w-full flex-col p-4 md:max-w-[420px]',
       className
     )}
     {...props}

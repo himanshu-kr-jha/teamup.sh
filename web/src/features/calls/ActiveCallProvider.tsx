@@ -24,6 +24,7 @@ import { MeetingChatButton, MeetingChatProvider, StageWithChat, UnreadChatMark, 
 import { NotesBanner } from './notetaker';
 import { CallControls, CallShortcuts, CompactCallControls, ShareUnavailableNote } from './CallControls';
 import { GuestAccess } from './GuestAccess';
+import { HandsProvider } from './Hands';
 import { CallLogDialog } from './CallLogDialog';
 import { copyCallLink } from './copyLink';
 import { classifyJoinError, type JoinFailure } from './knock';
@@ -517,6 +518,18 @@ function CallFrame({
   // What a drag or a resize started from: where the pointer was, and the frame.
   const gesture = useRef<{ kind: 'move' | 'resize'; startX: number; startY: number; from: typeof frame } | null>(null);
 
+  // Toasts appear in the same corner as the minimised window, and covered it: a
+  // hand going up, or somebody joining, hid the very call it was about. They sit
+  // just above it instead, measured from the bottom of the screen as it is.
+  useEffect(() => {
+    if (expanded) return;
+    const root = document.documentElement;
+    root.style.setProperty('--toast-window', `calc(${position.y + size.height}px - var(--toast-bottom, 0px))`);
+    return () => {
+      root.style.removeProperty('--toast-window');
+    };
+  }, [expanded, position.y, size.height]);
+
   // Turning a phone, or narrowing a browser, must not leave the window off screen.
   useEffect(() => {
     const refit = () => setFrame((f) => fitCallWindow(f.size, f.position, viewport()));
@@ -628,160 +641,163 @@ function CallFrame({
 
   return (
     <MeetingChatProvider transport={chatTransport}>
-      {/* Here rather than with the buttons, so the keys work in the corner window too. */}
-      <CallShortcuts />
-      <div
-        // text-foreground because LiveKit's theme sets white text on everything
-        // inside it, which on a light page made this bar's words and its minimise
-        // button invisible.
-        className={cn(
-          'z-50 overflow-hidden bg-background text-foreground shadow-2xl',
-          expanded
-            ? cn('fixed inset-0', sidebarOpen ? 'lg:left-64' : 'lg:left-16')
-            : // touch-none: a finger on it moves the window rather than scrolling the page.
-              'fixed touch-none select-none rounded-xl border border-border'
-        )}
-        style={
-          expanded
-            ? undefined
-            : {
-                right: position.x,
-                bottom: position.y,
-                width: size.width,
-                height: size.height,
-              }
-        }
-        data-testid={expanded ? undefined : 'call-window'}
-        onPointerDown={startGesture('move')}
-        onPointerMove={onGesture}
-        onPointerUp={endGesture}
-        onPointerCancel={endGesture}
-      >
-        {!expanded && (
-          <button
-            type="button"
-            aria-label="Resize the call window"
-            title="Drag to resize"
-            className="absolute left-1 top-1.5 z-10 flex h-7 w-7 cursor-nwse-resize items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-8 [@media(pointer:coarse)]:w-8"
-            onPointerDown={startGesture('resize')}
-            onPointerMove={onGesture}
-            onPointerUp={endGesture}
-            onPointerCancel={endGesture}
-            onKeyDown={resizeByKey}
-          >
-            <MoveDiagonal2 className="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
-        )}
-        <div className="flex h-full flex-col">
-          <div
-            className={cn(
-              'flex items-center gap-2 border-b border-border px-2 py-1.5',
-              !expanded && 'cursor-grab pl-9 active:cursor-grabbing'
-            )}
-          >
-            <span className="min-w-0 flex-1 truncate text-sm font-medium">
-              {expanded && title ? `${title} \u00b7 ` : ''}
-              {alone ? waitingLabel(reachable) : `${compactCount(remote.length + 1, expanded)}`}
-            </span>
-            {expanded ? (
-              <>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  aria-label="Copy the link to this call"
-                  title="Copy link"
-                  onClick={async () => {
-                    if (await copyCallLink(callId)) toast.success('Link copied. Anybody not on the call will have to ask to join.');
-                    else toast.error('Could not copy. Your browser did not allow it.');
-                  }}
-                >
-                  <Link2 className="h-4 w-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-7 w-7"
-                  aria-label="Guests"
-                  title="Guests"
-                  onClick={() => setShowingGuests(true)}
-                >
-                  <UserPlus className="h-4 w-4" />
-                </Button>
-                {canReadLog && (
+      <HandsProvider callId={callId}>
+        {/* Here rather than with the buttons, so the keys work in the corner window too. */}
+        <CallShortcuts />
+        <div
+          // text-foreground because LiveKit's theme sets white text on everything
+          // inside it, which on a light page made this bar's words and its minimise
+          // button invisible.
+          className={cn(
+            'z-50 overflow-hidden bg-background text-foreground shadow-2xl',
+            expanded
+              ? cn('fixed inset-0', sidebarOpen ? 'lg:left-64' : 'lg:left-16')
+              : // touch-none: a finger on it moves the window rather than scrolling the page.
+                'fixed touch-none select-none rounded-xl border border-border'
+          )}
+          style={
+            expanded
+              ? undefined
+              : {
+                  right: position.x,
+                  bottom: position.y,
+                  width: size.width,
+                  height: size.height,
+                }
+          }
+          data-testid={expanded ? undefined : 'call-window'}
+          onPointerDown={startGesture('move')}
+          onPointerMove={onGesture}
+          onPointerUp={endGesture}
+          onPointerCancel={endGesture}
+        >
+          {!expanded && (
+            <button
+              type="button"
+              aria-label="Resize the call window"
+              title="Drag to resize"
+              className="absolute left-1 top-1.5 z-10 flex h-7 w-7 cursor-nwse-resize items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-8 [@media(pointer:coarse)]:w-8"
+              onPointerDown={startGesture('resize')}
+              onPointerMove={onGesture}
+              onPointerUp={endGesture}
+              onPointerCancel={endGesture}
+              onKeyDown={resizeByKey}
+            >
+              <MoveDiagonal2 className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          )}
+          <div className="flex h-full flex-col">
+            <div
+              className={cn(
+                'flex items-center gap-2 border-b border-border px-2 py-1.5',
+                !expanded && 'cursor-grab pl-9 active:cursor-grabbing'
+              )}
+            >
+              <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                {expanded && title ? `${title} \u00b7 ` : ''}
+                {alone ? waitingLabel(reachable) : `${compactCount(remote.length + 1, expanded)}`}
+              </span>
+              {expanded ? (
+                <>
                   <Button
                     variant="ghost"
                     size="icon"
                     className="h-7 w-7"
-                    aria-label="Show the call log"
-                    title="Call log"
-                    onClick={() => setShowingLog(true)}
+                    aria-label="Copy the link to this call"
+                    title="Copy link"
+                    onClick={async () => {
+                      if (await copyCallLink(callId)) toast.success('Link copied. Anybody not on the call will have to ask to join.');
+                      else toast.error('Could not copy. Your browser did not allow it.');
+                    }}
                   >
-                    <History className="h-4 w-4" />
+                    <Link2 className="h-4 w-4" />
                   </Button>
-                )}
-              </>
-            ) : (
-              <CompactCallControls />
-            )}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="relative h-7 w-7"
-              aria-label={expanded ? 'Minimise the call' : 'Expand the call'}
-              onClick={() => navigate(expanded ? '/chat' : `/calls/${callId}`)}
-            >
-              {expanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-              {!expanded && <UnreadChatMark />}
-            </Button>
-            <Button
-              variant="destructive"
-              size="icon"
-              className="h-7 w-7"
-              aria-label="Leave the call"
-              onClick={hangUp}
-            >
-              <PhoneOff className="h-4 w-4" />
-            </Button>
-          </div>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-7 w-7"
+                    aria-label="Guests"
+                    title="Guests"
+                    onClick={() => setShowingGuests(true)}
+                  >
+                    <UserPlus className="h-4 w-4" />
+                  </Button>
+                  {canReadLog && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      aria-label="Show the call log"
+                      title="Call log"
+                      onClick={() => setShowingLog(true)}
+                    >
+                      <History className="h-4 w-4" />
+                    </Button>
+                  )}
+                </>
+              ) : (
+                <CompactCallControls />
+              )}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="relative h-7 w-7"
+                aria-label={expanded ? 'Minimise the call' : 'Expand the call'}
+                onClick={() => navigate(expanded ? '/chat' : `/calls/${callId}`)}
+              >
+                {expanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+                {!expanded && <UnreadChatMark />}
+              </Button>
+              <Button
+                variant="destructive"
+                size="icon"
+                className="h-7 w-7"
+                aria-label="Leave the call"
+                onClick={hangUp}
+              >
+                <PhoneOff className="h-4 w-4" />
+              </Button>
+            </div>
 
-          <BlockedAudioPrompt compact={!expanded} />
+            <BlockedAudioPrompt compact={!expanded} />
 
-          <div className="min-h-0 flex-1">
-            <CallTiles callId={callId} compact={!expanded} />
+            <div className="min-h-0 flex-1">
+              <CallTiles callId={callId} compact={!expanded} />
+            </div>
           </div>
         </div>
-      </div>
 
-      <CallLogDialog callId={callId} open={showingLog} onOpenChange={setShowingLog} live />
+        <CallLogDialog callId={callId} open={showingLog} onOpenChange={setShowingLog} live />
 
-      <Dialog open={showingGuests} onOpenChange={setShowingGuests}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Guests</DialogTitle>
-            <DialogDescription>People from outside the organization, let in with a link.</DialogDescription>
-          </DialogHeader>
-          <GuestAccess callId={callId} title={title} />
-        </DialogContent>
-      </Dialog>
+        <Dialog open={showingGuests} onOpenChange={setShowingGuests}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Guests</DialogTitle>
+              <DialogDescription>People from outside the organization, let in with a link.</DialogDescription>
+            </DialogHeader>
+            <GuestAccess callId={callId} title={title} />
+          </DialogContent>
+        </Dialog>
 
-      <Dialog open={asking} onOpenChange={(open) => !open && setAsking(false)}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Still there?</DialogTitle>
-            <DialogDescription>
-              You have been the only one in this call for a while. It will end shortly
-              unless you want to keep waiting.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="gap-2 sm:justify-center">
-            <Button variant="outline" onClick={hangUp}>
-              Leave the call
-            </Button>
-            <Button onClick={() => setAsking(false)}>Stay</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+
+        <Dialog open={asking} onOpenChange={(open) => !open && setAsking(false)}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Still there?</DialogTitle>
+              <DialogDescription>
+                You have been the only one in this call for a while. It will end shortly
+                unless you want to keep waiting.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter className="gap-2 sm:justify-center">
+              <Button variant="outline" onClick={hangUp}>
+                Leave the call
+              </Button>
+              <Button onClick={() => setAsking(false)}>Stay</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </HandsProvider>
     </MeetingChatProvider>
   );
 }

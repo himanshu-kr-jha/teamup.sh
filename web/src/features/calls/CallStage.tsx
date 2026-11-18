@@ -11,8 +11,10 @@ import {
 } from '@livekit/components-react';
 import { Track } from 'livekit-client';
 import type { TrackReferenceOrPlaceholder } from '@livekit/components-react';
-import { ChevronLeft, ChevronRight, MicOff, MonitorUp, NotebookPen, Pin, PinOff, UserX, Volume2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, MicOff, MonitorUp, NotebookPen, Pin, PinOff, UserX } from 'lucide-react';
 import { isNotetaker } from './notetaker';
+import { HandBadge, HandsChip } from './Hands';
+import { SpeakingBars } from './SpeakingBars';
 import { Button } from '@/shared/components/ui/button';
 import { callsApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
@@ -61,7 +63,15 @@ export function CallStage({ callId, compact, asGuest = false }: { callId: string
   const viewer = useMemo(() => ({ asGuest, canRemoveGuests: !asGuest && !!guestLink?.canManage }), [asGuest, guestLink?.canManage]);
   return (
     <ViewerContext.Provider value={viewer}>
-      <Stage callId={callId} compact={compact} />
+      <div className="relative h-full">
+        <Stage callId={callId} compact={compact} />
+        {/* Over the stage, out of the way of every tile's own badges and buttons. */}
+        {!compact && (
+          <div className="pointer-events-none absolute inset-x-0 top-3 z-10 flex justify-center px-4">
+            <HandsChip />
+          </div>
+        )}
+      </div>
     </ViewerContext.Provider>
   );
 }
@@ -366,6 +376,8 @@ function ParticipantPanel({
           // where to look.
           speaking && !presenting ? 'ring-2 ring-green-500' : 'ring-1 ring-border/50'
         )}
+        data-testid={presenting ? 'screen-tile' : 'participant-tile'}
+        data-identity={participant.identity}
       >
         {isTrackReference(track) && hasVideo ? (
           <VideoTrack
@@ -401,18 +413,13 @@ function ParticipantPanel({
           </div>
         )}
 
+        {!presenting && !notes && <HandBadge identity={participant.identity} small={compact} />}
+
         {/* The name, and whether they can be heard. */}
         <div className="absolute inset-x-0 bottom-0 flex items-center gap-1.5 bg-gradient-to-t from-black/70 to-transparent px-2 py-1.5 text-white">
-          {!presenting &&
-            !notes &&
-            (microphoneOff ? (
-              <MicOff className="h-3.5 w-3.5 shrink-0 text-red-400" aria-label="Microphone off" />
-            ) : (
-              <Volume2
-                className={cn('h-3.5 w-3.5 shrink-0', speaking ? 'text-green-400' : 'text-white/60')}
-                aria-hidden="true"
-              />
-            ))}
+          {!presenting && !notes && (
+            <SpeakingBars participant={participant} speaking={speaking} muted={microphoneOff} size={compact ? 'sm' : 'md'} />
+          )}
           {presenting && <MonitorUp className="h-3.5 w-3.5 shrink-0 text-white/80" aria-hidden="true" />}
           <span className="truncate text-xs font-medium text-white">
             {caption}

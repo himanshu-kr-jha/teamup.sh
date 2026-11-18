@@ -27,6 +27,7 @@ import { apiErrorMessage } from "@/shared/api/errors";
 import { cn } from "@/shared/utils/cn";
 import { BlockedAudioPrompt, liveKitURL } from "./ActiveCallProvider";
 import { CallStage } from "./CallStage";
+import { HandsProvider } from "./Hands";
 import { CallControls, CallShortcuts, ShareUnavailableNote } from "./CallControls";
 import { ShortcutsProvider } from "@/shared/shortcuts/ShortcutsProvider";
 import {
@@ -474,38 +475,41 @@ function GuestRoom({
       className="flex h-viewport flex-col bg-background text-foreground"
     >
       <MeetingChatProvider transport={chatTransport}>
-        {/* A guest has the same call keys as everybody else, and nothing more. */}
-        <ShortcutsProvider>
-          <CallShortcuts />
-        </ShortcutsProvider>
-        <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
-          <span className="min-w-0 flex-1 truncate text-sm font-medium">
-            {joined.title}
-            <GuestCount />
-          </span>
-          <span className="hidden rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground sm:inline">
-            You are a guest
-          </span>
-          <LeaveButton />
-        </div>
-        <BlockedAudioPrompt compact={false} />
-        <NotesBanner asGuest />
-        {problem && (
-          <p className="border-b border-border bg-destructive/10 p-2 text-center text-sm text-destructive">
-            {problem}
-          </p>
-        )}
-        <div className="min-h-0 flex-1">
-          <StageWithChat>
-            <CallStage callId="" compact={false} asGuest />
-          </StageWithChat>
-        </div>
-        <div className="flex shrink-0 flex-col items-center gap-1 border-t border-border p-2 sm:p-3">
-          <CallControls>
-            <MeetingChatButton />
-          </CallControls>
-          <ShareUnavailableNote />
-        </div>
+      {/* A guest sees hands go up, but has no account to raise one with. */}
+        <HandsProvider callId="" asGuest>
+          {/* A guest has the same call keys as everybody else, and nothing more. */}
+          <ShortcutsProvider>
+            <CallShortcuts />
+          </ShortcutsProvider>
+          <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
+            <span className="min-w-0 flex-1 truncate text-sm font-medium">
+              {joined.title}
+              <GuestCount />
+            </span>
+            <span className="hidden rounded bg-muted px-2 py-0.5 text-xs text-muted-foreground sm:inline">
+              You are a guest
+            </span>
+            <LeaveButton />
+          </div>
+          <BlockedAudioPrompt compact={false} />
+          <NotesBanner asGuest />
+          {problem && (
+            <p className="border-b border-border bg-destructive/10 p-2 text-center text-sm text-destructive">
+              {problem}
+            </p>
+          )}
+          <div className="min-h-0 flex-1">
+            <StageWithChat>
+              <CallStage callId="" compact={false} asGuest />
+            </StageWithChat>
+          </div>
+          <div className="flex shrink-0 flex-col items-center gap-1 border-t border-border p-2 sm:p-3">
+            <CallControls>
+              <MeetingChatButton />
+            </CallControls>
+            <ShareUnavailableNote />
+          </div>
+        </HandsProvider>
       </MeetingChatProvider>
       <RoomAudioRenderer />
       <CameraBackground />
