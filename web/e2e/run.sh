@@ -76,6 +76,17 @@ export TEAMUP_SETUP_OIDC_PROVIDER=google TEAMUP_SETUP_GOOGLE_CLIENT_ID=e2e.apps.
 
 cd "$ROOT"
 "$ROOT/bin/teamup" migrate up
+# The server of a run that has just ended can take a few seconds to let go of the
+# port, and starting on top of it failed with "address already in use". Wait for
+# it, and name the problem if something else is keeping the port.
+for _ in $(seq 1 30); do
+  (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null || break
+  sleep 1
+done
+if (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null; then
+  echo "Port $PORT is still in use by another program; stop it, or set E2E_PORT." >&2
+  exit 1
+fi
 "$ROOT/bin/teamup" server >"$LOG" 2>&1 &
 SERVER=$!
 trap 'kill "$SERVER" 2>/dev/null || true; wait "$SERVER" 2>/dev/null || true' EXIT
