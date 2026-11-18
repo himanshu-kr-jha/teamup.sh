@@ -26,6 +26,23 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-19-a',
+    date: '2026-11-19',
+    title: 'A call that survives a refresh',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'Refreshing the page keeps you in the call',
+        body: 'Reload the page during a call and you go straight back in, with your microphone and camera as they were. The others do not see you leave.',
+      },
+      {
+        area: 'meetings',
+        title: 'Back no longer leaves the call',
+        body: 'On a call, Back, or the back gesture on a phone, takes you to the page before with the call in the corner. Closing the tab asks first.',
+      },
+    ],
+  },
+  {
     id: '2026-11-18-c',
     date: '2026-11-18',
     title: 'Check your camera and microphone before you join',

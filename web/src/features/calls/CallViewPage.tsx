@@ -73,10 +73,12 @@ function CallRoute({ callId }: { callId: string }) {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
-  const { activeCall, join, joining, failure, clearFailure } = useActiveCall();
+  const { activeCall, join, joining, failure, clearFailure, resuming } = useActiveCall();
   const inCall = activeCall?.callId === callId;
+  // Being gone back into after a reload (ActiveCallProvider) is on its way in too.
+  const reconnecting = resuming === callId;
   // Already in it, there is nothing to set up: back to the call.
-  const [phase, setPhase] = useState<Phase>(() => (inCall ? 'join' : 'deciding'));
+  const [phase, setPhase] = useState<Phase>(() => (inCall || reconnecting ? 'join' : 'deciding'));
   // Kept from the first render, since the history entry is cleared of it below.
   const [ring] = useState(() => ringOf(location.state));
 
@@ -197,6 +199,15 @@ function CallRoute({ callId }: { callId: string }) {
             Back to calls
           </Button>
         </div>
+      </div>
+    );
+  }
+
+  if (reconnecting && !failure) {
+    return (
+      <div role="status" className="flex h-full items-center justify-center gap-2 text-sm text-muted-foreground">
+        <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" />
+        Reconnecting to the call{'\u2026'}
       </div>
     );
   }

@@ -101,6 +101,11 @@ export async function openSession(browser: Browser, who: PersonKey | Person, opt
       }
     });
     page.on('pageerror', (e) => problems.push(`[pageerror] ${e.message}`));
+    // A page in a call asks before it goes (beforeunload), and Playwright answers every
+    // dialog nobody listens for with Cancel, which for that one means staying: a test
+    // following a link or reloading mid-call would then never get there. Leave, as a
+    // person who meant to would; any other dialog is still cancelled, as before.
+    page.on('dialog', (d) => void (d.type() === 'beforeunload' ? d.accept() : d.dismiss()).catch(() => undefined));
   };
   context.on('page', watch);
   if (!options.tour || !options.whatsNew) await hideIntroductions(context, { tour: !options.tour, whatsNew: !options.whatsNew });
