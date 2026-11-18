@@ -118,6 +118,7 @@ export function SpeakingBars({
       aria-hidden={bare ? true : undefined}
       data-testid="speaking-bars"
       data-speaking={speaking ? 'true' : 'false'}
+      data-motion={reduced ? 'still' : 'moving'}
       className={cn(
         'inline-flex shrink-0 items-center justify-center [contain:layout_paint]',
         !bare && cn('rounded-full transition-colors duration-200', s.circle, speaking ? 'bg-green-500' : 'bg-black/45'),
