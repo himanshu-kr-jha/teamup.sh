@@ -1,5 +1,5 @@
 import { useRef, useState, type ComponentType, type ReactNode } from 'react';
-import { MediaDeviceMenu, useRoomContext, useTrackToggle } from '@livekit/components-react';
+import { MediaDeviceMenu, useIsSpeaking, useLocalParticipant, useRoomContext, useTrackToggle } from '@livekit/components-react';
 import { Track } from 'livekit-client';
 import { Mic, MicOff, MonitorOff, MonitorUp, Video, VideoOff } from 'lucide-react';
 import { useToast } from '@/shared/hooks/useToast';
@@ -8,6 +8,8 @@ import { useMeetingChatPanel } from './MeetingChat';
 import { cn } from '@/shared/utils/cn';
 import { shortcutHint, type ShortcutId } from '@/shared/shortcuts/catalogue';
 import { useShortcut } from '@/shared/shortcuts/ShortcutsProvider';
+import { HandButton, useHands } from './Hands';
+import { SpeakingBars } from './SpeakingBars';
 
 /** Whether this browser can capture a screen at all. Most phone browsers cannot. */
 export function canShareScreen(): boolean {
@@ -68,8 +70,17 @@ function Toggle({ source, compact }: { source: ToggleSource; compact?: boolean }
       )}
     >
       <Icon className={compact ? 'h-4 w-4' : 'h-5 w-5'} aria-hidden="true" />
+      {/* Your voice going out, beside the microphone that carries it. */}
+      {!compact && source === Track.Source.Microphone && enabled && <OwnVoice />}
     </button>
   );
+}
+
+/** Moving bars for whatever your own microphone hears. */
+function OwnVoice() {
+  const { localParticipant } = useLocalParticipant();
+  const speaking = useIsSpeaking(localParticipant);
+  return <SpeakingBars participant={localParticipant} speaking={speaking} muted={false} bare always size="md" className="-ml-0.5 h-5" />;
 }
 
 function WithDeviceMenu({ source, kind, label }: { source: ToggleSource; kind: MediaDeviceKind; label: string }) {
@@ -83,15 +94,27 @@ function WithDeviceMenu({ source, kind, label }: { source: ToggleSource; kind: M
   );
 }
 
-/** The full set, under the call. Anybody in a call can share (decision 20). */
+/**
+ * The full set, under the call. Anybody in a call can share (decision 20).
+ *
+ * On a phone they wrap onto a second row. LiveKit makes a button group as tall as
+ * its container, which in a row that wraps is the height of both rows, so the
+ * microphone and camera grew to double height and pushed the last row off the
+ * bottom of the screen; here a group is only as tall as its buttons.
+ */
 export function CallControls({ children }: { children?: ReactNode }) {
   const [shareable] = useState(canShareScreen);
   return (
-    <div className="flex flex-wrap items-center justify-center gap-2" role="group" aria-label="Call controls">
+    <div
+      className="flex flex-wrap items-center justify-center gap-2 [&_.lk-button-group]:h-auto"
+      role="group"
+      aria-label="Call controls"
+    >
       <WithDeviceMenu source={Track.Source.Microphone} kind="audioinput" label="Choose a microphone" />
       <WithDeviceMenu source={Track.Source.Camera} kind="videoinput" label="Choose a camera" />
       <BackgroundPicker />
       {shareable && <Toggle source={Track.Source.ScreenShare} />}
+      <HandButton />
       {children}
     </div>
   );
@@ -119,13 +142,15 @@ export function ShareUnavailableNote() {
 /**
  * The call's keys: Ctrl+D for the microphone and Ctrl+E for the camera, as in
  * other meeting apps, Ctrl+Shift+S to share, Ctrl+Alt+C for the chat (as in Google
- * Meet; the browser keeps Ctrl+Shift+C for inspecting the page), and
+ * Meet; the browser keeps Ctrl+Shift+C for inspecting the page), Ctrl+Shift+H
+ * to raise or lower your hand, and
  * Space held to talk while muted. Bound only while a call is open, so the
  * browser keeps Ctrl+D for bookmarks the rest of the time.
  */
 export function CallShortcuts() {
   const room = useRoomContext();
   const chat = useMeetingChatPanel();
+  const hands = useHands();
   const toast = useToast();
   // Space turned the microphone on, so letting go of it turns it off again.
   const talking = useRef(false);
@@ -151,6 +176,10 @@ export function CallShortcuts() {
   useShortcut('call.chat', () => {
     if (!chat) return false;
     chat.setOpen(!chat.open);
+  });
+  useShortcut('call.hand', () => {
+    if (!hands?.canRaise) return false;
+    hands.toggle();
   });
   useShortcut(
     'call.talk',

@@ -22,6 +22,7 @@ export type ShortcutId =
   | 'call.camera'
   | 'call.share'
   | 'call.chat'
+  | 'call.hand'
   | 'call.talk'
   | 'task.new'
   | 'task.edit'
@@ -61,6 +62,7 @@ export const SHORTCUTS: ShortcutInfo[] = [
   { id: 'call.camera', section: 'In a call', label: 'Turn your camera on or off', keys: ['mod+e'] },
   { id: 'call.share', section: 'In a call', label: 'Share your screen, or stop', keys: ['mod+shift+s'] },
   { id: 'call.chat', section: 'In a call', label: 'Open or close the meeting chat', keys: ['mod+alt+c'] },
+  { id: 'call.hand', section: 'In a call', label: 'Raise or lower your hand', keys: ['mod+shift+h'] },
   { id: 'call.talk', section: 'In a call', label: 'Hold to talk while muted', keys: ['space'] },
 
   { id: 'task.new', section: 'Tasks', label: 'New task', keys: ['c'] },

@@ -34,6 +34,12 @@ type mediaServer interface {
 	SendData(ctx context.Context, room, topic string, data []byte) error
 	// InRoom says whether somebody is connected to a room now.
 	InRoom(ctx context.Context, room, identity string) (bool, error)
+	// Attributes are somebody's participant attributes, and whether they are in
+	// the room at all. Their not being there is not an error.
+	Attributes(ctx context.Context, room, identity string) (map[string]string, bool, error)
+	// SetAttributes changes some of somebody's participant attributes; an empty
+	// value removes one. The others are left as they are.
+	SetAttributes(ctx context.Context, room, identity string, attrs map[string]string) error
 }
 
 // liveKit is the real server.
@@ -105,6 +111,37 @@ func (l liveKit) InRoom(ctx context.Context, room, identity string) (bool, error
 		}
 	}
 	return false, nil
+}
+
+func (l liveKit) Attributes(ctx context.Context, room, identity string) (map[string]string, bool, error) {
+	if l.s.roomService == nil {
+		return nil, false, errNoMedia
+	}
+	p, err := l.s.roomService.GetParticipant(ctx, &livekit.RoomParticipantIdentity{Room: room, Identity: identity})
+	if twirpNotFound(err) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if p.GetState() == livekit.ParticipantInfo_DISCONNECTED {
+		return nil, false, nil
+	}
+	attrs := p.GetAttributes()
+	if attrs == nil {
+		attrs = map[string]string{}
+	}
+	return attrs, true, nil
+}
+
+func (l liveKit) SetAttributes(ctx context.Context, room, identity string, attrs map[string]string) error {
+	if l.s.roomService == nil {
+		return errNoMedia
+	}
+	_, err := l.s.roomService.UpdateParticipant(ctx, &livekit.UpdateParticipantRequest{
+		Room: room, Identity: identity, Attributes: attrs,
+	})
+	return err
 }
 
 // twirpNotFound is LiveKit saying the room is not there.
