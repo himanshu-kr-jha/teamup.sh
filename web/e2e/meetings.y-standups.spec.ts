@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 import { test, expect } from './support/fixtures';
-import { apiAs, leaveCall } from './support/meetings';
+import { apiAs, leaveCall, passPrejoin } from './support/meetings';
 import { PEOPLE } from './support/people';
 
 // Stand-ups for one team: the owner's decisions of 14 November 2026. Mia manages
@@ -100,6 +100,7 @@ test('somebody outside the team with the link knocks, and is let in for the day'
   const alice = await as('alice');
   await alice.page.goto('/calls');
   await alice.page.getByRole('button', { name: `Join ${meeting.name}` }).click();
+  await passPrejoin(alice.page);
   await expect(alice.page.getByRole('button', { name: 'Leave the call' })).toBeVisible({ timeout: 30_000 });
   const callId = new URL(alice.page.url()).pathname.split('/').pop()!;
   // The door rings who is connected, which the webhooks say.

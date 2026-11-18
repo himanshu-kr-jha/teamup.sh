@@ -26,6 +26,20 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-18-c',
+    date: '2026-11-18',
+    title: 'Check your camera and microphone before you join',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'A screen before every video call and meeting',
+        body: 'Pressing Join now shows your camera as others will see it, with your background on, and how loud your microphone is. Turn either on or off, pick another camera, microphone or speaker, play a test sound, and see who is already in before you go in. Ctrl+D and Ctrl+E work there too.',
+        link: '/calls',
+      },
+      {
+        area: 'meetings',
+        title: 'Your last choice is kept',
+        body: 'The next call starts with the microphone, camera and devices you joined with last time. A voice call still goes straight in, like a phone.',
     id: '2026-11-18-d',
     date: '2026-11-18',
     title: 'See who is talking, and raise your hand',

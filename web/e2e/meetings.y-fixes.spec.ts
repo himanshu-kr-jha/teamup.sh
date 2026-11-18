@@ -13,6 +13,7 @@ import {
   leaveCall,
   lobbyJoin,
   oscillators,
+  passPrejoin,
   spyOnAudio,
   waitForLog,
 } from './support/meetings';
@@ -57,6 +58,7 @@ test.describe('ticket 20: a meeting that opened early and emptied', () => {
     await olivia.page.goto('/calls');
     const card = (page: Page) => page.getByRole('main').locator('div', { hasText: title }).filter({ has: page.getByRole('button', { name: 'Join', exact: true }) }).last();
     await card(olivia.page).getByRole('button', { name: 'Join', exact: true }).click();
+    await passPrejoin(olivia.page);
     await expect(inACall(olivia.page)).toBeVisible({ timeout: 30_000 });
     await leaveCall(olivia.page);
     await expect.poll(() => statusOf(owner, id)).toBe('ended');
@@ -74,6 +76,7 @@ test.describe('ticket 20: a meeting that opened early and emptied', () => {
     const dialog = alice.page.getByRole('dialog');
     await expect(dialog.getByText(/finished/)).toHaveCount(0);
     await dialog.getByRole('button', { name: 'Join', exact: true }).click();
+    await passPrejoin(alice.page);
     await expect(inACall(alice.page)).toBeVisible({ timeout: 30_000 });
     await expect.poll(() => statusOf(owner, id)).toBe('active');
     await owner.dispose();
@@ -173,6 +176,7 @@ test.describe('ticket 22 and 31: a standing meeting on your own calendar', () =>
     for (const person of [pat, alice]) {
       await person.page.goto('/calls');
       await person.page.getByRole('region', { name: 'Standing meetings' }).getByRole('button', { name: `Join ${name}` }).click();
+      await passPrejoin(person.page);
       await expect(inACall(person.page)).toBeVisible({ timeout: 30_000 });
     }
     const callId = (await owner.post(`/standing-meetings/${roomOf}/join`)).callId;
@@ -230,7 +234,9 @@ test.describe('ticket 26: somebody deactivated', () => {
 test.describe('ticket 28: a browser that will not play the call', () => {
   test('says so, and a click starts the sound', async ({ as }) => {
     const owner = await apiAs('owner');
-    const call = await createCall(owner, 'Blocked audio', [idOf('alice')]);
+    // A voice call, which a link walks straight into. A video call stops at the
+    // screen before it, and pressing Join there is the click a browser waits for.
+    const call = await owner.post('/calls', { title: 'Blocked audio', callType: 'audio', invitees: [idOf('alice')] });
     const alice = await as('alice');
     // What a browser with no engagement for this site does until it has had a click.
     await alice.context.addInitScript(() => {
@@ -245,7 +251,8 @@ test.describe('ticket 28: a browser that will not play the call', () => {
     });
     const olivia = await as('owner');
     await joinCall(olivia.page, call.id);
-    await olivia.page.getByRole('button', { name: 'Turn your microphone on' }).click();
+    // A call's microphone is on from the start: there is something to hear.
+    await expect(olivia.page.getByRole('button', { name: 'Turn your microphone off' }).first()).toBeVisible({ timeout: 20_000 });
     await joinCall(alice.page, call.id);
 
     const button = alice.page.getByRole('button', { name: 'Turn on sound' });
@@ -328,8 +335,11 @@ test.describe('ticket 34: following a link to a call that is ringing you', () =>
       history.pushState({}, '', `/calls/${id}`);
       dispatchEvent(new PopStateEvent('popstate'));
     }, call.id);
+    // On its page is on the way in, the screen before the call included.
+    await expect(ringing, 'gone as soon as its page opens').toHaveCount(0, { timeout: 1500 });
+    await lobbyJoin(alice.page).click();
     await expect(alice.page.getByRole('status', { name: 'Joining the call' })).toBeVisible();
-    await expect(ringing, 'gone while the token is still on its way').toHaveCount(0, { timeout: 1500 });
+    await expect(ringing, 'and stays gone while the token is still on its way').toHaveCount(0);
     const rings = await oscillators(alice.page);
     await expect(inACall(alice.page)).toBeVisible({ timeout: 30_000 });
     expect(await oscillators(alice.page), 'and it rang no more').toBe(rings);
@@ -367,6 +377,7 @@ test.describe('ticket 35: an earlier call ringing out while you are in another',
       await route.continue();
     });
     await olivia.page.goto(`/calls/${next.id}`);
+    await lobbyJoin(olivia.page).click();
     await olivia.page.waitForTimeout(1000);
 
     await pat.post(`/calls/${unanswered.id}/decline`, { reason: 'no_answer' });

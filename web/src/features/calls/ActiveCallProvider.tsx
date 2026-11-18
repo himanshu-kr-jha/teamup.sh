@@ -16,7 +16,7 @@ import {
   useRemoteParticipants,
   useRoomContext,
 } from '@livekit/components-react';
-import { ConnectionState, RoomEvent } from 'livekit-client';
+import { ConnectionState, RoomEvent, type RoomOptions } from 'livekit-client';
 import { useQuery } from '@tanstack/react-query';
 import { CallStage } from './CallStage';
 import { ROOM_OPTIONS } from './roomOptions';
@@ -36,6 +36,7 @@ import {
   Link2,
   Maximize2,
   Minimize2,
+  MoreVertical,
   MoveDiagonal2,
   PhoneOff,
   Volume2,
@@ -61,6 +62,15 @@ import { useWebSocket } from '@/features/websocket/WSProvider';
 import { cn } from '@/shared/utils/cn';
 import { CameraBackground } from './BackgroundPicker';
 import { RESIZE_STEP, fitCallWindow, keepSize, savedSize, toastLift, viewport } from './callWindow';
+import { saveJoinChoice } from './prejoin';
+import { callTitleFor } from './callTitle';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/shared/components/ui/dropdown-menu';
+import { useAuth } from '@/features/auth/AuthProvider';
 
 interface ActiveCall {
   callId: string;
@@ -72,14 +82,31 @@ interface ActiveCall {
    * the start, as on a phone, and the camera stays off until somebody turns it on.
    */
   voice?: boolean;
+  /** What was chosen on the screen before it (PreJoinScreen); nothing for a call, which goes straight in. */
+  media?: JoinOptions;
+}
+
+/**
+ * How to come in: the microphone and camera on or off, and on which devices.
+ * Left out, the microphone is on for a call and off for anything else, the camera
+ * is off, and the browser's default devices are used.
+ */
+export interface JoinOptions {
+  mic?: boolean;
+  camera?: boolean;
+  audioInput?: string;
+  videoInput?: string;
+  audioOutput?: string;
+  /** A day of a standing meeting, whose room nobody answers knocks from. */
+  standing?: boolean;
 }
 
 interface ActiveCallContextValue {
   activeCall: ActiveCall | null;
   /** Joins a call, or does nothing if already in it. */
-  join: (callId: string) => Promise<void>;
+  join: (callId: string, options?: JoinOptions) => Promise<void>;
   /** Goes into a standing meeting's room, with the token its join gave. */
-  enter: (callId: string, token: string) => void;
+  enter: (callId: string, token: string, options?: JoinOptions) => void;
   /** Leaves without ending it for anybody else. */
   leave: () => void;
   joining: boolean;
@@ -262,7 +289,7 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
   const missedEarlyRef = useRef(new Map<string, string>());
 
   const join = useCallback(
-    async (callId: string) => {
+    async (callId: string, options?: JoinOptions) => {
       setFailure(null);
       latestCallIdRef.current = callId;
       const missedIn = missedEarlyRef.current.get(callId);
@@ -276,7 +303,15 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
       setJoining(true);
       try {
         const res = await callsApi.getToken(callId);
-        setActiveCall({ callId, token: res.data.token, voice: res.data.callType === 'audio' });
+        const voice = res.data.callType === 'audio';
+        setActiveCall({
+          callId,
+          token: res.data.token,
+          voice,
+          standing: options?.standing,
+          // A voice call starts with the camera off, whatever a video call last chose.
+          media: voice && options ? { ...options, camera: false } : options,
+        });
       } catch (err) {
         setFailure(classifyJoinError(err));
       } finally {
@@ -286,10 +321,10 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
     [activeCall?.callId, navigate]
   );
 
-  const enter = useCallback((callId: string, token: string) => {
+  const enter = useCallback((callId: string, token: string, options?: JoinOptions) => {
     setFailure(null);
     latestCallIdRef.current = callId;
-    setActiveCall({ callId, token, standing: true });
+    setActiveCall({ callId, token, standing: true, media: options });
   }, []);
 
   const leave = useCallback(() => {
@@ -428,6 +463,20 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
     toastError.current(err.message || 'Lost connection to the call.');
   }, []);
 
+  // The devices chosen before joining, for the camera and microphone the call turns
+  // on and for its sound. Made once per call: LiveKitRoom builds a new room when its
+  // options change, and the call object only changes on joining.
+  const media = activeCall?.media;
+  const roomOptions = useMemo<RoomOptions>(() => {
+    if (!media?.audioInput && !media?.videoInput && !media?.audioOutput) return ROOM_OPTIONS;
+    return {
+      ...ROOM_OPTIONS,
+      ...(media.audioInput && { audioCaptureDefaults: { deviceId: media.audioInput } }),
+      ...(media.videoInput && { videoCaptureDefaults: { deviceId: media.videoInput } }),
+      ...(media.audioOutput && { audioOutput: { deviceId: media.audioOutput } }),
+    };
+  }, [media]);
+
   // Full size on that call's own page; a corner window everywhere else.
   const expanded = !!activeCall && location.pathname === `/calls/${activeCall.callId}`;
 
@@ -445,13 +494,14 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
           token={activeCall.token}
           serverUrl={liveKitURL()}
           connect
-          options={ROOM_OPTIONS}
-          // Joining a meeting or a video call with the camera and microphone
-          // off: you turn them on when you are ready, rather than finding out
-          // you were already on. A call is a conversation, so its microphone is
+          options={roomOptions}
+          // Joining a meeting or a video call as chosen on the screen before it,
+          // which starts with the camera and microphone off for somebody who has
+          // never joined: you turn them on when you are ready, rather than finding
+          // out you were already on. A call is a conversation, so its microphone is
           // on from the start; the camera is still yours to turn on.
-          video={false}
-          audio={!!activeCall.voice}
+          video={activeCall.media?.camera ?? false}
+          audio={activeCall.media?.mic ?? !!activeCall.voice}
           data-lk-theme="default"
           onDisconnected={leave}
           onError={onRoomError}
@@ -494,12 +544,33 @@ function CallFrame({
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   useJoinAnnouncements();
 
+  // A device picked during the call is the one the next call's screen starts on.
+  const { user } = useAuth();
+  const userId = user?.id;
+  useEffect(() => {
+    const onDevice = (kind: MediaDeviceKind, deviceId: string) => {
+      if (!deviceId || deviceId === 'default') return;
+      const field = kind === 'audioinput' ? 'audioInput' : kind === 'videoinput' ? 'videoInput' : 'audioOutput';
+      saveJoinChoice(userId, { [field]: deviceId });
+    };
+    room.on(RoomEvent.ActiveDeviceChanged, onDevice);
+    return () => {
+      room.off(RoomEvent.ActiveDeviceChanged, onDevice);
+    };
+  }, [room, userId]);
+
   const { data: details } = useQuery({
     queryKey: ['call', callId],
     queryFn: () => callsApi.get(callId).then((res) => res.data),
     staleTime: 60_000,
   });
   const title: string | undefined = details?.title?.trim() || undefined;
+  // In a call between two, the other person's name, not your own.
+  const shownTitle = callTitleFor(title, details?.participants, userId);
+  const copyLink = async () => {
+    if (await copyCallLink(callId)) toast.success('Link copied. Anybody not on the call will have to ask to join.');
+    else toast.error('Could not copy. Your browser did not allow it.');
+  };
   // Everybody may be in a standing meeting's room, and most of them may not read its
   // log, so nobody is offered a button whose only answer is a refusal.
   const canReadLog = details?.canReadLog === true;
@@ -651,63 +722,113 @@ function CallFrame({
   return (
     <MeetingChatProvider transport={chatTransport}>
       <HandsProvider callId={callId}>
-        {/* Here rather than with the buttons, so the keys work in the corner window too. */}
-        <CallShortcuts />
-        <div
-          // text-foreground because LiveKit's theme sets white text on everything
-          // inside it, which on a light page made this bar's words and its minimise
-          // button invisible.
-          className={cn(
-            'z-50 overflow-hidden bg-background text-foreground shadow-2xl',
-            expanded
-              ? cn('fixed inset-0', sidebarOpen ? 'lg:left-64' : 'lg:left-16')
-              : // touch-none: a finger on it moves the window rather than scrolling the page.
-                'fixed touch-none select-none rounded-xl border border-border'
-          )}
-          style={
-            expanded
-              ? undefined
-              : {
-                  right: position.x,
-                  bottom: position.y,
-                  width: size.width,
-                  height: size.height,
-                }
-          }
-          data-testid={expanded ? undefined : 'call-window'}
-          onPointerDown={startGesture('move')}
-          onPointerMove={onGesture}
-          onPointerUp={endGesture}
-          onPointerCancel={endGesture}
-        >
-          {!expanded && (
-            <button
-              type="button"
-              aria-label="Resize the call window"
-              title="Drag to resize"
-              className="absolute left-1 top-1.5 z-10 flex h-7 w-7 cursor-nwse-resize items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-8 [@media(pointer:coarse)]:w-8"
-              onPointerDown={startGesture('resize')}
-              onPointerMove={onGesture}
-              onPointerUp={endGesture}
-              onPointerCancel={endGesture}
-              onKeyDown={resizeByKey}
-            >
-              <MoveDiagonal2 className="h-3.5 w-3.5" aria-hidden="true" />
-            </button>
-          )}
-          <div className="flex h-full flex-col">
-            <div
-              className={cn(
-                'flex items-center gap-2 border-b border-border px-2 py-1.5',
-                !expanded && 'cursor-grab pl-9 active:cursor-grabbing'
-              )}
-            >
-              <span className="min-w-0 flex-1 truncate text-sm font-medium">
-                {expanded && title ? `${title} \u00b7 ` : ''}
+      {/* Here rather than with the buttons, so the keys work in the corner window too. */}
+      <CallShortcuts />
+      <div
+        // text-foreground because LiveKit's theme sets white text on everything
+        // inside it, which on a light page made this bar's words and its minimise
+        // button invisible.
+        className={cn(
+          'z-50 overflow-hidden bg-background text-foreground shadow-2xl',
+          expanded
+            ? cn('fixed inset-0', sidebarOpen ? 'lg:left-64' : 'lg:left-16')
+            : // touch-none: a finger on it moves the window rather than scrolling the page.
+              'fixed touch-none select-none rounded-xl border border-border'
+        )}
+        style={
+          expanded
+            ? undefined
+            : {
+                right: position.x,
+                bottom: position.y,
+                width: size.width,
+                height: size.height,
+              }
+        }
+        data-testid={expanded ? undefined : 'call-window'}
+        onPointerDown={startGesture('move')}
+        onPointerMove={onGesture}
+        onPointerUp={endGesture}
+        onPointerCancel={endGesture}
+      >
+        {!expanded && (
+          <button
+            type="button"
+            aria-label="Resize the call window"
+            title="Drag to resize"
+            className="absolute left-1 top-1.5 z-10 flex h-7 w-7 cursor-nwse-resize items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [@media(pointer:coarse)]:h-8 [@media(pointer:coarse)]:w-8"
+            onPointerDown={startGesture('resize')}
+            onPointerMove={onGesture}
+            onPointerUp={endGesture}
+            onPointerCancel={endGesture}
+            onKeyDown={resizeByKey}
+          >
+            <MoveDiagonal2 className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        )}
+        <div className="flex h-full flex-col">
+          <div
+            className={cn(
+              'flex items-center gap-2 border-b border-border px-2 py-1.5',
+              !expanded && 'cursor-grab pl-9 active:cursor-grabbing'
+            )}
+          >
+            {expanded && shownTitle ? (
+              // The name on a line of its own and how many are in under it, so on a
+              // phone neither is cut short to make room for the other.
+              <span className="min-w-0 flex-1 leading-tight" data-testid="call-heading">
+                <span className="block truncate text-sm font-medium">{shownTitle}</span>
+                <span className="block truncate text-xs text-muted-foreground">
+                  {alone ? waitingLabel(reachable) : compactCount(remote.length + 1, expanded)}
+                </span>
+              </span>
+            ) : (
+              <span className="min-w-0 flex-1 truncate text-sm font-medium" data-testid="call-heading">
                 {alone ? waitingLabel(reachable) : `${compactCount(remote.length + 1, expanded)}`}
               </span>
-              {expanded ? (
-                <>
+            )}
+            {expanded ? (
+              <>
+                {/* On a phone the link and the guests go under one button, leaving
+                    room in the bar for the title. */}
+                <DropdownMenu modal={false}>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon" className="h-7 w-7 sm:hidden" aria-label="More call options" title="More">
+                      <MoreVertical className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => void copyLink()}>
+                      <Link2 className="mr-2 h-4 w-4" aria-hidden="true" />
+                      Copy the link to this call
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => setShowingGuests(true)}>
+                      <UserPlus className="mr-2 h-4 w-4" aria-hidden="true" />
+                      Guests
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="hidden h-7 w-7 sm:inline-flex"
+                  aria-label="Copy the link to this call"
+                  title="Copy link"
+                  onClick={() => void copyLink()}
+                >
+                  <Link2 className="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="hidden h-7 w-7 sm:inline-flex"
+                  aria-label="Guests"
+                  title="Guests"
+                  onClick={() => setShowingGuests(true)}
+                >
+                  <UserPlus className="h-4 w-4" />
+                </Button>
+                {canReadLog && (
                   <Button
                     variant="ghost"
                     size="icon"

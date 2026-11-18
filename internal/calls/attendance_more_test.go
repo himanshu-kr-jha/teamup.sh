@@ -460,6 +460,39 @@ func TestSomebodyWithALinkLearnsOnlyEnoughToKnock(t *testing.T) {
 	if memberView.Title == nil || *memberView.Title != title || len(memberView.Participants) != 2 {
 		t.Errorf("a member sees it all, got %+v", memberView)
 	}
+	if memberView.CanKnock == nil || *memberView.CanKnock {
+		t.Errorf("a member walks in, and the page has to know it to show the screen before the call: %v", memberView.CanKnock)
+	}
+}
+
+// The page before a call goes straight to the door for somebody who may read a
+// call but not join it, as the owner of the organization may a call between two
+// others, rather than first offering a Join that only knocks.
+func TestSomebodyWhoMayReadButNotJoinIsToldTheyWouldKnock(t *testing.T) {
+	e := newLK(t)
+	title := "Between two"
+	ivy := e.person(t, "Invited Ivy", "member")
+	sam := e.person(t, "Sam Second", "member")
+	call, err := e.svc.CreateCall(context.Background(), e.org.ID, ivy, &title, "video", nil, []string{sam.String()})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := doJSON(t, e.asOwner(t), http.MethodGet, "/api/calls/"+call.ID.String(), "")
+	wantCode(t, w, http.StatusOK)
+	var view CallModel
+	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
+		t.Fatal(err)
+	}
+	if view.CanReadLog == nil || !*view.CanReadLog {
+		t.Fatalf("the owner reads any call's log: %s", w.Body.String())
+	}
+	if view.CanKnock == nil || !*view.CanKnock {
+		t.Errorf("but would knock to join it: %s", w.Body.String())
+	}
+	if code := doJSON(t, e.asOwner(t), http.MethodPost, "/api/calls/"+call.ID.String()+"/token", "").Code; code != http.StatusForbidden {
+		t.Errorf("and is turned away asking for a token: %d", code)
+	}
 }
 
 func TestAKnockerIsToldWhenTheCallEndsWithThemStillWaiting(t *testing.T) {

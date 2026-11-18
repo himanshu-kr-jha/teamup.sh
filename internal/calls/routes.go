@@ -390,13 +390,15 @@ func (s *Service) callAsSeenBy(ctx context.Context, orgID uuid.UUID, call *CallM
 	if err != nil {
 		return nil, err
 	}
-	if readable {
-		call.CanReadLog = &readable
-		return call, nil
-	}
 	mayJoin, err := s.MayJoin(ctx, orgID, call.ID, userID)
 	if err != nil {
 		return nil, err
+	}
+	if readable {
+		knock := !mayJoin
+		call.CanReadLog = &readable
+		call.CanKnock = &knock
+		return call, nil
 	}
 	limited := gin.H{"id": call.ID, "status": call.Status, "callType": call.CallType, "canKnock": !mayJoin, "canReadLog": false}
 	if mayJoin {

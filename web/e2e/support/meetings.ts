@@ -130,13 +130,31 @@ export const resetOscillators = (page: Page) =>
   });
 export const oscillators = (page: Page) => page.evaluate(() => (window as unknown as { __oscillators?: number }).__oscillators ?? 0);
 
-/** Follows a call's link and waits to be in it. A meeting nobody has started asks first; see lobbyJoin. */
+/**
+ * Follows a call's link and waits to be in it, pressing Join on the screen before
+ * a video call or a meeting (PreJoinScreen), with the microphone and camera as it
+ * starts them: off, for a browser that has not joined before.
+ */
 export async function joinCall(page: Page, callId: string) {
   await page.goto(`/calls/${callId}`);
-  await expect(page.getByRole('button', { name: 'Leave the call' })).toBeVisible({ timeout: 30_000 });
+  await passPrejoin(page);
+  await expect(page.getByRole('button', { name: 'Leave the call' }).first()).toBeVisible({ timeout: 30_000 });
 }
-/** The button that starts a scheduled meeting from its page. */
+/** The button that joins from the screen before a call, and starts a scheduled meeting. */
 export const lobbyJoin = (page: Page) => page.getByRole('button', { name: /^Join( now)?$/ });
+/** The screen before a video call or a meeting. */
+export const prejoinScreen = (page: Page) => page.getByRole('heading', { name: 'Ready to join?' });
+
+/**
+ * Presses Join on the screen before a call, once it is there. A voice call, or a
+ * call you are already in, has no such screen, and then this only waits for the call.
+ */
+export async function passPrejoin(page: Page) {
+  const leave = page.getByRole('button', { name: 'Leave the call' }).first();
+  const ready = prejoinScreen(page);
+  await expect(leave.or(ready).first()).toBeVisible({ timeout: 30_000 });
+  if (await ready.isVisible()) await lobbyJoin(page).click();
+}
 
 export const leaveCall = (page: Page) => page.getByRole('button', { name: 'Leave the call' }).click();
 

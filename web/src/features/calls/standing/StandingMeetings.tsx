@@ -15,33 +15,23 @@ import {
 import { standingApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
-import { useActiveCall } from '../ActiveCallProvider';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { PERMS, can } from '@/shared/permissions';
 import { FieldWorkBar } from './FieldWork';
 import { StandingMeetingDialog } from './StandingMeetingDialog';
 import { describeAudience, describeSchedule, type StandingMeeting } from './standing';
 
-/** Goes into today's room of a standing meeting. Shared with the calendar. */
+/**
+ * Goes to the screen before today's room of a standing meeting
+ * (StandingPreJoinPage). Nothing is opened until Join is pressed there: opening
+ * the day's room starts it and counts towards attendance. Shared with the calendar.
+ */
 export function useJoinStanding() {
-  const { enter } = useActiveCall();
   const navigate = useNavigate();
-  const toast = useToast();
-  const [joining, setJoining] = useState<string | null>(null);
-
   const joinStanding = async (id: string) => {
-    setJoining(id);
-    try {
-      const { data } = await standingApi.join(id);
-      enter(data.callId, data.token);
-      navigate(`/calls/${data.callId}`);
-    } catch (err) {
-      toast.error(apiErrorMessage(err, 'Could not join this meeting.'));
-    } finally {
-      setJoining(null);
-    }
+    navigate(`/calls/standing/${id}/join`);
   };
-  return { joinStanding, joining };
+  return { joinStanding, joining: null as string | null };
 }
 
 /** The permanent rooms, pinned at the top of Calls. */

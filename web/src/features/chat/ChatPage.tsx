@@ -73,6 +73,7 @@ import { focusWhenFree, typesOnOpen } from './composerFocus';
 import { applyDelete, applyEdit, isEditFrame } from './liveChanges';
 import { stepConversation, stepUnread } from './conversationKeys';
 import { useShortcut } from '@/shared/shortcuts/ShortcutsProvider';
+import type { RingState } from '@/features/calls/CallViewPage';
 
 interface Message {
   id: string;
@@ -867,7 +868,7 @@ export function ChatPage() {
         callType: 'audio',
         title: activeChannel?.name ?? undefined,
       });
-      navigate(`/calls/${call.id}`);
+      navigate(`/calls/${call.id}`, { state: { ring: 'placed' } satisfies RingState });
     } catch (err) {
       toast.error(apiErrorMessage(err, 'Could not start that call.'));
     } finally {

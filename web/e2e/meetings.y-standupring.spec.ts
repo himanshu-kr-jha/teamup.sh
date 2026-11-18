@@ -1,5 +1,5 @@
 import { expect, test } from './support/fixtures';
-import { apiAs, idOf, leaveCall, sql } from './support/meetings';
+import { apiAs, idOf, leaveCall, passPrejoin, sql } from './support/meetings';
 import { PEOPLE } from './support/people';
 
 // Stand-ups ring like a call as they start, and nothing rings somebody on leave:
@@ -53,6 +53,7 @@ test.describe('ringing and leave', () => {
 
     // Join takes her into the day's room.
     await ring.getByRole('button', { name: 'Join' }).click();
+    await passPrejoin(alice.page);
     await expect(alice.page.getByRole('button', { name: 'Leave the call' })).toBeVisible({ timeout: 30_000 });
     expect(sql(`SELECT count(*) FROM calls WHERE standing_meeting_id = '${id}'`)).toBe('1');
     await leaveCall(alice.page);
