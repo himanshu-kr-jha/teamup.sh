@@ -247,13 +247,15 @@ func (s *Service) RingInto(ctx context.Context, orgID, callID, ringerID uuid.UUI
 		return result, nil
 	default:
 	}
+	// Read now: the timer outlives this request, and the setting may change.
+	ringFor := s.ringFor
 	s.ringers.Add(1)
 	go func() {
 		defer s.ringers.Done()
 		select {
 		case <-s.ringStop:
 			return
-		case <-time.After(s.ringFor):
+		case <-time.After(ringFor):
 		}
 		ctx := context.WithoutCancel(ctx)
 		for _, id := range free {

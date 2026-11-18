@@ -1154,6 +1154,8 @@ func (s *Service) ringDevices(ctx context.Context, call *Call, callerName, body 
 	default:
 	}
 	lane := s.openLane(call.ID)
+	// Read now: the ringing outlives this request, and the settings may change.
+	every, ringFor := s.ringEvery, s.ringFor
 	s.ringers.Add(1)
 	go func() {
 		defer s.ringers.Done()
@@ -1167,10 +1169,10 @@ func (s *Service) ringDevices(ctx context.Context, call *Call, callerName, body 
 			case <-ctx.Done():
 			}
 		}()
-		if !lane.ring(ctx, s.notifier, invitees, ring) || s.ringEvery <= 0 {
+		if !lane.ring(ctx, s.notifier, invitees, ring) || every <= 0 {
 			return
 		}
-		s.keepRinging(ctx, call.ID, lane, invitees, ring)
+		s.keepRinging(ctx, call.ID, lane, invitees, ring, every, ringFor)
 	}()
 }
 
@@ -1246,11 +1248,11 @@ func (s *Service) laneOf(callID uuid.UUID) *ringLane {
 // Somebody who has picked up or turned it down on one device is still being
 // rung on the others, so they are told to stop there too: answered on the
 // laptop, the phone falls silent.
-func (s *Service) keepRinging(ctx context.Context, callID uuid.UUID, lane *ringLane, invitees []uuid.UUID, ring protocol.Push) {
+func (s *Service) keepRinging(ctx context.Context, callID uuid.UUID, lane *ringLane, invitees []uuid.UUID, ring protocol.Push, every, ringFor time.Duration) {
 	ringing := invitees
-	tick := time.NewTicker(s.ringEvery)
+	tick := time.NewTicker(every)
 	defer tick.Stop()
-	deadline := time.After(s.ringFor)
+	deadline := time.After(ringFor)
 	for {
 		select {
 		case <-ctx.Done():
