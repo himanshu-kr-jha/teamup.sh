@@ -913,6 +913,11 @@ type CallModel struct {
 	// CanReadLog says whether whoever asked may read this call's log, so that nobody
 	// is offered a button whose only answer is a refusal. Set for a reader, not stored.
 	CanReadLog *bool `json:"canReadLog,omitempty"`
+	// CanKnock says that whoever asked would be turned away at the door: they may
+	// read the call, as an administrator may, but not join it without being let in.
+	// The page then goes straight to the door rather than to the screen before the
+	// call. Set with CanReadLog, not stored.
+	CanKnock *bool `json:"canKnock,omitempty"`
 
 	// MissedReason says why a call between two people never happened:
 	// no_answer, declined, or busy (they were in another call). Nil otherwise.

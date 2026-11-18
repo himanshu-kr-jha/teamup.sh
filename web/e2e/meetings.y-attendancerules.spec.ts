@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { expect, test } from './support/fixtures';
-import { apiAs, idOf, leaveCall, sql, waitForLog } from './support/meetings';
+import { apiAs, idOf, leaveCall, passPrejoin, sql, waitForLog } from './support/meetings';
 import { PEOPLE } from './support/people';
 
 // Attendance rules, the owner's decisions of 16 November 2026: a stand-up may
@@ -81,6 +81,7 @@ test.describe('attendance rules', () => {
     for (const s of [alice, pat]) {
       await s.page.goto('/calls');
       await s.page.getByRole('button', { name: `Join ${name}` }).click();
+      await passPrejoin(s.page);
       await expect(s.page.getByRole('button', { name: 'Leave the call' })).toBeVisible({ timeout: 30_000 });
     }
     await pat.page.getByRole('button', { name: 'Turn your camera on' }).click();

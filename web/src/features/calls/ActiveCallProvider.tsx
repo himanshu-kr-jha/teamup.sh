@@ -16,7 +16,7 @@ import {
   useRemoteParticipants,
   useRoomContext,
 } from '@livekit/components-react';
-import { ConnectionState, RoomEvent } from 'livekit-client';
+import { ConnectionState, RoomEvent, type RoomOptions } from 'livekit-client';
 import { useQuery } from '@tanstack/react-query';
 import { CallStage } from './CallStage';
 import { ROOM_OPTIONS } from './roomOptions';
@@ -58,6 +58,8 @@ import { useUIStore } from '@/shared/store';
 import { useWebSocket } from '@/features/websocket/WSProvider';
 import { cn } from '@/shared/utils/cn';
 import { CameraBackground } from './BackgroundPicker';
+import { saveJoinChoice } from './prejoin';
+import { useAuth } from '@/features/auth/AuthProvider';
 import { RESIZE_STEP, fitCallWindow, keepSize, savedSize, viewport } from './callWindow';
 
 interface ActiveCall {
@@ -70,14 +72,31 @@ interface ActiveCall {
    * the start, as on a phone, and the camera stays off until somebody turns it on.
    */
   voice?: boolean;
+  /** What was chosen on the screen before it (PreJoinScreen); nothing for a call, which goes straight in. */
+  media?: JoinOptions;
+}
+
+/**
+ * How to come in: the microphone and camera on or off, and on which devices.
+ * Left out, the microphone is on for a call and off for anything else, the camera
+ * is off, and the browser's default devices are used.
+ */
+export interface JoinOptions {
+  mic?: boolean;
+  camera?: boolean;
+  audioInput?: string;
+  videoInput?: string;
+  audioOutput?: string;
+  /** A day of a standing meeting, whose room nobody answers knocks from. */
+  standing?: boolean;
 }
 
 interface ActiveCallContextValue {
   activeCall: ActiveCall | null;
   /** Joins a call, or does nothing if already in it. */
-  join: (callId: string) => Promise<void>;
+  join: (callId: string, options?: JoinOptions) => Promise<void>;
   /** Goes into a standing meeting's room, with the token its join gave. */
-  enter: (callId: string, token: string) => void;
+  enter: (callId: string, token: string, options?: JoinOptions) => void;
   /** Leaves without ending it for anybody else. */
   leave: () => void;
   joining: boolean;
@@ -257,7 +276,7 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
   const missedEarlyRef = useRef(new Map<string, string>());
 
   const join = useCallback(
-    async (callId: string) => {
+    async (callId: string, options?: JoinOptions) => {
       setFailure(null);
       latestCallIdRef.current = callId;
       const missedIn = missedEarlyRef.current.get(callId);
@@ -271,7 +290,13 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
       setJoining(true);
       try {
         const res = await callsApi.getToken(callId);
-        setActiveCall({ callId, token: res.data.token, voice: res.data.callType === 'audio' });
+        setActiveCall({
+          callId,
+          token: res.data.token,
+          voice: res.data.callType === 'audio',
+          standing: options?.standing,
+          media: options,
+        });
       } catch (err) {
         setFailure(classifyJoinError(err));
       } finally {
@@ -281,10 +306,10 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
     [activeCall?.callId, navigate]
   );
 
-  const enter = useCallback((callId: string, token: string) => {
+  const enter = useCallback((callId: string, token: string, options?: JoinOptions) => {
     setFailure(null);
     latestCallIdRef.current = callId;
-    setActiveCall({ callId, token, standing: true });
+    setActiveCall({ callId, token, standing: true, media: options });
   }, []);
 
   const leave = useCallback(() => {
@@ -423,6 +448,20 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
     toastError.current(err.message || 'Lost connection to the call.');
   }, []);
 
+  // The devices chosen before joining, for the camera and microphone the call turns
+  // on and for its sound. Made once per call: LiveKitRoom builds a new room when its
+  // options change, and the call object only changes on joining.
+  const media = activeCall?.media;
+  const roomOptions = useMemo<RoomOptions>(() => {
+    if (!media?.audioInput && !media?.videoInput && !media?.audioOutput) return ROOM_OPTIONS;
+    return {
+      ...ROOM_OPTIONS,
+      ...(media.audioInput && { audioCaptureDefaults: { deviceId: media.audioInput } }),
+      ...(media.videoInput && { videoCaptureDefaults: { deviceId: media.videoInput } }),
+      ...(media.audioOutput && { audioOutput: { deviceId: media.audioOutput } }),
+    };
+  }, [media]);
+
   // Full size on that call's own page; a corner window everywhere else.
   const expanded = !!activeCall && location.pathname === `/calls/${activeCall.callId}`;
 
@@ -440,13 +479,14 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
           token={activeCall.token}
           serverUrl={liveKitURL()}
           connect
-          options={ROOM_OPTIONS}
-          // Joining a meeting or a video call with the camera and microphone
-          // off: you turn them on when you are ready, rather than finding out
-          // you were already on. A call is a conversation, so its microphone is
+          options={roomOptions}
+          // Joining a meeting or a video call as chosen on the screen before it,
+          // which starts with the camera and microphone off for somebody who has
+          // never joined: you turn them on when you are ready, rather than finding
+          // out you were already on. A call is a conversation, so its microphone is
           // on from the start; the camera is still yours to turn on.
-          video={false}
-          audio={!!activeCall.voice}
+          video={activeCall.media?.camera ?? false}
+          audio={activeCall.media?.mic ?? !!activeCall.voice}
           data-lk-theme="default"
           onDisconnected={leave}
           onError={onRoomError}
@@ -488,6 +528,21 @@ function CallFrame({
   const alone = remote.length === 0;
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   useJoinAnnouncements();
+
+  // A device picked during the call is the one the next call's screen starts on.
+  const { user } = useAuth();
+  const userId = user?.id;
+  useEffect(() => {
+    const onDevice = (kind: MediaDeviceKind, deviceId: string) => {
+      if (!deviceId || deviceId === 'default') return;
+      const field = kind === 'audioinput' ? 'audioInput' : kind === 'videoinput' ? 'videoInput' : 'audioOutput';
+      saveJoinChoice(userId, { [field]: deviceId });
+    };
+    room.on(RoomEvent.ActiveDeviceChanged, onDevice);
+    return () => {
+      room.off(RoomEvent.ActiveDeviceChanged, onDevice);
+    };
+  }, [room, userId]);
 
   const { data: details } = useQuery({
     queryKey: ['call', callId],

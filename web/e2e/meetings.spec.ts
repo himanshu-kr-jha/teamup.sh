@@ -15,6 +15,7 @@ import {
   joinCall,
   leaveCall,
   oscillators,
+  passPrejoin,
   sql,
   resetOscillators,
   spyOnAudio,
@@ -327,8 +328,10 @@ test.describe('4. knocking on a private call', () => {
     await expect(admitButton(pat.page, NAME('sam'))).toHaveCount(0);
     await expect(pat.page.getByText(`${NAME('sam')} joined the call`, { exact: true })).toBeVisible();
 
-    // Admitted people are members: reconnecting does not knock again.
+    // Admitted people are members: reconnecting does not knock again. A reload is
+    // following the link afresh, so it stops at the screen before the call.
     await sam.page.reload();
+    await passPrejoin(sam.page);
     await expect(sam.page.getByRole('button', { name: 'Leave the call' })).toBeVisible({ timeout: 30_000 });
     await expect(sam.page.getByText('This is a private call')).toHaveCount(0);
 
@@ -673,6 +676,7 @@ test.describe('6. calendar', () => {
     await joinCall(olivia.page, call.id);
     // Alice is rung, and answers.
     await alice.page.getByRole('button', { name: 'Answer' }).click({ timeout: 20_000 });
+    await passPrejoin(alice.page);
     await expect(alice.page.getByRole('button', { name: 'Leave the call' })).toBeVisible({ timeout: 30_000 });
     await alice.page.waitForTimeout(4000);
     await leaveCall(alice.page);
@@ -751,6 +755,7 @@ const minutesLate = (page: Page, name: string) => attendanceRow(page, name).getB
 async function joinStandingByCard(page: Page, name: string) {
   await page.goto('/calls');
   await page.getByRole('button', { name: `Join ${name}` }).click();
+  await passPrejoin(page);
   await expect(page.getByRole('button', { name: 'Leave the call' })).toBeVisible({ timeout: 30_000 });
 }
 

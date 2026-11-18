@@ -1,101 +1,166 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { AlertTriangle, CalendarClock, CalendarX, CircleOff, Loader2, Video } from 'lucide-react';
+import { AlertTriangle, CalendarClock, CalendarX, CircleOff, Loader2 } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { callsApi } from '@/shared/api/client';
 import { formatDate, formatTime } from '@/shared/utils/cn';
 import { useAuth } from '@/features/auth/AuthProvider';
-import { JOIN_EARLY_MINUTES, dayLabelKey } from '@/features/calendar/layout';
+import { dayLabelKey } from '@/features/calendar/layout';
 import { useNow } from '@/shared/hooks/useNow';
-import { useActiveCall } from './ActiveCallProvider';
+import { useActiveCall, type JoinOptions } from './ActiveCallProvider';
 import { KnockScreen } from './KnockScreen';
 import { lobbyFor } from './lobby';
+import { PreJoinScreen } from './PreJoinScreen';
+import { readJoinChoice, type JoinChoice } from './prejoin';
 
-/** How often a lobby looks again, to say that somebody has started it. */
-const LOBBY_RECHECK_MS = 30_000;
+/** How often the screen before a call looks again at who is in it, and whether somebody started it. */
+const WHO_IS_HERE_RECHECK_MS = 5_000;
+
+/**
+ * A standing meeting's token is good for fifteen minutes (memberTokenTTL); one
+ * older than this is not trusted to last until the room is reached, and joining
+ * asks for a new one instead.
+ */
+const STANDING_TOKEN_FRESH_MS = 10 * 60_000;
+
+/**
+ * What a Join button for a standing meeting hands the page: opening the day's
+ * room gave a token already (useJoinStanding), kept until you press Join here.
+ */
+export interface StandingJoinState {
+  join: true;
+  standingToken: { token: string; at: number };
+}
+
+function standingTokenOf(state: unknown): StandingJoinState['standingToken'] | undefined {
+  const given = (state as Partial<StandingJoinState> | null)?.standingToken;
+  return given && typeof given.token === 'string' && typeof given.at === 'number' ? given : undefined;
+}
+
+/** The devices you used last, for a call that goes straight in. */
+function rememberedDevices(userId: string | undefined): JoinOptions {
+  const { audioInput, videoInput, audioOutput } = readJoinChoice(userId);
+  return { audioInput, videoInput, audioOutput };
+}
 
 /**
  * The call's own page. The room itself lives in ActiveCallProvider, above the
  * router, so that navigating away shrinks the call into a corner instead of
- * dropping it. All this page does is ask to be in the call and leave room for
- * it on screen, or show the door when that was refused, or stop at a lobby when
- * walking in would start a scheduled meeting nobody meant to start.
+ * dropping it. All this page does is decide how you come in and leave room for
+ * the call on screen, or show the door when coming in was refused.
+ *
+ * A video call or a meeting stops first at the screen before it (PreJoinScreen),
+ * where you set up your camera, microphone and background and see who is there;
+ * a call goes straight in, as a phone does. The screen also stands where the
+ * lobby of a scheduled meeting nobody has started used to: asking for a token is
+ * what opens such a meeting, so nothing asks for one until you press Join.
  */
 export function CallViewPage() {
   const { roomName: callId } = useParams<{ roomName: string }>();
   return callId ? <CallRoute key={callId} callId={callId} /> : null;
 }
 
-/** Whoever pressed a Join button has already decided. A link has decided nothing. */
-function pressedJoin(state: unknown): boolean {
-  return (state as { join?: boolean } | null)?.join === true;
-}
+/** 'deciding' until the call's details say which way in; 'join' once on the way, or in. */
+type Phase = 'deciding' | 'prejoin' | 'missed' | 'join';
 
 function CallRoute({ callId }: { callId: string }) {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
-  const { activeCall, join, joining, failure, clearFailure } = useActiveCall();
+  const { activeCall, join, enter, joining, failure, clearFailure } = useActiveCall();
   const inCall = activeCall?.callId === callId;
-  // null until it is known whether to walk straight in.
-  const [choice, setChoice] = useState<'join' | 'lobby' | null>(() => (pressedJoin(location.state) || inCall ? 'join' : null));
+  // Already in it, there is nothing to set up: back to the call.
+  const [phase, setPhase] = useState<Phase>(() => (inCall ? 'join' : 'deciding'));
+  const standingToken = standingTokenOf(location.state);
 
   const { data: call, error, isFetchedAfterMount, refetch } = useQuery({
     queryKey: ['call', callId],
     queryFn: () => callsApi.get(callId).then((res) => res.data),
-    enabled: choice !== 'join',
+    enabled: phase !== 'join',
     // A copy cached before somebody else opened it, or before you were let in, cannot
     // decide this.
     staleTime: 0,
     retry: false,
-    refetchInterval: choice === 'lobby' ? LOBBY_RECHECK_MS : false,
+    refetchInterval: phase === 'prejoin' ? WHO_IS_HERE_RECHECK_MS : false,
   });
 
-  // Looked at again as time passes, so a lobby left open turns missed at the end.
+  // Looked at again as time passes, so a screen left open turns missed at the end.
   const now = useNow();
   const lobby = call ? lobbyFor(call, user?.id, now) : 'none';
 
+  const go = useCallback(
+    (options?: JoinOptions) => {
+      setPhase('join');
+      void join(callId, options);
+    },
+    [callId, join]
+  );
+
   useEffect(() => {
-    if (choice !== null) return;
+    if (phase !== 'deciding') return;
     if (error) {
-      // Joining is what says why it cannot be read, in the words for that.
-      setChoice('join');
+      // Joining is what says why it cannot be read, in the words for that: the door
+      // of a call you are not in, or that it is over.
+      go(rememberedDevices(user?.id));
     } else if (isFetchedAfterMount && call) {
-      setChoice(lobby === 'none' ? 'join' : 'lobby');
+      if (lobby === 'missed') setPhase('missed');
+      // A call is answered or placed like a phone call, with no screen in between.
+      else if (call.callType === 'audio') go(rememberedDevices(user?.id));
+      // Somebody who could only ask to come in goes to the door, which opens nothing.
+      else if (call.canKnock === true) go();
+      else setPhase('prejoin');
     }
-  }, [choice, error, isFetchedAfterMount, call, lobby]);
+  }, [phase, error, isFetchedAfterMount, call, lobby, go, user?.id]);
 
-  useEffect(() => {
-    if (choice === 'join') void join(callId);
-  }, [choice, callId, join]);
+  const joinFromScreen = (choice: JoinChoice) => {
+    const options: JoinOptions = {
+      mic: choice.mic,
+      camera: choice.camera,
+      audioInput: choice.audioInput,
+      videoInput: choice.videoInput,
+      audioOutput: choice.audioOutput,
+      standing: !!call?.standingMeetingId,
+    };
+    if (standingToken && Date.now() - standingToken.at < STANDING_TOKEN_FRESH_MS) {
+      setPhase('join');
+      enter(callId, standingToken.token, options);
+    } else {
+      go(options);
+    }
+  };
 
-  if (choice === 'lobby' && lobby === 'missed') {
+  if (phase === 'missed' || (phase === 'prejoin' && lobby === 'missed')) {
     return <MissedMeeting call={call} organizer={!!user && call?.createdBy === user.id} />;
   }
 
-  if (choice === 'lobby') {
-    return <MeetingLobby callId={callId} call={call} early={lobby === 'early'} onJoin={() => setChoice('join')} />;
+  if (phase === 'prejoin' && lobby !== 'missed') {
+    return <PreJoinScreen callId={callId} call={call} lobby={lobby} onJoin={joinFromScreen} />;
   }
 
-  if (choice === 'join' && failure?.kind === 'knock') {
+  if (phase === 'join' && failure?.kind === 'knock') {
     return (
       <KnockScreen
         callId={callId}
         onAdmitted={async () => {
-          // They asked to come in, so in they go, and asking is deciding. But not into
-          // a meeting days away, which their arriving would lock against moving: for
-          // that, being let in means being invited.
+          // They asked to come in, so in they go, and asking is deciding: with what
+          // they chose last time. But not into a meeting days away, which their
+          // arriving would lock against moving: for that, being let in means being
+          // invited, and the screen before it says what joining would do.
           clearFailure();
           const { data: fresh } = await refetch();
-          if (fresh && lobbyFor(fresh, user?.id, new Date()) === 'early') setChoice('lobby');
-          else void join(callId);
+          if (fresh && lobbyFor(fresh, user?.id, new Date()) === 'early') {
+            setPhase('prejoin');
+          } else {
+            const last = readJoinChoice(user?.id);
+            void join(callId, fresh?.callType === 'audio' ? rememberedDevices(user?.id) : last);
+          }
         }}
       />
     );
   }
 
-  if (choice === 'join' && failure) {
+  if (phase === 'join' && failure) {
     const over = failure.kind === 'over';
     return (
       <div className="flex h-full items-center justify-center p-6">
@@ -124,7 +189,7 @@ function CallRoute({ callId }: { callId: string }) {
     );
   }
 
-  if (choice !== 'join' || joining || !inCall) {
+  if (phase !== 'join' || joining || !inCall) {
     return (
       <div role="status" aria-label="Joining the call" className="flex h-full items-center justify-center">
         <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" aria-hidden="true" />
@@ -136,63 +201,6 @@ function CallRoute({ callId }: { callId: string }) {
   return <div className="h-full" />;
 }
 
-/**
- * A scheduled meeting, as somebody who may join it sees it before anybody has. Joining
- * is a click, because joining starts it, and a meeting that has started can no longer
- * be moved. It is also where a knock notification leads: somebody at the door can be
- * answered from here (KnockCenter) without starting anything.
- */
-function MeetingLobby({
-  callId,
-  call,
-  early,
-  onJoin,
-}: {
-  callId: string;
-  call: { title?: string; status?: string; scheduledStart?: string } | undefined;
-  early: boolean;
-  onJoin: () => void;
-}) {
-  const navigate = useNavigate();
-  const { watchDoor } = useActiveCall();
-
-  useEffect(() => {
-    watchDoor(callId);
-    return () => watchDoor(null);
-  }, [callId, watchDoor]);
-
-  const started = call?.status === 'active';
-  const start = call?.scheduledStart;
-  return (
-    <div className="flex h-full items-center justify-center overflow-y-auto p-6">
-      <div className="w-full max-w-md text-center">
-        <CalendarClock className="mx-auto mb-3 h-10 w-10 text-primary" aria-hidden="true" />
-        <h1 className="break-anywhere text-lg font-semibold">{call?.title?.trim() || 'Scheduled meeting'}</h1>
-        {start && (
-          <p className="mt-1 text-sm tabular-nums text-muted-foreground">
-            {formatDate(start)} at {formatTime(start)}
-          </p>
-        )}
-        <p className="mt-3 text-sm text-muted-foreground">
-          {started
-            ? 'Somebody has started it.'
-            : early
-              ? `It opens ${JOIN_EARLY_MINUTES} minutes before it starts. Joining now starts it for everybody, and it can no longer be moved.`
-              : 'Nobody has started it yet. Joining starts it for everybody.'}
-        </p>
-        <div className="mt-5 flex flex-wrap justify-center gap-2">
-          <Button variant="outline" onClick={() => navigate('/calls')}>
-            Back to calls
-          </Button>
-          <Button onClick={onJoin}>
-            <Video className="mr-2 h-4 w-4" aria-hidden="true" />
-            {early && !started ? 'Join now' : 'Join'}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 /**
  * A scheduled meeting nobody started before its end. There is nothing to join;

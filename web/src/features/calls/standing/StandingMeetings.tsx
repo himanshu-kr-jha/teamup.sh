@@ -16,15 +16,20 @@ import { standingApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
 import { useActiveCall } from '../ActiveCallProvider';
+import type { StandingJoinState } from '../CallViewPage';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { PERMS, can } from '@/shared/permissions';
 import { FieldWorkBar } from './FieldWork';
 import { StandingMeetingDialog } from './StandingMeetingDialog';
 import { describeAudience, describeSchedule, type StandingMeeting } from './standing';
 
-/** Goes into today's room of a standing meeting. Shared with the calendar. */
+/**
+ * Goes to today's room of a standing meeting, opening it, and stops at the screen
+ * before it with the token that came back (CallViewPage). Shared with the calendar.
+ * Already in it, you go straight back to it.
+ */
 export function useJoinStanding() {
-  const { enter } = useActiveCall();
+  const { activeCall } = useActiveCall();
   const navigate = useNavigate();
   const toast = useToast();
   const [joining, setJoining] = useState<string | null>(null);
@@ -33,8 +38,12 @@ export function useJoinStanding() {
     setJoining(id);
     try {
       const { data } = await standingApi.join(id);
-      enter(data.callId, data.token);
-      navigate(`/calls/${data.callId}`);
+      if (activeCall?.callId === data.callId) {
+        navigate(`/calls/${data.callId}`);
+        return;
+      }
+      const state: StandingJoinState = { join: true, standingToken: { token: data.token, at: Date.now() } };
+      navigate(`/calls/${data.callId}`, { state });
     } catch (err) {
       toast.error(apiErrorMessage(err, 'Could not join this meeting.'));
     } finally {

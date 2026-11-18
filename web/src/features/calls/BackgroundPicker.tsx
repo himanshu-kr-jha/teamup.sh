@@ -66,7 +66,15 @@ const APPLY_TIMEOUT_MS = 20_000;
  */
 export function CameraBackground() {
   const { cameraTrack } = useLocalParticipant();
-  const track = cameraTrack?.track as LocalVideoTrack | undefined;
+  useCameraEffects(cameraTrack?.track as LocalVideoTrack | undefined);
+  return null;
+}
+
+/**
+ * Keeps your chosen background and colour on a camera track: the one in the call
+ * (CameraBackground), or the preview before you join it (PreJoinScreen).
+ */
+export function useCameraEffects(track: LocalVideoTrack | undefined) {
   const live = useCameraLive(track);
   const choice = useBackgroundChoice();
   const look = useLook();
@@ -104,6 +112,9 @@ export function CameraBackground() {
           new Promise<void>((resolve) => (timer = setTimeout(resolve, APPLY_TIMEOUT_MS))),
         ]);
       } catch {
+        // A camera let go of meanwhile, as the preview's is on joining, is no
+        // reason to forget the background chosen for it.
+        if (track.mediaStreamTrack?.readyState === 'ended') return;
         toastRef.current('Your camera effects could not be applied on this device.');
         setBackgroundChoice({ kind: 'none' });
         setLook('natural');
@@ -113,8 +124,6 @@ export function CameraBackground() {
       }
     });
   }, [track, live, choice, look, companyKey]);
-
-  return null;
 }
 
 /** Whether the camera is on and sending a picture, following it as it turns off and on. */
@@ -139,8 +148,12 @@ function useCameraLive(track: LocalVideoTrack | undefined): boolean {
   return live;
 }
 
-/** The button beside the camera's, and its menu of backgrounds. */
-export function BackgroundPicker() {
+/**
+ * The button beside the camera's, and its menu of backgrounds. In the call it is
+ * one of the call's own buttons; on the screen before it, a round button laid over
+ * your preview, beside the microphone and camera.
+ */
+export function BackgroundPicker({ variant = 'call' }: { variant?: 'call' | 'preview' }) {
   const supported = useBackgroundsSupported();
   const choice = useBackgroundChoice();
   const look = useLook();
@@ -184,7 +197,7 @@ export function BackgroundPicker() {
         <DropdownMenuTrigger asChild disabled={!supported}>
           <button
             type="button"
-            className="lk-button"
+            className={variant === 'call' ? 'lk-button' : previewButtonClass(on)}
             aria-label={label}
             title={label}
             aria-pressed={on}
@@ -198,7 +211,13 @@ export function BackgroundPicker() {
           side="top"
           align="center"
           sideOffset={8}
-          className="max-h-[min(40rem,calc(100dvh-6rem))] w-[18.5rem] overflow-y-auto p-2"
+          className={cn(
+            'w-[18.5rem] overflow-y-auto p-2',
+            // Over the preview it may open downwards, into whatever room is left below.
+            variant === 'call'
+              ? 'max-h-[min(40rem,calc(100dvh-6rem))]'
+              : 'max-h-[min(40rem,calc(var(--radix-dropdown-menu-content-available-height)-0.5rem))]'
+          )}
           aria-label="Background effects"
         >
           <DropdownMenuLabel className="px-1 pb-2 pt-0.5 text-xs font-medium text-muted-foreground">Background</DropdownMenuLabel>
@@ -285,6 +304,24 @@ export function BackgroundPicker() {
         data-testid="background-picture-input"
       />
     </>
+  );
+}
+
+/**
+ * A round button laid over your camera's preview, before a call. The picture
+ * under it is dark whatever the page's theme, so the button is too; one that is
+ * on turns light, and one whose device is off turns red, as in the call.
+ */
+export function previewButtonClass(on: boolean, alarm = false): string {
+  return cn(
+    'inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full border transition-colors',
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white focus-visible:ring-offset-2 focus-visible:ring-offset-black/40',
+    'disabled:cursor-not-allowed disabled:opacity-50',
+    alarm
+      ? 'border-transparent bg-red-600 text-white hover:bg-red-700'
+      : on
+        ? 'border-transparent bg-white text-slate-900 hover:bg-white/90'
+        : 'border-white/25 bg-black/55 text-white backdrop-blur hover:bg-black/70'
   );
 }
 
