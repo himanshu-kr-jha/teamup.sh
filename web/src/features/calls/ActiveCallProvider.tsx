@@ -492,6 +492,13 @@ function CallFrame({
   // People, not the note-taker: alone with it is alone.
   const remote = useOtherPeople();
   const alone = remote.length === 0;
+  // Once somebody has been in, being alone again is waiting, not ringing: the
+  // ring that started the call is long over.
+  const [somebodyCame, setSomebodyCame] = useState(false);
+  useEffect(() => {
+    if (!alone) setSomebodyCame(true);
+  }, [alone]);
+  const reachNow = somebodyCame ? null : reachable;
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   useJoinAnnouncements();
   const rings = useAddedRings(callId);
@@ -553,7 +560,7 @@ function CallFrame({
 
   // While their phone rings, the caller hears it ring, as on a phone: only when
   // it really is ringing ("Ringing\u2026"), and only until somebody comes in.
-  const ringing = alone && reachable === true;
+  const ringing = alone && reachNow === true;
   useEffect(() => {
     if (!ringing) return;
     const stop = playSound('ringback', { loop: true });
@@ -688,7 +695,7 @@ function CallFrame({
           >
             <span className="min-w-0 flex-1 truncate text-sm font-medium">
               {expanded && title ? `${title} \u00b7 ` : ''}
-              {alone ? waitingLabel(reachable) : `${compactCount(remote.length + 1, expanded)}`}
+              {alone ? waitingLabel(reachNow) : `${compactCount(remote.length + 1, expanded)}`}
             </span>
             {expanded ? (
               <>

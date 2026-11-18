@@ -1665,9 +1665,13 @@ func (s *Service) StillOccupiedBySomebodyElse(ctx context.Context, roomName, ide
 		return false, fmt.Errorf("list call participants: %w", err)
 	}
 	for _, participant := range res.GetParticipants() {
-		if participant.GetIdentity() != identity {
-			return true, nil
+		id := participant.GetIdentity()
+		// The note-taker is not somebody, and somebody already on the way out
+		// is not still here.
+		if id == identity || strings.HasPrefix(id, NoteTakerIdentityPrefix) || participant.GetState() == livekit.ParticipantInfo_DISCONNECTED {
+			continue
 		}
+		return true, nil
 	}
 	return false, nil
 }
