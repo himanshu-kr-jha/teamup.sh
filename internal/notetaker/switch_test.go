@@ -651,3 +651,34 @@ func TestTheSwitchReachesTheNoteTakerOnAnotherServerAtOnce(t *testing.T) {
 	defer stop()
 	w.svc.Stop(stopCtx)
 }
+
+// Speech to text answers clips in whatever order it finishes them; the
+// transcript is in the order they were said.
+func TestTheTranscriptIsInTheOrderThingsWereSaid(t *testing.T) {
+	w := newWorld(t)
+	ctx := context.Background()
+	if _, err := w.svc.db.Exec(ctx, `INSERT INTO meeting_notes (call_id, org_id, status) VALUES ($1, $2, 'taking')`, w.callID, w.orgID); err != nil {
+		t.Fatal(err)
+	}
+	at := func(m int) time.Time { return time.Date(2026, 11, 18, 10, m, 0, 0, time.UTC) }
+	for _, s := range []struct {
+		m    int
+		text string
+	}{{9, "third"}, {1, "first"}, {3, "second"}} {
+		if _, err := w.svc.db.Exec(ctx, `INSERT INTO meeting_note_segments (call_id, user_id, speaker_name, started_at, ended_at, text) VALUES ($1, $2, 'Ada Archer', $3, $3, $4)`,
+			w.callID, w.ada, at(s.m), s.text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	notes, err := w.svc.NotesFor(ctx, w.orgID, w.callID, w.ada, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, s := range notes.Transcript {
+		got = append(got, s.Text)
+	}
+	if strings.Join(got, ",") != "first,second,third" {
+		t.Errorf("in the order said: %v", got)
+	}
+}

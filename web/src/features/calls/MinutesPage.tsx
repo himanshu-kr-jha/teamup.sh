@@ -12,7 +12,7 @@ import { useToast } from '@/shared/hooks/useToast';
 import { canShare, copyFormatted, shareText } from '@/shared/richText/share';
 import { RichText } from '@/shared/richText/RichText';
 import { ForwardDialog } from '@/features/chat/ForwardDialog';
-import { pauseText } from './notetaker';
+import { pauseText, transcriptWithGaps } from './notetaker';
 
 const WAITING: Partial<Record<MeetingMinutes['status'], string>> = {
   taking: 'Notes are still being taken: the call has not ended.',
@@ -22,15 +22,21 @@ const WAITING: Partial<Record<MeetingMinutes['status'], string>> = {
 };
 
 /** What was said, in order, with the time and who said it. */
-function Transcript({ lines }: { lines: MeetingMinutes['transcript'] }) {
+function Transcript({ lines, pauses }: { lines: MeetingMinutes['transcript']; pauses?: MeetingMinutes['pauses'] }) {
   return (
     <section aria-label="Transcript" className="space-y-2 rounded-lg border border-border p-4 text-left text-sm">
-      {lines.map((s, i) => (
-        <p key={i}>
-          <span className="tabular-nums text-muted-foreground">{format(new Date(s.startedAt), 'HH:mm')}</span>{' '}
-          <span className="font-medium">{s.speaker}</span>: {s.text}
-        </p>
-      ))}
+      {transcriptWithGaps(lines, pauses).map((e, i) =>
+        e.kind === 'gap' ? (
+          <p key={i} className="italic text-muted-foreground" data-testid="transcript-gap">
+            <span className="tabular-nums">{format(new Date(e.at), 'HH:mm')}</span> {e.text}
+          </p>
+        ) : (
+          <p key={i}>
+            <span className="tabular-nums text-muted-foreground">{format(new Date(e.at), 'HH:mm')}</span>{' '}
+            <span className="font-medium">{e.speaker}</span>: {e.text}
+          </p>
+        )
+      )}
     </section>
   );
 }
@@ -155,7 +161,7 @@ function MinutesPageReadable() {
                 </div>
               )}
             </div>
-            {showTranscript && <Transcript lines={data.transcript} />}
+            {showTranscript && <Transcript lines={data.transcript} pauses={data.pauses} />}
           </div>
         ) : (
           <article className="space-y-6" data-testid="minutes">
@@ -251,7 +257,7 @@ function MinutesPageReadable() {
               </Button>
             </div>
 
-            {showTranscript && <Transcript lines={data.transcript} />}
+            {showTranscript && <Transcript lines={data.transcript} pauses={data.pauses} />}
             <ForwardDialog
               message={sending ? { id: callId, content: minutesText(m, link) } : null}
               onClose={() => setSending(false)}

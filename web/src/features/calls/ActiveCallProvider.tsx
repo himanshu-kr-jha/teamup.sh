@@ -13,7 +13,6 @@ import {
   LiveKitRoom,
   RoomAudioRenderer,
   useAudioPlayback,
-  useRemoteParticipants,
   useRoomContext,
 } from '@livekit/components-react';
 import { ConnectionState, RoomEvent } from 'livekit-client';
@@ -21,7 +20,7 @@ import { useQuery } from '@tanstack/react-query';
 import { CallStage } from './CallStage';
 import { ROOM_OPTIONS } from './roomOptions';
 import { MeetingChatButton, MeetingChatProvider, StageWithChat, UnreadChatMark, type ChatTransport } from './MeetingChat';
-import { NotesBanner, NotesButton, memberNotes } from './notetaker';
+import { NotesBanner, NotesButton, isNotetaker, memberNotes, useOtherPeople } from './notetaker';
 import { CallControls, CallShortcuts, CompactCallControls, ShareUnavailableNote } from './CallControls';
 import { GuestAccess } from './GuestAccess';
 import { AddPeopleButton, RingingStrip, useAddedRings } from './AddPeople';
@@ -151,10 +150,11 @@ function useJoinAnnouncements() {
       toastRef.current(message);
       if (document.visibilityState !== 'visible') notify({ title: 'TeamUp call', body: message, tag: 'call-joined' });
     };
-    const presentNow = () => [...room.remoteParticipants.values()].map((p) => p.identity);
+    // The note-taker is not somebody joining: no sound, no toast.
+    const presentNow = () => [...room.remoteParticipants.values()].filter((p) => !isNotetaker(p)).map((p) => p.identity);
     const onConnected = () => tracker.connected(presentNow(), Date.now());
-    const onJoined = (participant: { identity: string; name?: string }) => {
-      if (!tracker.joined(participant.identity, Date.now())) return;
+    const onJoined = (participant: { identity: string; name?: string; isAgent?: boolean }) => {
+      if (isNotetaker(participant) || !tracker.joined(participant.identity, Date.now())) return;
       pending.push(participant.name || participant.identity);
       clearTimeout(timer);
       timer = setTimeout(flush, BURST_WINDOW_MS);
@@ -489,7 +489,8 @@ function CallFrame({
   const navigate = useNavigate();
   const toast = useToast();
   const room = useRoomContext();
-  const remote = useRemoteParticipants();
+  // People, not the note-taker: alone with it is alone.
+  const remote = useOtherPeople();
   const alone = remote.length === 0;
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   useJoinAnnouncements();

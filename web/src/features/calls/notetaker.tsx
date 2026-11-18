@@ -1,6 +1,6 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useParticipants, useRoomContext } from '@livekit/components-react';
+import { useParticipants, useRemoteParticipants, useRoomContext } from '@livekit/components-react';
 import { RoomEvent, type RemoteParticipant } from 'livekit-client';
 import { NotebookPen, PauseCircle } from 'lucide-react';
 import { callsApi, guestApi, type CallNotesState, type NotesPause } from '@/shared/api/client';
@@ -18,6 +18,41 @@ export const NOTES_TOPIC = 'teamup.meeting-notes';
 
 export function isNotetaker(p: { identity: string; isAgent?: boolean }): boolean {
   return p.identity.startsWith(NOTETAKER_PREFIX) || !!p.isAgent;
+}
+
+/**
+ * The other people in the call: everybody else connected, without the
+ * note-taker, which is not a person. Counts, "Still there?" and whether you
+ * are last out all go by this.
+ */
+export function useOtherPeople() {
+  return useRemoteParticipants().filter((p) => !isNotetaker(p));
+}
+
+/** One line of the transcript as the page shows it: what was said, or where notes were not taken. */
+export type TranscriptEntry =
+  | { kind: 'said'; at: string; speaker: string; text: string }
+  | { kind: 'gap'; at: string; text: string };
+
+/**
+ * The transcript in the order it was said, by when each stretch began, with a
+ * line where notes were paused (or, off from the start, where they began).
+ */
+export function transcriptWithGaps(
+  lines: Array<{ speaker: string; startedAt: string; text: string }>,
+  pauses: NotesPause[] = [],
+  time: (at: string) => string = clockTime
+): TranscriptEntry[] {
+  const entries: TranscriptEntry[] = lines.map((l) => ({ kind: 'said', at: l.startedAt, speaker: l.speaker, text: l.text }));
+  for (const p of pauses) {
+    const at = p.from ?? p.to;
+    if (at) entries.push({ kind: 'gap', at, text: pauseText(p, time) });
+  }
+  // Stable, so lines that began together keep the order they were kept in.
+  return entries
+    .map((e, i) => ({ e, i, t: new Date(e.at).getTime() }))
+    .sort((a, b) => a.t - b.t || a.i - b.i)
+    .map(({ e }) => e);
 }
 
 /** A room's word that its notes changed, from the server only: nobody else can say so. */

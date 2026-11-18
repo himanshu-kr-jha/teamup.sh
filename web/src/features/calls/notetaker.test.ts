@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { CallNotesState } from '@/shared/api/client';
-import { NOTES_TOPIC, notesAction, notesBannerText, notesFromPacket, pauseText } from './notetaker';
+import { NOTES_TOPIC, notesAction, notesBannerText, notesFromPacket, pauseText, transcriptWithGaps } from './notetaker';
 
 const time = (at: string) => at.slice(11, 16);
 const state = (on: boolean, changes: CallNotesState['changes'] = []): CallNotesState => ({ callId: 'c1', available: true, on, changes });
@@ -58,5 +58,21 @@ describe('the room telling everybody', () => {
     expect(notesFromPacket(packet(paused), undefined, 'teamup.meeting-chat')).toBeNull();
     expect(notesFromPacket(new TextEncoder().encode('not json'), undefined, NOTES_TOPIC)).toBeNull();
     expect(notesFromPacket(packet({ on: 'yes' }), undefined, NOTES_TOPIC)).toBeNull();
+  });
+});
+
+describe('the transcript page', () => {
+  const said = (at: string, text: string) => ({ speaker: 'Ada', startedAt: `2026-11-18T${at}:00Z`, text });
+  it('is in the order things were said, with a line where notes were paused', () => {
+    // Kept in the order speech to text answered, not the order they were said.
+    const lines = [said('10:09', 'clip 10'), said('10:01', 'clip 8'), said('10:03', 'clip 9'), said('10:15', 'clip 11')];
+    const got = transcriptWithGaps(lines, [{ from: '2026-11-18T10:05:00Z', to: '2026-11-18T10:12:00Z', by: 'Ravi' }], time);
+    expect(got.map((e) => e.text)).toEqual(['clip 8', 'clip 9', 'Notes were paused from 10:05 to 10:12 by Ravi.', 'clip 10', 'clip 11']);
+    expect(got[2].kind).toBe('gap');
+  });
+
+  it('says where notes began when they were off from the start', () => {
+    const got = transcriptWithGaps([said('10:20', 'hello')], [{ to: '2026-11-18T10:12:00Z', resumedBy: 'Mia' }], time);
+    expect(got.map((e) => e.text)).toEqual(['Notes were off until 10:12, when Mia started them.', 'hello']);
   });
 });

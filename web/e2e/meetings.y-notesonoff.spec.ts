@@ -195,4 +195,31 @@ test.describe('meeting notes on and off', () => {
     await leaveCall(olivia.page);
     await leaveCall(alice.page);
   });
+
+  test('the note-taker is not a person: not counted, not announced, and alone with it is alone', async ({ as }) => {
+    test.setTimeout(240_000);
+    const owner = await apiAs('owner');
+    const call = await createCall(owner, `Two and Notes ${Date.now()}`, [idOf('alice')]);
+    const olivia = await as('owner');
+    const alice = await as('alice');
+    await joinCall(olivia.page, call.id);
+    await joinCall(alice.page, call.id);
+    await expect(banner(olivia.page)).toBeVisible({ timeout: 30_000 });
+    await expect(olivia.page.getByText('Notes, taking the minutes')).toBeVisible();
+
+    // Two people and the note-taker: two in the call, and nobody "joined" when it came in.
+    for (const page of [olivia.page, alice.page]) {
+      await expect(page.getByText(/In a call · 2$/)).toBeVisible();
+      await expect(page.getByText('Notes joined the call')).toHaveCount(0);
+    }
+
+    // Alice leaves. Olivia, alone with the note-taker, is alone: asked whether
+    // she is still there, and the call ends when she goes.
+    await leaveCall(alice.page);
+    await expect(olivia.page.getByText('Waiting for others')).toBeVisible({ timeout: 15_000 });
+    const still = olivia.page.getByRole('dialog', { name: 'Still there?' });
+    await expect(still).toBeVisible({ timeout: 120_000 });
+    await still.getByRole('button', { name: 'Leave the call' }).click();
+    await expect.poll(async () => (await owner.get(`/calls/${call.id}`)).status, { timeout: 30_000 }).toBe('ended');
+  });
 });
