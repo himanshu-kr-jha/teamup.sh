@@ -4,6 +4,7 @@ import { Track } from 'livekit-client';
 import { Mic, MicOff, MonitorOff, MonitorUp, Video, VideoOff } from 'lucide-react';
 import { useToast } from '@/shared/hooks/useToast';
 import { BackgroundPicker } from './BackgroundPicker';
+import { MicrophoneMenu } from './NoiseControls';
 import { useMeetingChatPanel } from './MeetingChat';
 import { cn } from '@/shared/utils/cn';
 import { shortcutHint, type ShortcutId } from '@/shared/shortcuts/catalogue';
@@ -72,12 +73,12 @@ function Toggle({ source, compact }: { source: ToggleSource; compact?: boolean }
   );
 }
 
-function WithDeviceMenu({ source, kind, label }: { source: ToggleSource; kind: MediaDeviceKind; label: string }) {
+function WithDeviceMenu({ source, kind, label, menu }: { source: ToggleSource; kind: MediaDeviceKind; label: string; menu?: ReactNode }) {
   return (
     <div className="lk-button-group">
       <Toggle source={source} />
       <div className="lk-button-group-menu">
-        <MediaDeviceMenu kind={kind} aria-label={label} title={label} />
+        {menu ?? <MediaDeviceMenu kind={kind} aria-label={label} title={label} />}
       </div>
     </div>
   );
@@ -88,7 +89,13 @@ export function CallControls({ children }: { children?: ReactNode }) {
   const [shareable] = useState(canShareScreen);
   return (
     <div className="flex flex-wrap items-center justify-center gap-2" role="group" aria-label="Call controls">
-      <WithDeviceMenu source={Track.Source.Microphone} kind="audioinput" label="Choose a microphone" />
+      {/* Which microphone, and noise cancellation. */}
+      <WithDeviceMenu
+        source={Track.Source.Microphone}
+        kind="audioinput"
+        label="Choose a microphone"
+        menu={<MicrophoneMenu label="Choose a microphone" />}
+      />
       <WithDeviceMenu source={Track.Source.Camera} kind="videoinput" label="Choose a camera" />
       <BackgroundPicker />
       {shareable && <Toggle source={Track.Source.ScreenShare} />}

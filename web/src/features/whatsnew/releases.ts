@@ -26,6 +26,23 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-19-b',
+    date: '2026-11-19',
+    title: 'Noise cancellation in calls',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'Background noise taken out of your microphone',
+        body: 'Noise behind you, such as a fan, traffic or the hum of a room, is filtered out on your own device before anybody hears it, while your voice comes through. It is on unless you turn it off.',
+      },
+      {
+        area: 'meetings',
+        title: 'Where to switch it',
+        body: 'Use the Noise cancellation switch on the screen before a call, or in the menu beside the microphone button during one. Your choice is kept for next time.',
+      },
+    ],
+  },
+  {
     id: '2026-11-18-c',
     date: '2026-11-18',
     title: 'Check your camera and microphone before you join',

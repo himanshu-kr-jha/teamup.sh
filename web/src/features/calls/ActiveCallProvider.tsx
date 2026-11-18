@@ -60,6 +60,9 @@ import { cn } from '@/shared/utils/cn';
 import { CameraBackground } from './BackgroundPicker';
 import { saveJoinChoice } from './prejoin';
 import { useAuth } from '@/features/auth/AuthProvider';
+import { useAuthStore } from '@/shared/store/authStore';
+import { withNoiseCapture } from './noiseCancellation';
+import { NoiseCancellation } from './NoiseControls';
 import { RESIZE_STEP, fitCallWindow, keepSize, savedSize, viewport } from './callWindow';
 
 interface ActiveCall {
@@ -467,6 +470,10 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
   // Full size on that call's own page; a corner window everywhere else.
   const expanded = !!activeCall && location.pathname === `/calls/${activeCall.callId}`;
 
+  // The microphone captured for the noise cancellation chosen as the call starts;
+  // changing it during the call is NoiseCancellation's to do, not a new room.
+  const callOptions = useMemo(() => withNoiseCapture(roomOptions, useAuthStore.getState().user?.id), [roomOptions]);
+
   const value = useMemo(
     () => ({ activeCall, join, enter, leave, joining, failure, clearFailure, watchedDoor, watchDoor }),
     [activeCall, join, enter, leave, joining, failure, clearFailure, watchedDoor]
@@ -481,7 +488,7 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
           token={activeCall.token}
           serverUrl={liveKitURL()}
           connect
-          options={roomOptions}
+          options={callOptions}
           // Joining a meeting or a video call as chosen on the screen before it,
           // which starts with the camera and microphone off for somebody who has
           // never joined: you turn them on when you are ready, rather than finding
@@ -504,6 +511,7 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
           />
           <RoomAudioRenderer />
           <CameraBackground />
+          <NoiseCancellation />
         </LiveKitRoom>
       )}
     </ActiveCallContext.Provider>

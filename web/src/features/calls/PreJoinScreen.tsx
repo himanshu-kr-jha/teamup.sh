@@ -27,6 +27,8 @@ import {
   type DeviceProblem,
   type JoinChoice,
 } from './prejoin';
+import { captureFor, markNoiseUnavailable, noiseStatus, useNoiseCancellationPossible, useNoiseChoice } from './noiseCancellation';
+import { NoiseSwitch } from './NoiseControls';
 
 /** What the screen shows of the call it is in front of. */
 export interface PreJoinCall {
@@ -108,7 +110,10 @@ export function PreJoinScreen({
     setCamProblem(problem);
     setChoice((c) => ({ ...c, camera: false }));
   });
-  const mic = useMicrophone(choice.mic && !releasing && !elsewhere, choice.audioInput, (problem) => {
+  // Your microphone as the call will send it: through noise cancellation when it is on.
+  const noiseWanted = useNoiseChoice(userId);
+  const noisePossible = useNoiseCancellationPossible();
+  const mic = useMicrophone(choice.mic && !releasing && !elsewhere, choice.audioInput, noiseWanted && noisePossible, (problem) => {
     setMicProblem(problem);
     setChoice((c) => ({ ...c, mic: false }));
   });
@@ -276,6 +281,7 @@ export function PreJoinScreen({
               onChange={(id) => change({ audioInput: id })}
             />
             <MicMeter stream={mic.stream} />
+            <NoiseSwitch status={noiseStatus(noiseWanted, noisePossible, mic.filtered)} className="mt-3" />
           </div>
           <DevicePicker
             kind="videoinput"
@@ -449,42 +455,68 @@ function useCameraPreview(on: boolean, deviceId: string | undefined, onProblem: 
   return { track, stop };
 }
 
-/** The microphone while it is on here, for its level; nothing is sent anywhere. */
-function useMicrophone(on: boolean, deviceId: string | undefined, onProblem: (p: DeviceProblem) => void) {
+/**
+ * The microphone while it is on here, for its level; nothing is sent anywhere.
+ * With noise cancellation on it goes through RNNoise, as it will in the call, so
+ * the level is of what the others will hear: a fan behind you hardly moves it.
+ */
+function useMicrophone(on: boolean, deviceId: string | undefined, rnnoise: boolean, onProblem: (p: DeviceProblem) => void) {
   const [stream, setStream] = useState<MediaStream | undefined>();
-  const current = useRef<MediaStream | undefined>();
+  const [filtered, setFiltered] = useState(false);
+  const current = useRef<{ raw: MediaStream; close?: () => void } | undefined>();
   const problemRef = useRef(onProblem);
   problemRef.current = onProblem;
 
   useEffect(() => {
     if (!on) return;
     let live = true;
-    const stopAll = (s: MediaStream | undefined) => s?.getTracks().forEach((t) => t.stop());
-    navigator.mediaDevices
-      .getUserMedia({ audio: deviceId ? { deviceId } : true })
-      .then((made) => {
-        if (!live) {
-          stopAll(made);
-          return;
-        }
-        current.current = made;
-        setStream(made);
-      })
-      .catch((err) => {
+    const release = (held: { raw: MediaStream; close?: () => void } | undefined) => {
+      held?.close?.();
+      held?.raw.getTracks().forEach((t) => t.stop());
+    };
+    (async () => {
+      let raw: MediaStream;
+      try {
+        raw = await navigator.mediaDevices.getUserMedia({ audio: { ...(deviceId && { deviceId }), ...captureFor(rnnoise) } });
+      } catch (err) {
         if (live) problemRef.current(deviceProblem(err));
-      });
+        return;
+      }
+      const held: { raw: MediaStream; close?: () => void } = { raw };
+      let shown = raw;
+      if (rnnoise) {
+        try {
+          const { denoise } = await import('./rnnoise');
+          const out = await denoise(raw.getAudioTracks()[0]);
+          held.close = out.close;
+          shown = new MediaStream([out.track]);
+        } catch (err) {
+          // The page not touched yet only holds the filter back; anything else is the device.
+          if ((err as Error)?.message !== 'suspended') markNoiseUnavailable();
+        }
+      }
+      if (!live) {
+        release(held);
+        return;
+      }
+      current.current = held;
+      setStream(shown);
+      setFiltered(!!held.close);
+    })();
     return () => {
       live = false;
-      stopAll(current.current);
+      release(current.current);
       current.current = undefined;
       setStream(undefined);
+      setFiltered(false);
     };
-  }, [on, deviceId]);
+  }, [on, deviceId, rnnoise]);
 
   const stop = useCallback(() => {
-    current.current?.getTracks().forEach((t) => t.stop());
+    current.current?.close?.();
+    current.current?.raw.getTracks().forEach((t) => t.stop());
   }, []);
-  return { stream, stop };
+  return { stream, filtered, stop };
 }
 
 /**
