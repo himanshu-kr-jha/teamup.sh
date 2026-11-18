@@ -13,6 +13,8 @@ export type WSMessageType =
   // Outbound only: somebody asks to join a private call; the answer, to them; and
   // the prompt clearing for every other member once somebody has answered.
   | 'call.knock' | 'call.knock.result' | 'call.knock.resolved'
+  // Outbound only: somebody in a call is ringing a colleague into it, and how that ring ended.
+  | 'call.adding' | 'call.ring.result'
   | 'notification.new' | 'notification.read';
 
 export interface Message<T = any> {

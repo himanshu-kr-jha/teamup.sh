@@ -53,6 +53,11 @@ const (
 	TypeCallKnockResult = "call.knock.result"
 	// Somebody else answered, so another member's prompt can go away.
 	TypeCallKnockResolved = "call.knock.resolved"
+	// Somebody in a call is ringing a colleague into it, to everybody in it.
+	TypeCallAdding = "call.adding"
+	// How that ring ended, to everybody in the call: answered, declined,
+	// no_answer, busy, on_leave or cancelled.
+	TypeCallRingResult = "call.ring.result"
 
 	// Notifications
 	TypeNotificationNew  = "notification.new"
@@ -279,6 +284,10 @@ type CallInvitedPayload struct {
 	// starts: CallerName is then the meeting's name, and there is nobody to
 	// tell about a decline.
 	Kind string `json:"kind,omitempty"`
+	// Ongoing is a ring into a call that is already going: somebody in it is
+	// adding this person. With names who else is in it, apart from the caller.
+	Ongoing bool     `json:"ongoing,omitempty"`
+	With    []string `json:"with,omitempty"`
 }
 
 type CallAcceptPayload struct {

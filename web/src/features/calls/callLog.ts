@@ -7,7 +7,8 @@ export type CallEventType =
   | 'left'
   | 'screen_share_started'
   | 'screen_share_stopped'
-  | 'camera_on';
+  | 'camera_on'
+  | 'rung';
 
 export interface CallEvent {
   id: string;
@@ -52,6 +53,8 @@ export function describeEvent(event: CallEvent): string {
       return `${who} stopped sharing their screen`;
     case 'camera_on':
       return `${who} turned their camera on`;
+    case 'rung':
+      return `${by} rang ${who} into the call`;
     default:
       return `${who}: ${event.type}`;
   }
@@ -65,6 +68,7 @@ const STEP: Record<string, number> = {
   screen_share_started: 3,
   screen_share_stopped: 4,
   camera_on: 3,
+  rung: 1,
   left: 5,
 };
 

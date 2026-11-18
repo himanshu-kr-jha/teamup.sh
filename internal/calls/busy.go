@@ -121,6 +121,14 @@ func (s *Service) answerBusy(ctx context.Context, call *Call, callerID string, b
 // nobody is left to answer and nobody joined is ended, which leaves the note
 // in the conversation between the two of them.
 func (s *Service) TurnedDown(ctx context.Context, orgID uuid.UUID, call *CallModel, userID uuid.UUID, reason string) error {
+	// Somebody rung into a call that is going is told to the people in it, and
+	// the call goes on for them whatever the answer (add_people.go).
+	if rung, err := s.wasRungInto(ctx, call.ID, userID); err != nil {
+		return err
+	} else if rung {
+		s.endAddedRing(ctx, call, userID, reason, nil)
+		return nil
+	}
 	if err := s.MarkParticipantLeft(ctx, call.ID, userID); err != nil {
 		return err
 	}

@@ -84,6 +84,9 @@ var memberLimits = []ratelimit.Rule{
 	{Name: "add-to-channel", Method: http.MethodPost, Route: "/api/channels/:id/members", Limit: per(300, hour), Who: ratelimit.ByUser},
 	{Name: "new-call", Method: http.MethodPost, Route: "/api/calls", Limit: per(120, hour), Who: ratelimit.ByUser},
 	{Name: "knock", Method: http.MethodPost, Route: "/api/calls/:id/knock", Limit: per(30, minute), Who: ratelimit.ByUser},
+	// Ringing colleagues into a call that is going. The same person can be rung
+	// into one call only a few times in ten minutes as well (add_people.go).
+	{Name: "ring-into-call", Method: http.MethodPost, Route: "/api/calls/:id/ring", Limit: per(60, hour), Who: ratelimit.ByUser},
 	{Name: "new-task", Method: http.MethodPost, Route: "/api/tasks", Limit: per(600, hour), Who: ratelimit.ByUser},
 
 	// Things that cost money or send mail.

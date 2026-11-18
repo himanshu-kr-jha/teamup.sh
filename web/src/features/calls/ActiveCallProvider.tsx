@@ -26,12 +26,15 @@ import { CallControls, CallShortcuts, CompactCallControls, ShareUnavailableNote 
 import { GuestAccess } from './GuestAccess';
 import { HandsProvider } from './Hands';
 import { forgetCallHands, tabStorage } from './handProofStore';
+import { AddPeopleButton, RingingStrip, useAddedRings } from './AddPeople';
+import { endsTheCallForYou } from './addPeople';
 import { CallLogDialog } from './CallLogDialog';
 import { copyCallLink } from './copyLink';
 import { classifyJoinError, type JoinFailure } from './knock';
 import { BURST_WINDOW_MS, createJoinTracker, joinedMessage } from './joinPing';
 import {
   AlertTriangle,
+  Globe,
   History,
   Link2,
   Maximize2,
@@ -40,7 +43,6 @@ import {
   MoveDiagonal2,
   PhoneOff,
   Volume2,
-  UserPlus,
 } from 'lucide-react';
 import '@livekit/components-styles';
 import { Button } from '@/shared/components/ui/button';
@@ -385,6 +387,9 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
         sayBusy(payload.callId, payload.declinedBy, payload.reason);
         return;
       }
+      // Only the call itself ending takes you out: a ring of yours into it being
+      // stopped, as you come in, is not that.
+      if (!endsTheCallForYou(payload.reason)) return;
       toast.toast('The call has ended.');
       setActiveCall(null);
     });
@@ -543,6 +548,7 @@ function CallFrame({
   const alone = remote.length === 0;
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   useJoinAnnouncements();
+  const rings = useAddedRings(callId);
 
   // A device picked during the call is the one the next call's screen starts on.
   const { user } = useAuth();
@@ -803,8 +809,8 @@ function CallFrame({
                       Copy the link to this call
                     </DropdownMenuItem>
                     <DropdownMenuItem onSelect={() => setShowingGuests(true)}>
-                      <UserPlus className="mr-2 h-4 w-4" aria-hidden="true" />
-                      Guests
+                      <Globe className="mr-2 h-4 w-4" aria-hidden="true" />
+                      Guests from outside the organization
                     </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
@@ -818,41 +824,18 @@ function CallFrame({
                 >
                   <Link2 className="h-4 w-4" />
                 </Button>
+                <AddPeopleButton rings={rings} />
                 <Button
                   variant="ghost"
                   size="icon"
                   className="hidden h-7 w-7 sm:inline-flex"
                   aria-label="Guests"
-                  title="Guests"
+                  title="Guests from outside the organization"
                   onClick={() => setShowingGuests(true)}
                 >
-                  <UserPlus className="h-4 w-4" />
+                  <Globe className="h-4 w-4" />
                 </Button>
                 {canReadLog && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    aria-label="Copy the link to this call"
-                    title="Copy link"
-                    onClick={async () => {
-                      if (await copyCallLink(callId)) toast.success('Link copied. Anybody not on the call will have to ask to join.');
-                      else toast.error('Could not copy. Your browser did not allow it.');
-                    }}
-                  >
-                    <Link2 className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    aria-label="Guests"
-                    title="Guests"
-                    onClick={() => setShowingGuests(true)}
-                  >
-                    <UserPlus className="h-4 w-4" />
-                  </Button>
-                  {canReadLog && (
                     <Button
                       variant="ghost"
                       size="icon"
@@ -890,6 +873,7 @@ function CallFrame({
             </div>
 
             <BlockedAudioPrompt compact={!expanded} />
+            <RingingStrip rings={rings} compact={!expanded} />
 
             <div className="min-h-0 flex-1">
               <CallTiles callId={callId} compact={!expanded} />

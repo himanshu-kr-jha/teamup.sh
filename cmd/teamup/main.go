@@ -963,6 +963,8 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// A call whose room finished while nothing was listening. Every replica sweeps,
 	// and ending a call is atomic.
 	go callsService.RunVanishedRoomSweep(sweepCtx, 5*time.Minute)
+	// A ring into a call that a restart cut short still ends as unanswered.
+	go callsService.RunExpiredRingSweep(sweepCtx, 15*time.Second)
 	// Stand-ups ring everybody they are for as they start.
 	go callsService.RunStandingRings(sweepCtx, 15*time.Second)
 	// What the status page shows for the last day. Every replica records four

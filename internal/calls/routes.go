@@ -32,6 +32,8 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.POST("/calls/:id/record", h.StartRecording)
 	rg.POST("/calls/:id/end", h.EndCall)
 	rg.POST("/calls/:id/decline", h.DeclineCall)
+	rg.POST("/calls/:id/ring", h.RingInto)
+	rg.DELETE("/calls/:id/ring/:userId", h.CancelRing)
 	rg.POST("/calls/:id/mute/:userId", h.MuteParticipant)
 	rg.PUT("/calls/:id/hand", h.putHand)
 	rg.DELETE("/calls/:id/record", h.StopRecording)
@@ -240,9 +242,17 @@ func (h *Handler) DeclineCall(c *gin.Context) {
 
 	// Nobody is rung for a meeting, so there is nothing to turn down, and an
 	// invitee must not be able to end one this way.
+	// Somebody rung into one while it is on can say no to that ring.
 	if call.ScheduledStart != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "a scheduled meeting cannot be declined"})
-		return
+		rung, err := h.service.wasRungInto(ctx, id, userID)
+		if err != nil {
+			httpx.Error(c, err, "failed to decline call")
+			return
+		}
+		if !rung {
+			c.JSON(http.StatusConflict, gin.H{"error": "a scheduled meeting cannot be declined"})
+			return
+		}
 	}
 
 	// Only somebody who was actually called can decline it.

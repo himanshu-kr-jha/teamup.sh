@@ -26,6 +26,35 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-18-e',
+    date: '2026-11-18',
+    title: 'Add people to a call',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'Ring a colleague into the call you are in',
+        body: 'In a call, press Add people at the top, tick the colleagues you want and press Ring. Their phone rings as for any call, it says who is already in it, and answering brings them straight in. While it rings you can cancel it, and if they decline or do not answer everyone in the call is told, while the call carries on. Guests, next to it, is still for people from outside the company.',
+      },
+    ],
+  },
+  {
+    id: '2026-11-18-d',
+    date: '2026-11-18',
+    title: 'See who is talking, and raise your hand',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'A microphone that moves when someone speaks',
+        body: 'The microphone on each person in a call now shows three small bars that move with their voice, and your own microphone button moves with yours, so you can see you are being heard. If your system is set to reduce motion, the bars stay still and simply show who is speaking.',
+      },
+      {
+        area: 'meetings',
+        title: 'Raise your hand',
+        body: 'Press the hand button in a call, or Ctrl+Shift+H, to raise your hand. Everyone sees it on your picture with your place in line, and the organizer can lower hands from the list at the top of the call. Your hand comes down by itself once you have been speaking for a few seconds.',
+      },
+    ],
+  },
+  {
     id: '2026-11-18-c',
     date: '2026-11-18',
     title: 'Check your camera and microphone before you join',
@@ -40,19 +69,6 @@ export const RELEASES: Release[] = [
         area: 'meetings',
         title: 'Your last choice is kept',
         body: 'The next call starts with the microphone, camera and devices you joined with last time. A voice call still goes straight in, like a phone.',
-    id: '2026-11-18-d',
-    date: '2026-11-18',
-    title: 'See who is talking, and raise your hand',
-    changes: [
-      {
-        area: 'meetings',
-        title: 'A microphone that moves when someone speaks',
-        body: 'The microphone on each person in a call now shows three small bars that move with their voice, and your own microphone button moves with yours, so you can see you are being heard. If your system is set to reduce motion, the bars stay still and simply show who is speaking.',
-      },
-      {
-        area: 'meetings',
-        title: 'Raise your hand',
-        body: 'Press the hand button in a call, or Ctrl+Shift+H, to raise your hand. Everyone sees it on your picture with your place in line, and the organizer can lower hands from the list at the top of the call. Your hand comes down by itself once you have been speaking for a few seconds.',
       },
     ],
   },
