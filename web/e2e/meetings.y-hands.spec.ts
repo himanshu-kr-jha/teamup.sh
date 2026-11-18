@@ -1,6 +1,7 @@
 import type { Page } from '@playwright/test';
 import { expect, test } from './support/fixtures';
 import { apiAs, createCall, idOf, joinCall } from './support/meetings';
+import type { PersonKey } from './support/people';
 
 // Asked for: a microphone that moves while somebody speaks, as in Google Meet, and
 // raising a hand. The hand is a LiveKit participant attribute that only the server
@@ -9,14 +10,14 @@ import { apiAs, createCall, idOf, joinCall } from './support/meetings';
 // Chromium's fake microphone plays e2e/fixtures/speech.wav, so a microphone that
 // is on is somebody talking. A video call starts with everybody's microphone off.
 
-const tile = (page: Page, who: 'owner' | 'alice') =>
+const tile = (page: Page, who: PersonKey) =>
   page.locator(`[data-testid="participant-tile"][data-identity="${idOf(who)}"]`).first();
-const bars = (page: Page, who: 'owner' | 'alice') => tile(page, who).getByTestId('speaking-bars');
-const badge = (page: Page, who: 'owner' | 'alice') => tile(page, who).getByTestId('hand-badge');
+const bars = (page: Page, who: PersonKey) => tile(page, who).getByTestId('speaking-bars');
+const badge = (page: Page, who: PersonKey) => tile(page, who).getByTestId('hand-badge');
 const chip = (page: Page) => page.getByTestId('hands-chip');
 
 /** The tallest the three bars on a tile have been over a short while, in pixels. */
-async function tallestBar(page: Page, who: 'owner' | 'alice', forMs = 1500): Promise<number> {
+async function tallestBar(page: Page, who: PersonKey, forMs = 1500): Promise<number> {
   return bars(page, who).evaluate(
     (el, ms) =>
       new Promise<number>((resolve) => {
@@ -31,6 +32,26 @@ async function tallestBar(page: Page, who: 'owner' | 'alice', forMs = 1500): Pro
       }),
     forMs
   );
+}
+
+/**
+ * What the hands chip lies over: any tile, or any button on one. It has a row of
+ * its own, so this should always be empty.
+ */
+async function underTheChip(page: Page): Promise<string[]> {
+  return page.evaluate(() => {
+    const chip = document.querySelector('[data-testid="hands-chip"]')?.getBoundingClientRect();
+    if (!chip) return ['no chip'];
+    const meets = (r: DOMRect) => r.left < chip.right && chip.left < r.right && r.top < chip.bottom && chip.top < r.bottom;
+    const hit: string[] = [];
+    document.querySelectorAll('[data-testid="participant-tile"]').forEach((tile) => {
+      if (meets(tile.getBoundingClientRect())) hit.push(`tile ${tile.getAttribute('data-identity')}`);
+      tile.querySelectorAll('button').forEach((b) => {
+        if (meets(b.getBoundingClientRect())) hit.push(`button ${b.getAttribute('aria-label')}`);
+      });
+    });
+    return hit;
+  });
 }
 
 async function allGone(api: Awaited<ReturnType<typeof apiAs>>, callId: string) {
@@ -135,6 +156,10 @@ test.describe('speaking and raised hands', () => {
     await expect(alice.page.getByText('Olivia Owner raised their hand', { exact: true }).first()).toBeVisible();
     await expect(chip(alice.page)).toHaveText(/2 hands raised/);
     await expect(chip(olivia.page)).toHaveText(/2 hands raised/);
+    // The chip has a row of its own: it lies over no tile and no tile's buttons,
+    // on a phone or on a desktop.
+    expect(await underTheChip(alice.page)).toEqual([]);
+    expect(await underTheChip(olivia.page)).toEqual([]);
     // A muted hand stays up.
     await olivia.page.waitForTimeout(4_000);
     await expect(badge(olivia.page, 'alice')).toHaveText('1');
@@ -270,6 +295,132 @@ test.describe('speaking and raised hands', () => {
     await allGone(owner, call.id);
     expect(olivia.problems).toEqual([]);
     expect(alice.problems).toEqual([]);
+    await owner.dispose();
+  });
+
+  // A reload is a new connection, with no hand on it. The tab keeps the hand's
+  // proof, so coming back into the call puts it back where it was.
+  test('a raised hand comes back in its place after a reload, and a lowered one does not', async ({ as }) => {
+    test.setTimeout(150_000);
+    const owner = await apiAs('owner');
+    const call = await createCall(owner, `Hands reload ${Date.now()}`, [idOf('sam')]);
+    const olivia = await as('owner');
+    await joinCall(olivia.page, call.id);
+    const sam = await as('sam');
+    await joinCall(sam.page, call.id);
+    await expect(tile(olivia.page, 'sam')).toBeVisible({ timeout: 20_000 });
+
+    const raised = sam.page.waitForResponse((r) => r.url().endsWith(`/calls/${call.id}/hand`) && r.request().method() === 'PUT');
+    await sam.page.getByRole('button', { name: 'Raise your hand' }).click();
+    const firstUp: string = (await (await raised).json()).raisedAt;
+    await expect(badge(olivia.page, 'sam')).toHaveText('1');
+    await olivia.page.keyboard.press('Control+Shift+H');
+    await expect(badge(olivia.page, 'owner')).toHaveText('2');
+    // Nothing that lets anybody in is kept, only the hand.
+    const stored = await sam.page.evaluate(() => JSON.stringify(sessionStorage));
+    expect(stored).toContain(firstUp);
+    expect(stored).not.toMatch(/eyJ[A-Za-z0-9_-]{10,}\./);
+
+    await sam.page.reload();
+    await joinCall(sam.page, call.id);
+    await expect(badge(olivia.page, 'sam')).toHaveText('1', { timeout: 20_000 });
+    await expect(badge(olivia.page, 'owner')).toHaveText('2');
+    await expect(badge(sam.page, 'sam')).toHaveText('1');
+    await expect(sam.page.getByRole('button', { name: 'Lower your hand' })).toBeVisible();
+    const again = await sam.page.request.put(`/api/calls/${call.id}/hand`, { data: { raised: true, refresh: true } });
+    expect((await again.json()).raisedAt).toBe(firstUp);
+    await expect(sam.page.getByText('at the back of the line', { exact: false })).toHaveCount(0);
+
+    // Lowered, then reloaded: it stays down.
+    await sam.page.getByRole('button', { name: 'Lower your hand' }).click();
+    await expect(badge(olivia.page, 'sam')).toHaveCount(0);
+    await expect(badge(olivia.page, 'owner')).toHaveText('1');
+    await sam.page.reload();
+    await joinCall(sam.page, call.id);
+    await expect(tile(olivia.page, 'sam')).toBeVisible({ timeout: 20_000 });
+    await sam.page.waitForTimeout(3_000);
+    await expect(badge(olivia.page, 'sam')).toHaveCount(0);
+    await expect(badge(sam.page, 'sam')).toHaveCount(0);
+    await expect(badge(olivia.page, 'owner')).toHaveText('1');
+
+    await olivia.page.getByRole('button', { name: 'Leave the call' }).click();
+    await sam.page.getByRole('button', { name: 'Leave the call' }).click();
+    await expect(sam.page.getByRole('button', { name: 'Leave the call' })).toHaveCount(0);
+    await allGone(owner, call.id);
+    expect(olivia.problems).toEqual([]);
+    expect(sam.problems).toEqual([]);
+    await owner.dispose();
+  });
+
+  test('with five people on a desktop, the chip covers no tile', async ({ as }) => {
+    test.setTimeout(150_000);
+    const owner = await apiAs('owner');
+    const others: PersonKey[] = ['alice', 'sam', 'mia', 'max'];
+    const call = await createCall(owner, `Hands five ${Date.now()}`, others.map(idOf));
+    const olivia = await as('owner');
+    await joinCall(olivia.page, call.id);
+    const sessions = [];
+    for (const who of others) {
+      const s = await as(who);
+      await joinCall(s.page, call.id);
+      sessions.push(s);
+    }
+    await expect(olivia.page.getByTestId('participant-tile')).toHaveCount(5, { timeout: 30_000 });
+
+    await sessions[0].page.getByRole('button', { name: 'Raise your hand' }).click();
+    await olivia.page.keyboard.press('Control+Shift+H');
+    await expect(chip(olivia.page)).toHaveText(/2 hands raised/);
+    // Hovering a tile shows its buttons, which the chip used to cover.
+    await tile(olivia.page, 'alice').hover();
+    expect(await underTheChip(olivia.page)).toEqual([]);
+    await olivia.page.screenshot({ path: 'test-results/hands-five-desktop.png' });
+
+    for (const s of [olivia, ...sessions]) await s.page.getByRole('button', { name: 'Leave the call' }).click();
+    await allGone(owner, call.id);
+    await owner.dispose();
+  });
+
+  test("a guest on a phone sees hands, the chip in its own row, and toasts above the controls", async ({ as }) => {
+    test.setTimeout(150_000);
+    const owner = await apiAs('owner');
+    const title = `Hands guest ${Date.now()}`;
+    const created = await owner.post('/meetings', {
+      title,
+      startsAt: new Date(Date.now() + 10 * 60_000).toISOString(),
+      endsAt: new Date(Date.now() + 40 * 60_000).toISOString(),
+      inviteeIds: [],
+    });
+    const id = created.meeting.id as string;
+    const link = await owner.put(`/calls/${id}/guest-link`, { enabled: true });
+
+    const olivia = await as('owner');
+    await olivia.page.goto(`/calls/${id}`);
+    await olivia.page.getByRole('button', { name: /^Join( now)?$/ }).click();
+    await expect(olivia.page.getByRole('button', { name: 'Leave the call' })).toBeVisible({ timeout: 30_000 });
+
+    const guest = await as('sam', { signedOut: true, phone: 'android', theme: 'dark' });
+    await guest.page.goto(link.directPath);
+    await guest.page.getByLabel('Your name').fill('Gita Guest');
+    await guest.page.getByRole('button', { name: 'Join the meeting' }).click();
+    await expect(guest.page.getByRole('button', { name: 'Leave', exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(olivia.page.getByText('Gita Guest (guest)', { exact: true })).toBeVisible({ timeout: 20_000 });
+    // No button for a guest to raise a hand with.
+    await expect(guest.page.getByRole('button', { name: 'Raise your hand' })).toHaveCount(0);
+
+    await olivia.page.keyboard.press('Control+Shift+H');
+    await expect(badge(guest.page, 'owner')).toHaveText('1');
+    await expect(chip(guest.page)).toHaveText(/1 hand raised/);
+    expect(await underTheChip(guest.page)).toEqual([]);
+
+    const toast = guest.page.getByText('Olivia Owner raised their hand', { exact: true }).first();
+    await expect(toast).toBeVisible();
+    const controls = (await guest.page.getByRole('group', { name: 'Call controls' }).boundingBox())!;
+    const toastBox = (await toast.boundingBox())!;
+    expect(toastBox.y + toastBox.height).toBeLessThanOrEqual(controls.y);
+    await guest.page.screenshot({ path: 'test-results/hands-guest-phone-dark.png' });
+
+    await guest.page.getByRole('button', { name: 'Leave', exact: true }).click();
+    await olivia.page.getByRole('button', { name: 'Leave the call' }).click();
     await owner.dispose();
   });
 });

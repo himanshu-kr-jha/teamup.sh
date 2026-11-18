@@ -25,7 +25,7 @@ import { BrandMark } from "@/features/branding/BrandMark";
 import { guestApi, type GuestMeeting } from "@/shared/api/client";
 import { apiErrorMessage } from "@/shared/api/errors";
 import { cn } from "@/shared/utils/cn";
-import { BlockedAudioPrompt, liveKitURL } from "./ActiveCallProvider";
+import { BlockedAudioPrompt, liveKitURL, useToastsAbove } from "./ActiveCallProvider";
 import { CallStage } from "./CallStage";
 import { HandsProvider } from "./Hands";
 import { CallControls, CallShortcuts, ShareUnavailableNote } from "./CallControls";
@@ -447,6 +447,10 @@ function GuestRoom({
   onLeft: (reason: Left["reason"]) => void;
 }) {
   const [problem, setProblem] = useState("");
+  // Toasts sit above the controls, as on a member's call page; on a phone they
+  // covered them.
+  const [controls, setControls] = useState<HTMLDivElement | null>(null);
+  useToastsAbove(controls, true);
   const chatTransport = useMemo<ChatTransport>(
     () => ({
       load: async () =>
@@ -503,7 +507,7 @@ function GuestRoom({
               <CallStage callId="" compact={false} asGuest />
             </StageWithChat>
           </div>
-          <div className="flex shrink-0 flex-col items-center gap-1 border-t border-border p-2 sm:p-3">
+          <div ref={setControls} className="flex shrink-0 flex-col items-center gap-1 border-t border-border p-2 sm:p-3">
             <CallControls>
               <MeetingChatButton />
             </CallControls>

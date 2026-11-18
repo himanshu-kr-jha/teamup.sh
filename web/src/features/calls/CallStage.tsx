@@ -13,7 +13,7 @@ import { Track } from 'livekit-client';
 import type { TrackReferenceOrPlaceholder } from '@livekit/components-react';
 import { ChevronLeft, ChevronRight, MicOff, MonitorUp, NotebookPen, Pin, PinOff, UserX } from 'lucide-react';
 import { isNotetaker } from './notetaker';
-import { HandBadge, HandsChip } from './Hands';
+import { HandBadge, HandsStrip } from './Hands';
 import { SpeakingBars } from './SpeakingBars';
 import { Button } from '@/shared/components/ui/button';
 import { callsApi } from '@/shared/api/client';
@@ -63,14 +63,13 @@ export function CallStage({ callId, compact, asGuest = false }: { callId: string
   const viewer = useMemo(() => ({ asGuest, canRemoveGuests: !asGuest && !!guestLink?.canManage }), [asGuest, guestLink?.canManage]);
   return (
     <ViewerContext.Provider value={viewer}>
-      <div className="relative h-full">
-        <Stage callId={callId} compact={compact} />
-        {/* Over the stage, out of the way of every tile's own badges and buttons. */}
-        {!compact && (
-          <div className="pointer-events-none absolute inset-x-0 top-3 z-10 flex justify-center px-4">
-            <HandsChip />
-          </div>
-        )}
+      <div className="flex h-full flex-col">
+        {/* A row of its own above the people, only while hands are up: laid over
+            them it covered a tile and its buttons when there was no room to spare. */}
+        {!compact && <HandsStrip />}
+        <div className="min-h-0 flex-1">
+          <Stage callId={callId} compact={compact} />
+        </div>
       </div>
     </ViewerContext.Provider>
   );
