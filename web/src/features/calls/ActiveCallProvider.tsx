@@ -33,7 +33,6 @@ import { copyCallLink } from './copyLink';
 import { classifyJoinError, type JoinFailure } from './knock';
 import { BURST_WINDOW_MS, createJoinTracker, joinedMessage } from './joinPing';
 import {
-  AlertTriangle,
   Globe,
   History,
   Link2,
@@ -73,6 +72,7 @@ import {
   DropdownMenuTrigger,
 } from '@/shared/components/ui/dropdown-menu';
 import { useAuth } from '@/features/auth/AuthProvider';
+import { MediaErrorBanner } from './MediaErrorBanner';
 
 interface ActiveCall {
   callId: string;
@@ -923,33 +923,13 @@ function compactCount(people: number, expanded: boolean) {
 
 /** The video itself, plus the controls when there is room for them. */
 function CallTiles({ callId, compact }: { callId: string; compact: boolean }) {
-  const room = useRoomContext();
-  const [mediaError, setMediaError] = useState('');
   const [controls, setControls] = useState<HTMLDivElement | null>(null);
   useToastsAbove(controls, !compact);
 
-  // Camera and microphone permission is the most common thing to go wrong;
-  // an empty tile with no explanation is the worst possible answer.
-  useEffect(() => {
-    const onFailure = () => {
-      setMediaError(
-        'TeamUp could not use your camera or microphone. Check the permission in your browser and rejoin.'
-      );
-    };
-    room.on(RoomEvent.MediaDevicesError, onFailure);
-    return () => {
-      room.off(RoomEvent.MediaDevicesError, onFailure);
-    };
-  }, [room]);
-
   return (
     <div className="flex h-full flex-col">
-      {mediaError && !compact && (
-        <div className="flex items-start gap-3 border-b border-border bg-destructive/10 p-3 text-sm text-destructive">
-          <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
-          <span>{mediaError}</span>
-        </div>
-      )}
+      {/* Mounted in the corner window too, so a failure there is still known when it grows. */}
+      <MediaErrorBanner hidden={compact} />
 
       {!compact && <NotesBanner />}
 
