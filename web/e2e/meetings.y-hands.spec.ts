@@ -111,13 +111,20 @@ test.describe('speaking and raised hands', () => {
     expect(new Set(samples.map((s) => s.join(','))).size).toBeGreaterThan(3);
 
     // Asking for less movement: the bars hold the shape of a voice and keep still.
+    // The page takes the new setting on its next render, and LiveKit's "speaking"
+    // drops for about 400ms between phrases of the fake speech: so wait for the
+    // still mode, and read the heights in the same moment as the speaking flag.
     await olivia.page.emulateMedia({ reducedMotion: 'reduce' });
-    await expect(bars(olivia.page, 'alice')).toHaveAttribute('data-speaking', 'true', { timeout: 20_000 });
-    const still = await bars(olivia.page, 'alice').evaluate((el) =>
-      Array.from(el.children).map((b) => Math.round((b as HTMLElement).getBoundingClientRect().height))
-    );
-    expect(still).toEqual([8, 12, 8]);
+    await expect(bars(olivia.page, 'alice')).toHaveAttribute('data-motion', 'still');
+    const stillWhileSpeaking = () =>
+      bars(olivia.page, 'alice').evaluate((el) =>
+        el.getAttribute('data-speaking') === 'true'
+          ? Array.from(el.children).map((b) => Math.round((b as HTMLElement).getBoundingClientRect().height))
+          : null
+      );
+    await expect.poll(stillWhileSpeaking, { message: 'still bars in the shape of a voice', timeout: 20_000 }).toEqual([8, 12, 8]);
     await olivia.page.emulateMedia({ reducedMotion: 'no-preference' });
+    await expect(bars(olivia.page, 'alice')).toHaveAttribute('data-motion', 'moving');
 
     // ── a hand raised mid-sentence stays up; speaking after a pause lowers it ──
     const raise = alice.page.getByRole('button', { name: 'Raise your hand' });
