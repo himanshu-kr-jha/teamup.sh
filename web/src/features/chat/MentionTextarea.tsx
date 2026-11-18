@@ -1,4 +1,5 @@
 import { useMemo, useRef, useState, type ComponentProps } from 'react';
+import { flushSync } from 'react-dom';
 import { Textarea } from '@/shared/components/ui/textarea';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { insertMention, mentionQuery, suggestPeople, type Mentionable } from './mentions';
@@ -36,12 +37,14 @@ export function MentionTextarea({
     if (!mention) return;
     const caret = ref.current?.selectionStart ?? value.length;
     const next = insertMention(value, mention.start, caret, person);
-    onValueChange(next.text);
-    setMention(null);
-    requestAnimationFrame(() => {
-      ref.current?.focus();
-      ref.current?.setSelectionRange(next.caret, next.caret);
+    // At once, not on the next frame: a key typed straight after picking would
+    // otherwise land before the caret is moved, and the caret then jump back over it.
+    flushSync(() => {
+      onValueChange(next.text);
+      setMention(null);
     });
+    ref.current?.focus();
+    ref.current?.setSelectionRange(next.caret, next.caret);
   };
 
   return (
