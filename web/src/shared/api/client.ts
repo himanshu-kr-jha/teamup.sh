@@ -631,6 +631,11 @@ export const callsApi = {
   /** Turns a call down and tells whoever started it why. */
   decline: (id: string, reason: 'declined' | 'no_answer' = 'declined') =>
     api.post(`/calls/${id}/decline`, { reason }),
+  /** Rings colleagues into a call you are in. */
+  ring: (id: string, userIds: string[]) =>
+    api.post<{ rung: RungPerson[] }>(`/calls/${id}/ring`, { userIds }),
+  /** Stops ringing somebody rung into a call. */
+  cancelRing: (id: string, userId: string) => api.delete(`/calls/${id}/ring/${userId}`),
   /** Asks to join a private call. A repeat while one is waiting is the same request. */
   knock: (id: string) => api.post<{ request: KnockRequest }>(`/calls/${id}/knock`),
   /** Who is waiting or has waited. Members only. */
@@ -640,6 +645,14 @@ export const callsApi = {
   /** The audit trail. Anybody who may not read it gets 404. */
   log: (id: string) => api.get<CallLog>(`/calls/${id}/log`),
 };
+
+/** Somebody a ring into a call went to: ringing, or why they were not rung. */
+export interface RungPerson {
+  userId: string;
+  name: string;
+  status: 'ringing' | 'busy' | 'on_leave';
+  backOn?: string;
+}
 
 export interface KnockRequest {
   id: string;

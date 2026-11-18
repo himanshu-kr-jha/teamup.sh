@@ -24,12 +24,14 @@ import { MeetingChatButton, MeetingChatProvider, StageWithChat, UnreadChatMark, 
 import { NotesBanner } from './notetaker';
 import { CallControls, CallShortcuts, CompactCallControls, ShareUnavailableNote } from './CallControls';
 import { GuestAccess } from './GuestAccess';
+import { AddPeopleButton, RingingStrip, useAddedRings } from './AddPeople';
 import { CallLogDialog } from './CallLogDialog';
 import { copyCallLink } from './copyLink';
 import { classifyJoinError, type JoinFailure } from './knock';
 import { BURST_WINDOW_MS, createJoinTracker, joinedMessage } from './joinPing';
 import {
   AlertTriangle,
+  Globe,
   History,
   Link2,
   Maximize2,
@@ -37,7 +39,6 @@ import {
   MoveDiagonal2,
   PhoneOff,
   Volume2,
-  UserPlus,
 } from 'lucide-react';
 import '@livekit/components-styles';
 import { Button } from '@/shared/components/ui/button';
@@ -488,6 +489,7 @@ function CallFrame({
   const alone = remote.length === 0;
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   useJoinAnnouncements();
+  const rings = useAddedRings(callId);
 
   const { data: details } = useQuery({
     queryKey: ['call', callId],
@@ -698,15 +700,16 @@ function CallFrame({
                 >
                   <Link2 className="h-4 w-4" />
                 </Button>
+                <AddPeopleButton rings={rings} />
                 <Button
                   variant="ghost"
                   size="icon"
                   className="h-7 w-7"
                   aria-label="Guests"
-                  title="Guests"
+                  title="Guests from outside the organization"
                   onClick={() => setShowingGuests(true)}
                 >
-                  <UserPlus className="h-4 w-4" />
+                  <Globe className="h-4 w-4" />
                 </Button>
                 {canReadLog && (
                   <Button
@@ -746,6 +749,7 @@ function CallFrame({
           </div>
 
           <BlockedAudioPrompt compact={!expanded} />
+          <RingingStrip rings={rings} compact={!expanded} />
 
           <div className="min-h-0 flex-1">
             <CallTiles callId={callId} compact={!expanded} />

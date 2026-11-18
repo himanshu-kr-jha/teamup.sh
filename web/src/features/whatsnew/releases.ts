@@ -26,6 +26,18 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-18-e',
+    date: '2026-11-18',
+    title: 'Add people to a call',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'Ring a colleague into the call you are in',
+        body: 'In a call, press Add people at the top, tick the colleagues you want and press Ring. Their phone rings as for any call, it says who is already in it, and answering brings them straight in. While it rings you can cancel it, and if they decline or do not answer everyone in the call is told, while the call carries on. Guests, next to it, is still for people from outside the company.',
+      },
+    ],
+  },
+  {
     id: '2026-11-18-b',
     date: '2026-11-18',
     title: 'Your company background in calls',
