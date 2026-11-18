@@ -13,6 +13,7 @@ import {
   LiveKitRoom,
   RoomAudioRenderer,
   useAudioPlayback,
+  useConnectionState,
   useRoomContext,
 } from '@livekit/components-react';
 import { ConnectionState, RoomEvent, type RoomOptions } from 'livekit-client';
@@ -35,6 +36,7 @@ import {
   Globe,
   History,
   Link2,
+  Loader2,
   Maximize2,
   Minimize2,
   MoreVertical,
@@ -72,6 +74,9 @@ import {
 } from '@/shared/components/ui/dropdown-menu';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { MediaErrorBanner } from './MediaErrorBanner';
+import { forgetCall, recallCall, type CallMemory } from './callMemory';
+import { RememberCall, isLeavingPage, useBackStaysInApp } from './CallContinuity';
+import { currentBackgroundChoice, sameChoice, setBackgroundChoice } from './background';
 
 interface ActiveCall {
   callId: string;
@@ -85,6 +90,8 @@ interface ActiveCall {
   voice?: boolean;
   /** What was chosen on the screen before it (PreJoinScreen); nothing for a call, which goes straight in. */
   media?: JoinOptions;
+  /** Gone back into after a reload of the page (callMemory.ts), rather than joined. */
+  resumed?: boolean;
 }
 
 /**
@@ -118,6 +125,8 @@ interface ActiveCallContextValue {
   /** The call whose door somebody is watching from its page, without being in it. */
   watchedDoor: string | null;
   watchDoor: (callId: string | null) => void;
+  /** The call being gone back into after a reload, until it is joined or that fails. */
+  resuming: string | null;
 }
 
 const ActiveCallContext = createContext<ActiveCallContextValue | undefined>(undefined);
@@ -291,7 +300,7 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
   const missedEarlyRef = useRef(new Map<string, string>());
 
   const join = useCallback(
-    async (callId: string, options?: JoinOptions) => {
+    async (callId: string, options?: JoinOptions, resumed?: boolean) => {
       setFailure(null);
       latestCallIdRef.current = callId;
       const missedIn = missedEarlyRef.current.get(callId);
@@ -313,15 +322,35 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
           standing: options?.standing,
           // A voice call starts with the camera off, whatever a video call last chose.
           media: voice && options ? { ...options, camera: false } : options,
+          resumed,
         });
       } catch (err) {
-        setFailure(classifyJoinError(err));
+        const why = classifyJoinError(err);
+        setFailure(why);
+        // Off the call's own page nothing else would say that coming back did not work.
+        if (resumed && window.location.pathname !== `/calls/${callId}`) {
+          toast.error(why.kind === 'over' ? 'The call you were in has ended.' : 'Could not reconnect to the call.');
+        }
       } finally {
         setJoining(false);
       }
     },
-    [activeCall?.callId, navigate]
+    [activeCall?.callId, navigate, toast]
   );
+
+  // A reload moments after being in a call goes straight back into it, with the
+  // microphone and camera as they were, wherever in the app the reload happened.
+  const { user } = useAuth();
+  const [resume] = useState<CallMemory | null>(() => recallCall(user?.id, Date.now()));
+  const [resuming, setResuming] = useState<string | null>(() => resume?.callId ?? null);
+  const resumedRef = useRef(false);
+  useEffect(() => {
+    if (!resume || resumedRef.current) return;
+    resumedRef.current = true;
+    if (resume.background && !sameChoice(resume.background, currentBackgroundChoice())) setBackgroundChoice(resume.background);
+    const { mic, camera, audioInput, videoInput, audioOutput, standing } = resume;
+    void join(resume.callId, { mic, camera, audioInput, videoInput, audioOutput, standing }, true).finally(() => setResuming(null));
+  }, [resume, join]);
 
   const enter = useCallback((callId: string, token: string, options?: JoinOptions) => {
     setFailure(null);
@@ -330,6 +359,9 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const leave = useCallback(() => {
+    // The page going away closes the room too; that is a reload or a closed tab,
+    // not leaving, and the call is gone back into from the next page.
+    if (isLeavingPage()) return;
     setActiveCall((current) => {
       // Standing on the call's own page after leaving would rejoin it
       // immediately, because that page's whole job is to join whatever the
@@ -447,6 +479,12 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
     }
   }, [activeCall]);
 
+  // Out of the call, however that came about (you left, it ended, you were removed,
+  // or going back in failed): a reload now starts afresh.
+  useEffect(() => {
+    if (!activeCall && !resuming && !isLeavingPage()) forgetCall();
+  }, [activeCall, resuming]);
+
   // Being in a call is observed rather than chosen, so it sets itself and
   // clears when the call ends however it ends.
   useEffect(() => {
@@ -473,9 +511,11 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
   // options change, and the call object only changes on joining.
   const media = activeCall?.media;
   const roomOptions = useMemo<RoomOptions>(() => {
-    if (!media?.audioInput && !media?.videoInput && !media?.audioOutput) return ROOM_OPTIONS;
+    // The page says goodbye to the room itself, once it is really going (RememberCall).
+    if (!media?.audioInput && !media?.videoInput && !media?.audioOutput) return { ...ROOM_OPTIONS, disconnectOnPageLeave: false };
     return {
       ...ROOM_OPTIONS,
+      disconnectOnPageLeave: false,
       ...(media.audioInput && { audioCaptureDefaults: { deviceId: media.audioInput } }),
       ...(media.videoInput && { videoCaptureDefaults: { deviceId: media.videoInput } }),
       ...(media.audioOutput && { audioOutput: { deviceId: media.audioOutput } }),
@@ -486,8 +526,8 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
   const expanded = !!activeCall && location.pathname === `/calls/${activeCall.callId}`;
 
   const value = useMemo(
-    () => ({ activeCall, join, enter, leave, joining, failure, clearFailure, watchedDoor, watchDoor }),
-    [activeCall, join, enter, leave, joining, failure, clearFailure, watchedDoor]
+    () => ({ activeCall, join, enter, leave, joining, failure, clearFailure, watchedDoor, watchDoor, resuming }),
+    [activeCall, join, enter, leave, joining, failure, clearFailure, watchedDoor, resuming]
   );
 
   return (
@@ -519,11 +559,14 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
             expanded={expanded}
             onLeave={leave}
             reachable={activeCall.callId in reach ? reach[activeCall.callId] : null}
+            resumed={!!activeCall.resumed}
           />
           <RoomAudioRenderer />
           <CameraBackground />
+          <RememberCall userId={user?.id} callId={activeCall.callId} standing={!!activeCall.standing} />
         </LiveKitRoom>
       )}
+      {resuming && !activeCall && location.pathname !== `/calls/${resuming}` && <ReconnectingNote />}
     </ActiveCallContext.Provider>
   );
 }
@@ -534,12 +577,15 @@ function CallFrame({
   expanded,
   onLeave,
   reachable,
+  resumed,
 }: {
   callId: string;
   expanded: boolean;
   onLeave: () => void;
   /** Whether the other end has a session open; null until the server says. */
   reachable: Reach | null;
+  /** Gone back into after a reload, which says so until it is connected. */
+  resumed: boolean;
 }) {
   const navigate = useNavigate();
   const toast = useToast();
@@ -549,7 +595,8 @@ function CallFrame({
   const alone = remote.length === 0;
   // Once somebody has been in, being alone again is waiting, not ringing: the
   // ring that started the call is long over.
-  const [somebodyCame, setSomebodyCame] = useState(false);
+  // Somebody back after a reload had their call answered long before.
+  const [somebodyCame, setSomebodyCame] = useState(resumed);
   useEffect(() => {
     if (!alone) setSomebodyCame(true);
   }, [alone]);
@@ -557,6 +604,9 @@ function CallFrame({
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   useJoinAnnouncements();
   const rings = useAddedRings(callId);
+  const connection = useConnectionState(room);
+  const reconnecting = resumed && connection !== ConnectionState.Connected;
+  useBackStaysInApp(expanded && connection === ConnectionState.Connected);
 
   // A device picked during the call is the one the next call's screen starts on.
   const { user } = useAuth();
@@ -633,6 +683,9 @@ function CallFrame({
   // the call itself is closed only by whoever turns out to be last out - there
   // is deliberately no way to hang up on everybody else.
   const hangUp = useCallback(async () => {
+    // Whoever hangs up alone ends the call, even if somebody else dropped out a
+    // moment ago and may be reloading: they come back to "This call has ended",
+    // which is the truth, rather than to a room the server may never close.
     const lastOut = remote.length === 0;
     try {
       if (lastOut) {
@@ -793,12 +846,20 @@ function CallFrame({
               <span className="min-w-0 flex-1 leading-tight" data-testid="call-heading">
                 <span className="block truncate text-sm font-medium">{shownTitle}</span>
                 <span className="block truncate text-xs text-muted-foreground">
-                  {alone ? waitingLabel(reachNow) : compactCount(remote.length + 1, expanded)}
+                  {reconnecting
+                    ? 'Reconnecting to the call\u2026'
+                    : alone
+                      ? waitingLabel(reachNow)
+                      : compactCount(remote.length + 1, expanded)}
                 </span>
               </span>
             ) : (
               <span className="min-w-0 flex-1 truncate text-sm font-medium" data-testid="call-heading">
-                {alone ? waitingLabel(reachNow) : `${compactCount(remote.length + 1, expanded)}`}
+                {reconnecting
+                  ? 'Reconnecting to the call\u2026'
+                  : alone
+                    ? waitingLabel(reachNow)
+                    : `${compactCount(remote.length + 1, expanded)}`}
               </span>
             )}
             {expanded ? (
@@ -923,6 +984,23 @@ function CallFrame({
         </Dialog>
       </HandsProvider>
     </MeetingChatProvider>
+  );
+}
+
+/**
+ * Where the corner window will be, while a call is gone back into after a reload
+ * on some other page than its own.
+ */
+function ReconnectingNote() {
+  return (
+    <div
+      role="status"
+      // Where CallFrame puts the window: above the bottom navigation on a phone.
+      className="fixed bottom-[72px] right-2 z-50 flex items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground shadow-2xl lg:bottom-6"
+    >
+      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" />
+      {'Reconnecting to the call\u2026'}
+    </div>
   );
 }
 
