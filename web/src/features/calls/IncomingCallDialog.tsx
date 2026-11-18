@@ -61,6 +61,7 @@ export function IncomingCallDialog() {
     if (onItsPage) dismiss(onItsPage);
   }, [activeCall, onItsPage, dismiss, queue]);
 
+  const answerRef = useRef<HTMLButtonElement>(null);
   const stopToneRef = useRef<StopSound>();
   const giveUpTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
@@ -151,7 +152,15 @@ export function IncomingCallDialog() {
 
   return (
     <Dialog open={!!call} onOpenChange={(open) => !open && call && decline()}>
-      <DialogContent className="max-w-sm">
+      <DialogContent
+        className="max-w-sm"
+        // Enter answers, as the ring invites: the focus starts on Answer, not on
+        // Decline, which comes first only in reading order.
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          answerRef.current?.focus();
+        }}
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             {call?.callType === 'audio' ? (
@@ -170,7 +179,7 @@ export function IncomingCallDialog() {
             <PhoneOff className="mr-2 h-4 w-4" />
             {call?.standing ? 'Not now' : 'Decline'}
           </Button>
-          <Button onClick={answer}>
+          <Button ref={answerRef} onClick={answer}>
             <Phone className="mr-2 h-4 w-4" />
             {call?.standing ? 'Join' : 'Answer'}
           </Button>

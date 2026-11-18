@@ -34,6 +34,7 @@ import {
   Link2,
   Maximize2,
   Minimize2,
+  MoreVertical,
   MoveDiagonal2,
   PhoneOff,
   Volume2,
@@ -59,6 +60,13 @@ import { useWebSocket } from '@/features/websocket/WSProvider';
 import { cn } from '@/shared/utils/cn';
 import { CameraBackground } from './BackgroundPicker';
 import { saveJoinChoice } from './prejoin';
+import { callTitleFor } from './callTitle';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/shared/components/ui/dropdown-menu';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { RESIZE_STEP, fitCallWindow, keepSize, savedSize, viewport } from './callWindow';
 
@@ -552,6 +560,12 @@ function CallFrame({
     staleTime: 60_000,
   });
   const title: string | undefined = details?.title?.trim() || undefined;
+  // In a call between two, the other person's name, not your own.
+  const shownTitle = callTitleFor(title, details?.participants, userId);
+  const copyLink = async () => {
+    if (await copyCallLink(callId)) toast.success('Link copied. Anybody not on the call will have to ask to join.');
+    else toast.error('Could not copy. Your browser did not allow it.');
+  };
   // Everybody may be in a standing meeting's room, and most of them may not read its
   // log, so nobody is offered a button whose only answer is a refusal.
   const canReadLog = details?.canReadLog === true;
@@ -736,29 +750,55 @@ function CallFrame({
               !expanded && 'cursor-grab pl-9 active:cursor-grabbing'
             )}
           >
-            <span className="min-w-0 flex-1 truncate text-sm font-medium">
-              {expanded && title ? `${title} \u00b7 ` : ''}
-              {alone ? waitingLabel(reachable) : `${compactCount(remote.length + 1, expanded)}`}
-            </span>
+            {expanded && shownTitle ? (
+              // The name on a line of its own and how many are in under it, so on a
+              // phone neither is cut short to make room for the other.
+              <span className="min-w-0 flex-1 leading-tight" data-testid="call-heading">
+                <span className="block truncate text-sm font-medium">{shownTitle}</span>
+                <span className="block truncate text-xs text-muted-foreground">
+                  {alone ? waitingLabel(reachable) : compactCount(remote.length + 1, expanded)}
+                </span>
+              </span>
+            ) : (
+              <span className="min-w-0 flex-1 truncate text-sm font-medium" data-testid="call-heading">
+                {alone ? waitingLabel(reachable) : `${compactCount(remote.length + 1, expanded)}`}
+              </span>
+            )}
             {expanded ? (
               <>
+                {/* On a phone the link and the guests go under one button, leaving
+                    room in the bar for the title. */}
+                <DropdownMenu modal={false}>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon" className="h-7 w-7 sm:hidden" aria-label="More call options" title="More">
+                      <MoreVertical className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => void copyLink()}>
+                      <Link2 className="mr-2 h-4 w-4" aria-hidden="true" />
+                      Copy the link to this call
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => setShowingGuests(true)}>
+                      <UserPlus className="mr-2 h-4 w-4" aria-hidden="true" />
+                      Guests
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-7 w-7"
+                  className="hidden h-7 w-7 sm:inline-flex"
                   aria-label="Copy the link to this call"
                   title="Copy link"
-                  onClick={async () => {
-                    if (await copyCallLink(callId)) toast.success('Link copied. Anybody not on the call will have to ask to join.');
-                    else toast.error('Could not copy. Your browser did not allow it.');
-                  }}
+                  onClick={() => void copyLink()}
                 >
                   <Link2 className="h-4 w-4" />
                 </Button>
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-7 w-7"
+                  className="hidden h-7 w-7 sm:inline-flex"
                   aria-label="Guests"
                   title="Guests"
                   onClick={() => setShowingGuests(true)}
