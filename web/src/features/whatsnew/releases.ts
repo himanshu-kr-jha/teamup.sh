@@ -26,6 +26,28 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-19-e',
+    date: '2026-11-19',
+    title: 'Find people and teams by typing',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'Search when you invite people',
+        body: 'Starting a call, scheduling a meeting or choosing who a stand-up is for, type a few letters of a name, an email, a company role or a team. Press Enter when only one person is left, or use the arrow keys, and whoever you picked stays at the top.',
+      },
+      {
+        area: 'tasks',
+        title: 'Search in every list of people',
+        body: 'Assigning a task, adding people to it, filtering the board by person or team, and giving project access all have a search box now, so nobody has to scroll a long list to find somebody.',
+      },
+      {
+        area: 'app',
+        title: 'Teams are searchable too',
+        body: 'Find a team by its name or by somebody on it, on Organization, in a stand-up and in every team filter. Escape clears what you typed before it closes anything.',
+      },
+    ],
+  },
+  {
     id: '2026-11-19-c',
     date: '2026-11-19',
     title: 'A fix for the camera warning in calls',

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { UserPlus } from 'lucide-react';
 import {
@@ -14,6 +14,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/shared/components/ui
 import { FormDialog } from '@/shared/components/FormDialog';
 import { PersonAvatar } from '@/shared/components/UserAvatar';
 import { PeoplePicker, addEach, addLabel } from '@/shared/components/PeoplePicker';
+import { usePeopleDirectory } from '@/shared/components/search/directory';
+import { NoMatch, useBrowseSearch } from '@/shared/components/search/listKeys';
+import { personFacts } from '@/shared/utils/peopleSearch';
 import { channelsApi, filesApi, orgApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
@@ -56,7 +59,13 @@ export function ChannelSettingsDialog({
     enabled: !!channelId,
   });
 
-  const members = membersData?.data ?? [];
+  const members = useMemo(() => membersData?.data ?? [], [membersData]);
+  const directory = usePeopleDirectory();
+  const memberFacts = useCallback(
+    (m: any) => personFacts({ name: m.name ?? '', email: m.email, jobTitle: directory.about(m.userId)?.jobTitle, teams: directory.about(m.userId)?.teams }),
+    [directory]
+  );
+  const memberSearch = useBrowseSearch(members, memberFacts);
   const { user } = useAuth();
   // What the server lets this person do: a channel's owners and admins manage
   // its members, and so does whoever administers every channel. A direct
@@ -115,8 +124,10 @@ export function ChannelSettingsDialog({
               {!membersLoading && members.length === 0 && (
                 <p className="text-sm text-muted-foreground">Nobody is in this channel yet.</p>
               )}
+              {memberSearch.box('Search members')}
+              {memberSearch.none && <NoMatch query={memberSearch.query} />}
               <ul className="max-h-72 space-y-1 overflow-y-auto">
-                {members.map((m: any) => (
+                {memberSearch.shown.map((m: any) => (
                   <li key={m.userId} className="flex items-center gap-3 rounded-md p-2 hover:bg-accent">
                     <PersonAvatar userId={m.userId} name={m.name} src={m.avatarUrl} fallbackClassName="bg-primary/10 font-medium text-primary" />
                     <div className="min-w-0 flex-1">
@@ -189,6 +200,7 @@ export function ChannelSettingsDialog({
           selected={picked}
           onChange={setPicked}
           empty="Everybody in the organization is already in this channel."
+          autoFocus
         />
       </FormDialog>
     </>

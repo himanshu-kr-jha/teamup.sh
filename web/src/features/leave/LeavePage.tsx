@@ -9,6 +9,7 @@ import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
 import { FormDialog } from '@/shared/components/FormDialog';
+import { SearchSelect, usePersonOptions } from '@/shared/components/SearchSelect';
 import { holidaysApi, leaveApi, localToday, type Holiday, type LeavePerson, type LeaveRecord } from '@/shared/api/client';
 import { useAuth } from '@/features/auth/AuthProvider';
 import { PERMS, can } from '@/shared/permissions';
@@ -32,6 +33,9 @@ import {
 } from './leave';
 
 const EVERYBODY = 'all';
+
+/** The people leave is listed for start with yourself. */
+const youFirst = (p: { name: string }, i: number) => (i === 0 ? `${p.name} (you)` : p.name);
 
 /**
  * Your leave, and the leave of whoever you manage, with the organization's
@@ -87,6 +91,8 @@ export function LeaveBoard() {
   const range = { from: addDays(today, -365), to: addDays(today, 730) };
   const { data: people = [] } = useLeavePeople();
   const managesOthers = people.length > 1;
+  // The first is always you.
+  const filterOptions = usePersonOptions(people, { extra: [{ value: EVERYBODY, label: 'Everybody' }], label: youFirst });
   const { data, error, isPending, refetch } = useQuery({
     queryKey: ['leave', range.from, range.to],
     queryFn: () => leaveApi.list(range).then((res) => res.data),
@@ -101,19 +107,14 @@ export function LeaveBoard() {
     <div className="space-y-6">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         {managesOthers ? (
-          <Select value={person} onValueChange={setPerson}>
-            <SelectTrigger className="h-9 w-full sm:w-64" aria-label="Show leave for">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={EVERYBODY}>Everybody</SelectItem>
-              {people.map((p, i) => (
-                <SelectItem key={p.id} value={p.id}>
-                  {i === 0 ? `${p.name} (you)` : p.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <SearchSelect
+            value={person}
+            onChange={setPerson}
+            options={filterOptions}
+            aria-label="Show leave for"
+            searchPlaceholder="Search people"
+            className="h-9 w-full sm:w-64"
+          />
         ) : (
           <span />
         )}
@@ -255,6 +256,7 @@ function LeaveDialog({
   const set = (changes: Partial<LeaveDraft>) => setDraft((d) => ({ ...d, ...changes }));
   const problem = leaveDraftProblem(draft);
   const forSomebodyElse = record ? record.userId !== people[0]?.id : who !== people[0]?.id;
+  const whoOptions = usePersonOptions(people, { label: youFirst });
 
   return (
     <FormDialog
@@ -279,18 +281,13 @@ function LeaveDialog({
       {!record && people.length > 1 && (
         <div className="space-y-2">
           <Label htmlFor="leavePerson">Whose leave</Label>
-          <Select value={who} onValueChange={setWho}>
-            <SelectTrigger id="leavePerson">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {people.map((p, i) => (
-                <SelectItem key={p.id} value={p.id}>
-                  {i === 0 ? `${p.name} (you)` : p.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <SearchSelect
+            id="leavePerson"
+            value={who}
+            onChange={setWho}
+            options={whoOptions}
+            searchPlaceholder="Search people"
+          />
         </div>
       )}
 

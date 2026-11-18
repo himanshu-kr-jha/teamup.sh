@@ -2,6 +2,7 @@ import * as React from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { X } from 'lucide-react';
 import { cn } from '@/shared/utils/cn';
+import { keepOpenWhileSearchHasText, skipSearchFocusOnPhone } from '@/shared/components/search/escape';
 
 // Radix handles focus trapping, escape-to-close, backdrop clicks and returning
 // focus to whatever opened the dialog, so none of that is reimplemented here.
@@ -28,11 +29,19 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName;
 const DialogContent = React.forwardRef<
   React.ElementRef<typeof DialogPrimitive.Content>,
   React.ComponentPropsWithoutRef<typeof DialogPrimitive.Content>
->(({ className, children, ...props }, ref) => (
+>(({ className, children, onEscapeKeyDown, onOpenAutoFocus, ...props }, ref) => (
   <DialogPortal>
     <DialogOverlay />
     <DialogPrimitive.Content
       ref={ref}
+      onEscapeKeyDown={(event) => {
+        keepOpenWhileSearchHasText(event);
+        onEscapeKeyDown?.(event);
+      }}
+      onOpenAutoFocus={(event) => {
+        onOpenAutoFocus?.(event);
+        if (!event.defaultPrevented) skipSearchFocusOnPhone(event);
+      }}
       className={cn(
         'fixed left-1/2 top-1/2 z-50 grid w-full max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4',
         'border border-border bg-background p-6 shadow-lg sm:rounded-lg',

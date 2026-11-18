@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Check, FileText, Hash, Loader2, Megaphone, Search, Send, Share2, X } from 'lucide-react';
+import { personFacts, rankBy } from '@/shared/utils/peopleSearch';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { PersonAvatar } from '@/shared/components/UserAvatar';
@@ -111,7 +112,8 @@ export function SharePage() {
   }, [userData, conversations, user?.id]);
 
   const shownConversations = conversations.filter((c) => matches(c.name));
-  const shownPeople = people.filter((p) => matches(p.name, p.email));
+  // People by the app's one rule for finding somebody, best matches first.
+  const shownPeople = useMemo(() => rankBy(people, query, (p) => personFacts({ ...p, name: p.name ?? '' })), [people, query]);
 
   const isChosen = (t: Target) => chosen.some((c) => keyOf(c) === keyOf(t));
   const toggle = (t: Target) =>

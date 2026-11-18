@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Check, Clock, KeyRound, Loader2, RefreshCw, ShieldCheck, UserMinus, X } from 'lucide-react';
@@ -9,6 +9,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/shared/components/ui
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
 import { FormDialog } from '@/shared/components/FormDialog';
+import { SearchSelect, usePersonOptions } from '@/shared/components/SearchSelect';
+import { byName } from '@/shared/utils/peopleSearch';
 import { PersonAvatar } from '@/shared/components/UserAvatar';
 import {
   accessApi,
@@ -199,7 +201,11 @@ export function ProjectAccessDialog({ project, onClose }: { project: Project | n
   const [level, setLevel] = useState<AccessLevel>('read');
   const [busy, setBusy] = useState<string | null>(null);
 
-  const people = (usersData?.data ?? []) as Array<{ id: string; name: string }>;
+  const people = useMemo(
+    () => [...((usersData?.data ?? []) as Array<{ id: string; name: string; email?: string }>)].sort(byName),
+    [usersData]
+  );
+  const personOptions = usePersonOptions(people);
 
   const act = async (id: string, work: () => Promise<unknown>, done: string) => {
     setBusy(id);
@@ -266,14 +272,14 @@ export function ProjectAccessDialog({ project, onClose }: { project: Project | n
                 <div className="flex flex-wrap items-end gap-2 rounded-md border border-border p-2">
                   <div className="min-w-[10rem] flex-1 space-y-1">
                     <Label htmlFor="givePerson">Person</Label>
-                    <Select value={person} onValueChange={setPerson}>
-                      <SelectTrigger id="givePerson"><SelectValue placeholder="Choose somebody" /></SelectTrigger>
-                      <SelectContent>
-                        {people.map((p) => (
-                          <SelectItem key={p.id} value={p.id}>{p.name}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <SearchSelect
+                      id="givePerson"
+                      value={person}
+                      onChange={setPerson}
+                      options={personOptions}
+                      placeholder="Choose somebody"
+                      searchPlaceholder="Search people"
+                    />
                   </div>
                   <div className="w-28 space-y-1">
                     <Label htmlFor="giveLevel">Access</Label>

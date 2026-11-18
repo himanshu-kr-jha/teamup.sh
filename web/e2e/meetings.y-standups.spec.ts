@@ -39,10 +39,11 @@ test('a manager makes a stand-up for their team: the team sees it, nobody else d
   // A manager is offered her own teams, not the whole organization.
   const who = dialog.getByRole('group', { name: 'Who is it for' });
   await expect(who.getByRole('radio', { name: 'Everybody in the organization' })).toHaveCount(0);
-  await expect(who.getByRole('button', { name: 'Sales' })).toHaveCount(0);
+  const teams = who.getByRole('list', { name: 'Teams' });
+  await expect(teams.getByRole('checkbox', { name: /^Sales/ })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'Create' })).toBeDisabled();
-  await who.getByRole('button', { name: 'Backend' }).click();
-  await expect(who.getByRole('button', { name: 'Backend' })).toHaveAttribute('aria-pressed', 'true');
+  await teams.getByRole('checkbox', { name: /^Backend/ }).check();
+  await expect(teams.getByRole('checkbox', { name: /^Backend/ })).toBeChecked();
   await dialog.getByRole('button', { name: 'Create' }).click();
   await expect(card(mia.page, name).getByTestId('standing-audience')).toHaveText('For Backend');
 

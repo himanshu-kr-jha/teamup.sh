@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, UsersRound } from 'lucide-react';
-import { PeoplePicker } from '@/shared/components/PeoplePicker';
+import { PeoplePicker, TeamPicker } from '@/shared/components/PeoplePicker';
 import { FormDialog } from '@/shared/components/FormDialog';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
@@ -96,8 +96,6 @@ export function StandingMeetingDialog({
   const current = { ...form, durationMinutes: Number(lengthText) };
   const problem = standingFormProblem(current) ?? audienceProblem(audience);
 
-  const toggleTeam = (id: string) =>
-    setAudience((a) => ({ ...a, teamIds: a.teamIds.includes(id) ? a.teamIds.filter((t) => t !== id) : [...a.teamIds, id] }));
   // Somebody already chosen stays on the list while editing, even if the editor
   // could not choose them now, so saving does not quietly drop them.
   const teamChoices = useMemo(() => {
@@ -251,25 +249,11 @@ export function StandingMeetingDialog({
                 {teamChoices.length > 0 && (
                   <div className="space-y-1.5">
                     <p className="text-xs text-muted-foreground">Teams, with the teams beneath them</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {teamChoices.map((team) => {
-                        const on = audience.teamIds.includes(team.id);
-                        return (
-                          <button
-                            key={team.id}
-                            type="button"
-                            aria-pressed={on}
-                            onClick={() => toggleTeam(team.id)}
-                            className={cn(
-                              'rounded-full border px-3 py-1 text-sm transition-colors',
-                              on ? 'border-primary bg-primary text-primary-foreground' : 'border-input bg-background hover:bg-accent'
-                            )}
-                          >
-                            {team.name}
-                          </button>
-                        );
-                      })}
-                    </div>
+                    <TeamPicker
+                      teams={teamChoices}
+                      selected={audience.teamIds}
+                      onChange={(ids) => setAudience((a) => ({ ...a, teamIds: ids }))}
+                    />
                   </div>
                 )}
                 <div className="space-y-1.5">
