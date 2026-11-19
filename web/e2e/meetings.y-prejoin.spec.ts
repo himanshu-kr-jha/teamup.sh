@@ -83,6 +83,8 @@ test.describe('the screen before a call', () => {
     await page.waitForTimeout(300);
     await page.screenshot({ path: `${SHOTS}/background-menu.png` });
     await page.getByRole('menuitemradio', { name: 'Blur', exact: true }).click();
+    // Choosing keeps the menu open, so the preview shows it; Escape closes it.
+    await page.keyboard.press('Escape');
     await expect(page.getByRole('menu', { name: 'Background effects' })).toHaveCount(0);
     // On the preview itself: the camera goes through the background processor.
     await expect(page.getByTestId('background-effects')).toHaveAttribute('aria-pressed', 'true');

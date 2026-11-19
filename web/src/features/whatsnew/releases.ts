@@ -26,6 +26,19 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-19-f',
+    date: '2026-11-19',
+    title: 'Backgrounds go on without freezing your video',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'No more frozen video while a background goes on',
+        body: 'Choosing a blur or a picture in a call no longer freezes your video for you or for others. Your camera keeps going as it is while the background gets ready, then switches over in one go. The menu now stays open and shows a preview of your camera with the background on, and the first background you choose comes on faster.',
+        link: '/calls',
+      },
+    ],
+  },
+  {
     id: '2026-11-19-e',
     date: '2026-11-19',
     title: 'Find people and teams by typing',

@@ -256,6 +256,10 @@ export function supportsLooks(): boolean {
  * and on; and taken off entirely when both are plain, so a plain camera costs
  * nothing. Call it only while the camera is live: a processor set on a camera
  * that is off waits for a picture that is not coming.
+ *
+ * Nobody sees the video stand still meanwhile: a new processor is made ready
+ * while the camera goes on sending as it is, and put on once it is; one taken
+ * off hands the camera back to the call before it goes.
  */
 export async function applyCameraEffects(
   track: LocalVideoTrack,
@@ -268,7 +272,7 @@ export async function applyCameraEffects(
   const plainLook = !filter.filter && !filter.wash;
   const running = track.getProcessor();
   if (!options && plainLook) {
-    if (running) await track.stopProcessor();
+    if (running) await takeEffectsOff(track);
     return;
   }
   const m = await import('./cameraProcessor');
@@ -284,11 +288,50 @@ export async function applyCameraEffects(
     return;
   }
   if (running) await track.stopProcessor();
-  const processor = m.createCameraProcessor(background, filter, {
-    tasksVisionFileSet: __MEDIAPIPE_WASM__,
-    modelAssetPath: '/mediapipe/selfie_segmenter.tflite',
-  });
-  const visible = m.shown(processor);
-  await track.setProcessor(processor);
-  await visible;
+  const settings = track.getSourceTrackSettings();
+  await m.attachCameraProcessor(
+    (processor) => track.setProcessor(processor),
+    background,
+    filter,
+    { width: settings.width, height: settings.height },
+    () => !track.isMuted && track.mediaStreamTrack?.readyState === 'live'
+  );
+}
+
+/**
+ * Takes the processor off a camera. Its picture goes plain at once, the call is
+ * given the camera as it is, and only then does the processor go, so the video
+ * others see never waits for it.
+ */
+async function takeEffectsOff(track: LocalVideoTrack) {
+  const running = track.getProcessor();
+  if (!running) return;
+  const m = await import('./cameraProcessor');
+  if (m.isCameraProcessor(running)) {
+    await m.updateCameraProcessor(running, null, { filter: '', wash: '' });
+    const camera = m.cameraUnder(running);
+    if (camera?.readyState === 'live') await track.sender?.replaceTrack(camera).catch(() => undefined);
+  }
+  await track.stopProcessor();
+}
+
+/**
+ * Fetches what a background needs ahead of time, so the first one is quick: when
+ * the picker opens, and once the page is idle in a call with the camera on. Not
+ * on a connection that asks to save data, unless the picker is opened.
+ */
+export function preloadCameraEffects(whenIdle = false) {
+  const saveData = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData;
+  if (whenIdle && saveData) return () => undefined;
+  const load = () => void import('./cameraProcessor').then((m) => m.preloadEffects()).catch(() => undefined);
+  if (!whenIdle) {
+    load();
+    return () => undefined;
+  }
+  if (typeof requestIdleCallback === 'function') {
+    const id = requestIdleCallback(load, { timeout: 10_000 });
+    return () => cancelIdleCallback(id);
+  }
+  const timer = setTimeout(load, 3_000);
+  return () => clearTimeout(timer);
 }
