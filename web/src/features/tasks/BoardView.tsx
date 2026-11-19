@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Search, Filter, MoreVertical, Calendar, Lock } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
@@ -10,6 +10,8 @@ import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tansta
 import { Link } from 'react-router-dom';
 import { Tabs, TabsList, TabsTrigger } from '@/shared/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
+import { SearchSelect, usePersonOptions, useTeamOptions } from '@/shared/components/SearchSelect';
+import { byName } from '@/shared/utils/peopleSearch';
 import { tasksApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { useToast } from '@/shared/hooks/useToast';
@@ -131,16 +133,18 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
     queryKey: ['managed-teams'],
     queryFn: () => tasksApi.managedTeams(),
   });
-  const managedTeams = managedData?.data ?? [];
+  const managedTeams = useMemo(() => managedData?.data ?? [], [managedData]);
 
   // Narrowing to a team narrows who you can pick; "all teams" offers everyone
   // across every team they run, deduplicated.
-  const peopleInScope = (() => {
+  const peopleInScope = useMemo(() => {
     const teams = teamId === 'all' ? managedTeams : managedTeams.filter((t) => t.id === teamId);
-    const byId = new Map<string, { userId: string; name: string }>();
-    teams.forEach((t) => t.members.forEach((m) => byId.set(m.userId, m)));
-    return [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
-  })();
+    const byId = new Map<string, { id: string; name: string; email: string }>();
+    teams.forEach((t) => t.members.forEach((m) => byId.set(m.userId, { id: m.userId, name: m.name, email: m.email })));
+    return [...byId.values()].sort(byName);
+  }, [managedTeams, teamId]);
+  const personOptions = usePersonOptions(peopleInScope, { extra: [{ value: 'all', label: 'Everyone' }] });
+  const teamOptions = useTeamOptions(managedTeams, [{ value: 'all', label: 'All teams' }]);
 
   // The search term is applied in the browser, so it must not be part of the
   // key: putting it there made every keystroke a brand-new query, which flipped
@@ -206,25 +210,27 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
   const teamFilters = (phone: boolean) => (
     <>
       {managedTeams.length > 1 && (
-        <Select value={teamId} onValueChange={(v) => { setTeamId(v); setAssigneeId('all'); }}>
-          <SelectTrigger className={phone ? 'h-9 min-w-0 flex-1' : 'h-9 w-40'} aria-label="Filter by team"><SelectValue /></SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All teams</SelectItem>
-            {managedTeams.map((t) => (
-              <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <SearchSelect
+          value={teamId}
+          onChange={(v) => {
+            setTeamId(v);
+            setAssigneeId('all');
+          }}
+          options={teamOptions}
+          aria-label="Filter by team"
+          searchPlaceholder="Search teams"
+          nobody="No team"
+          className={phone ? 'h-9 min-w-0 flex-1' : 'h-9 w-40'}
+        />
       )}
-      <Select value={assigneeId} onValueChange={setAssigneeId}>
-        <SelectTrigger className={phone ? 'h-9 min-w-0 flex-1' : 'h-9 w-44'} aria-label="Filter by person"><SelectValue /></SelectTrigger>
-        <SelectContent>
-          <SelectItem value="all">Everyone</SelectItem>
-          {peopleInScope.map((m) => (
-            <SelectItem key={m.userId} value={m.userId}>{m.name}</SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
+      <SearchSelect
+        value={assigneeId}
+        onChange={setAssigneeId}
+        options={personOptions}
+        aria-label="Filter by person"
+        searchPlaceholder="Search people"
+        className={phone ? 'h-9 min-w-0 flex-1' : 'h-9 w-44'}
+      />
     </>
   );
 

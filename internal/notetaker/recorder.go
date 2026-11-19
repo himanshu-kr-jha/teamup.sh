@@ -85,6 +85,9 @@ type recorder struct {
 	empty           bool
 	// spoken counts the packets written while they were speaking.
 	spoken int
+	// off is notes paused: nothing that arrives is kept, not even the moment
+	// before somebody speaks.
+	off bool
 }
 
 func newRecorder(speaker Speaker, emit func(Clip), now func() time.Time) *recorder {
@@ -95,6 +98,9 @@ func newRecorder(speaker Speaker, emit func(Clip), now func() time.Time) *record
 func (r *recorder) Packet(p *rtp.Packet) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.off {
+		return
+	}
 	now := r.now()
 	if r.w != nil {
 		step := int32(p.Timestamp - r.lastTS)
@@ -172,6 +178,25 @@ func (r *recorder) Flush() {
 	if r.w != nil {
 		r.close(r.now())
 	}
+}
+
+// Cut is notes being paused: the clip open now ends here, as though they had
+// stopped speaking, and nothing is kept until Resume.
+func (r *recorder) Cut() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.off = true
+	r.preroll = nil
+	if r.w != nil {
+		r.close(r.now())
+	}
+}
+
+// Resume is notes being taken again.
+func (r *recorder) Resume() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.off = false
 }
 
 func (r *recorder) open(now time.Time) {

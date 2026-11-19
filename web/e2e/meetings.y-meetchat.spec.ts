@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 import { expect, test } from './support/fixtures';
-import { apiAs, idOf, iso } from './support/meetings';
+import { apiAs, idOf, iso, passPrejoin } from './support/meetings';
 
 // A meeting's own chat, as in a video meeting's side panel: the people in the
 // call write to each other beside the video, a guest included, somebody who
@@ -40,8 +40,9 @@ test.describe('meeting chat', () => {
     await expect(inACall(olivia.page)).toBeVisible({ timeout: 30_000 });
 
     const ally = await as('alice');
-    // Invited, and the meeting is on: opening it is joining it.
+    // Invited, and the meeting is on: the screen before it, then in.
     await ally.page.goto(`/calls/${id}`);
+    await passPrejoin(ally.page);
     await expect(inACall(ally.page)).toBeVisible({ timeout: 30_000 });
     await expect(olivia.page.getByText('Alice Archer', { exact: true })).toBeVisible({ timeout: 20_000 });
 

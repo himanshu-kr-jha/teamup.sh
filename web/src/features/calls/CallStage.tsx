@@ -11,8 +11,10 @@ import {
 } from '@livekit/components-react';
 import { Track } from 'livekit-client';
 import type { TrackReferenceOrPlaceholder } from '@livekit/components-react';
-import { ChevronLeft, ChevronRight, MicOff, MonitorUp, NotebookPen, Pin, PinOff, UserX, Volume2 } from 'lucide-react';
-import { isNotetaker } from './notetaker';
+import { ChevronLeft, ChevronRight, MicOff, MonitorUp, NotebookPen, Pin, PinOff, UserX } from 'lucide-react';
+import { isNotetaker, useNotesPaused } from './notetaker';
+import { HandBadge, HandsStrip } from './Hands';
+import { SpeakingBars } from './SpeakingBars';
 import { Button } from '@/shared/components/ui/button';
 import { callsApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
@@ -31,6 +33,10 @@ import {
   reconcileOrder,
   stageShare,
 } from './tileLayout';
+import { firstNameOf } from './callTitle';
+
+/** The narrowest a tile in the corner window gets before its row wraps. */
+const CORNER_TILE_MIN_WIDTH = 72;
 
 /**
  * The people in a call.
@@ -61,7 +67,14 @@ export function CallStage({ callId, compact, asGuest = false }: { callId: string
   const viewer = useMemo(() => ({ asGuest, canRemoveGuests: !asGuest && !!guestLink?.canManage }), [asGuest, guestLink?.canManage]);
   return (
     <ViewerContext.Provider value={viewer}>
-      <Stage callId={callId} compact={compact} />
+      <div className="flex h-full flex-col">
+        {/* A row of its own above the people, only while hands are up: laid over
+            them it covered a tile and its buttons when there was no room to spare. */}
+        {!compact && <HandsStrip />}
+        <div className="min-h-0 flex-1">
+          <Stage callId={callId} compact={compact} />
+        </div>
+      </div>
     </ViewerContext.Provider>
   );
 }
@@ -228,7 +241,7 @@ function TileGrid({
     .map((identity) => byIdentity.get(identity))
     .filter((t): t is TrackReferenceOrPlaceholder => !!t);
 
-  const grid = bestGrid(visible.length, width, height, TILE_GAP);
+  const grid = bestGrid(visible.length, width, height, TILE_GAP, compact ? CORNER_TILE_MIN_WIDTH : undefined);
   const rowWidth = grid.columns * grid.tileWidth + (grid.columns - 1) * TILE_GAP;
   // A tile too small for a big circle and for hover controls is drawn as a small one.
   const small = compact || grid.tileHeight < 130;
@@ -312,6 +325,7 @@ function ParticipantPanel({
   const viewer = useContext(ViewerContext);
   const guest = isGuest(participant);
   const jobTitleOf = useJobTitles();
+  const notesPaused = useNotesPaused();
 
   const name = nameOf(track);
   const isLocal = participant.isLocal;
@@ -322,15 +336,26 @@ function ParticipantPanel({
   const microphoneOff = !participant.isMicrophoneEnabled;
   const notes = isNotetaker(participant);
   // What they do at the company, beside their name; a guest has none.
-  const jobTitle = notes || guest || presenting ? '' : jobTitleOf(participant.identity);
+  // A small tile has no room for it.
+  const jobTitle = notes || guest || presenting || compact ? '' : jobTitleOf(participant.identity);
+  // A small tile, as in the corner window, says first names, which fit.
+  const shownName = compact ? firstNameOf(name) : name;
 
-  const caption = notes
-    ? 'Notes, taking the minutes'
+  const fullCaption = notes
+    ? notesPaused
+      ? 'Notes, paused'
+      : 'Notes, taking the minutes'
     : presenting
     ? isLocal
       ? 'You are presenting'
       : `${name} is presenting`
     : `${name}${guest ? ' (guest)' : ''}${isLocal ? ' (you)' : ''}`;
+  const caption =
+    notes || presenting
+      ? fullCaption
+      : compact && isLocal
+        ? 'You'
+        : `${shownName}${guest ? ' (guest)' : ''}${isLocal ? ' (you)' : ''}`;
 
   const remove = async () => {
     setRemoving(true);
@@ -366,6 +391,8 @@ function ParticipantPanel({
           // where to look.
           speaking && !presenting ? 'ring-2 ring-green-500' : 'ring-1 ring-border/50'
         )}
+        data-testid={presenting ? 'screen-tile' : 'participant-tile'}
+        data-identity={participant.identity}
       >
         {isTrackReference(track) && hasVideo ? (
           <VideoTrack
@@ -379,7 +406,8 @@ function ParticipantPanel({
             className={cn('h-full w-full', presenting || pinned ? '!object-contain' : 'object-cover')}          />
         ) : (
           // A camera that is off should show the person, not a black rectangle.
-          <div className="flex h-full w-full items-center justify-center">
+          // On a small tile the picture sits above the name rather than under it.
+          <div className={cn('flex h-full w-full items-center justify-center', compact && 'pb-6')}>
             {notes ? (
               <span
                 className={cn(
@@ -401,26 +429,24 @@ function ParticipantPanel({
           </div>
         )}
 
+        {!presenting && !notes && <HandBadge identity={participant.identity} small={compact} />}
+
         {/* The name, and whether they can be heard. */}
         <div className="absolute inset-x-0 bottom-0 flex items-center gap-1.5 bg-gradient-to-t from-black/70 to-transparent px-2 py-1.5 text-white">
-          {!presenting &&
-            !notes &&
-            (microphoneOff ? (
-              <MicOff className="h-3.5 w-3.5 shrink-0 text-red-400" aria-label="Microphone off" />
-            ) : (
-              <Volume2
-                className={cn('h-3.5 w-3.5 shrink-0', speaking ? 'text-green-400' : 'text-white/60')}
-                aria-hidden="true"
-              />
-            ))}
+          {!presenting && !notes && (
+            <SpeakingBars participant={participant} speaking={speaking} muted={microphoneOff} size={compact ? 'sm' : 'md'} />
+          )}
           {presenting && <MonitorUp className="h-3.5 w-3.5 shrink-0 text-white/80" aria-hidden="true" />}
-          <span className="truncate text-xs font-medium text-white">
+          <span className="truncate text-xs font-medium text-white" title={fullCaption}>
             {caption}
             {jobTitle && <span className="font-normal text-white/70"> · {jobTitle}</span>}
           </span>
-          <span className="ml-auto shrink-0">
-            <ConnectionQualityIndicator participant={participant} />
-          </span>
+          {/* A small tile keeps its width for the name. */}
+          {!compact && (
+            <span className="ml-auto shrink-0">
+              <ConnectionQualityIndicator participant={participant} />
+            </span>
+          )}
         </div>
 
         {/* Controls, out of the way until wanted. A touch screen has no hover, so

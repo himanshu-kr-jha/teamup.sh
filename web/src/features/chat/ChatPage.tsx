@@ -73,6 +73,7 @@ import { focusWhenFree, typesOnOpen } from './composerFocus';
 import { applyDelete, applyEdit, isEditFrame } from './liveChanges';
 import { stepConversation, stepUnread } from './conversationKeys';
 import { useShortcut } from '@/shared/shortcuts/ShortcutsProvider';
+import type { RingState } from '@/features/calls/CallViewPage';
 
 interface Message {
   id: string;
@@ -341,11 +342,19 @@ export function ChatPage() {
     const next = insertMention(message, mention.start, caret, person);
     setMessage(next.text);
     setMention(null);
-    requestAnimationFrame(() => {
-      composerRef.current?.focus();
-      composerRef.current?.setSelectionRange(next.caret, next.caret);
-    });
+    mentionCaret.current = next.caret;
   };
+  // The caret goes after the name as soon as the new text is in the box, before
+  // the next key. Done a frame later, a fast typist's next letter landed first
+  // and was left behind the caret ("thanks @Alice or the notesf").
+  const mentionCaret = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const caret = mentionCaret.current;
+    if (caret === null || !composerRef.current) return;
+    mentionCaret.current = null;
+    composerRef.current.focus();
+    composerRef.current.setSelectionRange(caret, caret);
+  }, [message]);
 
   // Recording a voice message replaces the message box; a video message has a dialog.
   const [recordingVoice, setRecordingVoice] = useState(false);
@@ -867,7 +876,7 @@ export function ChatPage() {
         callType: 'audio',
         title: activeChannel?.name ?? undefined,
       });
-      navigate(`/calls/${call.id}`);
+      navigate(`/calls/${call.id}`, { state: { ring: 'placed' } satisfies RingState });
     } catch (err) {
       toast.error(apiErrorMessage(err, 'Could not start that call.'));
     } finally {

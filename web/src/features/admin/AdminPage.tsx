@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { OrganizationLeave } from './OrganizationLeave';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
@@ -24,6 +24,10 @@ import {
   X,
 } from 'lucide-react';
 import { filtering, memberMatches, type MemberFilter } from './memberSearch';
+import { byName, indexBy, personFacts, rankBy, search, teamFacts } from '@/shared/utils/peopleSearch';
+import { usePeopleDirectory } from '@/shared/components/search/directory';
+import { NoMatch, SearchInput, useBrowseSearch } from '@/shared/components/search/listKeys';
+import { SearchSelect, usePersonOptions, useTeamOptions } from '@/shared/components/SearchSelect';
 import { MailSettingsTab, mailProblemText } from './MailSettingsTab';
 import { AppearanceTab } from './AppearanceTab';
 import { NotetakerTab } from './NotetakerTab';
@@ -234,7 +238,11 @@ function MembersTab({
     () => [...new Set<string>(users.flatMap((u: any) => u.roles ?? []))].sort((a, b) => a.localeCompare(b)),
     [users],
   );
-  const shown = useMemo(() => users.filter((u: any) => memberMatches(u, filter)), [users, filter]);
+  // Best matches first, by the app's one rule; in the server's order otherwise.
+  const shown = useMemo(
+    () => rankBy(users.filter((u: any) => memberMatches(u, filter)), filter.query, (u: any) => personFacts(u)),
+    [users, filter]
+  );
   // "/" anywhere on the page, but not while typing, goes to the member search
   // rather than the header's.
   useShortcut('search', () => {
@@ -338,7 +346,7 @@ function MembersTab({
           {users.length === 0 && <p className="text-sm text-muted-foreground">No members yet.</p>}
           {users.length > 0 && shown.length === 0 && (
             <div className="flex flex-col items-start gap-2 py-6 text-sm text-muted-foreground">
-              <p>Nobody matches that.</p>
+              <p>{filter.query.trim() ? `No one matches “${filter.query.trim()}”.` : 'No one matches these filters.'}</p>
               <Button variant="outline" size="sm" onClick={() => setFilter({ query: '', team: '', role: '' })}>
                 Clear the search
               </Button>
@@ -1038,8 +1046,8 @@ function TeamsTab({
 
   const { data, isLoading } = useQuery({ queryKey: ['teams'], queryFn: () => orgApi.listTeams() });
   const { data: usersData } = useQuery({ queryKey: ['users'], queryFn: () => orgApi.listUsers() });
-  const teams = data?.data ?? [];
-  const users = usersData?.data ?? [];
+  const teams = useMemo(() => data?.data ?? [], [data]);
+  const users = useMemo(() => usersData?.data ?? [], [usersData]);
   const tree = asTree(teams);
   // Who is on the team being added to, so the list offers only who is not.
   const { data: addToMembersData } = useQuery({
@@ -1062,6 +1070,28 @@ function TeamsTab({
   // as well, so the button is simply not offered.
   const canMove = (t: any) =>
     isAdmin || (managedTeamIds.has(String(t.id)) && eligibleParents(teams, String(t.id), canParent).length > 0);
+  const topLevel = isAdmin ? [{ value: TOP_LEVEL, label: 'Nothing, top level' }] : [];
+  const moveParents = useMemo(
+    () => eligibleParents(teams, movingTeam?.id, canParent).map((t: any) => ({ id: String(t.id), name: t.name })),
+    [teams, movingTeam?.id, canParent]
+  );
+  const newParents = useMemo(
+    () => eligibleParents(teams, undefined, canParent).map((t: any) => ({ id: String(t.id), name: t.name })),
+    [teams, canParent]
+  );
+  const moveOptions = useTeamOptions(moveParents, topLevel);
+  const newParentOptions = useTeamOptions(newParents, topLevel);
+  const managerPeople = useMemo(() => [...users].sort(byName), [users]);
+  const managerOptions = usePersonOptions(managerPeople);
+  // Finding a team in a long tree: by its name, or by somebody on it. A search
+  // lists the matches flat, best first; each still says what it sits under.
+  const [teamQuery, setTeamQuery] = useState('');
+  const directory = usePeopleDirectory();
+  const teamIndex = useMemo(
+    () => indexBy(teams, (t: any) => teamFacts({ name: t.name, members: directory.membersOf(t.name) })),
+    [teams, directory]
+  );
+  const listedTeams = teamQuery.trim() ? search(teamIndex, teamQuery).map((team) => ({ team, depth: 0 })) : tree;
   // An administrator's new team defaults to the top level; a lead has no
   // default, because the top level is not theirs to choose.
   const defaultParentChoice = isAdmin ? TOP_LEVEL : '';
@@ -1088,7 +1118,21 @@ function TeamsTab({
         </CardHeader>
         <CardContent className="space-y-2">
           {teams.length === 0 && <p className="text-sm text-muted-foreground">No teams yet.</p>}
-          {tree.map(({ team: t, depth }) => (
+          {teams.length > 1 && (
+            <div className="pb-2">
+              <SearchInput
+                value={teamQuery}
+                onChange={(e) => setTeamQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') setTeamQuery('');
+                }}
+                placeholder="Search teams, or who is on them"
+                aria-label="Search teams"
+              />
+            </div>
+          )}
+          {teamQuery.trim() !== '' && listedTeams.length === 0 && <NoMatch query={teamQuery} noun="No team" />}
+          {listedTeams.map(({ team: t, depth }) => (
             <div
               key={t.id}
               // Indented, and hung off a rule, so the shape of the organization
@@ -1183,16 +1227,16 @@ function TeamsTab({
       >
         <div className="space-y-2">
           <Label htmlFor="teamParent">Sits under</Label>
-          <Select value={moveToId} onValueChange={setMoveToId}>
-            <SelectTrigger id="teamParent"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {/* Only an administrator can lift a team out of every subtree. */}
-              {isAdmin && <SelectItem value={TOP_LEVEL}>Nothing — top level</SelectItem>}
-              {eligibleParents(teams, movingTeam?.id, canParent).map((p: any) => (
-                <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {/* Only an administrator can lift a team out of every subtree. */}
+          <SearchSelect
+            id="teamParent"
+            value={moveToId}
+            onChange={setMoveToId}
+            options={moveOptions}
+            placeholder="Choose a team"
+            searchPlaceholder="Search teams"
+            nobody="No team"
+          />
           <p className="text-xs text-muted-foreground">
             A team cannot be moved underneath itself or one of the teams below it.
             {!isAdmin && ' You can only move it to another team you run.'}
@@ -1237,14 +1281,14 @@ function TeamsTab({
       >
         <div className="space-y-2">
           <Label htmlFor="teamManager">Manager</Label>
-          <Select value={managerId} onValueChange={setManagerId}>
-            <SelectTrigger id="teamManager"><SelectValue placeholder="Choose somebody" /></SelectTrigger>
-            <SelectContent>
-              {users.map((u: any) => (
-                <SelectItem key={u.id} value={u.id}>{u.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <SearchSelect
+            id="teamManager"
+            value={managerId}
+            onChange={setManagerId}
+            options={managerOptions}
+            placeholder="Choose somebody"
+            searchPlaceholder="Search people"
+          />
         </div>
       </FormDialog>
 
@@ -1293,18 +1337,16 @@ function TeamsTab({
         </div>
         <div className="space-y-2">
           <Label htmlFor="newTeamParent">{isAdmin ? 'Sits under (optional)' : 'Sits under'}</Label>
-          <Select value={newParentId} onValueChange={setNewParentId}>
-            <SelectTrigger id="newTeamParent">
-              <SelectValue placeholder="Choose a team you run" />
-            </SelectTrigger>
-            <SelectContent>
-              {/* Only an administrator starts a new branch of the organization. */}
-              {isAdmin && <SelectItem value={TOP_LEVEL}>Nothing — top level</SelectItem>}
-              {eligibleParents(teams, undefined, canParent).map((p: any) => (
-                <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          {/* Only an administrator starts a new branch of the organization. */}
+          <SearchSelect
+            id="newTeamParent"
+            value={newParentId}
+            onChange={setNewParentId}
+            options={newParentOptions}
+            placeholder="Choose a team you run"
+            searchPlaceholder="Search teams"
+            nobody="No team"
+          />
           {!isAdmin && (
             <p className="text-xs text-muted-foreground">
               You run the new team, through the one it sits under.
@@ -1346,6 +1388,7 @@ function TeamsTab({
           selected={memberIds}
           onChange={setMemberIds}
           empty="Everybody is already on this team."
+          autoFocus
         />
       </FormDialog>
     </>
@@ -1371,7 +1414,13 @@ function TeamMembersDialog({
     queryFn: () => orgApi.listTeamMembers(team.id),
     enabled: !!team,
   });
-  const members = data?.data ?? [];
+  const members = useMemo(() => data?.data ?? [], [data]);
+  const directory = usePeopleDirectory();
+  const memberFacts = useCallback(
+    (m: any) => personFacts({ name: m.name ?? '', email: m.email, jobTitle: m.jobTitle ?? directory.about(m.id)?.jobTitle, teams: directory.about(m.id)?.teams }),
+    [directory]
+  );
+  const memberSearch = useBrowseSearch(members, memberFacts);
 
   const remove = async (userId: string) => {
     try {
@@ -1398,8 +1447,10 @@ function TeamMembersDialog({
         {!isLoading && members.length === 0 && (
           <p className="text-sm text-muted-foreground">Nobody is on this team yet.</p>
         )}
+        {memberSearch.box(`Search ${team?.name ?? 'the team'}`)}
+        {memberSearch.none && <NoMatch query={memberSearch.query} />}
         <ul className="max-h-72 space-y-1 overflow-y-auto">
-          {members.map((m: any) => (
+          {memberSearch.shown.map((m: any) => (
             <li key={m.id} className="flex items-center gap-3 rounded-md p-2 hover:bg-accent">
               <div className="relative shrink-0">
                 <UserAvatar name={m.name} src={m.avatarUrl} fallbackClassName="bg-primary/10 font-medium text-primary" />

@@ -648,7 +648,11 @@ func runServer(cmd *cobra.Command, args []string) error {
 	}, cfg.BaseURL, logger)
 	notetakerService.SetNotifier(notificationsService)
 	notetakerService.SetMailer(mailService)
+	// Notes turned on or off reach the note-taker on whichever server has it.
+	notetakerService.UseRedis(redisClient)
 	callsService.SetJoinHook(notetakerService.PersonJoined)
+	// Notes on or off in one call, and paused and resumed during it.
+	callsService.SetNotesHooks(notetakerService.Available, notetakerService.NotesChanged)
 	tasksService.SetNotifier(notificationsService)
 	integrationsService.SetNotifier(notificationsService)
 	calendarService.SetNotifier(notificationsService)
@@ -963,6 +967,8 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// A call whose room finished while nothing was listening. Every replica sweeps,
 	// and ending a call is atomic.
 	go callsService.RunVanishedRoomSweep(sweepCtx, 5*time.Minute)
+	// A ring into a call that a restart cut short still ends as unanswered.
+	go callsService.RunExpiredRingSweep(sweepCtx, 15*time.Second)
 	// Stand-ups ring everybody they are for as they start.
 	go callsService.RunStandingRings(sweepCtx, 15*time.Second)
 	// What the status page shows for the last day. Every replica records four
@@ -972,6 +978,7 @@ func runServer(cmd *cobra.Command, args []string) error {
 	// Meeting notes another server left off, on its way out or because it died:
 	// carried on in the call, or written up if the call has ended.
 	go notetakerService.RunResume(sweepCtx, 20*time.Second)
+	go notetakerService.ListenForSwitches(sweepCtx)
 
 	// Graceful shutdown.
 	//

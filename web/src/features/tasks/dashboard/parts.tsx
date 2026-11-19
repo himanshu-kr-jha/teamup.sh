@@ -4,7 +4,7 @@ import { AlertTriangle, Loader2 } from 'lucide-react';
 import { UnreadTaskDot } from '@/features/notifications/UnreadTaskDot';
 import { Badge } from '@/shared/components/ui/badge';
 import { Button } from '@/shared/components/ui/button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
+import { SearchSelect, useTeamOptions } from '@/shared/components/SearchSelect';
 import { apiErrorMessage, isClientError } from '@/shared/api/errors';
 import type { TaskCounts, TeamRef } from '@/shared/types/dashboard';
 import { cn } from '@/shared/utils/cn';
@@ -77,21 +77,18 @@ const ALL_TEAMS = 'all';
 /** Narrows the view to a team. Nothing to narrow, nothing drawn. */
 export function TeamFilter({ teams }: { teams: TeamRef[] }) {
   const { team, update } = useTabParams();
+  const options = useTeamOptions(teams, [{ value: ALL_TEAMS, label: 'All teams' }]);
   if (teams.length === 0) return null;
   return (
-    <Select value={team ?? ALL_TEAMS} onValueChange={(v) => update({ team: v === ALL_TEAMS ? null : v, person: null })}>
-      <SelectTrigger className="h-9 w-full sm:w-48" aria-label="Filter by team">
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        <SelectItem value={ALL_TEAMS}>All teams</SelectItem>
-        {teams.map((t) => (
-          <SelectItem key={t.id} value={t.id}>
-            {t.name}
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
+    <SearchSelect
+      value={team ?? ALL_TEAMS}
+      onChange={(v) => update({ team: v === ALL_TEAMS ? null : v, person: null })}
+      options={options}
+      aria-label="Filter by team"
+      searchPlaceholder="Search teams"
+      nobody="No team"
+      className="h-9 w-full sm:w-48"
+    />
   );
 }
 

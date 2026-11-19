@@ -6,16 +6,9 @@ import { addDays, format, isSameDay, isToday, parse, isValid } from 'date-fns';
 import { AlertTriangle, CalendarPlus, CheckSquare, ChevronLeft, ChevronRight, Eye, Loader2, NotebookPen, TimerOff, Palmtree, PartyPopper } from 'lucide-react';
 import type { AxiosError } from 'axios';
 import { Button } from '@/shared/components/ui/button';
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectLabel,
-  SelectSeparator,
-  SelectTrigger,
-  SelectValue,
-} from '@/shared/components/ui/select';
+import { SearchSelect, type SelectOption } from '@/shared/components/SearchSelect';
+import { usePeopleDirectory } from '@/shared/components/search/directory';
+import { personFacts } from '@/shared/utils/peopleSearch';
 import type { DayMark } from './dayMarks';
 import { calendarApi, orgApi, tasksApi, type DueTask } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
@@ -121,6 +114,25 @@ export function CalendarPage() {
     queryFn: () => calendarApi.people().then((res) => res.data),
   });
   const groups: CalendarGroup[] = useMemo(() => groupsResponse ?? [], [groupsResponse]);
+  const directory = usePeopleDirectory();
+  const whoseOptions: SelectOption[] = useMemo(
+    () => [
+      { key: 'mine', value: user?.id ?? '', label: 'My calendar', facts: { primary: ['My calendar'] } },
+      ...groups.flatMap((group) =>
+        group.people.map((person) => {
+          const about = directory.about(person.id);
+          return {
+            key: `${group.teamId ?? group.name}:${person.id}`,
+            value: person.id,
+            label: person.name,
+            group: group.name,
+            facts: personFacts({ name: person.name, email: about?.email, jobTitle: about?.jobTitle, teams: [...(about?.teams ?? []), group.name] }),
+          };
+        })
+      ),
+    ],
+    [groups, user?.id, directory]
+  );
   const whose = whoseCalendar(params.get('person'), user?.id, groups, people);
   const viewedId = whose.id;
   const own = whose.own;
@@ -222,26 +234,18 @@ export function CalendarPage() {
           )}
           <div className="flex w-full flex-wrap items-center gap-2 md:ml-auto md:w-auto">
             {groups.length > 0 && (
-              <Select value={viewedId} onValueChange={(id) => setParam({ person: id === user?.id ? null : id })}>
-                <SelectTrigger className="h-9 w-full min-w-0 md:w-56" aria-label="Whose calendar">
-                  {/* Somebody opened by a link may not be in the list, and is still named. */}
-                  <SelectValue>{own ? 'My calendar' : whose.name ?? 'Somebody else'}</SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={user?.id ?? ''}>My calendar</SelectItem>
-                  {groups.map((group) => (
-                    <SelectGroup key={group.teamId ?? group.name}>
-                      <SelectSeparator />
-                      <SelectLabel>{group.name}</SelectLabel>
-                      {group.people.map((person) => (
-                        <SelectItem key={person.id} value={person.id}>
-                          {person.name}
-                        </SelectItem>
-                      ))}
-                    </SelectGroup>
-                  ))}
-                </SelectContent>
-              </Select>
+              <div className="w-full min-w-0 md:w-56">
+                {/* Somebody opened by a link may not be in the list, and is still named. */}
+                <SearchSelect
+                  value={viewedId}
+                  onChange={(id) => setParam({ person: id === user?.id ? null : id })}
+                  options={whoseOptions}
+                  display={own ? 'My calendar' : whose.name ?? 'Somebody else'}
+                  aria-label="Whose calendar"
+                  searchPlaceholder="Search people"
+                  className="h-9"
+                />
+              </div>
             )}
             {own && <GoogleCalendarButton outcome={params.get('google')} onOutcomeSeen={() => setParam({ google: null })} />}
             {own && (

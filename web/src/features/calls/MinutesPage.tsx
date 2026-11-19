@@ -12,6 +12,7 @@ import { useToast } from '@/shared/hooks/useToast';
 import { canShare, copyFormatted, shareText } from '@/shared/richText/share';
 import { RichText } from '@/shared/richText/RichText';
 import { ForwardDialog } from '@/features/chat/ForwardDialog';
+import { pauseText, transcriptWithGaps } from './notetaker';
 
 const WAITING: Partial<Record<MeetingMinutes['status'], string>> = {
   taking: 'Notes are still being taken: the call has not ended.',
@@ -21,15 +22,21 @@ const WAITING: Partial<Record<MeetingMinutes['status'], string>> = {
 };
 
 /** What was said, in order, with the time and who said it. */
-function Transcript({ lines }: { lines: MeetingMinutes['transcript'] }) {
+function Transcript({ lines, pauses }: { lines: MeetingMinutes['transcript']; pauses?: MeetingMinutes['pauses'] }) {
   return (
     <section aria-label="Transcript" className="space-y-2 rounded-lg border border-border p-4 text-left text-sm">
-      {lines.map((s, i) => (
-        <p key={i}>
-          <span className="tabular-nums text-muted-foreground">{format(new Date(s.startedAt), 'HH:mm')}</span>{' '}
-          <span className="font-medium">{s.speaker}</span>: {s.text}
-        </p>
-      ))}
+      {transcriptWithGaps(lines, pauses).map((e, i) =>
+        e.kind === 'gap' ? (
+          <p key={i} className="italic text-muted-foreground" data-testid="transcript-gap">
+            {e.text}
+          </p>
+        ) : (
+          <p key={i}>
+            <span className="tabular-nums text-muted-foreground">{format(new Date(e.at), 'HH:mm')}</span>{' '}
+            <span className="font-medium">{e.speaker}</span>: {e.text}
+          </p>
+        )
+      )}
     </section>
   );
 }
@@ -49,6 +56,7 @@ export function minutesText(m: NonNullable<MeetingMinutes['minutes']>, link?: st
   if (m.actionItems.length)
     parts.push(['*Action items*', ...m.actionItems.map((a) => `- *${a.owner}:* ${a.task}${a.due ? ` _(by ${a.due})_` : ''}`)].join('\n'));
   if (m.openQuestions.length) parts.push(['*Open questions*', ...m.openQuestions.map((q) => `- ${q}`)].join('\n'));
+  if (m.pauses?.length) parts.push(['*Not written down*', ...m.pauses.map((p) => `- ${pauseText(p)}`)].join('\n'));
   if (link) parts.push(`Full minutes and transcript: ${link}`);
   return parts.join('\n\n');
 }
@@ -153,7 +161,7 @@ function MinutesPageReadable() {
                 </div>
               )}
             </div>
-            {showTranscript && <Transcript lines={data.transcript} />}
+            {showTranscript && <Transcript lines={data.transcript} pauses={data.pauses} />}
           </div>
         ) : (
           <article className="space-y-6" data-testid="minutes">
@@ -207,6 +215,17 @@ function MinutesPageReadable() {
               </section>
             )}
 
+            {(m.pauses?.length ?? 0) > 0 && (
+              <section data-testid="minutes-pauses">
+                <h2 className="mb-2 font-semibold">Not written down</h2>
+                <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
+                  {m.pauses!.map((p, i) => (
+                    <li key={i}>{pauseText(p)}</li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
             <div className="flex flex-wrap gap-2">
               <Button variant="outline" size="sm" onClick={() => setSending(true)}>
                 <Send className="mr-2 h-4 w-4" />
@@ -238,7 +257,7 @@ function MinutesPageReadable() {
               </Button>
             </div>
 
-            {showTranscript && <Transcript lines={data.transcript} />}
+            {showTranscript && <Transcript lines={data.transcript} pauses={data.pauses} />}
             <ForwardDialog
               message={sending ? { id: callId, content: minutesText(m, link) } : null}
               onClose={() => setSending(false)}

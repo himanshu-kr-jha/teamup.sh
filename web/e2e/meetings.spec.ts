@@ -15,6 +15,7 @@ import {
   joinCall,
   leaveCall,
   oscillators,
+  passPrejoin,
   sql,
   resetOscillators,
   spyOnAudio,
@@ -327,8 +328,10 @@ test.describe('4. knocking on a private call', () => {
     await expect(admitButton(pat.page, NAME('sam'))).toHaveCount(0);
     await expect(pat.page.getByText(`${NAME('sam')} joined the call`, { exact: true })).toBeVisible();
 
-    // Admitted people are members: reconnecting does not knock again.
+    // Admitted people are members: reconnecting does not knock again. A reload is
+    // following the link afresh, so it stops at the screen before the call.
     await sam.page.reload();
+    await passPrejoin(sam.page);
     await expect(sam.page.getByRole('button', { name: 'Leave the call' })).toBeVisible({ timeout: 30_000 });
     await expect(sam.page.getByText('This is a private call')).toHaveCount(0);
 
@@ -590,12 +593,12 @@ test.describe('6. calendar', () => {
     const dialog = mia.page.getByRole('dialog');
     await dialog.getByLabel('Name', { exact: true }).fill('Check in');
     await fillMeetingTime(mia.page, at(4, 10, 30), '1 hour');
-    await dialog.getByLabel('People', { exact: true }).fill('Pat');
-    await dialog.getByRole('button', { name: NAME('pat') }).click();
+    await dialog.getByLabel('Find people').fill('Pat');
+    await dialog.getByRole('checkbox', { name: NAME('pat') }).check();
     await expect(dialog.getByRole('status').filter({ hasText: 'You can still go ahead' })).toHaveCount(0);
     await expect(dialog.getByRole('button', { name: 'Schedule', exact: true })).toBeVisible();
-    await dialog.getByLabel('People', { exact: true }).fill('Alice');
-    await dialog.getByRole('button', { name: NAME('alice') }).click();
+    await dialog.getByLabel('Find people').fill('Alice');
+    await dialog.getByRole('checkbox', { name: NAME('alice') }).check();
     const warning = dialog.getByRole('status').filter({ hasText: 'You can still go ahead' });
     await expect(warning).toContainText(`${NAME('alice')}: focus time`);
     // Pat is free: the warning names nobody else.
@@ -751,6 +754,7 @@ const minutesLate = (page: Page, name: string) => attendanceRow(page, name).getB
 async function joinStandingByCard(page: Page, name: string) {
   await page.goto('/calls');
   await page.getByRole('button', { name: `Join ${name}` }).click();
+  await passPrejoin(page);
   await expect(page.getByRole('button', { name: 'Leave the call' })).toBeVisible({ timeout: 30_000 });
 }
 

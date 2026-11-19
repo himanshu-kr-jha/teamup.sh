@@ -1,6 +1,6 @@
 import type { Page } from '@playwright/test';
 import { test, expect } from './support/fixtures';
-import { apiAs, leaveCall } from './support/meetings';
+import { apiAs, leaveCall, passPrejoin } from './support/meetings';
 import { PEOPLE } from './support/people';
 
 // Stand-ups for one team: the owner's decisions of 14 November 2026. Mia manages
@@ -39,10 +39,11 @@ test('a manager makes a stand-up for their team: the team sees it, nobody else d
   // A manager is offered her own teams, not the whole organization.
   const who = dialog.getByRole('group', { name: 'Who is it for' });
   await expect(who.getByRole('radio', { name: 'Everybody in the organization' })).toHaveCount(0);
-  await expect(who.getByRole('button', { name: 'Sales' })).toHaveCount(0);
+  const teams = who.getByRole('list', { name: 'Teams' });
+  await expect(teams.getByRole('checkbox', { name: /^Sales/ })).toHaveCount(0);
   await expect(dialog.getByRole('button', { name: 'Create' })).toBeDisabled();
-  await who.getByRole('button', { name: 'Backend' }).click();
-  await expect(who.getByRole('button', { name: 'Backend' })).toHaveAttribute('aria-pressed', 'true');
+  await teams.getByRole('checkbox', { name: /^Backend/ }).check();
+  await expect(teams.getByRole('checkbox', { name: /^Backend/ })).toBeChecked();
   await dialog.getByRole('button', { name: 'Create' }).click();
   await expect(card(mia.page, name).getByTestId('standing-audience')).toHaveText('For Backend');
 
@@ -100,6 +101,7 @@ test('somebody outside the team with the link knocks, and is let in for the day'
   const alice = await as('alice');
   await alice.page.goto('/calls');
   await alice.page.getByRole('button', { name: `Join ${meeting.name}` }).click();
+  await passPrejoin(alice.page);
   await expect(alice.page.getByRole('button', { name: 'Leave the call' })).toBeVisible({ timeout: 30_000 });
   const callId = new URL(alice.page.url()).pathname.split('/').pop()!;
   // The door rings who is connected, which the webhooks say.

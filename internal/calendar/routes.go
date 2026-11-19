@@ -268,6 +268,8 @@ func (h *Handler) ScheduleMeeting(c *gin.Context) {
 		StartsAt   *string  `json:"startsAt"`
 		EndsAt     *string  `json:"endsAt"`
 		InviteeIDs []string `json:"inviteeIds"`
+		// TakeNotes is the switch in the dialog; left out, the organization's default.
+		TakeNotes *bool `json:"takeNotes"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		refuse(c, "invalid request")
@@ -286,6 +288,10 @@ func (h *Handler) ScheduleMeeting(c *gin.Context) {
 	}
 	m, conflicts, err := h.service.ScheduleMeeting(c.Request.Context(), orgID, userID, req.Title, *start, *end, invitees)
 	if err != nil {
+		httpx.Error(c, err, "failed to schedule meeting")
+		return
+	}
+	if err := h.service.ChooseNotes(c.Request.Context(), orgID, m.ID, req.TakeNotes); err != nil {
 		httpx.Error(c, err, "failed to schedule meeting")
 		return
 	}

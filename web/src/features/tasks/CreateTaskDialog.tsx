@@ -1,10 +1,12 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
 import { Textarea } from '@/shared/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
 import { FormDialog } from '@/shared/components/FormDialog';
+import { SearchSelect, usePersonOptions } from '@/shared/components/SearchSelect';
+import { byName } from '@/shared/utils/peopleSearch';
 import { projectsApi, tasksApi } from '@/shared/api/client';
 import { endOfDueDay } from './dueDate';
 
@@ -36,7 +38,11 @@ export function CreateTaskDialog({ open, onOpenChange, onCreated }: Props) {
     queryFn: () => tasksApi.assignableUsers(),
     enabled: open,
   });
-  const users = usersData?.data ?? [];
+  const users = useMemo(
+    () => (usersData?.data ?? []).map((u) => ({ id: u.userId, name: u.name, email: u.email })).sort(byName),
+    [usersData]
+  );
+  const assigneeOptions = usePersonOptions(users, { extra: [{ value: UNASSIGNED, label: 'Unassigned' }] });
 
   const reset = () => {
     setTitle('');
@@ -130,15 +136,13 @@ export function CreateTaskDialog({ open, onOpenChange, onCreated }: Props) {
 
         <div className="space-y-2">
           <Label htmlFor="taskAssignee">Assignee</Label>
-          <Select value={assigneeId} onValueChange={setAssigneeId}>
-            <SelectTrigger id="taskAssignee"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value={UNASSIGNED}>Unassigned</SelectItem>
-              {users.map((u: any) => (
-                <SelectItem key={u.userId} value={u.userId}>{u.name}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+          <SearchSelect
+            id="taskAssignee"
+            value={assigneeId}
+            onChange={setAssigneeId}
+            options={assigneeOptions}
+            searchPlaceholder="Search people"
+          />
         </div>
 
         <div className="space-y-2">

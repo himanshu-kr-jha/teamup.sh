@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ChevronLeft, MapPin } from 'lucide-react';
@@ -6,7 +6,8 @@ import { Button } from '@/shared/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
+import { SearchSelect, usePersonOptions } from '@/shared/components/SearchSelect';
+import { byName } from '@/shared/utils/peopleSearch';
 import { fieldWorkApi, orgApi, type FieldCheckin } from '@/shared/api/client';
 import { formatTime } from '@/shared/utils/cn';
 import { EmptyState, ErrorState, LoadingState } from '@/features/tasks/dashboard/parts';
@@ -45,7 +46,8 @@ export function FieldWorkPage() {
     queryFn: () => orgApi.listUsers(),
     enabled: everybody,
   });
-  const people = ((users?.data ?? []) as { id: string; name: string }[]).slice().sort((a, b) => a.name.localeCompare(b.name));
+  const people = useMemo(() => ((users?.data ?? []) as { id: string; name: string }[]).slice().sort(byName), [users]);
+  const personOptions = usePersonOptions(people, { extra: [{ value: EVERYBODY, label: 'Everybody' }] });
 
   const byDate = new Map<string, FieldCheckin[]>();
   for (const c of data?.checkins ?? []) byDate.set(c.onDate, [...(byDate.get(c.onDate) ?? []), c]);
@@ -80,19 +82,16 @@ export function FieldWorkPage() {
             </div>
           </div>
           {everybody && (
-            <Select value={person} onValueChange={setPerson}>
-              <SelectTrigger className="h-9 w-full sm:ml-auto sm:w-56" aria-label="Show check-ins of">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={EVERYBODY}>Everybody</SelectItem>
-                {people.map((p) => (
-                  <SelectItem key={p.id} value={p.id}>
-                    {p.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div className="w-full sm:ml-auto sm:w-56">
+              <SearchSelect
+                value={person}
+                onChange={setPerson}
+                options={personOptions}
+                aria-label="Show check-ins of"
+                searchPlaceholder="Search people"
+                className="h-9"
+              />
+            </div>
           )}
         </div>
 

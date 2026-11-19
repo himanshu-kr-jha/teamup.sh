@@ -88,6 +88,17 @@ export function useChime() {
     });
   }, [play]);
 
+  /**
+   * A hand went up: one soft, high note, quieter than somebody coming in, so a
+   * meeting full of questions does not turn into a sound effect.
+   */
+  const hand = useCallback(() => {
+    play((ctx) => {
+      const now = ctx.currentTime;
+      note(ctx, 1047, now, 0.35, 0.045);
+    });
+  }, [play]);
+
   /** A new message: the recorded notification sound. */
   const ping = useCallback(() => {
     playSound('notification');
@@ -100,5 +111,5 @@ export function useChime() {
     ctxRef.current = null;
   }, []);
 
-  return { ping, joined, knock, stop };
+  return { ping, joined, knock, hand, stop };
 }

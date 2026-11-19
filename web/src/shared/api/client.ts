@@ -175,6 +175,8 @@ export interface StatusReport {
 /** The meeting note-taker's settings, as an administrator sees them: keys only as set or not. */
 export interface NotetakerSettings {
   enabled: boolean;
+  /** Notes only in calls where somebody turns them on, rather than in every call. */
+  onlyWhenAsked: boolean;
   sttProvider: 'sarvam';
   sttModel: string;
   sttLanguage: string;
@@ -199,8 +201,34 @@ export interface MeetingMinutes {
     decisions: string[];
     actionItems: Array<{ owner: string; task: string; due?: string }>;
     openQuestions: string[];
+    pauses?: NotesPause[];
   };
   transcript: Array<{ speaker: string; startedAt: string; text: string }>;
+  /** When notes were not taken. */
+  pauses?: NotesPause[];
+}
+
+/** A stretch of a call when notes were off. No from: off from the start; no to: off to the end. */
+export interface NotesPause {
+  from?: string;
+  to?: string;
+  by?: string;
+  resumedBy?: string;
+}
+
+/** Whether a call's notes are on, and every turn of the switch, latest last. */
+export interface CallNotesState {
+  callId: string;
+  /** Whether the organization has a note-taker at all. */
+  available: boolean;
+  on: boolean;
+  changes: Array<{ on: boolean; userId?: string; name: string; at: string }>;
+}
+
+/** What a new call or meeting starts with. */
+export interface NotesDefault {
+  available: boolean;
+  everyCall: boolean;
 }
 
 export interface MeetingNotesItem {
@@ -221,6 +249,7 @@ export const notetakerApi = {
   /** Keys left empty keep what is saved. */
   save: (data: {
     enabled: boolean;
+    onlyWhenAsked: boolean;
     sttKey?: string;
     sttModel: string;
     sttLanguage: string;
@@ -590,6 +619,9 @@ export const guestApi = {
     api.get<{ messages: MeetingChatMessage[] }>(`/guest/${encodeURIComponent(token)}/chat`, { headers: { 'X-Guest-Key': key } }),
   sendChat: (token: string, key: string, content: string) =>
     api.post<MeetingChatMessage>(`/guest/${encodeURIComponent(token)}/chat`, { content }, { headers: { 'X-Guest-Key': key } }),
+  /** Whether notes are being taken in the meeting, for a guest in it. */
+  notes: (token: string, key: string) =>
+    api.get<CallNotesState>(`/guest/${encodeURIComponent(token)}/notes`, { headers: { 'X-Guest-Key': key } }),
 };
 
 /** One message in a meeting's own chat. senderId is the sender's identity in the room. */
@@ -617,8 +649,14 @@ export const callsApi = {
     api.post<GuestLink>(`/calls/${id}/guest-invites`, { emails, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }),
   removeGuestInvite: (id: string, email: string) => api.delete<GuestLink>(`/calls/${id}/guest-invites`, { params: { email } }),
   list: (params?: { status?: string; channelId?: string }) => getList('/calls', 'calls', params),
-  create: (data: { title?: string; channelId?: string; callType: 'video' | 'audio'; invitees?: string[] }) =>
+  create: (data: { title?: string; channelId?: string; callType: 'video' | 'audio'; invitees?: string[]; takeNotes?: boolean }) =>
     api.post<{ id: string; roomName: string }>('/calls', data),
+  /** Whether notes are being taken in a call, for somebody who may join it. */
+  notes: (id: string) => api.get<CallNotesState>(`/calls/${id}/notes`),
+  /** Pauses or resumes the notes, for anybody in the call. */
+  setNotes: (id: string, on: boolean) => api.put<CallNotesState>(`/calls/${id}/notes`, { on }),
+  /** Whether a new call takes notes unless told otherwise. */
+  notesDefault: () => api.get<NotesDefault>('/notes-default'),
   get: (id: string) => api.get(`/calls/${id}`),
   getToken: (id: string) =>
     api.post<{ token: string; roomName: string; callType?: 'audio' | 'video' }>(`/calls/${id}/token`),
@@ -628,9 +666,31 @@ export const callsApi = {
    *  it is one way - nobody turns another person's microphone back on. */
   muteParticipant: (callId: string, identity: string) =>
     api.post(`/calls/${callId}/mute/${identity}`),
+  /**
+   * Raises or lowers a hand: your own, or, for the organizer or an admin,
+   * lowers somebody else's. The server writes it on the person in the room.
+   *
+   * A raised hand comes back with a proof of its place. `restore` hands that
+   * back to put a hand the room lost where it was; `refresh` only asks for a
+   * fresh proof of a hand that is up, and never raises one.
+   */
+  setHand: (
+    callId: string,
+    raised: boolean,
+    options: { userId?: string; restore?: { raisedAt: string; proof: string }; refresh?: boolean } = {}
+  ) =>
+    api.put<{ userId: string; raised: boolean; raisedAt?: string; proof?: string; restored?: boolean }>(
+      `/calls/${callId}/hand`,
+      { raised, ...options }
+    ),
   /** Turns a call down and tells whoever started it why. */
   decline: (id: string, reason: 'declined' | 'no_answer' = 'declined') =>
     api.post(`/calls/${id}/decline`, { reason }),
+  /** Rings colleagues into a call you are in. */
+  ring: (id: string, userIds: string[]) =>
+    api.post<{ rung: RungPerson[] }>(`/calls/${id}/ring`, { userIds }),
+  /** Stops ringing somebody rung into a call. */
+  cancelRing: (id: string, userId: string) => api.delete(`/calls/${id}/ring/${userId}`),
   /** Asks to join a private call. A repeat while one is waiting is the same request. */
   knock: (id: string) => api.post<{ request: KnockRequest }>(`/calls/${id}/knock`),
   /** Who is waiting or has waited. Members only. */
@@ -640,6 +700,14 @@ export const callsApi = {
   /** The audit trail. Anybody who may not read it gets 404. */
   log: (id: string) => api.get<CallLog>(`/calls/${id}/log`),
 };
+
+/** Somebody a ring into a call went to: ringing, or why they were not rung. */
+export interface RungPerson {
+  userId: string;
+  name: string;
+  status: 'ringing' | 'busy' | 'on_leave';
+  backOn?: string;
+}
 
 export interface KnockRequest {
   id: string;
@@ -662,6 +730,8 @@ export interface MeetingBody {
   startsAt: string;
   endsAt: string;
   inviteeIds: string[];
+  /** Only when it is made; left out, the organization's default. */
+  takeNotes?: boolean;
 }
 
 export interface MeetingConflict {

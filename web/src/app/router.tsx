@@ -17,6 +17,7 @@ import { MeetingNotesPage } from '@/features/calls/MeetingNotesPage';
 import { GuestJoinPage } from '@/features/calls/GuestJoinPage';
 import { FieldWorkPage } from '@/features/calls/standing/FieldWorkPage';
 import { AttendancePage } from '@/features/calls/standing/AttendancePage';
+import { StandingPreJoinPage } from '@/features/calls/standing/StandingPreJoinPage';
 import { CalendarPage } from '@/features/calendar/CalendarPage';
 import { LeavePage } from '@/features/leave/LeavePage';
 import { StatusPage } from '@/features/status/StatusPage';
@@ -122,6 +123,7 @@ export const router = createBrowserRouter([
       { path: 'calls/:callId/minutes', element: <MinutesPage /> },
       { path: 'meeting-notes', element: <MeetingNotesPage /> },
       { path: 'calls/standing/:id/attendance', element: <AttendancePage /> },
+      { path: 'calls/standing/:id/join', element: <StandingPreJoinPage /> },
       { path: 'field-work', element: <FieldWorkPage /> },
       { path: 'calendar', element: <CalendarPage /> },
       { path: 'leave', element: <LeavePage /> },

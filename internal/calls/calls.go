@@ -85,6 +85,10 @@ type Service struct {
 	// note-taker uses it to join.
 	joined func(ctx context.Context, orgID, callID uuid.UUID, roomName string)
 	clock  func() time.Time
+	// notesPolicy and notesChanged are the note-taker's side of turning a
+	// call's notes on and off; see notes.go.
+	notesPolicy  NotesPolicy
+	notesChanged func(ctx context.Context, orgID, callID uuid.UUID)
 
 	// How often a call's notification is put up again, and for how long; see
 	// keepRinging. A zero ringEvery rings once.
@@ -913,6 +917,11 @@ type CallModel struct {
 	// CanReadLog says whether whoever asked may read this call's log, so that nobody
 	// is offered a button whose only answer is a refusal. Set for a reader, not stored.
 	CanReadLog *bool `json:"canReadLog,omitempty"`
+	// CanKnock says that whoever asked would be turned away at the door: they may
+	// read the call, as an administrator may, but not join it without being let in.
+	// The page then goes straight to the door rather than to the screen before the
+	// call. Set with CanReadLog, not stored.
+	CanKnock *bool `json:"canKnock,omitempty"`
 
 	// MissedReason says why a call between two people never happened:
 	// no_answer, declined, or busy (they were in another call). Nil otherwise.
@@ -1145,6 +1154,8 @@ func (s *Service) ringDevices(ctx context.Context, call *Call, callerName, body 
 	default:
 	}
 	lane := s.openLane(call.ID)
+	// Read now: the ringing outlives this request, and the settings may change.
+	every, ringFor := s.ringEvery, s.ringFor
 	s.ringers.Add(1)
 	go func() {
 		defer s.ringers.Done()
@@ -1158,10 +1169,10 @@ func (s *Service) ringDevices(ctx context.Context, call *Call, callerName, body 
 			case <-ctx.Done():
 			}
 		}()
-		if !lane.ring(ctx, s.notifier, invitees, ring) || s.ringEvery <= 0 {
+		if !lane.ring(ctx, s.notifier, invitees, ring) || every <= 0 {
 			return
 		}
-		s.keepRinging(ctx, call.ID, lane, invitees, ring)
+		s.keepRinging(ctx, call.ID, lane, invitees, ring, every, ringFor)
 	}()
 }
 
@@ -1237,11 +1248,11 @@ func (s *Service) laneOf(callID uuid.UUID) *ringLane {
 // Somebody who has picked up or turned it down on one device is still being
 // rung on the others, so they are told to stop there too: answered on the
 // laptop, the phone falls silent.
-func (s *Service) keepRinging(ctx context.Context, callID uuid.UUID, lane *ringLane, invitees []uuid.UUID, ring protocol.Push) {
+func (s *Service) keepRinging(ctx context.Context, callID uuid.UUID, lane *ringLane, invitees []uuid.UUID, ring protocol.Push, every, ringFor time.Duration) {
 	ringing := invitees
-	tick := time.NewTicker(s.ringEvery)
+	tick := time.NewTicker(every)
 	defer tick.Stop()
-	deadline := time.After(s.ringFor)
+	deadline := time.After(ringFor)
 	for {
 		select {
 		case <-ctx.Done():
@@ -1290,8 +1301,10 @@ func (s *Service) stillRinging(ctx context.Context, callID uuid.UUID, people []u
 	rows, err := s.db.Query(ctx, `
 		SELECT user_id FROM call_participants
 		WHERE call_id = $1 AND user_id = ANY($2)
-		  AND joined_at IS NULL AND answered_at IS NULL AND left_at IS NULL
-	`, callID, people)
+		  AND ((rung_at IS NULL AND joined_at IS NULL AND answered_at IS NULL AND left_at IS NULL)
+		    -- Rung into the call while it was going, and not yet rung out (add_people.go).
+		    OR (rung_at IS NOT NULL AND ring_ended_at IS NULL AND rung_at > $3))
+	`, callID, people, s.clock().Add(-RingWindow))
 	if err != nil {
 		return nil, fmt.Errorf("read who is still being rung: %w", err)
 	}
@@ -1373,9 +1386,13 @@ func (s *Service) NoteIfMissed(ctx context.Context, callID uuid.UUID, reason str
 		return
 	}
 
-	rows, err := s.db.Query(ctx,
-		`SELECT user_id FROM call_participants WHERE call_id = $1 AND user_id <> $2`,
-		callID, createdBy)
+	// Somebody rung into the call who never came does not make it a group call:
+	// it was still between the two of them.
+	rows, err := s.db.Query(ctx, `
+		SELECT user_id FROM call_participants
+		WHERE call_id = $1 AND user_id <> $2
+		  AND NOT (rung_at IS NOT NULL AND joined_at IS NULL AND answered_at IS NULL)
+	`, callID, createdBy)
 	if err != nil {
 		s.logger.Warn().Err(err).Msg("could not work out who was called")
 		return
@@ -1461,6 +1478,8 @@ type PendingInvitation struct {
 	CallerName string
 	CallType   string
 	ChannelID  *uuid.UUID
+	// Ongoing is a ring into a call that is already going, from somebody in it.
+	Ongoing bool
 }
 
 // PendingInvitationsFor lists calls this person was invited to that are still
@@ -1472,18 +1491,22 @@ type PendingInvitation struct {
 // provided whoever called is still waiting.
 func (s *Service) PendingInvitationsFor(ctx context.Context, userID uuid.UUID) ([]PendingInvitation, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT c.id, c.room_name, c.created_by, COALESCE(u.name, u.email, ''), c.call_type, c.channel_id
+		SELECT c.id, c.room_name, COALESCE(p.rung_by, c.created_by), COALESCE(u.name, u.email, ''),
+		       c.call_type, c.channel_id, p.rung_at IS NOT NULL
 		FROM call_participants p
 		JOIN calls c ON c.id = p.call_id
-		LEFT JOIN users u ON u.id = c.created_by
+		LEFT JOIN users u ON u.id = COALESCE(p.rung_by, c.created_by)
 		WHERE p.user_id = $1
-		  AND p.joined_at IS NULL
-		  AND p.answered_at IS NULL
-		  AND p.left_at IS NULL
 		  AND c.status = 'active'
-		  AND c.scheduled_start IS NULL
-		  AND c.created_by <> $1
-		  AND c.started_at > NOW() - $2::interval
+		  AND ((p.rung_at IS NULL
+		        AND p.joined_at IS NULL
+		        AND p.answered_at IS NULL
+		        AND p.left_at IS NULL
+		        AND c.scheduled_start IS NULL
+		        AND c.created_by <> $1
+		        AND c.started_at > NOW() - $2::interval)
+		    -- Rung into a call that is going, and still ringing.
+		    OR (p.rung_at IS NOT NULL AND p.ring_ended_at IS NULL AND p.rung_at > NOW() - $2::interval))
 	`, userID, RingWindow.String())
 	if err != nil {
 		return nil, fmt.Errorf("list pending invitations: %w", err)
@@ -1494,7 +1517,7 @@ func (s *Service) PendingInvitationsFor(ctx context.Context, userID uuid.UUID) (
 	for rows.Next() {
 		var p PendingInvitation
 		if err := rows.Scan(&p.CallID, &p.RoomName, &p.CallerID, &p.CallerName,
-			&p.CallType, &p.ChannelID); err != nil {
+			&p.CallType, &p.ChannelID, &p.Ongoing); err != nil {
 			return nil, fmt.Errorf("scan pending invitation: %w", err)
 		}
 		pending = append(pending, p)
@@ -1529,6 +1552,12 @@ func (s *Service) DeliverPendingInvitations(ctx context.Context, userID uuid.UUI
 		if p.ChannelID != nil {
 			payload.ChannelID = p.ChannelID.String()
 		}
+		if p.Ongoing {
+			payload.Ongoing = true
+			payload.With = s.othersInCall(ctx, p.CallID, p.CallerID, userID)
+			s.broadcaster.BroadcastToUser(userID.String(), protocol.NewMessage(protocol.TypeCallInvited, payload))
+			continue
+		}
 		s.broadcaster.BroadcastToUser(userID.String(), protocol.NewMessage(protocol.TypeCallInvited, payload))
 
 		// The caller has been watching "calling"; it is ringing now.
@@ -1550,6 +1579,7 @@ func (s *Service) notePickedUp(ctx context.Context, call *CallModel, userID uuid
 		call.ID, userID, s.clock()); err != nil {
 		s.logger.Warn().Err(err).Msg("could not record that somebody picked up")
 	}
+	s.answeredAddedRing(ctx, call, userID)
 	if userID != call.CreatedBy {
 		if err := s.MarkAnswered(ctx, call.ID); err != nil {
 			s.logger.Warn().Err(err).Msg("could not record that a call was answered")
@@ -1642,9 +1672,13 @@ func (s *Service) StillOccupiedBySomebodyElse(ctx context.Context, roomName, ide
 		return false, fmt.Errorf("list call participants: %w", err)
 	}
 	for _, participant := range res.GetParticipants() {
-		if participant.GetIdentity() != identity {
-			return true, nil
+		id := participant.GetIdentity()
+		// The note-taker is not somebody, and somebody already on the way out
+		// is not still here.
+		if id == identity || strings.HasPrefix(id, NoteTakerIdentityPrefix) || participant.GetState() == livekit.ParticipantInfo_DISCONNECTED {
+			continue
 		}
+		return true, nil
 	}
 	return false, nil
 }
@@ -1658,7 +1692,11 @@ func (s *Service) AnybodyLeftToAnswer(ctx context.Context, callID, callerID uuid
 	err := s.db.QueryRow(ctx, `
 		SELECT COUNT(*) FROM call_participants
 		WHERE call_id = $1 AND user_id <> $2 AND left_at IS NULL
-	`, callID, callerID).Scan(&outstanding)
+		  -- Somebody rung into the call whose ring has run out is not going to
+		  -- answer, even before the sweep has said so (add_people.go).
+		  AND NOT (rung_at IS NOT NULL AND joined_at IS NULL AND answered_at IS NULL
+		           AND (ring_ended_at IS NOT NULL OR rung_at <= $3))
+	`, callID, callerID, s.clock().Add(-RingWindow)).Scan(&outstanding)
 	if err != nil {
 		return false, fmt.Errorf("count outstanding participants: %w", err)
 	}

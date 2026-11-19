@@ -8,6 +8,8 @@
  * write them.
  */
 
+import { byName, rankBy } from '@/shared/utils/peopleSearch';
+
 export interface Mentionable {
   id: string;
   name: string;
@@ -70,24 +72,12 @@ export function mentionQuery(text: string, caret: number): { query: string; star
   return { query: match[2], start: caret - match[2].length - 1 };
 }
 
-/** The people worth offering for a query, best matches first. */
+/**
+ * The people worth offering for a query, best matches first, by the app's one
+ * rule for finding people, with their handles counting as names.
+ */
 export function suggestPeople(query: string, people: Mentionable[], limit = 6): Mentionable[] {
-  const q = query.toLowerCase();
-  const score = (p: Mentionable) => {
-    const name = p.name.toLowerCase();
-    const user = usernameOf(p).toLowerCase();
-    if (!q) return 3;
-    if (user.startsWith(q) || name.startsWith(q)) return 0;
-    if (name.split(/\s+/).some((w) => w.startsWith(q))) return 1;
-    if (name.includes(q) || user.includes(q)) return 2;
-    return -1;
-  };
-  return people
-    .map((p) => ({ p, s: score(p) }))
-    .filter((x) => x.s >= 0)
-    .sort((a, b) => a.s - b.s || a.p.name.localeCompare(b.p.name))
-    .slice(0, limit)
-    .map((x) => x.p);
+  return rankBy([...people].sort(byName), query, (p) => ({ primary: [p.name, usernameOf(p), squash(p.name)] })).slice(0, limit);
 }
 
 /** The text with the @-word at `start` replaced by the person's handle and a space. */

@@ -20,6 +20,16 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck disable=SC1091
 . "$ROOT/web/e2e/test-services.env"
 
+# up and migrate make the shared test database afresh: wait for anybody else
+# using the services first. Already inside the lock, go straight on.
+case "${1:-}" in
+  up | migrate)
+    if [ -z "${TEAMUP_TESTS_LOCK_HELD:-}" ]; then
+      exec "$ROOT/scripts/with-test-lock.sh" "$0" "$@"
+    fi
+    ;;
+esac
+
 PREFIX=teamup-cal-test
 # The same versions production runs, so a test cannot pass on something production does not have.
 PG_IMAGE=postgres:16-alpine
@@ -76,10 +86,20 @@ wait_for_postgres() {
 
 # go test clones the database TEAMUP_TEST_DATABASE_URL names, so it has to exist
 # and carry every migration. The migrate command lives in the binary.
+#
+# It is made afresh from this checkout's migrations every time. Several
+# branches share these services, and two of them can each add a migration with
+# the same number: migrating up from the other branch's 0055 said "already at
+# version 55" and left this branch's 0055 out, so every test failed on a missing
+# table. Made afresh, the database is always exactly this checkout's schema.
+#
+# Dropping it while another checkout's tests are cloning it would break that
+# run, so up and migrate hold the test services' lock (scripts/with-test-lock.sh),
+# and so do make test-go, make e2e and make check, for the tests after it.
 migrate() {
   wait_for_postgres
-  docker exec "$PREFIX-pg" psql -h 127.0.0.1 -U teamup -d postgres -Atqc "SELECT 1 FROM pg_database WHERE datname = 'teamup_test'" | grep -q 1 \
-    || docker exec "$PREFIX-pg" psql -h 127.0.0.1 -U teamup -d postgres -qc 'CREATE DATABASE teamup_test' >/dev/null
+  docker exec "$PREFIX-pg" psql -h 127.0.0.1 -U teamup -d postgres -v ON_ERROR_STOP=1 -q \
+    -c 'DROP DATABASE IF EXISTS teamup_test WITH (FORCE)' -c 'CREATE DATABASE teamup_test' >/dev/null
   say "  migrating teamup_test"
   (cd "$ROOT" && TEAMUP_DATABASE_URL="$TEAMUP_TEST_DATABASE_URL" go run ./cmd/teamup migrate up 2>&1 | tail -1)
 }

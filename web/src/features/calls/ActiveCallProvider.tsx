@@ -13,31 +13,36 @@ import {
   LiveKitRoom,
   RoomAudioRenderer,
   useAudioPlayback,
-  useRemoteParticipants,
+  useConnectionState,
   useRoomContext,
 } from '@livekit/components-react';
-import { ConnectionState, RoomEvent } from 'livekit-client';
+import { ConnectionState, RoomEvent, type RoomOptions } from 'livekit-client';
 import { useQuery } from '@tanstack/react-query';
 import { CallStage } from './CallStage';
 import { ROOM_OPTIONS } from './roomOptions';
 import { MeetingChatButton, MeetingChatProvider, StageWithChat, UnreadChatMark, type ChatTransport } from './MeetingChat';
-import { NotesBanner } from './notetaker';
+import { NotesBanner, NotesButton, isNotetaker, memberNotes, useOtherPeople } from './notetaker';
 import { CallControls, CallShortcuts, CompactCallControls, ShareUnavailableNote } from './CallControls';
 import { GuestAccess } from './GuestAccess';
+import { HandsProvider } from './Hands';
+import { forgetCallHands, tabStorage } from './handProofStore';
+import { AddPeopleButton, RingingStrip, useAddedRings } from './AddPeople';
+import { endsTheCallForYou } from './addPeople';
 import { CallLogDialog } from './CallLogDialog';
 import { copyCallLink } from './copyLink';
 import { classifyJoinError, type JoinFailure } from './knock';
 import { BURST_WINDOW_MS, createJoinTracker, joinedMessage } from './joinPing';
 import {
-  AlertTriangle,
+  Globe,
   History,
   Link2,
+  Loader2,
   Maximize2,
   Minimize2,
+  MoreVertical,
   MoveDiagonal2,
   PhoneOff,
   Volume2,
-  UserPlus,
 } from 'lucide-react';
 import '@livekit/components-styles';
 import { Button } from '@/shared/components/ui/button';
@@ -58,7 +63,23 @@ import { useUIStore } from '@/shared/store';
 import { useWebSocket } from '@/features/websocket/WSProvider';
 import { cn } from '@/shared/utils/cn';
 import { CameraBackground } from './BackgroundPicker';
-import { RESIZE_STEP, fitCallWindow, keepSize, savedSize, viewport } from './callWindow';
+import { RESIZE_STEP, fitCallWindow, keepSize, savedSize, toastLift, viewport } from './callWindow';
+import { saveJoinChoice } from './prejoin';
+import { callTitleFor } from './callTitle';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/shared/components/ui/dropdown-menu';
+import { useAuth } from '@/features/auth/AuthProvider';
+import { MediaErrorBanner } from './MediaErrorBanner';
+import { forgetCall, recallCall, type CallMemory } from './callMemory';
+import { RememberCall, isLeavingPage, useBackStaysInApp } from './CallContinuity';
+import { currentBackgroundChoice, sameChoice, setBackgroundChoice } from './background';
+import { useAuthStore } from '@/shared/store/authStore';
+import { withNoiseCapture } from './noiseCancellation';
+import { NoiseCancellation } from './NoiseControls';
 
 interface ActiveCall {
   callId: string;
@@ -70,14 +91,33 @@ interface ActiveCall {
    * the start, as on a phone, and the camera stays off until somebody turns it on.
    */
   voice?: boolean;
+  /** What was chosen on the screen before it (PreJoinScreen); nothing for a call, which goes straight in. */
+  media?: JoinOptions;
+  /** Gone back into after a reload of the page (callMemory.ts), rather than joined. */
+  resumed?: boolean;
+}
+
+/**
+ * How to come in: the microphone and camera on or off, and on which devices.
+ * Left out, the microphone is on for a call and off for anything else, the camera
+ * is off, and the browser's default devices are used.
+ */
+export interface JoinOptions {
+  mic?: boolean;
+  camera?: boolean;
+  audioInput?: string;
+  videoInput?: string;
+  audioOutput?: string;
+  /** A day of a standing meeting, whose room nobody answers knocks from. */
+  standing?: boolean;
 }
 
 interface ActiveCallContextValue {
   activeCall: ActiveCall | null;
   /** Joins a call, or does nothing if already in it. */
-  join: (callId: string) => Promise<void>;
+  join: (callId: string, options?: JoinOptions) => Promise<void>;
   /** Goes into a standing meeting's room, with the token its join gave. */
-  enter: (callId: string, token: string) => void;
+  enter: (callId: string, token: string, options?: JoinOptions) => void;
   /** Leaves without ending it for anybody else. */
   leave: () => void;
   joining: boolean;
@@ -88,6 +128,8 @@ interface ActiveCallContextValue {
   /** The call whose door somebody is watching from its page, without being in it. */
   watchedDoor: string | null;
   watchDoor: (callId: string | null) => void;
+  /** The call being gone back into after a reload, until it is joined or that fails. */
+  resuming: string | null;
 }
 
 const ActiveCallContext = createContext<ActiveCallContextValue | undefined>(undefined);
@@ -149,10 +191,11 @@ function useJoinAnnouncements() {
       toastRef.current(message);
       if (document.visibilityState !== 'visible') notify({ title: 'TeamUp call', body: message, tag: 'call-joined' });
     };
-    const presentNow = () => [...room.remoteParticipants.values()].map((p) => p.identity);
+    // The note-taker is not somebody joining: no sound, no toast.
+    const presentNow = () => [...room.remoteParticipants.values()].filter((p) => !isNotetaker(p)).map((p) => p.identity);
     const onConnected = () => tracker.connected(presentNow(), Date.now());
-    const onJoined = (participant: { identity: string; name?: string }) => {
-      if (!tracker.joined(participant.identity, Date.now())) return;
+    const onJoined = (participant: { identity: string; name?: string; isAgent?: boolean }) => {
+      if (isNotetaker(participant) || !tracker.joined(participant.identity, Date.now())) return;
       pending.push(participant.name || participant.identity);
       clearTimeout(timer);
       timer = setTimeout(flush, BURST_WINDOW_MS);
@@ -205,10 +248,13 @@ export function BlockedAudioPrompt({ compact }: { compact: boolean }) {
 /**
  * Keeps toasts above the call's controls while it fills the screen, however tall they
  * are: they wrap on a phone, and gain a note where a browser cannot share a screen.
+ *
+ * It takes the element itself (from a callback ref) rather than a ref object: the
+ * controls can appear after the first render, as on a guest's page, and a ref
+ * read once in an effect then never saw them.
  */
-function useToastsAbove(bar: React.RefObject<HTMLElement>, active: boolean) {
+export function useToastsAbove(element: HTMLElement | null, active: boolean) {
   useEffect(() => {
-    const element = bar.current;
     if (!active || !element) return;
     const root = document.documentElement;
     const place = () => root.style.setProperty('--toast-bottom', `${element.offsetHeight}px`);
@@ -219,7 +265,7 @@ function useToastsAbove(bar: React.RefObject<HTMLElement>, active: boolean) {
       observer.disconnect();
       root.style.removeProperty('--toast-bottom');
     };
-  }, [bar, active]);
+  }, [element, active]);
 }
 
 /**
@@ -257,7 +303,7 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
   const missedEarlyRef = useRef(new Map<string, string>());
 
   const join = useCallback(
-    async (callId: string) => {
+    async (callId: string, options?: JoinOptions, resumed?: boolean) => {
       setFailure(null);
       latestCallIdRef.current = callId;
       const missedIn = missedEarlyRef.current.get(callId);
@@ -271,23 +317,54 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
       setJoining(true);
       try {
         const res = await callsApi.getToken(callId);
-        setActiveCall({ callId, token: res.data.token, voice: res.data.callType === 'audio' });
+        const voice = res.data.callType === 'audio';
+        setActiveCall({
+          callId,
+          token: res.data.token,
+          voice,
+          standing: options?.standing,
+          // A voice call starts with the camera off, whatever a video call last chose.
+          media: voice && options ? { ...options, camera: false } : options,
+          resumed,
+        });
       } catch (err) {
-        setFailure(classifyJoinError(err));
+        const why = classifyJoinError(err);
+        setFailure(why);
+        // Off the call's own page nothing else would say that coming back did not work.
+        if (resumed && window.location.pathname !== `/calls/${callId}`) {
+          toast.error(why.kind === 'over' ? 'The call you were in has ended.' : 'Could not reconnect to the call.');
+        }
       } finally {
         setJoining(false);
       }
     },
-    [activeCall?.callId, navigate]
+    [activeCall?.callId, navigate, toast]
   );
 
-  const enter = useCallback((callId: string, token: string) => {
+  // A reload moments after being in a call goes straight back into it, with the
+  // microphone and camera as they were, wherever in the app the reload happened.
+  const { user } = useAuth();
+  const [resume] = useState<CallMemory | null>(() => recallCall(user?.id, Date.now()));
+  const [resuming, setResuming] = useState<string | null>(() => resume?.callId ?? null);
+  const resumedRef = useRef(false);
+  useEffect(() => {
+    if (!resume || resumedRef.current) return;
+    resumedRef.current = true;
+    if (resume.background && !sameChoice(resume.background, currentBackgroundChoice())) setBackgroundChoice(resume.background);
+    const { mic, camera, audioInput, videoInput, audioOutput, standing } = resume;
+    void join(resume.callId, { mic, camera, audioInput, videoInput, audioOutput, standing }, true).finally(() => setResuming(null));
+  }, [resume, join]);
+
+  const enter = useCallback((callId: string, token: string, options?: JoinOptions) => {
     setFailure(null);
     latestCallIdRef.current = callId;
-    setActiveCall({ callId, token, standing: true });
+    setActiveCall({ callId, token, standing: true, media: options });
   }, []);
 
   const leave = useCallback(() => {
+    // The page going away closes the room too; that is a reload or a closed tab,
+    // not leaving, and the call is gone back into from the next page.
+    if (isLeavingPage()) return;
     setActiveCall((current) => {
       // Standing on the call's own page after leaving would rejoin it
       // immediately, because that page's whole job is to join whatever the
@@ -345,6 +422,9 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
         sayBusy(payload.callId, payload.declinedBy, payload.reason);
         return;
       }
+      // Only the call itself ending takes you out: a ring of yours into it being
+      // stopped, as you come in, is not that.
+      if (!endsTheCallForYou(payload.reason)) return;
       toast.toast('The call has ended.');
       setActiveCall(null);
     });
@@ -402,6 +482,12 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
     }
   }, [activeCall]);
 
+  // Out of the call, however that came about (you left, it ended, you were removed,
+  // or going back in failed): a reload now starts afresh.
+  useEffect(() => {
+    if (!activeCall && !resuming && !isLeavingPage()) forgetCall();
+  }, [activeCall, resuming]);
+
   // Being in a call is observed rather than chosen, so it sets itself and
   // clears when the call ends however it ends.
   useEffect(() => {
@@ -423,12 +509,32 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
     toastError.current(err.message || 'Lost connection to the call.');
   }, []);
 
+  // The devices chosen before joining, for the camera and microphone the call turns
+  // on and for its sound. Made once per call: LiveKitRoom builds a new room when its
+  // options change, and the call object only changes on joining.
+  const media = activeCall?.media;
+  const roomOptions = useMemo<RoomOptions>(() => {
+    // The page says goodbye to the room itself, once it is really going (RememberCall).
+    if (!media?.audioInput && !media?.videoInput && !media?.audioOutput) return { ...ROOM_OPTIONS, disconnectOnPageLeave: false };
+    return {
+      ...ROOM_OPTIONS,
+      disconnectOnPageLeave: false,
+      ...(media.audioInput && { audioCaptureDefaults: { deviceId: media.audioInput } }),
+      ...(media.videoInput && { videoCaptureDefaults: { deviceId: media.videoInput } }),
+      ...(media.audioOutput && { audioOutput: { deviceId: media.audioOutput } }),
+    };
+  }, [media]);
+
   // Full size on that call's own page; a corner window everywhere else.
   const expanded = !!activeCall && location.pathname === `/calls/${activeCall.callId}`;
 
+  // The microphone captured for the noise cancellation chosen as the call starts;
+  // changing it during the call is NoiseCancellation's to do, not a new room.
+  const callOptions = useMemo(() => withNoiseCapture(roomOptions, useAuthStore.getState().user?.id), [roomOptions]);
+
   const value = useMemo(
-    () => ({ activeCall, join, enter, leave, joining, failure, clearFailure, watchedDoor, watchDoor }),
-    [activeCall, join, enter, leave, joining, failure, clearFailure, watchedDoor]
+    () => ({ activeCall, join, enter, leave, joining, failure, clearFailure, watchedDoor, watchDoor, resuming }),
+    [activeCall, join, enter, leave, joining, failure, clearFailure, watchedDoor, resuming]
   );
 
   return (
@@ -440,13 +546,14 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
           token={activeCall.token}
           serverUrl={liveKitURL()}
           connect
-          options={ROOM_OPTIONS}
-          // Joining a meeting or a video call with the camera and microphone
-          // off: you turn them on when you are ready, rather than finding out
-          // you were already on. A call is a conversation, so its microphone is
+          options={callOptions}
+          // Joining a meeting or a video call as chosen on the screen before it,
+          // which starts with the camera and microphone off for somebody who has
+          // never joined: you turn them on when you are ready, rather than finding
+          // out you were already on. A call is a conversation, so its microphone is
           // on from the start; the camera is still yours to turn on.
-          video={false}
-          audio={!!activeCall.voice}
+          video={activeCall.media?.camera ?? false}
+          audio={activeCall.media?.mic ?? !!activeCall.voice}
           data-lk-theme="default"
           onDisconnected={leave}
           onError={onRoomError}
@@ -459,11 +566,15 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
             expanded={expanded}
             onLeave={leave}
             reachable={activeCall.callId in reach ? reach[activeCall.callId] : null}
+            resumed={!!activeCall.resumed}
           />
           <RoomAudioRenderer />
           <CameraBackground />
+          <RememberCall userId={user?.id} callId={activeCall.callId} standing={!!activeCall.standing} />
+          <NoiseCancellation />
         </LiveKitRoom>
       )}
+      {resuming && !activeCall && location.pathname !== `/calls/${resuming}` && <ReconnectingNote />}
     </ActiveCallContext.Provider>
   );
 }
@@ -474,20 +585,51 @@ function CallFrame({
   expanded,
   onLeave,
   reachable,
+  resumed,
 }: {
   callId: string;
   expanded: boolean;
   onLeave: () => void;
   /** Whether the other end has a session open; null until the server says. */
   reachable: Reach | null;
+  /** Gone back into after a reload, which says so until it is connected. */
+  resumed: boolean;
 }) {
   const navigate = useNavigate();
   const toast = useToast();
   const room = useRoomContext();
-  const remote = useRemoteParticipants();
+  // People, not the note-taker: alone with it is alone.
+  const remote = useOtherPeople();
   const alone = remote.length === 0;
+  // Once somebody has been in, being alone again is waiting, not ringing: the
+  // ring that started the call is long over.
+  // Somebody back after a reload had their call answered long before.
+  const [somebodyCame, setSomebodyCame] = useState(resumed);
+  useEffect(() => {
+    if (!alone) setSomebodyCame(true);
+  }, [alone]);
+  const reachNow = somebodyCame ? null : reachable;
   const sidebarOpen = useUIStore((s) => s.sidebarOpen);
   useJoinAnnouncements();
+  const rings = useAddedRings(callId);
+  const connection = useConnectionState(room);
+  const reconnecting = resumed && connection !== ConnectionState.Connected;
+  useBackStaysInApp(expanded && connection === ConnectionState.Connected);
+
+  // A device picked during the call is the one the next call's screen starts on.
+  const { user } = useAuth();
+  const userId = user?.id;
+  useEffect(() => {
+    const onDevice = (kind: MediaDeviceKind, deviceId: string) => {
+      if (!deviceId || deviceId === 'default') return;
+      const field = kind === 'audioinput' ? 'audioInput' : kind === 'videoinput' ? 'videoInput' : 'audioOutput';
+      saveJoinChoice(userId, { [field]: deviceId });
+    };
+    room.on(RoomEvent.ActiveDeviceChanged, onDevice);
+    return () => {
+      room.off(RoomEvent.ActiveDeviceChanged, onDevice);
+    };
+  }, [room, userId]);
 
   const { data: details } = useQuery({
     queryKey: ['call', callId],
@@ -495,6 +637,12 @@ function CallFrame({
     staleTime: 60_000,
   });
   const title: string | undefined = details?.title?.trim() || undefined;
+  // In a call between two, the other person's name, not your own.
+  const shownTitle = callTitleFor(title, details?.participants, userId);
+  const copyLink = async () => {
+    if (await copyCallLink(callId)) toast.success('Link copied. Anybody not on the call will have to ask to join.');
+    else toast.error('Could not copy. Your browser did not allow it.');
+  };
   // Everybody may be in a standing meeting's room, and most of them may not read its
   // log, so nobody is offered a button whose only answer is a refusal.
   const canReadLog = details?.canReadLog === true;
@@ -517,6 +665,21 @@ function CallFrame({
   // What a drag or a resize started from: where the pointer was, and the frame.
   const gesture = useRef<{ kind: 'move' | 'resize'; startX: number; startY: number; from: typeof frame } | null>(null);
 
+  // Toasts appear in the same corner as the minimised window, and covered it: a
+  // hand going up, or somebody joining, hid the very call it was about. They sit
+  // just above it instead, measured from the bottom of the screen as it is.
+  // Only when the window is in their way, and never off the top (toastLift).
+  useEffect(() => {
+    if (expanded) return;
+    const lift = toastLift(position, size, viewport());
+    if (lift === null) return;
+    const root = document.documentElement;
+    root.style.setProperty('--toast-window', `calc(${lift}px - var(--toast-bottom, 0px))`);
+    return () => {
+      root.style.removeProperty('--toast-window');
+    };
+  }, [expanded, position, size]);
+
   // Turning a phone, or narrowing a browser, must not leave the window off screen.
   useEffect(() => {
     const refit = () => setFrame((f) => fitCallWindow(f.size, f.position, viewport()));
@@ -528,6 +691,9 @@ function CallFrame({
   // the call itself is closed only by whoever turns out to be last out - there
   // is deliberately no way to hang up on everybody else.
   const hangUp = useCallback(async () => {
+    // Whoever hangs up alone ends the call, even if somebody else dropped out a
+    // moment ago and may be reloading: they come back to "This call has ended",
+    // which is the truth, rather than to a room the server may never close.
     const lastOut = remote.length === 0;
     try {
       if (lastOut) {
@@ -540,13 +706,15 @@ function CallFrame({
       }
       await room.disconnect();
     } finally {
+      // Leaving on purpose: a raised hand is not to come back on the way in again.
+      forgetCallHands(tabStorage(), callId);
       onLeave();
     }
   }, [room, onLeave, remote.length, callId]);
 
   // While their phone rings, the caller hears it ring, as on a phone: only when
   // it really is ringing ("Ringing\u2026"), and only until somebody comes in.
-  const ringing = alone && reachable === true;
+  const ringing = alone && reachNow === true;
   useEffect(() => {
     if (!ringing) return;
     const stop = playSound('ringback', { loop: true });
@@ -628,6 +796,7 @@ function CallFrame({
 
   return (
     <MeetingChatProvider transport={chatTransport}>
+      <HandsProvider callId={callId}>
       {/* Here rather than with the buttons, so the keys work in the corner window too. */}
       <CallShortcuts />
       <div
@@ -679,110 +848,167 @@ function CallFrame({
               !expanded && 'cursor-grab pl-9 active:cursor-grabbing'
             )}
           >
-            <span className="min-w-0 flex-1 truncate text-sm font-medium">
-              {expanded && title ? `${title} \u00b7 ` : ''}
-              {alone ? waitingLabel(reachable) : `${compactCount(remote.length + 1, expanded)}`}
-            </span>
+            {expanded && shownTitle ? (
+              // The name on a line of its own and how many are in under it, so on a
+              // phone neither is cut short to make room for the other.
+              <span className="min-w-0 flex-1 leading-tight" data-testid="call-heading">
+                <span className="block truncate text-sm font-medium">{shownTitle}</span>
+                <span className="block truncate text-xs text-muted-foreground">
+                  {reconnecting
+                    ? 'Reconnecting to the call\u2026'
+                    : alone
+                      ? waitingLabel(reachNow)
+                      : compactCount(remote.length + 1, expanded)}
+                </span>
+              </span>
+            ) : (
+              <span className="min-w-0 flex-1 truncate text-sm font-medium" data-testid="call-heading">
+                {reconnecting
+                  ? 'Reconnecting to the call\u2026'
+                  : alone
+                    ? waitingLabel(reachNow)
+                    : `${compactCount(remote.length + 1, expanded)}`}
+              </span>
+            )}
             {expanded ? (
               <>
+                {/* On a phone the link and the guests go under one button, leaving
+                    room in the bar for the title. */}
+                <DropdownMenu modal={false}>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="ghost" size="icon" className="h-7 w-7 sm:hidden" aria-label="More call options" title="More">
+                      <MoreVertical className="h-4 w-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem onSelect={() => void copyLink()}>
+                      <Link2 className="mr-2 h-4 w-4" aria-hidden="true" />
+                      Copy the link to this call
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => setShowingGuests(true)}>
+                      <Globe className="mr-2 h-4 w-4" aria-hidden="true" />
+                      Guests from outside the organization
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-7 w-7"
+                  className="hidden h-7 w-7 sm:inline-flex"
                   aria-label="Copy the link to this call"
                   title="Copy link"
-                  onClick={async () => {
-                    if (await copyCallLink(callId)) toast.success('Link copied. Anybody not on the call will have to ask to join.');
-                    else toast.error('Could not copy. Your browser did not allow it.');
-                  }}
+                  onClick={() => void copyLink()}
                 >
                   <Link2 className="h-4 w-4" />
                 </Button>
+                {/* On a phone the controls under the call have no room for it. */}
+                <NotesButton callId={callId} compact />
+                <AddPeopleButton rings={rings} />
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="h-7 w-7"
+                  className="hidden h-7 w-7 sm:inline-flex"
                   aria-label="Guests"
-                  title="Guests"
+                  title="Guests from outside the organization"
                   onClick={() => setShowingGuests(true)}
                 >
-                  <UserPlus className="h-4 w-4" />
+                  <Globe className="h-4 w-4" />
                 </Button>
                 {canReadLog && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7"
-                    aria-label="Show the call log"
-                    title="Call log"
-                    onClick={() => setShowingLog(true)}
-                  >
-                    <History className="h-4 w-4" />
-                  </Button>
-                )}
-              </>
-            ) : (
-              <CompactCallControls />
-            )}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="relative h-7 w-7"
-              aria-label={expanded ? 'Minimise the call' : 'Expand the call'}
-              onClick={() => navigate(expanded ? '/chat' : `/calls/${callId}`)}
-            >
-              {expanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-              {!expanded && <UnreadChatMark />}
-            </Button>
-            <Button
-              variant="destructive"
-              size="icon"
-              className="h-7 w-7"
-              aria-label="Leave the call"
-              onClick={hangUp}
-            >
-              <PhoneOff className="h-4 w-4" />
-            </Button>
-          </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="h-7 w-7"
+                      aria-label="Show the call log"
+                      title="Call log"
+                      onClick={() => setShowingLog(true)}
+                    >
+                      <History className="h-4 w-4" />
+                    </Button>
+                  )}
+                </>
+              ) : (
+                <CompactCallControls />
+              )}
+              <Button
+                variant="ghost"
+                size="icon"
+                className="relative h-7 w-7"
+                aria-label={expanded ? 'Minimise the call' : 'Expand the call'}
+                onClick={() => navigate(expanded ? '/chat' : `/calls/${callId}`)}
+              >
+                {expanded ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+                {!expanded && <UnreadChatMark />}
+              </Button>
+              <Button
+                variant="destructive"
+                size="icon"
+                className="h-7 w-7"
+                aria-label="Leave the call"
+                onClick={hangUp}
+              >
+                <PhoneOff className="h-4 w-4" />
+              </Button>
+            </div>
 
-          <BlockedAudioPrompt compact={!expanded} />
+            <BlockedAudioPrompt compact={!expanded} />
+            <RingingStrip rings={rings} compact={!expanded} />
 
-          <div className="min-h-0 flex-1">
-            <CallTiles callId={callId} compact={!expanded} />
+            <div className="min-h-0 flex-1">
+              <CallTiles callId={callId} compact={!expanded} />
+            </div>
           </div>
         </div>
-      </div>
 
-      <CallLogDialog callId={callId} open={showingLog} onOpenChange={setShowingLog} live />
+        <CallLogDialog callId={callId} open={showingLog} onOpenChange={setShowingLog} live />
 
-      <Dialog open={showingGuests} onOpenChange={setShowingGuests}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Guests</DialogTitle>
-            <DialogDescription>People from outside the organization, let in with a link.</DialogDescription>
-          </DialogHeader>
-          <GuestAccess callId={callId} title={title} />
-        </DialogContent>
-      </Dialog>
+        <Dialog open={showingGuests} onOpenChange={setShowingGuests}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Guests</DialogTitle>
+              <DialogDescription>People from outside the organization, let in with a link.</DialogDescription>
+            </DialogHeader>
+            <GuestAccess callId={callId} title={title} />
+          </DialogContent>
+        </Dialog>
 
-      <Dialog open={asking} onOpenChange={(open) => !open && setAsking(false)}>
-        <DialogContent className="max-w-sm">
-          <DialogHeader>
-            <DialogTitle>Still there?</DialogTitle>
-            <DialogDescription>
-              You have been the only one in this call for a while. It will end shortly
-              unless you want to keep waiting.
-            </DialogDescription>
-          </DialogHeader>
-          <DialogFooter className="gap-2 sm:justify-center">
-            <Button variant="outline" onClick={hangUp}>
-              Leave the call
-            </Button>
-            <Button onClick={() => setAsking(false)}>Stay</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+
+        <Dialog open={asking} onOpenChange={(open) => !open && setAsking(false)}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader>
+              <DialogTitle>Still there?</DialogTitle>
+              <DialogDescription>
+                You have been the only one in this call for a while. It will end shortly
+                unless you want to keep waiting.
+              </DialogDescription>
+            </DialogHeader>
+            <DialogFooter className="gap-2 sm:justify-center">
+              <Button variant="outline" onClick={hangUp}>
+                Leave the call
+              </Button>
+              <Button onClick={() => setAsking(false)}>Stay</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </HandsProvider>
     </MeetingChatProvider>
+  );
+}
+
+/**
+ * Where the corner window will be, while a call is gone back into after a reload
+ * on some other page than its own.
+ */
+function ReconnectingNote() {
+  return (
+    <div
+      role="status"
+      // Where CallFrame puts the window: above the bottom navigation on a phone.
+      className="fixed bottom-[72px] right-2 z-50 flex items-center gap-2 rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground shadow-2xl lg:bottom-6"
+    >
+      <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" />
+      {'Reconnecting to the call\u2026'}
+    </div>
   );
 }
 
@@ -793,35 +1019,15 @@ function compactCount(people: number, expanded: boolean) {
 
 /** The video itself, plus the controls when there is room for them. */
 function CallTiles({ callId, compact }: { callId: string; compact: boolean }) {
-  const room = useRoomContext();
-  const [mediaError, setMediaError] = useState('');
-  const controls = useRef<HTMLDivElement>(null);
+  const [controls, setControls] = useState<HTMLDivElement | null>(null);
   useToastsAbove(controls, !compact);
-
-  // Camera and microphone permission is the most common thing to go wrong;
-  // an empty tile with no explanation is the worst possible answer.
-  useEffect(() => {
-    const onFailure = () => {
-      setMediaError(
-        'TeamUp could not use your camera or microphone. Check the permission in your browser and rejoin.'
-      );
-    };
-    room.on(RoomEvent.MediaDevicesError, onFailure);
-    return () => {
-      room.off(RoomEvent.MediaDevicesError, onFailure);
-    };
-  }, [room]);
 
   return (
     <div className="flex h-full flex-col">
-      {mediaError && !compact && (
-        <div className="flex items-start gap-3 border-b border-border bg-destructive/10 p-3 text-sm text-destructive">
-          <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0" />
-          <span>{mediaError}</span>
-        </div>
-      )}
+      {/* Mounted in the corner window too, so a failure there is still known when it grows. */}
+      <MediaErrorBanner hidden={compact} />
 
-      {!compact && <NotesBanner />}
+      {!compact && <NotesBanner source={memberNotes(callId)} />}
 
       <div className="min-h-0 flex-1">
         {compact ? (
@@ -836,9 +1042,10 @@ function CallTiles({ callId, compact }: { callId: string; compact: boolean }) {
       {/* The controls need room; the corner window keeps only leave, which
           lives in its title bar. */}
       {!compact && (
-        <div ref={controls} className="flex shrink-0 flex-col items-center gap-1 border-t border-border p-2 sm:p-3">
+        <div ref={setControls} className="flex shrink-0 flex-col items-center gap-1 border-t border-border p-2 sm:p-3">
           <CallControls>
             <MeetingChatButton />
+            <NotesButton callId={callId} />
           </CallControls>
           <ShareUnavailableNote />
         </div>
