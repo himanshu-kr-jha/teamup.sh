@@ -146,4 +146,59 @@ test.describe('the minimised call window', () => {
     await allGone(owner, call.id);
     await owner.dispose();
   });
+
+  // Found by CI on the companion-mode branch: a toast arriving while the window is
+  // minimised slid in from a full height below where it ends, which is over the
+  // window's title bar, and a drag or a click there in that moment went to the
+  // toast. It has to arrive above the window, and never cross it.
+  test('a toast arriving never passes over the minimised window', async ({ as }) => {
+    test.setTimeout(120_000);
+    const owner = await apiAs('owner');
+    const call = await createCall(owner, `Toast path ${Date.now()}`, [idOf('alice')]);
+    const olivia = await as('owner');
+    await joinCall(olivia.page, call.id);
+    const alice = await as('alice');
+    await joinCall(alice.page, call.id);
+    await expect(olivia.page.getByText('Alice Archer', { exact: true }).first()).toBeVisible({ timeout: 20_000 });
+    await olivia.page.waitForTimeout(2500);
+    await olivia.page.getByRole('button', { name: 'Minimise the call' }).click();
+    await expect(callWindow(olivia.page)).toBeVisible();
+
+    // Every toast's place, frame by frame, from the moment it appears until it has arrived.
+    await olivia.page.evaluate(() => {
+      const w = window as unknown as { __toastOverlap: string[]; __toastsSeen: number };
+      w.__toastOverlap = [];
+      w.__toastsSeen = 0;
+      const corner = () => document.querySelector('[data-testid="call-window"]')?.getBoundingClientRect();
+      const watch = (el: Element) => {
+        w.__toastsSeen++;
+        const end = performance.now() + 800;
+        const look = () => {
+          const t = el.getBoundingClientRect();
+          const c = corner();
+          if (c && t.width && t.bottom > c.top + 1 && t.top < c.bottom && t.right > c.left && t.left < c.right) {
+            w.__toastOverlap.push(`toast ${Math.round(t.top)} to ${Math.round(t.bottom)}, window from ${Math.round(c.top)}`);
+          }
+          if (performance.now() < end) requestAnimationFrame(look);
+        };
+        look();
+      };
+      new MutationObserver((changes) => {
+        for (const c of changes)
+          c.addedNodes.forEach((n) => {
+            if (n instanceof Element && n.closest('ol') && n.tagName === 'LI') watch(n);
+          });
+      }).observe(document.body, { childList: true, subtree: true });
+    });
+    await alice.page.getByRole('button', { name: 'Raise your hand' }).click();
+    await expect(olivia.page.getByText('Alice Archer raised their hand', { exact: true }).last()).toBeVisible();
+    await olivia.page.waitForTimeout(1000);
+    expect(await olivia.page.evaluate(() => (window as unknown as { __toastsSeen: number }).__toastsSeen), 'the toast was watched').toBeGreaterThan(0);
+    expect(await olivia.page.evaluate(() => (window as unknown as { __toastOverlap: string[] }).__toastOverlap)).toEqual([]);
+
+    await olivia.page.getByRole('button', { name: 'Leave the call' }).click();
+    await alice.page.getByRole('button', { name: 'Leave the call' }).first().click();
+    await allGone(owner, call.id);
+    await owner.dispose();
+  });
 });

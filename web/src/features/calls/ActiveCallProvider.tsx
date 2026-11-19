@@ -666,6 +666,7 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
             standing={!!activeCall.standing}
             companion={!!activeCall.companion}
             soundOff={soundOff}
+            joiningWith={{ mic: activeCall.media?.mic ?? !!activeCall.voice, camera: activeCall.media?.camera ?? false }}
           />
           <NoiseCancellation />
           <DeviceMoves
@@ -795,8 +796,11 @@ function CallFrame({
     if (lift === null) return;
     const root = document.documentElement;
     root.style.setProperty('--toast-window', `calc(${lift}px - var(--toast-bottom, 0px))`);
+    // Toasts arrive from the side meanwhile, never across the window (globals.css).
+    root.dataset.callWindow = 'lifted';
     return () => {
       root.style.removeProperty('--toast-window');
+      delete root.dataset.callWindow;
     };
   }, [expanded, position, size]);
 

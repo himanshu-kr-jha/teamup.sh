@@ -28,6 +28,7 @@ export function RememberCall({
   standing,
   companion = false,
   soundOff = false,
+  joiningWith,
 }: {
   userId: string | undefined;
   callId: string;
@@ -36,11 +37,21 @@ export function RememberCall({
   companion?: boolean;
   /** A second camera's sound, off or turned on. */
   soundOff?: boolean;
+  /** The microphone and camera the call is being joined with, until it is connected and they can be read. */
+  joiningWith: { mic: boolean; camera: boolean };
 }) {
   const room = useRoomContext();
 
+  const joiningMic = joiningWith.mic;
+  const joiningCamera = joiningWith.camera;
   const write = useCallback(() => {
-    if (!userId || room.state !== ConnectionState.Connected) return;
+    // Written from the moment the call is being joined, not only once it is
+    // connected: a reload while it is still connecting (a second, more on a
+    // slow phone) used to find nothing written and drop you at the screen
+    // before the call. Until then the microphone and camera are what you
+    // joined with, since none is published yet.
+    if (!userId || room.state === ConnectionState.Disconnected) return;
+    const connected = room.state === ConnectionState.Connected;
     const me = room.localParticipant;
     const device = (kind: MediaDeviceKind) => {
       const id = room.getActiveDevice(kind);
@@ -52,18 +63,19 @@ export function RememberCall({
       standing,
       companion,
       soundOff,
-      mic: me.isMicrophoneEnabled,
-      camera: me.isCameraEnabled,
+      mic: connected ? me.isMicrophoneEnabled : joiningMic,
+      camera: connected ? me.isCameraEnabled : joiningCamera,
       audioInput: device('audioinput'),
       videoInput: device('videoinput'),
       audioOutput: device('audiooutput'),
       background: currentBackgroundChoice(),
       at: Date.now(),
     });
-  }, [room, userId, callId, standing, companion, soundOff]);
+  }, [room, userId, callId, standing, companion, soundOff, joiningMic, joiningCamera]);
 
   useEffect(() => {
     const events = [
+      RoomEvent.ConnectionStateChanged,
       RoomEvent.Connected,
       RoomEvent.Reconnected,
       RoomEvent.LocalTrackPublished,
