@@ -64,6 +64,12 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service, options ...func(*Hand
 	rg.GET("/org/call-backgrounds/:theme", h.GetCallBackground)
 	rg.PUT("/org/call-backgrounds/:theme", h.require(auth.PermOrgSettings), h.SetCallBackground)
 	rg.DELETE("/org/call-backgrounds/:theme", h.require(auth.PermOrgSettings), h.RemoveCallBackground)
+	rg.POST("/org/call-pictures", h.require(auth.PermOrgSettings), h.AddCallPicture)
+	rg.PUT("/org/call-pictures/order", h.require(auth.PermOrgSettings), h.OrderCallPictures)
+	rg.GET("/org/call-pictures/:id", h.GetCallPicture)
+	rg.GET("/org/call-pictures/:id/thumb", h.GetCallPictureThumb)
+	rg.PATCH("/org/call-pictures/:id", h.require(auth.PermOrgSettings), h.RenameCallPicture)
+	rg.DELETE("/org/call-pictures/:id", h.require(auth.PermOrgSettings), h.RemoveCallPicture)
 
 	rg.GET("/users", h.ListUsers)
 	rg.POST("/users", h.require(auth.PermMembers), h.AddMember)

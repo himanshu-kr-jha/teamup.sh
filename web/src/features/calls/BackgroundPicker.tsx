@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import { useLocalParticipant } from '@livekit/components-react';
 import { TrackEvent, type LocalVideoTrack } from 'livekit-client';
 import { Ban, Check, ImagePlus, Loader2, Sparkles } from 'lucide-react';
@@ -10,27 +11,34 @@ import {
   DropdownMenuTrigger,
 } from '@/shared/components/ui/dropdown-menu';
 import { useToast } from '@/shared/hooks/useToast';
+import { PERMS, can } from '@/shared/permissions';
+import { useAuthStore } from '@/shared/store/authStore';
 import { cn } from '@/shared/utils/cn';
 import {
   LOOKS,
-  PICTURES,
   applyCameraEffects,
   preloadCameraEffects,
-  customPicture,
   lookFilter,
   lookWash,
   setLook,
+  stillAllowed,
   supportsLooks,
   useLook,
   sameChoice,
-  saveCustomPicture,
   setBackgroundChoice,
-  thumbURL,
   useBackgroundChoice,
   useBackgroundsSupported,
   type BackgroundChoice,
 } from './background';
-import { COMPANY_THEMES, composeCompanyBackground, useCompanySource, useCompanyTemplates, type CompanySource, type CompanyTheme } from './companyBackground';
+import {
+  COMPANY_THEMES,
+  composeCompanyBackground,
+  useCallBackgrounds,
+  useCompanySource,
+  useKnownCallBackgrounds,
+  type CompanySource,
+  type CompanyTheme,
+} from './companyBackground';
 import { companyCanvasSize } from './nameplate';
 
 // Whether an effect is being put on the camera right now. The first one fetches
@@ -82,10 +90,16 @@ export function useCameraEffects(track: LocalVideoTrack | undefined): boolean {
   const live = useCameraLive(track);
   const choice = useBackgroundChoice();
   const look = useLook();
+  useForgetStaleBackground();
+  const backgrounds = useCallBackgrounds();
   // The company background is made from your name and role as well as the
   // template, so a change to any of them makes it again.
   const company = useCompanySource(choice.kind === 'company' ? choice.theme : null);
-  const companyKey = company === undefined ? undefined : JSON.stringify(company);
+  // One of the organization's pictures, by its address: undefined while the
+  // pictures are being found out, null when it is not among them.
+  const picture =
+    choice.kind !== 'picture' ? null : backgrounds ? (backgrounds.pictures?.find((p) => p.id === choice.id)?.url ?? null) : undefined;
+  const sourceKey = company === undefined || picture === undefined ? undefined : JSON.stringify({ company, picture });
   const toast = useToast();
   const toastRef = useRef(toast.error);
   toastRef.current = toast.error;
@@ -94,22 +108,22 @@ export function useCameraEffects(track: LocalVideoTrack | undefined): boolean {
   const queue = useRef(Promise.resolve());
 
   useEffect(() => {
-    // Not until it is known whether there is a company background: taking the
+    // Not until it is known which backgrounds the organization has: taking the
     // effect off meanwhile would only flash the room behind you.
-    if (!track || !live || companyKey === undefined) return;
-    const source = JSON.parse(companyKey) as CompanySource | null;
+    if (!track || !live || sourceKey === undefined) return;
+    const source = JSON.parse(sourceKey) as { company: CompanySource | null; picture: string | null };
     setApplying(1);
     queue.current = queue.current.then(async () => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         await Promise.race([
           (async () => {
-            let picture: string | null = null;
-            if (source) {
+            let picture = source.picture;
+            if (source.company) {
               // The camera's own size, not that of the picture an effect already on it puts out.
               const settings = track.getSourceTrackSettings();
               const size = companyCanvasSize(settings?.width, settings?.height);
-              picture = await composeCompanyBackground(source, size.width, size.height);
+              picture = await composeCompanyBackground(source.company, size.width, size.height);
             }
             await applyCameraEffects(track, choice, look, picture);
           })(),
@@ -127,8 +141,21 @@ export function useCameraEffects(track: LocalVideoTrack | undefined): boolean {
         setApplying(-1);
       }
     });
-  }, [track, live, choice, look, companyKey]);
+  }, [track, live, choice, look, sourceKey]);
   return live;
+}
+
+/**
+ * Forgets a background the organization no longer offers, such as a picture an
+ * administrator has since removed, and goes back to none, quietly. Only once the
+ * server has said what there is, so a failed request forgets nothing.
+ */
+function useForgetStaleBackground() {
+  const known = useKnownCallBackgrounds();
+  const choice = useBackgroundChoice();
+  useEffect(() => {
+    if (known && !stillAllowed(choice, known)) setBackgroundChoice({ kind: 'none' });
+  }, [known, choice]);
 }
 
 /** Whether the camera is on and sending a picture, following it as it turns off and on. */
@@ -164,12 +191,12 @@ export function BackgroundPicker({ variant = 'call' }: { variant?: 'call' | 'pre
   const look = useLook();
   const busy = useApplying();
   const [looks] = useState(supportsLooks);
-  const toast = useToast();
-  const [custom, setCustom] = useState(customPicture);
-  const [saving, setSaving] = useState(false);
-  const fileInput = useRef<HTMLInputElement>(null);
-  const templates = useCompanyTemplates();
-  const companyThemes = COMPANY_THEMES.filter((t) => templates?.[t.theme]);
+  const backgrounds = useCallBackgrounds();
+  const signedIn = useAuthStore((s) => s.isAuthenticated);
+  const mayManage = useAuthStore((s) => can(s.user, PERMS.orgSettings));
+  useForgetStaleBackground();
+  const companyThemes = COMPANY_THEMES.filter((t) => backgrounds?.[t.theme]);
+  const pictures = backgrounds?.pictures ?? [];
   const [open, setOpen] = useState(false);
   // Whatever is chosen next should be quick, the first time too.
   useEffect(() => {
@@ -177,149 +204,134 @@ export function BackgroundPicker({ variant = 'call' }: { variant?: 'call' | 'pre
   }, [open, supported]);
 
   if (supported === null) return null;
-  // A company background the organization has since taken away is no background.
-  const gone = choice.kind === 'company' && !!templates && !templates[choice.theme];
+  // A background the organization has since taken away is no background.
+  const gone = !!backgrounds && !stillAllowed(choice, backgrounds);
   const on = (choice.kind !== 'none' && !gone) || look !== 'natural';
   const label = supported ? 'Background effects' : 'Background effects are not available in this browser';
 
   const choose = (next: BackgroundChoice) => setBackgroundChoice(next);
 
-  const addPicture = async (file: File | undefined) => {
-    if (!file) return;
-    setSaving(true);
-    try {
-      await saveCustomPicture(file);
-      setCustom(customPicture());
-      // A new choice object even when it was already yours, so the camera
-      // picks up the new picture.
-      choose({ kind: 'custom' });
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'That picture could not be used.');
-    } finally {
-      setSaving(false);
-      if (fileInput.current) fileInput.current.value = '';
-    }
-  };
-
   return (
-    <>
-      <DropdownMenu modal={false} open={open} onOpenChange={setOpen}>
-        <DropdownMenuTrigger asChild disabled={!supported}>
-          <button
-            type="button"
-            className={variant === 'call' ? 'lk-button' : previewButtonClass(on)}
-            aria-label={label}
-            title={label}
-            aria-pressed={on}
-            data-lk-enabled={on}
-            data-testid="background-effects"
-          >
-            {saving || busy ? <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" /> : <Sparkles className="h-5 w-5" aria-hidden="true" />}
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          side="top"
-          align="center"
-          sideOffset={8}
-          className={cn(
-            'w-[18.5rem] overflow-y-auto p-2',
-            // Over the preview it may open downwards, into whatever room is left below.
-            variant === 'call'
-              ? 'max-h-[min(40rem,calc(100dvh-6rem))]'
-              : 'max-h-[min(40rem,calc(var(--radix-dropdown-menu-content-available-height)-0.5rem))]'
-          )}
-          aria-label="Background effects"
+    <DropdownMenu modal={false} open={open} onOpenChange={setOpen}>
+      <DropdownMenuTrigger asChild disabled={!supported}>
+        <button
+          type="button"
+          className={variant === 'call' ? 'lk-button' : previewButtonClass(on)}
+          aria-label={label}
+          title={label}
+          aria-pressed={on}
+          data-lk-enabled={on}
+          data-testid="background-effects"
         >
-          {variant === 'call' && open && <CallPreview />}
-          <DropdownMenuLabel className="px-1 pb-2 pt-0.5 text-xs font-medium text-muted-foreground">Background</DropdownMenuLabel>
-          <div className="grid grid-cols-3 gap-2">
-            <Tile label="None" selected={choice.kind === 'none' || gone} onSelect={() => choose({ kind: 'none' })}>
-              <span className="flex h-full w-full items-center justify-center bg-muted text-muted-foreground">
-                <Ban className="h-5 w-5" aria-hidden="true" />
-              </span>
-            </Tile>
-            <Tile
-              label="Slight blur"
-              selected={sameChoice(choice, { kind: 'blur', strength: 'light' })}
-              onSelect={() => choose({ kind: 'blur', strength: 'light' })}
-            >
-              <RoomSample blur={2} />
-            </Tile>
-            <Tile
-              label="Blur"
-              selected={sameChoice(choice, { kind: 'blur', strength: 'strong' })}
-              onSelect={() => choose({ kind: 'blur', strength: 'strong' })}
-            >
-              <RoomSample blur={5} />
-            </Tile>
-            {companyThemes.map((t) => (
-              <Tile
-                key={t.theme}
-                label={t.label}
-                selected={sameChoice(choice, { kind: 'company', theme: t.theme })}
-                onSelect={() => choose({ kind: 'company', theme: t.theme })}
-              >
-                <CompanyThumb theme={t.theme} />
-              </Tile>
-            ))}
-            {PICTURES.map((p) => (
-              <Tile
-                key={p.id}
-                label={p.label}
-                selected={sameChoice(choice, { kind: 'image', id: p.id })}
-                onSelect={() => choose({ kind: 'image', id: p.id })}
-              >
-                <img src={thumbURL(p.id)} alt="" className="h-full w-full object-cover" draggable={false} />
-              </Tile>
-            ))}
-            {custom && (
-              <Tile label="Your picture" selected={choice.kind === 'custom'} onSelect={() => choose({ kind: 'custom' })}>
-                <img src={custom} alt="" className="h-full w-full object-cover" draggable={false} />
-              </Tile>
-            )}
-            <Tile
-              label={custom ? 'Change your picture' : 'Add a picture'}
-              selected={false}
-              closes
-              onSelect={() => fileInput.current?.click()}
-            >
-              <span className="flex h-full w-full items-center justify-center border border-dashed border-border bg-background text-muted-foreground">
-                <ImagePlus className="h-5 w-5" aria-hidden="true" />
-              </span>
-            </Tile>
-          </div>
-          {looks && (
-            <>
-              <DropdownMenuLabel className="px-1 pb-2 pt-3 text-xs font-medium text-muted-foreground">Colour</DropdownMenuLabel>
-              <div className="grid grid-cols-3 gap-2" role="group" aria-label="Colour">
-                {LOOKS.map((l) => (
-                  <Tile key={l.id} label={l.label} selected={look === l.id} onSelect={() => setLook(l.id)}>
-                    <span className="relative block h-full w-full" style={{ filter: lookFilter(l.id) || undefined }}>
-                      <RoomSample blur={0} />
-                      {lookWash(l.id) && (
-                        <span className="absolute inset-0 mix-blend-soft-light" style={{ backgroundColor: lookWash(l.id) }} />
-                      )}
-                    </span>
+          {busy ? <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" /> : <Sparkles className="h-5 w-5" aria-hidden="true" />}
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        side="top"
+        align="center"
+        sideOffset={8}
+        className={cn(
+          'w-[18.5rem] overflow-y-auto p-2',
+          // Over the preview it may open downwards, into whatever room is left below.
+          variant === 'call'
+            ? 'max-h-[min(40rem,calc(100dvh-6rem))]'
+            : 'max-h-[min(40rem,calc(var(--radix-dropdown-menu-content-available-height)-0.5rem))]'
+        )}
+        aria-label="Background effects"
+      >
+        {variant === 'call' && open && <CallPreview />}
+        <DropdownMenuLabel className="px-1 pb-2 pt-0.5 text-xs font-medium text-muted-foreground">Background</DropdownMenuLabel>
+        <div className="grid grid-cols-3 gap-2">
+          <Tile label="None" selected={choice.kind === 'none' || gone} onSelect={() => choose({ kind: 'none' })}>
+            <span className="flex h-full w-full items-center justify-center bg-muted text-muted-foreground">
+              <Ban className="h-5 w-5" aria-hidden="true" />
+            </span>
+          </Tile>
+          <Tile
+            label="Slight blur"
+            selected={sameChoice(choice, { kind: 'blur', strength: 'light' })}
+            onSelect={() => choose({ kind: 'blur', strength: 'light' })}
+          >
+            <RoomSample blur={2} />
+          </Tile>
+          <Tile
+            label="Blur"
+            selected={sameChoice(choice, { kind: 'blur', strength: 'strong' })}
+            onSelect={() => choose({ kind: 'blur', strength: 'strong' })}
+          >
+            <RoomSample blur={5} />
+          </Tile>
+        </div>
+        {/* A guest is not one of the organization, so has its blurs but not its pictures. */}
+        {signedIn && (
+          <>
+            <DropdownMenuLabel className="px-1 pb-2 pt-3 text-xs font-medium text-muted-foreground">Pictures</DropdownMenuLabel>
+            {!backgrounds ? (
+              <div className="grid grid-cols-3 gap-2" aria-hidden="true">
+                {[0, 1, 2].map((i) => (
+                  <span key={i} className="block aspect-video animate-pulse rounded-md bg-muted" />
+                ))}
+              </div>
+            ) : companyThemes.length + pictures.length === 0 ? (
+              <div className="rounded-md border border-dashed border-border px-3 py-3 text-center" data-testid="background-pictures-empty">
+                <p className="text-xs leading-snug text-muted-foreground">Your organization has not added any background pictures yet.</p>
+                {mayManage && (
+                  <DropdownMenuItem asChild className="mx-auto mt-2 w-fit cursor-pointer justify-center gap-1.5 text-xs font-medium text-primary">
+                    <Link to="/organization?tab=appearance">
+                      <ImagePlus className="h-3.5 w-3.5" aria-hidden="true" />
+                      Add pictures
+                    </Link>
+                  </DropdownMenuItem>
+                )}
+              </div>
+            ) : (
+              <div className="grid grid-cols-3 gap-2" role="group" aria-label="Pictures">
+                {companyThemes.map((t) => (
+                  <Tile
+                    key={t.theme}
+                    label={t.label}
+                    selected={sameChoice(choice, { kind: 'company', theme: t.theme })}
+                    onSelect={() => choose({ kind: 'company', theme: t.theme })}
+                  >
+                    <CompanyThumb theme={t.theme} />
+                  </Tile>
+                ))}
+                {pictures.map((p) => (
+                  <Tile
+                    key={p.id}
+                    label={p.name}
+                    selected={sameChoice(choice, { kind: 'picture', id: p.id })}
+                    onSelect={() => choose({ kind: 'picture', id: p.id })}
+                  >
+                    <img src={p.thumbUrl} alt="" className="h-full w-full object-cover" draggable={false} loading="lazy" />
                   </Tile>
                 ))}
               </div>
-            </>
-          )}
-          <p className="px-1 pt-2 text-[11px] leading-snug text-muted-foreground">
-            Done on this device, before your video is sent. Others see the result.          </p>
-        </DropdownMenuContent>
-      </DropdownMenu>
-      <input
-        ref={fileInput}
-        type="file"
-        accept="image/jpeg,image/png,image/webp"
-        className="hidden"
-        aria-hidden="true"
-        tabIndex={-1}
-        onChange={(e) => void addPicture(e.target.files?.[0])}
-        data-testid="background-picture-input"
-      />
-    </>
+            )}
+          </>
+        )}
+        {looks && (
+          <>
+            <DropdownMenuLabel className="px-1 pb-2 pt-3 text-xs font-medium text-muted-foreground">Colour</DropdownMenuLabel>
+            <div className="grid grid-cols-3 gap-2" role="group" aria-label="Colour">
+              {LOOKS.map((l) => (
+                <Tile key={l.id} label={l.label} selected={look === l.id} onSelect={() => setLook(l.id)}>
+                  <span className="relative block h-full w-full" style={{ filter: lookFilter(l.id) || undefined }}>
+                    <RoomSample blur={0} />
+                    {lookWash(l.id) && (
+                      <span className="absolute inset-0 mix-blend-soft-light" style={{ backgroundColor: lookWash(l.id) }} />
+                    )}
+                  </span>
+                </Tile>
+              ))}
+            </div>
+          </>
+        )}
+        <p className="px-1 pt-2 text-[11px] leading-snug text-muted-foreground">
+          Done on this device, before your video is sent. Others see the result.
+        </p>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -475,25 +487,23 @@ function CompanyThumb({ theme }: { theme: CompanyTheme }) {
 
 /**
  * One choice in the menu. Choosing keeps the menu open, so the preview shows it
- * coming on and the next can be tried; `closes` is for one that opens something else.
+ * coming on and the next can be tried.
  */
 function Tile({
   label,
   selected,
   onSelect,
-  closes = false,
   children,
 }: {
   label: string;
   selected: boolean;
   onSelect: () => void;
-  closes?: boolean;
   children: ReactNode;
 }) {
   return (
     <DropdownMenuItem
       onSelect={(e) => {
-        if (!closes) e.preventDefault();
+        e.preventDefault();
         onSelect();
       }}
       aria-label={label}

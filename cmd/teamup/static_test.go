@@ -16,7 +16,7 @@ func TestStaticServesEveryFolderAndRootFile(t *testing.T) {
 		"sw.js":                   {Data: []byte("worker")},
 		"assets/index-abc.js":     {Data: []byte("bundle")},
 		"sounds/ringtone.mp3":     {Data: []byte("ring")},
-		"backgrounds/night.jpg":   {Data: []byte("night")},
+		"fonts/manrope.woff2":     {Data: []byte("font")},
 		"mediapipe/selfie.tflite": {Data: []byte("model")},
 		"mediapipe/tasks-vision-1.2/wasm/vision.wasm": {Data: []byte("\x00asm")},
 	}
@@ -29,7 +29,7 @@ func TestStaticServesEveryFolderAndRootFile(t *testing.T) {
 		{"/sw.js", "worker", ""},
 		{"/assets/index-abc.js", "bundle", "public, max-age=31536000, immutable"},
 		{"/sounds/ringtone.mp3", "ring", "public, max-age=86400"},
-		{"/backgrounds/night.jpg", "night", "public, max-age=86400"},
+		{"/fonts/manrope.woff2", "font", "public, max-age=86400"},
 		{"/mediapipe/selfie.tflite", "model", "public, max-age=86400"},
 		{"/mediapipe/tasks-vision-1.2/wasm/vision.wasm", "\x00asm", "public, max-age=31536000, immutable"},
 	}

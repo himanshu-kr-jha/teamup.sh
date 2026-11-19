@@ -10,7 +10,7 @@ import { useAuthStore } from '@/shared/store/authStore';
 import {
   CALL_BACKGROUNDS_QUERY_KEY,
   composeCompanyBackground,
-  useCompanyTemplates,
+  useCallBackgrounds,
   type CompanyTheme,
 } from '@/features/calls/companyBackground';
 
@@ -29,11 +29,11 @@ const THEMES: { theme: CompanyTheme; label: string }[] = [
  * their own name and company role is written in its top right corner.
  */
 export function CallBackgroundsCard() {
-  const templates = useCompanyTemplates();
+  const templates = useCallBackgrounds();
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Call backgrounds</CardTitle>
+        <CardTitle>Company backgrounds</CardTitle>
         <p className="text-sm text-muted-foreground">
           A company background for calls, in a dark and a light version. Everybody can choose it behind their camera, and
           their own name and company role are written in the top right corner, so leave that corner empty.

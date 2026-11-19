@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -85,7 +86,7 @@ func TestAnAdministratorPutsInReplacesAndRemovesTheCallBackgrounds(t *testing.T)
 	}
 
 	// Everybody in the organization sees it and can fetch it.
-	if got := backgroundsOf(t, send(t, member, http.MethodGet, "/api/org/call-backgrounds", nil)); got != v {
+	if got := backgroundsOf(t, send(t, member, http.MethodGet, "/api/org/call-backgrounds", nil)); !reflect.DeepEqual(got, v) {
 		t.Errorf("a member sees the same: %+v", got)
 	}
 	pic := send(t, member, http.MethodGet, v.Dark, nil)

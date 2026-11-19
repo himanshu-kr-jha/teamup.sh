@@ -148,10 +148,25 @@ export const brandingApi = {
   get: () => api.get<Branding>('/branding'),
 };
 
-/** The organization's call backgrounds, by address; empty for none. */
+/** One of the organization's own background pictures, by address. */
+export interface CallPicture {
+  id: string;
+  name: string;
+  /** The picture itself, 16:9 and at most 1920 x 1080. */
+  url: string;
+  /** A small copy for the menu. */
+  thumbUrl: string;
+}
+
+/**
+ * The organization's call backgrounds: the two name templates by address, empty
+ * for none, and its own pictures in their order. An older server leaves the
+ * pictures out.
+ */
 export interface CallBackgrounds {
   dark: string;
   light: string;
+  pictures?: CallPicture[];
 }
 
 export type ServiceState = 'operational' | 'outage';
@@ -377,6 +392,16 @@ export const orgApi = {
       headers: { 'Content-Type': picture.type || 'application/octet-stream' },
     }),
   removeCallBackground: (theme: 'dark' | 'light') => api.delete<CallBackgrounds>(`/org/call-backgrounds/${theme}`),
+  /** Adds one of the organization's background pictures, sent as the picture itself. */
+  addCallPicture: (picture: Blob, name: string) =>
+    api.post<CallBackgrounds>('/org/call-pictures', picture, {
+      params: { name },
+      headers: { 'Content-Type': picture.type || 'application/octet-stream' },
+    }),
+  renameCallPicture: (id: string, name: string) => api.patch<CallBackgrounds>(`/org/call-pictures/${id}`, { name }),
+  /** Puts the pictures in this order. */
+  orderCallPictures: (ids: string[]) => api.put<CallBackgrounds>('/org/call-pictures/order', { ids }),
+  removeCallPicture: (id: string) => api.delete<CallBackgrounds>(`/org/call-pictures/${id}`),
   getUser: (id: string) => api.get(`/users/${id}`),
   updateUser: (id: string, data: { name?: string; avatarUrl?: string; jobTitle?: string }) => api.patch(`/users/${id}`, data),
   /** A picture already cut to a small square, as a data URL. */

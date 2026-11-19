@@ -1,6 +1,9 @@
-// What sits behind you on camera: nothing changed, your room blurred, or a
-// picture. The choice is yours and this browser's: it is kept here and applied
-// to your camera in every call, without anybody else's say.
+// What sits behind you on camera: nothing changed, your room blurred, or one of
+// the organization's backgrounds. The choice is yours and this browser's: it is
+// kept here and applied to your camera in every call, without anybody else's say.
+// The pictures to choose from are the organization's alone (the owner's request
+// of 19 November 2026): an administrator puts them in, on Organization >
+// Appearance, and there are no others.
 //
 // The work happens on this device. MediaPipe finds the person in each frame and
 // the rest is blurred or replaced before the video leaves; the runtime and its
@@ -9,61 +12,59 @@
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import type { LocalVideoTrack } from 'livekit-client';
 import type { SwitchBackgroundProcessorOptions } from '@livekit/track-processors';
+import type { CallBackgrounds } from '@/shared/api/client';
 
 export type BackgroundChoice =
   | { kind: 'none' }
   | { kind: 'blur'; strength: 'light' | 'strong' }
-  | { kind: 'image'; id: string }
-  | { kind: 'custom' }
+  /** One of the organization's own pictures, by its id. */
+  | { kind: 'picture'; id: string }
   /** The organization's template with your own name on it (companyBackground.ts). */
   | { kind: 'company'; theme: 'dark' | 'light' };
-
-/** The pictures that come with TeamUp, drawn by web/scripts/make-backgrounds.py. */
-export const PICTURES = [
-  { id: 'studio', label: 'Studio' },
-  { id: 'indigo', label: 'Indigo' },
-  { id: 'dawn', label: 'Dawn' },
-  { id: 'ocean', label: 'Ocean' },
-  { id: 'forest', label: 'Forest' },
-  { id: 'night', label: 'Night' },
-] as const;
-
-export const pictureURL = (id: string) => `/backgrounds/${id}.jpg`;
-export const thumbURL = (id: string) => `/backgrounds/${id}-thumb.jpg`;
 
 /** How hard each blur is, in the processor's own units. */
 const BLUR_RADIUS = { light: 6, strong: 16 } as const;
 
 const CHOICE_KEY = 'teamup.call.background';
-const CUSTOM_KEY = 'teamup.call.background.custom';
-/** The size an uploaded picture is brought to: the camera's own, so nothing is wasted. */
-const CUSTOM_WIDTH = 1280;
-const CUSTOM_HEIGHT = 720;
+/**
+ * Where a picture of your own used to be kept, before only the organization's
+ * could be chosen. Cleared whenever the choice is read, so it does not linger.
+ */
+const OLD_CUSTOM_KEY = 'teamup.call.background.custom';
 
 const NONE: BackgroundChoice = { kind: 'none' };
 
 function read(): BackgroundChoice {
   try {
+    localStorage.removeItem(OLD_CUSTOM_KEY);
+  } catch {
+    // Nothing kept, or nothing to keep it in.
+  }
+  try {
     const raw = localStorage.getItem(CHOICE_KEY);
     if (!raw) return NONE;
     const parsed = JSON.parse(raw) as BackgroundChoice;
     if (parsed.kind === 'blur' && (parsed.strength === 'light' || parsed.strength === 'strong')) return parsed;
-    if (parsed.kind === 'image' && PICTURES.some((p) => p.id === parsed.id)) return parsed;
-    if (parsed.kind === 'custom' && readCustom()) return parsed;
-    // Kept even before the organization's templates are known; it is simply not
-    // applied if there turns out to be none.
+    // Kept even before the organization's pictures and templates are known; it
+    // is not applied until they are, and is forgotten if it is not among them
+    // (stillAllowed).
+    if (parsed.kind === 'picture' && typeof parsed.id === 'string' && parsed.id) return { kind: 'picture', id: parsed.id };
     if (parsed.kind === 'company' && (parsed.theme === 'dark' || parsed.theme === 'light')) return parsed;
+    // Anything else, such as a picture that came with TeamUp or one of your
+    // own from before, is no longer on offer.
+    forget();
     return NONE;
   } catch {
+    forget();
     return NONE;
   }
 }
 
-function readCustom(): string | null {
+function forget() {
   try {
-    return localStorage.getItem(CUSTOM_KEY);
+    localStorage.removeItem(CHOICE_KEY);
   } catch {
-    return null;
+    // Not kept anyway.
   }
 }
 
@@ -78,7 +79,8 @@ export const currentBackgroundChoice = choiceNow;
 export function setBackgroundChoice(choice: BackgroundChoice) {
   current = choice;
   try {
-    localStorage.setItem(CHOICE_KEY, JSON.stringify(choice));
+    if (choice.kind === 'none') localStorage.removeItem(CHOICE_KEY);
+    else localStorage.setItem(CHOICE_KEY, JSON.stringify(choice));
   } catch {
     // Private browsing: it still applies to this call, it is just not remembered.
   }
@@ -101,60 +103,34 @@ export function sameChoice(a: BackgroundChoice, b: BackgroundChoice): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-/** Your own picture, if you have added one. */
-export function customPicture(): string | null {
-  return readCustom();
-}
-
 /**
- * Takes a picture you chose, crops it to the camera's shape from its middle,
- * and keeps it in this browser. Rejects anything that is not a picture.
+ * Whether a choice is still on offer, given what the organization has now: a
+ * picture or template it has since taken away is not. Blurs and none always are.
  */
-export async function saveCustomPicture(file: File): Promise<void> {
-  if (!file.type.startsWith('image/')) throw new Error('Choose a picture: a JPEG, PNG or WebP file.');
-  const url = URL.createObjectURL(file);
-  try {
-    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const i = new Image();
-      i.onload = () => resolve(i);
-      i.onerror = () => reject(new Error('That picture could not be opened.'));
-      i.src = url;
-    });
-    const canvas = document.createElement('canvas');
-    canvas.width = CUSTOM_WIDTH;
-    canvas.height = CUSTOM_HEIGHT;
-    const scale = Math.max(CUSTOM_WIDTH / img.naturalWidth, CUSTOM_HEIGHT / img.naturalHeight);
-    const w = img.naturalWidth * scale;
-    const h = img.naturalHeight * scale;
-    canvas.getContext('2d')!.drawImage(img, (CUSTOM_WIDTH - w) / 2, (CUSTOM_HEIGHT - h) / 2, w, h);
-    const data = canvas.toDataURL('image/jpeg', 0.85);
-    try {
-      localStorage.setItem(CUSTOM_KEY, data);
-    } catch {
-      throw new Error('This browser has no room to keep that picture.');
-    }
-  } finally {
-    URL.revokeObjectURL(url);
+export function stillAllowed(choice: BackgroundChoice, backgrounds: CallBackgrounds): boolean {
+  switch (choice.kind) {
+    case 'picture':
+      return (backgrounds.pictures ?? []).some((p) => p.id === choice.id);
+    case 'company':
+      return !!backgrounds[choice.theme];
+    default:
+      return true;
   }
 }
 
 /**
  * What the processor is told for a choice; null for none, which takes the
- * processor off. For the company background, `company` is the picture already
- * made with your name on it, or null while there is none.
+ * processor off. For one of the organization's pictures, `picture` is its
+ * address; for the company background, the picture already made with your name
+ * on it. Either is null while there is none.
  */
-export function processorOptions(choice: BackgroundChoice, company?: string | null): SwitchBackgroundProcessorOptions | null {
+export function processorOptions(choice: BackgroundChoice, picture?: string | null): SwitchBackgroundProcessorOptions | null {
   switch (choice.kind) {
     case 'blur':
       return { mode: 'background-blur', blurRadius: BLUR_RADIUS[choice.strength] };
-    case 'image':
-      return { mode: 'virtual-background', imagePath: pictureURL(choice.id) };
-    case 'custom': {
-      const data = readCustom();
-      return data ? { mode: 'virtual-background', imagePath: data } : null;
-    }
+    case 'picture':
     case 'company':
-      return company ? { mode: 'virtual-background', imagePath: company } : null;
+      return picture ? { mode: 'virtual-background', imagePath: picture } : null;
     default:
       return null;
   }
@@ -265,9 +241,9 @@ export async function applyCameraEffects(
   track: LocalVideoTrack,
   choice: BackgroundChoice,
   look: LookId,
-  company?: string | null
+  picture?: string | null
 ): Promise<void> {
-  const options = processorOptions(choice, company);
+  const options = processorOptions(choice, picture);
   const filter = { filter: lookFilter(look), wash: lookWash(look) };
   const plainLook = !filter.filter && !filter.wash;
   const running = track.getProcessor();

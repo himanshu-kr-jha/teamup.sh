@@ -54,10 +54,12 @@ type CallBackground struct {
 }
 
 // CallBackgroundsView is what is shown: each template by address, empty for
-// none, so the pictures are fetched once and cached.
+// none, so the pictures are fetched once and cached; and the organization's own
+// pictures (call_pictures.go), in their order.
 type CallBackgroundsView struct {
-	Dark  string `json:"dark"`
-	Light string `json:"light"`
+	Dark     string            `json:"dark"`
+	Light    string            `json:"light"`
+	Pictures []CallPictureView `json:"pictures"`
 }
 
 func callBackgroundURL(theme, version string) string {
@@ -105,6 +107,13 @@ func (h *Handler) callBackgroundsView(c *gin.Context, orgID uuid.UUID) (CallBack
 		httpx.Error(c, err, "failed to read the call backgrounds")
 		return CallBackgroundsView{}, false
 	}
+	rows.Close()
+	pictures, err := h.service.callPictures(c.Request.Context(), orgID)
+	if err != nil {
+		httpx.Error(c, err, "failed to read the call backgrounds")
+		return CallBackgroundsView{}, false
+	}
+	view.Pictures = pictures
 	return view, true
 }
 

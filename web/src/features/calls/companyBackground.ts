@@ -1,8 +1,8 @@
-// The organization's call backgrounds, each made personal: an administrator
-// puts in one template for a dark look and one for a light one (Organization >
-// Appearance), and this browser writes the signed-in person's own name and
-// company role on it before it goes behind their camera. One upload, and
-// everybody has a background of their own.
+// The organization's call backgrounds. Its own pictures are worn as they are.
+// The two templates are made personal: an administrator puts in one for a dark
+// look and one for a light one (Organization > Appearance), and this browser
+// writes the signed-in person's own name and company role on it before it goes
+// behind their camera. One upload, and everybody has a background of their own.
 //
 // The text is drawn on the background itself, which is put in the video before
 // it is sent, so others read it the right way round. Your own preview is not
@@ -22,20 +22,39 @@ export const COMPANY_THEMES: { theme: CompanyTheme; label: string }[] = [
 
 export const CALL_BACKGROUNDS_QUERY_KEY = ['call-backgrounds'] as const;
 
-/**
- * The organization's templates, by address. Undefined while they are being
- * found out, and none for somebody who is not signed in, such as a guest.
- */
-export function useCompanyTemplates(): CallBackgrounds | undefined {
+const NOTHING: CallBackgrounds = { dark: '', light: '', pictures: [] };
+
+function useCallBackgroundsQuery() {
   const signedIn = useAuthStore((s) => s.isAuthenticated);
-  const { data, isError } = useQuery({
+  const query = useQuery({
     queryKey: CALL_BACKGROUNDS_QUERY_KEY,
     queryFn: async () => (await orgApi.callBackgrounds()).data,
     enabled: signedIn,
     staleTime: 5 * 60 * 1000,
   });
-  if (!signedIn || isError) return { dark: '', light: '' };
-  return data;
+  return { signedIn, ...query };
+}
+
+/**
+ * The organization's templates and pictures, by address. Undefined while they
+ * are being found out, and none for somebody who is not signed in, such as a
+ * guest: a guest is not one of the organization, so does not wear its
+ * backgrounds (decided 19 November 2026).
+ */
+export function useCallBackgrounds(): CallBackgrounds | undefined {
+  const { signedIn, data, isError } = useCallBackgroundsQuery();
+  if (!signedIn || isError) return NOTHING;
+  return data && { ...data, pictures: data.pictures ?? [] };
+}
+
+/**
+ * The same, but only once the server has said so: never the empty stand-in for a
+ * guest or for a request that failed, so a choice is not forgotten because the
+ * network blinked.
+ */
+export function useKnownCallBackgrounds(): CallBackgrounds | undefined {
+  const { signedIn, data, isSuccess } = useCallBackgroundsQuery();
+  return signedIn && isSuccess && data ? { ...data, pictures: data.pictures ?? [] } : undefined;
 }
 
 /** What one person's background is made from. */
@@ -52,7 +71,7 @@ export interface CompanySource {
  * undefined while that is still being found out.
  */
 export function useCompanySource(theme: CompanyTheme | null): CompanySource | null | undefined {
-  const templates = useCompanyTemplates();
+  const templates = useCallBackgrounds();
   const name = useAuthStore((s) => s.user?.name ?? '');
   const role = useAuthStore((s) => s.user?.jobTitle ?? '');
   if (!theme) return null;

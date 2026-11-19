@@ -26,6 +26,29 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-19-g',
+    date: '2026-11-19',
+    title: 'Your organization’s own call backgrounds',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'Backgrounds chosen by your organization',
+        body: 'The pictures you can put behind your camera are now the ones your organization has added, and only those. The blurs and the company backgrounds with your name on are still there. If you had one of the old pictures or one of your own, your camera goes back to no background; pick one of your organization’s from the background menu.',
+        link: '/calls',
+      },
+      {
+        area: 'app',
+        title: 'Administrators add the pictures',
+        body: 'On Organization, Appearance, an administrator adds a set of background pictures at once, names them, puts them in order and removes any. Everybody can choose them in their next call.',
+      },
+      {
+        area: 'meetings',
+        title: 'No more endless mirror when you present',
+        body: 'When you share your screen, you now see a card saying you are presenting, with a button to stop, instead of your own screen inside itself over and over. Everybody else still sees your screen as before.',
+      },
+    ],
+  },
+  {
     id: '2026-11-19-f',
     date: '2026-11-19',
     title: 'Backgrounds go on without freezing your video',

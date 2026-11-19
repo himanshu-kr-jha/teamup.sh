@@ -1,6 +1,8 @@
 import type { Page } from '@playwright/test';
 import { expect, test, type Session } from './support/fixtures';
+import type { Api } from './support/api';
 import { apiAs, createCall, idOf, joinCall, leaveCall } from './support/meetings';
+import { COLOURS, addOrgPictures, removeOrgPictures, type OrgPicture } from './support/orgPictures';
 
 // The sounds of calls and messages, and backgrounds behind your camera.
 // Against the real stack, with Chromium's fake camera.
@@ -160,7 +162,21 @@ test.describe('the bell in a conversation', () => {
 });
 
 test.describe('backgrounds', () => {
-  test('a picture replaces what is behind you, from TeamUp itself, and is remembered for the next call', async ({ as }) => {
+  // The organization's own pictures are the only ones there are: the
+  // administrator puts in two for these tests, and takes them away after.
+  let admin: Api;
+  let night: OrgPicture;
+  let dawn: OrgPicture;
+  test.beforeAll(async () => {
+    admin = await apiAs('owner');
+    [night, dawn] = await addOrgPictures(admin, { Night: COLOURS.night, Dawn: COLOURS.dawn });
+  });
+  test.afterAll(async () => {
+    await removeOrgPictures(admin, [night, dawn]);
+    await admin.dispose();
+  });
+
+  test('one of the organization’s pictures replaces what is behind you, from TeamUp itself, and is remembered for the next call', async ({ as }) => {
     const owner = await apiAs('owner');
     const olivia = await as('owner');
     const fetched: string[] = [];
@@ -177,9 +193,15 @@ test.describe('backgrounds', () => {
     await button.click();
     const menu = olivia.page.getByRole('menu', { name: 'Background effects' });
     await expect(menu).toBeVisible();
-    for (const name of ['None', 'Slight blur', 'Blur', 'Studio', 'Indigo', 'Dawn', 'Ocean', 'Forest', 'Night', 'Add a picture']) {
+    for (const name of ['None', 'Slight blur', 'Blur', 'Night', 'Dawn']) {
       await expect(menu.getByRole('menuitemradio', { name, exact: true })).toBeVisible();
     }
+    // Nothing that came with TeamUp, and no way to add a picture of your own.
+    for (const name of ['Studio', 'Indigo', 'Ocean', 'Forest', 'Add a picture', 'Your picture']) {
+      await expect(menu.getByRole('menuitemradio', { name, exact: true })).toHaveCount(0);
+    }
+    // The tiles are the small copies, not the pictures themselves.
+    await expect(menu.getByRole('menuitemradio', { name: 'Night', exact: true }).locator('img')).toHaveAttribute('src', night.thumbUrl);
     await expect(menu.getByRole('menuitemradio', { name: 'None', exact: true })).toHaveAttribute('aria-checked', 'true');
     await menu.getByRole('menuitemradio', { name: 'Night', exact: true }).click();
     await expect(menu.getByRole('menuitemradio', { name: 'Night', exact: true })).toHaveAttribute('aria-checked', 'true');
@@ -200,10 +222,12 @@ test.describe('backgrounds', () => {
       .toBe(true);
     await expect(olivia.page.getByText('could not be changed')).toHaveCount(0);
 
-    // Its runtime and model came from TeamUp, not from a CDN.
+    // Its runtime and model came from TeamUp, not from a CDN, and the picture from the organization.
     expect(fetched.some((u) => /\/mediapipe\/tasks-vision-[\d.]+\/wasm\/vision_wasm/.test(u))).toBe(true);
     expect(fetched.some((u) => u.endsWith('/mediapipe/selfie_segmenter.tflite'))).toBe(true);
+    expect(fetched.some((u) => u.endsWith(night.url))).toBe(true);
     expect(fetched.filter((u) => /jsdelivr|googleapis|unpkg/.test(u))).toEqual([]);
+    expect(fetched.filter((u) => u.includes('/backgrounds/'))).toEqual([]);
 
     // Remembered: the next call starts with it.
     await leaveCall(olivia.page);
@@ -218,23 +242,8 @@ test.describe('backgrounds', () => {
       }, { timeout: 30_000 })
       .toBe(true);
 
-    // Your own picture: a bright red one, added from a file.
-    const red = await redPng(olivia.page);
-    await button.click();
-    const chooser = olivia.page.waitForEvent('filechooser');
-    await menu.getByRole('menuitemradio', { name: 'Add a picture' }).click();
-    await (await chooser).setFiles({ name: 'red.png', mimeType: 'image/png', buffer: red });
-    await expect
-      .poll(async () => {
-        const c = await ownCameraColour(olivia.page);
-        return !!c && c.r > 150 && c.g < 80 && c.b < 80;
-      }, { timeout: 30_000 })
-      .toBe(true);
-    await button.click();
-    await expect(menu.getByRole('menuitemradio', { name: 'Your picture', exact: true })).toHaveAttribute('aria-checked', 'true');
-    await expect(menu.getByRole('menuitemradio', { name: 'Change your picture' })).toBeVisible();
-
     // And off again: the camera as it is.
+    await button.click();
     await menu.getByRole('menuitemradio', { name: 'None', exact: true }).click();
     await expect(button).toHaveAttribute('aria-pressed', 'false');
     await expect
@@ -243,6 +252,64 @@ test.describe('backgrounds', () => {
         return !!c && Math.abs(c.r - plain.r) + Math.abs(c.g - plain.g) + Math.abs(c.b - plain.b) < 60;
       }, { timeout: 30_000 })
       .toBe(true);
+    await leaveCall(olivia.page);
+    await owner.dispose();
+  });
+
+  test('a picture the administrator takes away, or one from before, goes back to no background, quietly', async ({ as }) => {
+    const owner = await apiAs('owner');
+    const [red] = await addOrgPictures(owner, { 'Red wall': COLOURS.red });
+    try {
+      const olivia = await as('owner');
+      // A picture that came with TeamUp and one of her own, chosen before only the organization's were offered.
+      await olivia.context.addInitScript(() => {
+        if (sessionStorage.getItem('seeded')) return;
+        sessionStorage.setItem('seeded', '1');
+        localStorage.setItem('teamup.call.background', JSON.stringify({ kind: 'image', id: 'night' }));
+        localStorage.setItem('teamup.call.background.custom', 'data:image/jpeg;base64,AAAA');
+      });
+      const call = await createCall(owner, `Stale background ${Date.now()}`);
+      await joinCall(olivia.page, call.id);
+      await olivia.page.getByRole('button', { name: 'Turn your camera on' }).click();
+      await expect.poll(() => ownCameraColour(olivia.page), { timeout: 20_000 }).not.toBeNull();
+      const button = olivia.page.getByTestId('background-effects');
+      await expect(button).toHaveAttribute('aria-pressed', 'false');
+      expect(
+        await olivia.page.evaluate(() => [localStorage.getItem('teamup.call.background'), localStorage.getItem('teamup.call.background.custom')])
+      ).toEqual([null, null]);
+
+      // She wears the red one.
+      await button.click();
+      const menu = olivia.page.getByRole('menu', { name: 'Background effects' });
+      await menu.getByRole('menuitemradio', { name: 'Red wall', exact: true }).click();
+      await olivia.page.keyboard.press('Escape');
+      const isRed = async () => {
+        const c = await ownCameraColour(olivia.page);
+        return !!c && c.r > 150 && c.g < 80 && c.b < 80;
+      };
+      await expect.poll(isRed, { timeout: 30_000 }).toBe(true);
+
+      // The administrator takes it away. Next time her page asks, it is gone:
+      // her camera goes back to how it is, with no message about it.
+      await owner.del(`/org/call-pictures/${red.id}`);
+      await olivia.page.reload();
+      await expect(olivia.page.getByRole('button', { name: /Turn your camera (on|off)/ })).toBeVisible({ timeout: 30_000 });
+      if (await olivia.page.getByRole('button', { name: 'Turn your camera on' }).isVisible()) {
+        await olivia.page.getByRole('button', { name: 'Turn your camera on' }).click();
+      }
+      await expect(button).toHaveAttribute('aria-pressed', 'false', { timeout: 20_000 });
+      await expect.poll(async () => (await ownCameraColour(olivia.page)) !== null && !(await isRed()), { timeout: 30_000 }).toBe(true);
+      expect(await olivia.page.evaluate(() => localStorage.getItem('teamup.call.background'))).toBeNull();
+      await expect(olivia.page.getByText('could not be applied')).toHaveCount(0);
+      await button.click();
+      await expect(menu.getByRole('menuitemradio', { name: 'None', exact: true })).toHaveAttribute('aria-checked', 'true');
+      await expect(menu.getByRole('menuitemradio', { name: 'Red wall', exact: true })).toHaveCount(0);
+      await olivia.page.keyboard.press('Escape');
+      await leaveCall(olivia.page);
+    } finally {
+      await owner.del(`/org/call-pictures/${red.id}`).catch(() => undefined);
+      await owner.dispose();
+    }
   });
 
   test('a background chosen while the camera is off is on as soon as it comes back on, without turning it off and on again', async ({ as }) => {
@@ -344,16 +411,3 @@ test.describe('backgrounds', () => {
     await expect(olivia.page.getByText('could not be changed')).toHaveCount(0);
   });
 });
-
-async function redPng(page: Page): Promise<Buffer> {
-  const dataUrl = await page.evaluate(() => {
-    const c = document.createElement('canvas');
-    c.width = 320;
-    c.height = 180;
-    const g = c.getContext('2d')!;
-    g.fillStyle = '#dc2626';
-    g.fillRect(0, 0, 320, 180);
-    return c.toDataURL('image/png');
-  });
-  return Buffer.from(dataUrl.split(',')[1], 'base64');
-}

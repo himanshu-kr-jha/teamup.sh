@@ -9,7 +9,7 @@ import (
 )
 
 // registerStatic serves the built frontend: every folder by its own name (assets,
-// icons, sounds, call backgrounds, the MediaPipe runtime) and every file at its
+// icons, sounds, fonts, the MediaPipe runtime) and every file at its
 // root (the service worker, the manifest).
 //
 // Both used to be listed by hand, one route per name, including Workbox's file,
@@ -47,7 +47,7 @@ func registerStatic(router gin.IRoutes, site fs.FS) {
 // again every time; that matters for the MediaPipe runtime, about 9 MB, fetched
 // when a background effect starts. Its folder is named by version, and assets'
 // names carry a content hash, so both can be kept for good. The rest (sounds,
-// backgrounds, the model, icons) keep their names across releases, so a day.
+// fonts, the model, icons) keep their names across releases, so a day.
 func staticCache(folder string) func(*gin.Context) {
 	return func(c *gin.Context) {
 		value := "public, max-age=86400"
