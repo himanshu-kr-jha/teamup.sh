@@ -245,6 +245,16 @@ test.describe('the new call features together', () => {
       await olivia.page.screenshot({ path: `${SHOTS}/1-hands-olivia-light.png` });
       await sam.page.screenshot({ path: `${SHOTS}/1-hands-sam-phone-dark.png` });
       expect(await scrollsSideways(sam.page)).toBe(false);
+      // Alice's fake microphone talks on, in sentences with pauses between: a new
+      // one after a pause lowers her hand by itself, as it should, at a moment
+      // that depends on the machine's speed (CI's slower one lowered it while
+      // Zoe was being rung). Both go quiet until the hands are lowered for them.
+      for (const page of [alice.page, sam.page]) {
+        await page.getByRole('button', { name: 'Turn your microphone off' }).first().click();
+        await expect(page.getByRole('button', { name: 'Turn your microphone on' }).first()).toBeVisible();
+      }
+      await expect(badge(olivia.page, SAM)).toHaveText('1');
+      await expect(badge(olivia.page, ALICE)).toHaveText('2');
     });
 
     await test.step('1. Olivia rings Zoe in with Add people; Zoe answers, sees the hands and the notes banner', async () => {
@@ -291,6 +301,10 @@ test.describe('the new call features together', () => {
       }
       await expect(alice.page.getByRole('button', { name: 'Raise your hand' })).toBeVisible();
       await expect(sam.page.getByRole('button', { name: 'Raise your hand' })).toBeVisible();
+      for (const page of [alice.page, sam.page]) {
+        await page.getByRole('button', { name: 'Turn your microphone on' }).first().click();
+        await expect(page.getByRole('button', { name: 'Turn your microphone off' }).first()).toBeVisible();
+      }
     });
 
     await test.step('2. hands up again, Alice pauses the notes, and everybody, Zoe too, sees who did', async () => {

@@ -110,6 +110,12 @@ export async function openSession(browser: Browser, who: PersonKey | Person, opt
   context.on('page', watch);
   if (!options.tour || !options.whatsNew) await hideIntroductions(context, { tour: !options.tour, whatsNew: !options.whatsNew });
   const page = await context.newPage();
+  // E2E_CPU_THROTTLE=6 slows each page's CPU that many times, to see locally the
+  // races a slow CI machine runs into (a reload while a call is still connecting).
+  if (process.env.E2E_CPU_THROTTLE) {
+    const cdp = await context.newCDPSession(page);
+    await cdp.send('Emulation.setCPUThrottlingRate', { rate: Number(process.env.E2E_CPU_THROTTLE) });
+  }
 
   if (!options.signedOut) await signIn(page, who);
   return { who: typeof who === 'string' ? who : who.name, context, page, problems };
