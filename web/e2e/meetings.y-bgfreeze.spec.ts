@@ -213,8 +213,12 @@ test.describe('putting a background on in a call', () => {
     await alice.page.waitForTimeout(2_000);
     const off = await gaps(alice.page, from);
     console.log(`off: longest ${off.longest} ms, usual ${off.usual} ms`);
+    // Measured against the pace the video had with the background on: the last
+    // frame before the switch comes at that pace, and the plain camera's quicker
+    // one after it made a busy machine's ordinary gap (733 ms against 550 ms
+    // frames) look like a freeze.
     expect(off.longest, `Olivia's video stood still for ${off.longest} ms while the background came off`).toBeLessThanOrEqual(
-      allowed(off.usual)
+      allowed(Math.max(off.usual, change.usual))
     );
 
     // Closing the picker lets the preview's copy of the camera go, and its processor.
