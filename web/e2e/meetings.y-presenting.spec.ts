@@ -27,7 +27,7 @@ function ownCaptureVideos(page: Page) {
 /** Whether somebody's shared screen arrives on a page, as moving pictures. */
 function receivedScreen(page: Page, identity: string) {
   return page.evaluate((who) => {
-    const video = document.querySelector<HTMLVideoElement>(`[data-testid="screen-tile"][data-identity="${who}"] video`);
+    const video = document.querySelector<HTMLVideoElement>(`[data-testid="screen-tile"][data-person="${who}"] video`);
     return !!video && video.videoWidth > 0 && !video.paused;
   }, identity);
 }
@@ -53,7 +53,7 @@ for (const theme of ['light', 'dark'] as const) {
       await expect(card).toContainText('You are presenting');
       await expect(card.getByRole('button', { name: 'Stop presenting' })).toBeVisible();
       await expect.poll(() => ownCaptureVideos(alice.page), { timeout: 5_000 }).toBe(0);
-      await expect(alice.page.locator(`[data-testid="screen-tile"][data-identity="${idOf('alice')}"] video`)).toHaveCount(0);
+      await expect(alice.page.locator(`[data-testid="screen-tile"][data-person="${idOf('alice')}"] video`)).toHaveCount(0);
       // Olivia sees Alice's screen, moving.
       await expect(olivia.page.getByText(`${PEOPLE.alice.name} is presenting`)).toBeVisible();
       await expect.poll(() => receivedScreen(olivia.page, idOf('alice')), { timeout: 30_000 }).toBe(true);
