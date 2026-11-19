@@ -528,7 +528,10 @@ func (h *Handler) GetCallToken(c *gin.Context) {
 	if displayName == "" {
 		displayName = user.Email
 	}
-	token, err := h.service.GetToken(ctx, call.RoomName, user.UserID, displayName)
+	// Which of their devices this is (companion mode). An older page sends
+	// nothing, and joins as its bare user id as it always did.
+	device := deviceOf(c)
+	token, err := h.service.GetDeviceToken(ctx, call.RoomName, user.UserID, device, displayName)
 	if err != nil {
 		httpx.Error(c, err, "failed to generate token")
 		return
@@ -542,7 +545,31 @@ func (h *Handler) GetCallToken(c *gin.Context) {
 	}
 
 	// The type says how to come in: an audio call starts with the microphone on.
-	c.JSON(http.StatusOK, gin.H{"token": token, "roomName": call.RoomName, "callType": call.CallType})
+	// Where else they are in it already says whether to ask how this device
+	// joins: as a second camera, or taking the call over.
+	c.JSON(http.StatusOK, gin.H{
+		"token":        token,
+		"roomName":     call.RoomName,
+		"callType":     call.CallType,
+		"identity":     device.identityFor(user.UserID),
+		"otherDevices": h.service.OtherDevices(ctx, call.RoomName, userID, device),
+	})
+}
+
+// deviceOf reads which device a request comes from, from a body of
+// {"device": {"id": "...", "kind": "phone"}}. No body, or a body without one,
+// is the zero Device: an older page.
+func deviceOf(c *gin.Context) Device {
+	var req struct {
+		Device Device `json:"device"`
+	}
+	if c.Request.Body == nil || c.Request.ContentLength == 0 {
+		return Device{}
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		return Device{}
+	}
+	return req.Device.clean()
 }
 
 func (h *Handler) StartRecording(c *gin.Context) {
@@ -617,8 +644,10 @@ func (h *Handler) EndCall(c *gin.Context) {
 
 	// A call ends when the last person leaves, and not before. Nobody hangs up
 	// on everybody else, so this closes the record only once the room is empty
-	// apart from whoever is asking.
-	occupied, err := h.service.StillOccupiedBySomebodyElse(c.Request.Context(), call.RoomName, user.UserID)
+	// apart from whoever is asking, from the device asking: their phone still
+	// in the call keeps it going.
+	me := deviceOf(c).identityFor(user.UserID)
+	occupied, err := h.service.StillOccupiedBySomebodyElse(c.Request.Context(), call.RoomName, me)
 	if err != nil {
 		httpx.Error(c, err, "failed to end call")
 		return

@@ -15,12 +15,18 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"github.com/teamup/teamup/internal/calls/participant"
 	"github.com/teamup/teamup/internal/httpx"
 	apperrors "github.com/teamup/teamup/pkg/errors"
 )
 
 // HandAttribute is the LiveKit participant attribute that holds a raised hand:
 // the time it went up, in RFC 3339, or nothing at all when it is down.
+//
+// A hand is the person's, not the device's: somebody in from a laptop and a
+// phone has one hand, written on every device they are in from, so either can
+// lower it and it stays up while either is still there. A page counts it once
+// (handQueue.ts).
 //
 // It lives on the media server rather than in the database because that is
 // where everybody in the room already reads each other from, and a late
@@ -152,36 +158,34 @@ func (s *Service) SetHand(ctx context.Context, orgID, callID, actor uuid.UUID, a
 	}
 
 	media := s.mediaOf()
-	mine, present, err := media.Attributes(ctx, call.RoomName, actor.String())
+	conns, err := media.Connections(ctx, call.RoomName)
 	if errors.Is(err, errNoMedia) {
 		return nil, apperrors.New(apperrors.CodeBadRequest, "calls are not configured on this installation")
 	}
 	if err != nil {
 		return nil, err
 	}
-	if !present {
+	if len(devicesOf(conns, actor)) == 0 {
 		return nil, errNotInCall
 	}
-	theirs := mine
-	if !self {
-		theirs, present, err = media.Attributes(ctx, call.RoomName, target.String())
-		if err != nil {
-			return nil, err
-		}
-		if !present {
-			return nil, errTargetNotInCall
-		}
+	theirs := devicesOf(conns, target)
+	if len(theirs) == 0 {
+		return nil, errTargetNotInCall
 	}
 
 	now := s.clock()
 	state := &HandState{UserID: target, Raised: change.Raised}
-	current := theirs[HandAttribute]
+	current := handOf(theirs)
 	switch {
 	case change.Refresh && current == "":
 		state.Raised = false
 		return state, nil
 	case change.Raised && current != "":
-		// Already up: keep its place, with a fresh proof of it.
+		// Already up: keep its place, with a fresh proof of it. A device that
+		// lost it, as one whose connection came back does, gets it again.
+		if err := setHandOn(ctx, media, call.RoomName, theirs, current); err != nil {
+			return nil, err
+		}
 		state.RaisedAt = current
 		state.Restored = change.Restore != nil && change.Restore.RaisedAt == current
 		state.Proof = s.handProof(call.RoomName, target.String(), current, now)
@@ -196,13 +200,80 @@ func (s *Service) SetHand(ctx context.Context, orgID, callID, actor uuid.UUID, a
 		state.RaisedAt = now.UTC().Format(handTimeLayout)
 	}
 	// An empty value is how LiveKit is told to remove an attribute.
-	if err := media.SetAttributes(ctx, call.RoomName, target.String(), map[string]string{HandAttribute: state.RaisedAt}); err != nil {
+	if err := setHandOn(ctx, media, call.RoomName, theirs, state.RaisedAt); err != nil {
 		return nil, err
 	}
 	if state.Raised {
 		state.Proof = s.handProof(call.RoomName, target.String(), state.RaisedAt, now)
 	}
 	return state, nil
+}
+
+// devicesOf is a member's connections to a room, from any device.
+func devicesOf(conns []Connection, userID uuid.UUID) []Connection {
+	var out []Connection
+	for _, c := range conns {
+		if participant.IsMember(c.Identity, userID) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// handOf is when a person's hand went up, as any of their devices has it: the
+// earliest, should two disagree.
+func handOf(devices []Connection) string {
+	earliest, at := "", time.Time{}
+	for _, d := range devices {
+		v := d.Attributes[HandAttribute]
+		if v == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339Nano, v)
+		if err != nil {
+			continue
+		}
+		if earliest == "" || t.Before(at) {
+			earliest, at = v, t
+		}
+	}
+	return earliest
+}
+
+// setHandOn writes a hand (or, with no time, its coming down) on each of a
+// person's devices that does not have it so already.
+func setHandOn(ctx context.Context, media mediaServer, room string, devices []Connection, raisedAt string) error {
+	for _, d := range devices {
+		if d.Attributes[HandAttribute] == raisedAt {
+			continue
+		}
+		if err := media.SetAttributes(ctx, room, d.Identity, map[string]string{HandAttribute: raisedAt}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// shareHand gives a device that has just joined the hand its person already has
+// up on another device. Best effort: the hand is still up on the other one.
+func (s *Service) shareHand(ctx context.Context, room string, userID uuid.UUID, identity string) {
+	media := s.mediaOf()
+	conns, err := media.Connections(ctx, room)
+	if err != nil {
+		return
+	}
+	devices := devicesOf(conns, userID)
+	raised := handOf(devices)
+	if raised == "" {
+		return
+	}
+	for _, d := range devices {
+		if d.Identity == identity && d.Attributes[HandAttribute] == "" {
+			if err := media.SetAttributes(ctx, room, identity, map[string]string{HandAttribute: raised}); err != nil {
+				s.logger.Warn().Err(err).Msg("could not give a device that joined the hand its person has up")
+			}
+		}
+	}
 }
 
 // putHand is PUT /calls/:id/hand with {"raised": bool, "userId"?: string,

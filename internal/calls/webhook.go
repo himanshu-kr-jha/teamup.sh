@@ -17,6 +17,7 @@ import (
 	"github.com/livekit/protocol/webhook"
 	"google.golang.org/protobuf/encoding/protojson"
 
+	"github.com/teamup/teamup/internal/calls/participant"
 	"github.com/teamup/teamup/internal/httpx"
 	apperrors "github.com/teamup/teamup/pkg/errors"
 )
@@ -84,24 +85,24 @@ func (s *Service) HandleWebhook(ctx context.Context, event *livekit.WebhookEvent
 		return nil
 	}
 
-	participant := event.GetParticipant()
+	who := event.GetParticipant()
 	// A guest is not on the attendance trail; arriving is only checked.
-	if strings.HasPrefix(participant.GetIdentity(), GuestIdentityPrefix) {
+	if strings.HasPrefix(who.GetIdentity(), GuestIdentityPrefix) {
 		if event.GetEvent() == webhook.EventParticipantJoined {
-			s.guestArrived(ctx, call, roomName, participant.GetIdentity())
+			s.guestArrived(ctx, call, roomName, who.GetIdentity())
 			// A guest makes a meeting as much as a colleague does.
 			s.tellJoined(ctx, call, roomName)
 		}
 		return nil
 	}
-	userID, known, err := s.personInOrg(ctx, call.OrgID, participant.GetIdentity())
-	if err != nil || !known || participant.GetSid() == "" {
+	userID, known, err := s.personInOrg(ctx, call.OrgID, who.GetIdentity())
+	if err != nil || !known || who.GetSid() == "" {
 		return err
 	}
 
 	switch event.GetEvent() {
 	case webhook.EventParticipantJoined:
-		if err := s.recordJoined(ctx, call, userID, participant.GetSid(), eventTime(participant.GetJoinedAt(), at)); err != nil {
+		if err := s.recordJoined(ctx, call, userID, who.GetSid(), eventTime(who.GetJoinedAt(), at)); err != nil {
 			return err
 		}
 		// They really connected, so the trail says so. But a token cannot be revoked,
@@ -114,10 +115,13 @@ func (s *Service) HandleWebhook(ctx context.Context, event *livekit.WebhookEvent
 			s.putOut(ctx, roomName, userID)
 			return nil
 		}
+		// A hand is the person's, not the device's: a device joining while it
+		// is up gets it too, so it stays up if the other one leaves.
+		s.shareHand(ctx, roomName, userID, who.GetIdentity())
 		s.tellJoined(ctx, call, roomName)
 		return nil
 	case webhook.EventParticipantLeft:
-		return s.recordLeft(ctx, call, userID, participant.GetSid(), participant.GetJoinedAt(), at)
+		return s.recordLeft(ctx, call, userID, who.GetSid(), who.GetJoinedAt(), at)
 	}
 
 	track := event.GetTrack()
@@ -173,13 +177,16 @@ func (s *Service) callForRoom(ctx context.Context, roomName string) (*webhookCal
 	return &call, nil
 }
 
-// personInOrg resolves a participant's identity, which is a user id for everybody
-// we issued a token to.
+// personInOrg resolves a participant's identity, which is a member's user id,
+// with the device they joined from after it (participant.Parse), for everybody
+// we issued a member's token to. Each device is a session of its own, and the
+// attendance trail counts the person once (mergedDuration).
 func (s *Service) personInOrg(ctx context.Context, orgID uuid.UUID, identity string) (uuid.UUID, bool, error) {
-	userID, err := uuid.Parse(identity)
-	if err != nil {
+	who := participant.Parse(identity)
+	if who.Kind != participant.Member {
 		return uuid.Nil, false, nil
 	}
+	userID := who.UserID
 	var known bool
 	if err := s.db.QueryRow(ctx,
 		`SELECT EXISTS (SELECT 1 FROM users WHERE id = $1 AND org_id = $2)`,

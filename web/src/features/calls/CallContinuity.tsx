@@ -22,7 +22,18 @@ export const isLeavingPage = () => leavingPage;
  * devices as they are now, and says goodbye to the room when the page goes.
  * Renders nothing; it sits inside the room.
  */
-export function RememberCall({ userId, callId, standing }: { userId: string | undefined; callId: string; standing: boolean }) {
+export function RememberCall({
+  userId,
+  callId,
+  standing,
+  companion = false,
+}: {
+  userId: string | undefined;
+  callId: string;
+  standing: boolean;
+  /** A second camera whose sound is still off: a reload keeps it so. */
+  companion?: boolean;
+}) {
   const room = useRoomContext();
 
   const write = useCallback(() => {
@@ -36,6 +47,7 @@ export function RememberCall({ userId, callId, standing }: { userId: string | un
       userId,
       callId,
       standing,
+      companion,
       mic: me.isMicrophoneEnabled,
       camera: me.isCameraEnabled,
       audioInput: device('audioinput'),
@@ -44,7 +56,7 @@ export function RememberCall({ userId, callId, standing }: { userId: string | un
       background: currentBackgroundChoice(),
       at: Date.now(),
     });
-  }, [room, userId, callId, standing]);
+  }, [room, userId, callId, standing, companion]);
 
   useEffect(() => {
     const events = [

@@ -7,6 +7,8 @@
  * every screen agrees, and somebody who joins late sees the same order.
  */
 
+import { personOf } from './devices';
+
 /** The attribute the server writes; see HandAttribute in internal/calls/hand.go. */
 export const HAND_ATTRIBUTE = 'hand';
 
@@ -26,7 +28,15 @@ export interface HandHolder {
 }
 
 export interface RaisedHand {
+  /**
+   * Whose hand it is: the person (devices.ts personOf), the same from each of
+   * their devices. Somebody in from a laptop and a phone has one hand.
+   */
   identity: string;
+  /** The device whose tile shows it: the one that has had it longest. */
+  device: string;
+  /** The time it went up, as the server wrote it. */
+  raisedAt: string;
   name: string;
   /** When it went up, in milliseconds. */
   at: number;
@@ -42,14 +52,28 @@ export function raisedAt(person: HandHolder): number | null {
   return Number.isNaN(at) ? null : at;
 }
 
-/** Everybody with a hand up, first up first; two at the same moment in a steady order. */
+/**
+ * Everybody with a hand up, first up first; two at the same moment in a steady
+ * order. Each person once, however many devices they are in from: the server
+ * writes a hand on all of them (internal/calls/hand.go).
+ */
 export function handQueue(people: Iterable<HandHolder>): RaisedHand[] {
-  const up: Omit<RaisedHand, 'position'>[] = [];
+  const byPerson = new Map<string, Omit<RaisedHand, 'position'>>();
   for (const person of people) {
     const at = raisedAt(person);
     if (at === null) continue;
-    up.push({ identity: person.identity, name: person.name || person.identity, at });
+    const who = personOf(person.identity) || person.identity;
+    const hand = {
+      identity: who,
+      device: person.identity,
+      raisedAt: person.attributes?.[HAND_ATTRIBUTE] ?? '',
+      name: person.name || person.identity,
+      at,
+    };
+    const known = byPerson.get(who);
+    if (!known || at < known.at || (at === known.at && person.identity < known.device)) byPerson.set(who, hand);
   }
+  const up = [...byPerson.values()];
   up.sort((a, b) => a.at - b.at || (a.identity < b.identity ? -1 : a.identity > b.identity ? 1 : 0));
   return up.map((hand, i) => ({ ...hand, position: i + 1 }));
 }

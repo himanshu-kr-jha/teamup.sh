@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/livekit/protocol/livekit"
 
+	"github.com/teamup/teamup/internal/calls/participant"
 	"github.com/teamup/teamup/internal/testsupport"
 	"github.com/teamup/teamup/pkg/protocol"
 )
@@ -85,10 +87,40 @@ func (f *fakeMedia) SendData(_ context.Context, room, topic string, data []byte)
 	return nil
 }
 
+// InRoom matches by person, as the real one does: any device of theirs.
 func (f *fakeMedia) InRoom(_ context.Context, room, identity string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.present[room+"/"+identity], nil
+	if f.present[room+"/"+identity] {
+		return true, nil
+	}
+	who := participant.Person(identity)
+	for key, in := range f.present {
+		id, ok := strings.CutPrefix(key, room+"/")
+		if in && ok && who != "" && participant.Person(id) == who {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (f *fakeMedia) Connections(_ context.Context, room string) ([]Connection, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []Connection
+	for key, in := range f.present {
+		id, ok := strings.CutPrefix(key, room+"/")
+		if !in || !ok {
+			continue
+		}
+		attrs := map[string]string{}
+		for k, v := range f.attrs[key] {
+			attrs[k] = v
+		}
+		out = append(out, Connection{Identity: id, Attributes: attrs})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Identity < out[j].Identity })
+	return out, nil
 }
 
 func (f *fakeMedia) CloseRoom(_ context.Context, room string) error {

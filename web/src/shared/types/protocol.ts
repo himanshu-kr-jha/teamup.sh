@@ -15,6 +15,8 @@ export type WSMessageType =
   | 'call.knock' | 'call.knock.result' | 'call.knock.resolved'
   // Outbound only: somebody in a call is ringing a colleague into it, and how that ring ended.
   | 'call.adding' | 'call.ring.result'
+  // Outbound only: you picked a call up on one of your devices, so it stops ringing on the others.
+  | 'call.answered'
   | 'notification.new' | 'notification.read';
 
 export interface Message<T = any> {

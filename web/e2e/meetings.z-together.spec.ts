@@ -23,7 +23,7 @@ const heard: number[] = [];
 const asked: string[] = [];
 
 // ── what is on screen ─────────────────────────────────────────────────────────
-const tile = (page: Page, id: string) => page.locator(`[data-testid="participant-tile"][data-identity="${id}"]`).first();
+const tile = (page: Page, id: string) => page.locator(`[data-testid="participant-tile"][data-person="${id}"]`).first();
 const bars = (page: Page, id: string) => tile(page, id).getByTestId('speaking-bars');
 const badge = (page: Page, id: string) => tile(page, id).getByTestId('hand-badge');
 const chip = (page: Page) => page.getByTestId('hands-chip');
@@ -290,6 +290,34 @@ test.describe('the new call features together', () => {
       }
       await expect(alice.page.getByRole('button', { name: 'Raise your hand' })).toBeVisible();
       await expect(sam.page.getByRole('button', { name: 'Raise your hand' })).toBeVisible();
+    });
+
+    await test.step('1. Olivia adds her phone as a second camera: still four people, her tiles named, the notes go on', async () => {
+      const OLIVIA = idOf('owner');
+      const phone = await as('owner', { phone: 'iphone' });
+      await phone.page.goto(`/calls/${call.id}`);
+      await expect(prejoinScreen(phone.page)).toBeVisible({ timeout: 20_000 });
+      await lobbyJoin(phone.page).click();
+      const choice = phone.page.getByTestId('companion-choice');
+      await expect(choice).toBeVisible({ timeout: 30_000 });
+      await choice.getByRole('button', { name: 'Camera only' }).click();
+      await expect(leaveButton(phone.page)).toBeVisible({ timeout: 30_000 });
+      await expect(phone.page.getByTestId('companion-note')).toBeVisible();
+      await expect(notesBanner(phone.page)).toHaveText(NOTES_ON, { timeout: 30_000 });
+      const hers = (page: Page) => page.locator(`[data-testid="participant-tile"][data-person="${OLIVIA}"]`);
+      for (const page of [olivia.page, alice.page, sam.page, zoe.page, phone.page]) {
+        await expect(hers(page)).toHaveCount(2, { timeout: 20_000 });
+        await expect(page.getByTestId('call-heading')).toContainText(/4/);
+      }
+      await expect(olivia.page.getByTestId('call-heading')).toContainText('In a call · 4');
+      await expect(alice.page.getByText(`${PEOPLE.owner.name} (phone)`, { exact: true })).toBeVisible();
+      await expect(alice.page.getByText(`${PEOPLE.owner.name} (laptop)`, { exact: true })).toBeVisible();
+      await still(phone.page);
+      await phone.page.screenshot({ path: `${SHOTS}/1-olivia-phone-camera-only.png` });
+      expect(await scrollsSideways(phone.page)).toBe(false);
+      await leaveCall(phone.page);
+      for (const page of [olivia.page, alice.page, sam.page, zoe.page]) await expect(hers(page)).toHaveCount(1, { timeout: 20_000 });
+      await expect(alice.page.getByText(`${PEOPLE.owner.name} (laptop)`, { exact: true })).toHaveCount(0);
     });
 
     await test.step('2. hands up again, Alice pauses the notes, and everybody, Zoe too, sees who did', async () => {
