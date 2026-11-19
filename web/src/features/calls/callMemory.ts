@@ -21,8 +21,10 @@ export interface CallMemory {
   callId: string;
   /** A day of a standing meeting, whose room nobody answers knocks from. */
   standing: boolean;
-  /** A second camera (companion mode) whose sound is off: it comes back so, and is not asked again. */
+  /** A second camera (companion mode): it comes back as one, and is not asked again. */
   companion?: boolean;
+  /** Whether its sound was off. */
+  soundOff?: boolean;
   mic: boolean;
   camera: boolean;
   audioInput?: string;
@@ -62,7 +64,7 @@ export function parseCallMemory(raw: string | null): CallMemory | null {
       userId,
       callId,
       standing: m.standing === true,
-      ...(m.companion === true && { companion: true }),
+      ...(m.companion === true && { companion: true, soundOff: m.soundOff !== false }),
       mic: m.mic === true,
       camera: m.camera === true,
       audioInput: text(m.audioInput),

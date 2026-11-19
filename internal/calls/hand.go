@@ -36,6 +36,12 @@ import (
 // somebody else, or jump the queue by backdating their own.
 const HandAttribute = "hand"
 
+// HandLoweredByAttribute says whose doing it was that a hand came down: the user
+// id of whoever lowered it, the person themselves or the organizer. Each of the
+// person's devices reads it to tell "Your hand was lowered." (somebody else did)
+// from lowering it on their other device (say nothing). Gone while a hand is up.
+const HandLoweredByAttribute = "handLoweredBy"
+
 // handTimeLayout is RFC 3339 to the millisecond, so two hands raised in the same
 // second still queue in the order they went up.
 const handTimeLayout = "2006-01-02T15:04:05.000Z07:00"
@@ -183,7 +189,7 @@ func (s *Service) SetHand(ctx context.Context, orgID, callID, actor uuid.UUID, a
 	case change.Raised && current != "":
 		// Already up: keep its place, with a fresh proof of it. A device that
 		// lost it, as one whose connection came back does, gets it again.
-		if err := setHandOn(ctx, media, call.RoomName, theirs, current); err != nil {
+		if err := setHandOn(ctx, media, call.RoomName, theirs, current, ""); err != nil {
 			return nil, err
 		}
 		state.RaisedAt = current
@@ -200,7 +206,11 @@ func (s *Service) SetHand(ctx context.Context, orgID, callID, actor uuid.UUID, a
 		state.RaisedAt = now.UTC().Format(handTimeLayout)
 	}
 	// An empty value is how LiveKit is told to remove an attribute.
-	if err := setHandOn(ctx, media, call.RoomName, theirs, state.RaisedAt); err != nil {
+	loweredBy := ""
+	if !state.Raised {
+		loweredBy = actor.String()
+	}
+	if err := setHandOn(ctx, media, call.RoomName, theirs, state.RaisedAt, loweredBy); err != nil {
 		return nil, err
 	}
 	if state.Raised {
@@ -242,12 +252,14 @@ func handOf(devices []Connection) string {
 
 // setHandOn writes a hand (or, with no time, its coming down) on each of a
 // person's devices that does not have it so already.
-func setHandOn(ctx context.Context, media mediaServer, room string, devices []Connection, raisedAt string) error {
+func setHandOn(ctx context.Context, media mediaServer, room string, devices []Connection, raisedAt, loweredBy string) error {
 	for _, d := range devices {
 		if d.Attributes[HandAttribute] == raisedAt {
 			continue
 		}
-		if err := media.SetAttributes(ctx, room, d.Identity, map[string]string{HandAttribute: raisedAt}); err != nil {
+		// In one change, so a page reads who lowered it with the hand coming down.
+		attrs := map[string]string{HandAttribute: raisedAt, HandLoweredByAttribute: loweredBy}
+		if err := media.SetAttributes(ctx, room, d.Identity, attrs); err != nil {
 			return err
 		}
 	}

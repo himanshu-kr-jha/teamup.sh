@@ -12,7 +12,7 @@ import {
   readMoved,
   samePerson,
 } from './devices';
-import { handQueue } from './handQueue';
+import { handQueue, loweredBySomebodyElse } from './handQueue';
 import { parseCallMemory } from './callMemory';
 
 const ASHA = '6f1c2b8e-3d4a-4f5b-9c6d-7e8f9a0b1c2d';
@@ -125,10 +125,22 @@ describe('raised hands', () => {
   });
 });
 
+describe('a hand coming down', () => {
+  it('is news only when somebody else lowered it', () => {
+    expect(loweredBySomebodyElse({ handLoweredBy: ASHA }, ASHA)).toBe(false);
+    expect(loweredBySomebodyElse({ handLoweredBy: BILAL }, ASHA)).toBe(true);
+    expect(loweredBySomebodyElse({}, ASHA)).toBe(true);
+    expect(loweredBySomebodyElse(undefined, ASHA)).toBe(true);
+  });
+});
+
 describe('a reload of a second camera', () => {
-  it('comes back as one', () => {
+  it('comes back as one, with its sound as it was', () => {
     const raw = JSON.stringify({ userId: 'u1', callId: 'c1', at: 1, mic: false, camera: true, companion: true });
     expect(parseCallMemory(raw)?.companion).toBe(true);
+    expect(parseCallMemory(raw)?.soundOff).toBe(true);
+    const on = JSON.stringify({ userId: 'u1', callId: 'c1', at: 1, companion: true, soundOff: false });
+    expect(parseCallMemory(on)?.soundOff).toBe(false);
     expect(parseCallMemory(JSON.stringify({ userId: 'u1', callId: 'c1', at: 1 }))?.companion).toBeUndefined();
   });
 });

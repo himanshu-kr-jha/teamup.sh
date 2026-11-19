@@ -12,6 +12,18 @@ import { personOf } from './devices';
 /** The attribute the server writes; see HandAttribute in internal/calls/hand.go. */
 export const HAND_ATTRIBUTE = 'hand';
 
+/** Who lowered a hand that came down, by user id (HandLoweredByAttribute in internal/calls/hand.go). */
+export const HAND_LOWERED_BY_ATTRIBUTE = 'handLoweredBy';
+
+/**
+ * Whether your hand coming down is news to say on this device: not when you
+ * lowered it yourself, here or on your other device (companion mode).
+ */
+export function loweredBySomebodyElse(attributes: Readonly<Record<string, string>> | undefined, me: string): boolean {
+  const by = attributes?.[HAND_LOWERED_BY_ATTRIBUTE];
+  return !by || by !== me;
+}
+
 /** How long your own hand stays up once you are speaking without a break. */
 export const AUTO_LOWER_AFTER_MS = 3_000;
 

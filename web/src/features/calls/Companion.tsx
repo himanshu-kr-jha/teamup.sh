@@ -1,10 +1,11 @@
 import { useEffect, useRef } from 'react';
 import { useRoomContext } from '@livekit/components-react';
 import { ConnectionState, RoomEvent, type RemoteParticipant } from 'livekit-client';
-import { ArrowRightLeft, Video, VolumeX } from 'lucide-react';
+import { ArrowRightLeft, Video, Volume2, VolumeX } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/shared/components/ui/dialog';
 import type { OtherDevice } from '@/shared/api/client';
+import { cn } from '@/shared/utils/cn';
 import { MOVED_TOPIC, movedPacket, readMoved, type DeviceKind } from './devices';
 
 // Companion mode's parts that are seen: the question asked when you join a call
@@ -114,23 +115,51 @@ function capitalize(text: string): string {
 
 /**
  * Said on a device that joined as a second camera, for as long as its sound is
- * off: its microphone is off too, and can be turned on with the usual button.
+ * off. The sound button beside the call's title turns it on, and the microphone
+ * is the usual button.
  */
-export function CompanionNote({ kind, onTurnOnSound }: { kind: DeviceKind; onTurnOnSound: () => void }) {
+export function CompanionNote({ kind }: { kind: DeviceKind }) {
   return (
     <div
       role="status"
       data-testid="companion-note"
-      className="flex shrink-0 flex-wrap items-center justify-center gap-x-3 gap-y-1 border-b border-border bg-primary/10 px-3 py-1.5 text-center text-xs"
+      className="flex shrink-0 items-center justify-center gap-2 border-b border-border bg-primary/10 px-3 py-1.5 text-center text-xs"
     >
-      <span className="inline-flex items-center gap-2">
-        <VolumeX className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden="true" />
-        <span>Camera only: this {kind}'s microphone and sound are off, so there is no echo.</span>
-      </span>
-      <Button size="sm" variant="outline" className="h-7 bg-background" onClick={onTurnOnSound}>
-        Turn on sound
-      </Button>
+      <VolumeX className="h-3.5 w-3.5 shrink-0 text-primary" aria-hidden="true" />
+      <span>Camera only: this {kind}'s microphone and sound are off, so there is no echo.</span>
     </div>
+  );
+}
+
+/**
+ * The sound of a second camera, on or off, in the call's title bar so it is
+ * there in the corner window too. Turning it off turns the microphone off with
+ * it, back to a silent camera: a microphone on with the sound off would still
+ * be heard as an echo by the other device.
+ */
+export function SoundToggle({ off, onChange }: { off: boolean; onChange: (on: boolean) => void }) {
+  const room = useRoomContext();
+  const label = off ? 'Turn on sound' : 'Turn off sound';
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      className={cn('h-7 w-7 shrink-0', off && 'text-muted-foreground')}
+      aria-label={label}
+      aria-pressed={!off}
+      title={off ? 'Sound off: turn it on' : 'Sound on: turn it off, with the microphone'}
+      data-testid="sound-toggle"
+      onClick={() => {
+        if (off) {
+          onChange(true);
+          return;
+        }
+        onChange(false);
+        void room.localParticipant.setMicrophoneEnabled(false).catch(() => undefined);
+      }}
+    >
+      {off ? <VolumeX className="h-4 w-4" aria-hidden="true" /> : <Volume2 className="h-4 w-4" aria-hidden="true" />}
+    </Button>
   );
 }
 

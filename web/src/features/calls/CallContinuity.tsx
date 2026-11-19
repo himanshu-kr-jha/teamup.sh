@@ -27,12 +27,15 @@ export function RememberCall({
   callId,
   standing,
   companion = false,
+  soundOff = false,
 }: {
   userId: string | undefined;
   callId: string;
   standing: boolean;
   /** A second camera whose sound is still off: a reload keeps it so. */
   companion?: boolean;
+  /** A second camera's sound, off or turned on. */
+  soundOff?: boolean;
 }) {
   const room = useRoomContext();
 
@@ -48,6 +51,7 @@ export function RememberCall({
       callId,
       standing,
       companion,
+      soundOff,
       mic: me.isMicrophoneEnabled,
       camera: me.isCameraEnabled,
       audioInput: device('audioinput'),
@@ -56,7 +60,7 @@ export function RememberCall({
       background: currentBackgroundChoice(),
       at: Date.now(),
     });
-  }, [room, userId, callId, standing, companion]);
+  }, [room, userId, callId, standing, companion, soundOff]);
 
   useEffect(() => {
     const events = [

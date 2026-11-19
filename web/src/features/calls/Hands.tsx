@@ -33,6 +33,7 @@ import {
   newlyRaised,
   raisedMessage,
   type RaisedHand,
+  loweredBySomebodyElse,
 } from './handQueue';
 import { forgetCallHands, forgetHand, loadHand, saveHand, tabStorage } from './handProofStore';
 import { personOf } from './devices';
@@ -156,7 +157,10 @@ export function HandsProvider({ callId, asGuest = false, children }: { callId: s
         // Taken down while connected: by you, by speaking, or by the organizer.
         if (primed) {
           if (lowering.current === 'auto') toastRef.current.toast(AUTO_LOWERED_MESSAGE);
-          else if (lowering.current === null) toastRef.current.toast(LOWERED_FOR_YOU_MESSAGE);
+          // Lowered by you on your other device is not news; by the organizer it is.
+          else if (lowering.current === null && loweredBySomebodyElse(room.localParticipant.attributes, me)) {
+            toastRef.current.toast(LOWERED_FOR_YOU_MESSAGE);
+          }
         }
         lowering.current = null;
         keep(null);

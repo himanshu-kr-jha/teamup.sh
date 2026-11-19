@@ -23,7 +23,7 @@ import { ROOM_OPTIONS } from './roomOptions';
 import { MeetingChatButton, MeetingChatProvider, StageWithChat, UnreadChatMark, type ChatTransport } from './MeetingChat';
 import { NotesBanner, NotesButton, isNotetaker, memberNotes, useOtherConnections, useOtherPeople } from './notetaker';
 import { countPeople, movedMessage, samePerson, thisDevice } from './devices';
-import { CompanionChoice, CompanionNote, DeviceMoves, type CompanionAnswer } from './Companion';
+import { CompanionChoice, CompanionNote, DeviceMoves, SoundToggle, type CompanionAnswer } from './Companion';
 import { CallControls, CallShortcuts, CompactCallControls, ShareUnavailableNote } from './CallControls';
 import { GuestAccess } from './GuestAccess';
 import { HandsProvider } from './Hands';
@@ -120,6 +120,8 @@ interface PendingCompanion {
 export interface JoinOptions {
   /** Joining as a second camera (companion mode): the sound off as well as the microphone. */
   companion?: boolean;
+  /** A second camera's sound, off unless it was turned on (kept through a reload). */
+  soundOff?: boolean;
   mic?: boolean;
   camera?: boolean;
   audioInput?: string;
@@ -149,7 +151,8 @@ interface ActiveCallContextValue {
   resuming: string | null;
   /** Whether this device's sound is off, as a second camera's is until turned on. */
   soundOff: boolean;
-  turnOnSound: () => void;
+  /** Turns this device's sound on or off; a second camera starts with it off. */
+  setSound: (on: boolean) => void;
 }
 
 const ActiveCallContext = createContext<ActiveCallContextValue | undefined>(undefined);
@@ -312,7 +315,7 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
   const [watchedDoor, watchDoor] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingCompanion | null>(null);
   const [soundOff, setSoundOff] = useState(false);
-  const turnOnSound = useCallback(() => setSoundOff(false), []);
+  const setSound = useCallback((on: boolean) => setSoundOff(!on), []);
   const clearFailure = useCallback(() => setFailure(null), []);
   const toast = useToast();
   const location = useLocation();
@@ -334,7 +337,7 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
   // how this one joins. A reload is not asked: it goes back in as it was.
   const begin = useCallback((call: ActiveCall, others: OtherDevice[] | undefined) => {
     if (call.resumed || !others?.length) {
-      setSoundOff(!!call.companion);
+      setSoundOff(call.media?.soundOff ?? !!call.companion);
       setActiveCall(call);
       return;
     }
@@ -417,8 +420,8 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
     if (!resume || resumedRef.current) return;
     resumedRef.current = true;
     if (resume.background && !sameChoice(resume.background, currentBackgroundChoice())) setBackgroundChoice(resume.background);
-    const { mic, camera, audioInput, videoInput, audioOutput, standing, companion } = resume;
-    void join(resume.callId, { mic, camera, audioInput, videoInput, audioOutput, standing, companion }, true).finally(() =>
+    const { mic, camera, audioInput, videoInput, audioOutput, standing, companion, soundOff: off } = resume;
+    void join(resume.callId, { mic, camera, audioInput, videoInput, audioOutput, standing, companion, soundOff: off }, true).finally(() =>
       setResuming(null)
     );
   }, [resume, join]);
@@ -604,8 +607,8 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
   const callOptions = useMemo(() => withNoiseCapture(roomOptions, useAuthStore.getState().user?.id), [roomOptions]);
 
   const value = useMemo(
-    () => ({ activeCall, join, enter, leave, joining, failure, clearFailure, watchedDoor, watchDoor, resuming, soundOff, turnOnSound }),
-    [activeCall, join, enter, leave, joining, failure, clearFailure, watchedDoor, resuming, soundOff, turnOnSound]
+    () => ({ activeCall, join, enter, leave, joining, failure, clearFailure, watchedDoor, watchDoor, resuming, soundOff, setSound }),
+    [activeCall, join, enter, leave, joining, failure, clearFailure, watchedDoor, resuming, soundOff, setSound]
   );
 
   // Another tab of this browser is the same device, and joining from it took the
@@ -657,7 +660,13 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
           {/* A second camera's sound is off until turned on, or the two devices echo. */}
           <RoomAudioRenderer muted={soundOff} volume={soundOff ? 0 : 1} />
           <CameraBackground />
-          <RememberCall userId={user?.id} callId={activeCall.callId} standing={!!activeCall.standing} companion={soundOff} />
+          <RememberCall
+            userId={user?.id}
+            callId={activeCall.callId}
+            standing={!!activeCall.standing}
+            companion={!!activeCall.companion}
+            soundOff={soundOff}
+          />
           <NoiseCancellation />
           <DeviceMoves
             takeOverFrom={activeCall.takeOverFrom}
@@ -709,7 +718,8 @@ function CallFrame({
   // Every other connection, your own devices included: the call is not over for
   // anybody while your phone is still in it.
   const connections = useOtherConnections();
-  const { soundOff, turnOnSound } = useActiveCall();
+  const { activeCall, soundOff, setSound } = useActiveCall();
+  const companion = !!activeCall?.companion;
   const here = useMemo(() => thisDevice().kind, []);
   // Once somebody has been in, being alone again is waiting, not ringing: the
   // ring that started the call is long over.
@@ -1041,6 +1051,8 @@ function CallFrame({
               ) : (
                 <CompactCallControls />
               )}
+              {/* A second camera's sound, in the corner window too. */}
+              {companion && <SoundToggle off={soundOff} onChange={setSound} />}
               <Button
                 variant="ghost"
                 size="icon"
@@ -1064,7 +1076,7 @@ function CallFrame({
 
             {/* Sound that is off on purpose is not sound the browser blocked. */}
             {!soundOff && <BlockedAudioPrompt compact={!expanded} />}
-            {soundOff && expanded && <CompanionNote kind={here} onTurnOnSound={turnOnSound} />}
+            {soundOff && expanded && <CompanionNote kind={here} />}
             <RingingStrip rings={rings} compact={!expanded} />
 
             <div className="min-h-0 flex-1">

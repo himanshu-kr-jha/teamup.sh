@@ -224,6 +224,24 @@ func TestAHandIsThePersonsOnEveryDevice(t *testing.T) {
 	if attr(laptop) != "" || attr(phone) != "" {
 		t.Fatalf("lowered on both devices: %q %q", attr(laptop), attr(phone))
 	}
+	by := func(identity string) string {
+		h.media.mu.Lock()
+		defer h.media.mu.Unlock()
+		return h.media.attrs[h.call.RoomName+"/"+identity][HandLoweredByAttribute]
+	}
+	// Each device can tell who lowered it: here the organizer, so it is said.
+	if by(laptop) != h.organizer.String() || by(phone) != h.organizer.String() {
+		t.Fatalf("lowered by the organizer: %q %q", by(laptop), by(phone))
+	}
+	// Up again, nobody has lowered it; down by herself, it was her.
+	h.put(t, h.asha, "member", `{"raised":true}`)
+	if by(laptop) != "" || by(phone) != "" {
+		t.Fatalf("a raised hand has nobody who lowered it: %q %q", by(laptop), by(phone))
+	}
+	h.put(t, h.asha, "member", `{"raised":false}`)
+	if by(laptop) != h.asha.String() || by(phone) != h.asha.String() {
+		t.Fatalf("lowered by herself: %q %q", by(laptop), by(phone))
+	}
 }
 
 func TestADeviceJoiningGetsTheHandAlreadyUp(t *testing.T) {

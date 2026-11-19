@@ -32,6 +32,18 @@ const hearing = (page: Page) =>
     })
   );
 
+/** Writes down every "Your hand was lowered." said on a page from now on, however briefly. */
+async function watchLowered(page: Page) {
+  await page.evaluate(() => {
+    const w = window as unknown as { __lowered: number };
+    w.__lowered = 0;
+    new MutationObserver((changes) => {
+      for (const c of changes) c.addedNodes.forEach((n) => /Your hand was lowered\./.test(n.textContent ?? '') && w.__lowered++);
+    }).observe(document.body, { childList: true, subtree: true });
+  });
+}
+const loweredSaid = (page: Page) => page.evaluate(() => (window as unknown as { __lowered: number }).__lowered);
+
 /** Whether the page scrolls sideways, which a phone layout must not. */
 const scrollsSideways = (page: Page) =>
   page.evaluate(() => {
@@ -90,7 +102,7 @@ test.describe('companion mode', () => {
     await expect(tiles(phone.page, idOf('owner'))).toHaveCount(1, { timeout: 20_000 });
     await phone.page.waitForTimeout(2000);
     expect(await hearing(phone.page), 'a second camera plays no sound').toBe(false);
-    // No "Turn on sound" prompt for sound that is off on purpose besides the note's own button.
+    // One way to turn it on, and no "Turn on sound" prompt for sound the browser blocked.
     await expect(phone.page.getByRole('button', { name: 'Turn on sound' })).toHaveCount(1);
 
     // Everybody sees both of Alice's tiles, named, and counts her once.
@@ -111,10 +123,31 @@ test.describe('companion mode', () => {
     const log = await waitForLog(owner, call.id, 'both of Alice’s devices in', (l) => l.sessions.filter((s) => s.userId === alice && !s.leftAt).length === 2);
     expect(log.sessions.filter((s) => s.userId === idOf('owner')).length).toBeGreaterThanOrEqual(1);
 
-    // Her sound is hers to turn on.
+    // Her sound is hers to turn on, and her microphone.
     await phone.page.getByRole('button', { name: 'Turn on sound' }).click();
     await expect(companionNote(phone.page)).toHaveCount(0);
     await expect.poll(() => hearing(phone.page), { timeout: 20_000 }).toBe(true);
+    await phone.page.getByRole('button', { name: 'Turn your microphone on' }).click();
+    await expect(phone.page.getByRole('button', { name: 'Turn your microphone off' }).first()).toBeVisible({ timeout: 20_000 });
+
+    // And to turn off again from the corner window: back to a silent camera, the microphone off with it.
+    await phone.page.getByRole('button', { name: 'Minimise the call' }).click();
+    const corner = phone.page.getByTestId('call-window');
+    await expect(corner).toBeVisible();
+    await phone.page.screenshot({ path: `${SHOTS}/corner-sound-on-phone.png` });
+    await corner.getByRole('button', { name: 'Turn off sound' }).click();
+    await expect(corner.getByRole('button', { name: 'Turn on sound' })).toBeVisible();
+    await expect(corner.getByRole('button', { name: 'Turn your microphone on' })).toBeVisible({ timeout: 20_000 });
+    await expect.poll(() => hearing(phone.page), { timeout: 20_000 }).toBe(false);
+    await phone.page.screenshot({ path: `${SHOTS}/corner-sound-off-phone.png` });
+    // On again from the corner, and off again: it is a toggle wherever the call is.
+    await corner.getByRole('button', { name: 'Turn on sound' }).click();
+    await expect.poll(() => hearing(phone.page), { timeout: 20_000 }).toBe(true);
+    await corner.getByRole('button', { name: 'Turn off sound' }).click();
+    await expect.poll(() => hearing(phone.page), { timeout: 20_000 }).toBe(false);
+    await corner.getByRole('button', { name: 'Expand the call' }).click();
+    await expect(companionNote(phone.page)).toBeVisible();
+    await expect(phone.page.getByRole('button', { name: 'Turn your microphone on' })).toBeVisible();
 
     // The phone leaving is not the call ending, and the laptop is alone with nobody again but Olivia.
     await leaveCall(phone.page);
@@ -176,9 +209,23 @@ test.describe('companion mode', () => {
     // Hers on both devices: the laptop's button says it is up.
     await expect(laptop.page.getByRole('button', { name: 'Lower your hand' })).toBeVisible();
     // Raising "again" on the laptop is lowering the one hand.
+    await watchLowered(phone.page);
+    await watchLowered(laptop.page);
     await laptop.page.getByRole('button', { name: 'Lower your hand' }).click();
     for (const page of [olivia.page, laptop.page, phone.page]) await expect(chip(page)).toHaveCount(0, { timeout: 15_000 });
     await expect(phone.page.getByRole('button', { name: 'Raise your hand' })).toBeVisible();
+    // She lowered it herself: her phone does not tell her somebody else did.
+    await phone.page.waitForTimeout(2000);
+    expect(await loweredSaid(phone.page), 'the phone says somebody lowered her hand').toBe(0);
+    expect(await loweredSaid(laptop.page)).toBe(0);
+
+    // The organizer lowering it is still said, on both of her devices.
+    await laptop.page.getByRole('button', { name: 'Raise your hand' }).click();
+    await expect(chip(olivia.page)).toHaveText(/^1 hand raised/, { timeout: 15_000 });
+    await chip(olivia.page).click();
+    await olivia.page.getByTestId('hands-list').getByRole('menuitem', { name: `Lower ${ALICE}'s hand` }).click();
+    for (const page of [laptop.page, phone.page]) await expect.poll(() => loweredSaid(page), { timeout: 15_000 }).toBeGreaterThan(0);
+    await olivia.page.keyboard.press('Escape');
 
     for (const s of [phone, laptop, olivia]) await leaveCall(s.page);
     await owner.dispose();
