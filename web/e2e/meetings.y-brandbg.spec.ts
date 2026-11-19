@@ -198,6 +198,9 @@ test('an administrator puts in the company backgrounds, and a person in a call w
     await menu.screenshot({ path: 'test-results/brandbg-picker.png' });
     await menu.getByRole('menuitemradio', { name: 'Company (dark)', exact: true }).click();
     await expect(button).toHaveAttribute('aria-pressed', 'true');
+    // Choosing keeps the menu open, so the preview shows it; Escape closes it.
+    await alice.page.keyboard.press('Escape');
+    await expect(menu).toBeHidden();
 
     // Olivia receives Alice's video with the name and role in the top right,
     // reading the right way round. In the grid her tile is 16:9, so all of it shows.

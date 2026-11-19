@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useLocalParticipant } from '@livekit/components-react';
-import type { LocalVideoTrack } from 'livekit-client';
+import { TrackEvent, type LocalVideoTrack } from 'livekit-client';
 import { Ban, Check, ImagePlus, Loader2, Sparkles } from 'lucide-react';
 import {
   DropdownMenu,
@@ -15,6 +15,7 @@ import {
   LOOKS,
   PICTURES,
   applyCameraEffects,
+  preloadCameraEffects,
   customPicture,
   lookFilter,
   lookWash,
@@ -66,7 +67,10 @@ const APPLY_TIMEOUT_MS = 20_000;
  */
 export function CameraBackground() {
   const { cameraTrack } = useLocalParticipant();
-  useCameraEffects(cameraTrack?.track as LocalVideoTrack | undefined);
+  const live = useCameraEffects(cameraTrack?.track as LocalVideoTrack | undefined);
+  // With the camera on, what a background needs is fetched while nothing else is
+  // going on, so the first one chosen is quick.
+  useEffect(() => (live ? preloadCameraEffects(true) : undefined), [live]);
   return null;
 }
 
@@ -74,7 +78,7 @@ export function CameraBackground() {
  * Keeps your chosen background and colour on a camera track: the one in the call
  * (CameraBackground), or the preview before you join it (PreJoinScreen).
  */
-export function useCameraEffects(track: LocalVideoTrack | undefined) {
+export function useCameraEffects(track: LocalVideoTrack | undefined): boolean {
   const live = useCameraLive(track);
   const choice = useBackgroundChoice();
   const look = useLook();
@@ -124,6 +128,7 @@ export function useCameraEffects(track: LocalVideoTrack | undefined) {
       }
     });
   }, [track, live, choice, look, companyKey]);
+  return live;
 }
 
 /** Whether the camera is on and sending a picture, following it as it turns off and on. */
@@ -165,6 +170,11 @@ export function BackgroundPicker({ variant = 'call' }: { variant?: 'call' | 'pre
   const fileInput = useRef<HTMLInputElement>(null);
   const templates = useCompanyTemplates();
   const companyThemes = COMPANY_THEMES.filter((t) => templates?.[t.theme]);
+  const [open, setOpen] = useState(false);
+  // Whatever is chosen next should be quick, the first time too.
+  useEffect(() => {
+    if (open && supported) preloadCameraEffects();
+  }, [open, supported]);
 
   if (supported === null) return null;
   // A company background the organization has since taken away is no background.
@@ -193,7 +203,7 @@ export function BackgroundPicker({ variant = 'call' }: { variant?: 'call' | 'pre
 
   return (
     <>
-      <DropdownMenu modal={false}>
+      <DropdownMenu modal={false} open={open} onOpenChange={setOpen}>
         <DropdownMenuTrigger asChild disabled={!supported}>
           <button
             type="button"
@@ -220,6 +230,7 @@ export function BackgroundPicker({ variant = 'call' }: { variant?: 'call' | 'pre
           )}
           aria-label="Background effects"
         >
+          {variant === 'call' && open && <CallPreview />}
           <DropdownMenuLabel className="px-1 pb-2 pt-0.5 text-xs font-medium text-muted-foreground">Background</DropdownMenuLabel>
           <div className="grid grid-cols-3 gap-2">
             <Tile label="None" selected={choice.kind === 'none' || gone} onSelect={() => choose({ kind: 'none' })}>
@@ -266,7 +277,12 @@ export function BackgroundPicker({ variant = 'call' }: { variant?: 'call' | 'pre
                 <img src={custom} alt="" className="h-full w-full object-cover" draggable={false} />
               </Tile>
             )}
-            <Tile label={custom ? 'Change your picture' : 'Add a picture'} selected={false} onSelect={() => fileInput.current?.click()}>
+            <Tile
+              label={custom ? 'Change your picture' : 'Add a picture'}
+              selected={false}
+              closes
+              onSelect={() => fileInput.current?.click()}
+            >
               <span className="flex h-full w-full items-center justify-center border border-dashed border-border bg-background text-muted-foreground">
                 <ImagePlus className="h-5 w-5" aria-hidden="true" />
               </span>
@@ -308,6 +324,119 @@ export function BackgroundPicker({ variant = 'call' }: { variant?: 'call' | 'pre
 }
 
 /**
+ * Your camera at the top of the menu, with what you choose on it, so you see it
+ * come on before everybody else does.
+ *
+ * While the camera has no processor, it shows a copy of the camera (never the one
+ * sent) through the processor being made ready, over the camera as it is sent;
+ * the camera takes that processor once it shows the choice there
+ * (attachCameraProcessor), and the copy goes once the camera's own picture shows
+ * it too. While the camera has one, a change is made to it in place, at once, so
+ * the camera as sent is the preview.
+ */
+function CallPreview() {
+  const { cameraTrack } = useLocalParticipant();
+  const track = cameraTrack?.track as LocalVideoTrack | undefined;
+  const live = useCameraLive(track);
+  if (!track || !live) return null;
+  return <EffectsPreview track={track} />;
+}
+
+function EffectsPreview({ track }: { track: LocalVideoTrack }) {
+  const busy = useApplying();
+  const sent = useRef<HTMLVideoElement>(null);
+  const copy = useRef<HTMLVideoElement>(null);
+  // Counts the processor coming on and off, which changes what is shown.
+  const [round, setRound] = useState(0);
+
+  useEffect(() => {
+    const el = sent.current;
+    if (!el) return;
+    track.attach(el);
+    return () => {
+      track.detach(el);
+    };
+  }, [track]);
+
+  useEffect(() => {
+    const el = copy.current;
+    if (!el) return;
+    const show = (shown: boolean) => (el.dataset.shown = String(shown));
+    if (track.getProcessor()) {
+      const changed = () => !track.getProcessor() && setRound((r) => r + 1);
+      track.on(TrackEvent.TrackProcessorUpdate, changed);
+      return () => {
+        track.off(TrackEvent.TrackProcessorUpdate, changed);
+      };
+    }
+    const camera = track.mediaStreamTrack.clone();
+    const settings = track.getSourceTrackSettings();
+    let stopped = false;
+    let preview: import('./cameraProcessor').Preview | null = null;
+    void import('./cameraProcessor').then(async (m) => {
+      if (stopped) return;
+      preview = m.openPreview(camera, { width: settings.width, height: settings.height });
+      const out = await preview.output;
+      if (!out || stopped) return;
+      el.srcObject = new MediaStream([out]);
+      void el.play().catch(() => undefined);
+      afterFrame(el, () => !stopped && show(true));
+    });
+    const changed = () => {
+      const shownSent = sent.current;
+      if (!track.getProcessor() || !shownSent) return;
+      // The camera has taken the processor: once its own picture shows it, the copy goes.
+      afterFrame(shownSent, () => {
+        if (stopped) return;
+        show(false);
+        setRound((r) => r + 1);
+      });
+    };
+    track.on(TrackEvent.TrackProcessorUpdate, changed);
+    return () => {
+      stopped = true;
+      track.off(TrackEvent.TrackProcessorUpdate, changed);
+      show(false);
+      el.srcObject = null;
+      preview?.close();
+      camera.stop();
+    };
+  }, [track, round]);
+
+  return (
+    <div
+      className="relative mb-2 aspect-video overflow-hidden rounded-md bg-slate-900 ring-1 ring-border"
+      data-testid="background-preview"
+      role="img"
+      aria-label="Preview of your camera"
+    >
+      <video ref={sent} muted playsInline autoPlay className="absolute inset-0 h-full w-full object-cover" />
+      <video
+        ref={copy}
+        muted
+        playsInline
+        autoPlay
+        data-shown="false"
+        data-testid="background-preview-copy"
+        className="absolute inset-0 h-full w-full object-cover opacity-0 data-[shown=true]:opacity-100"
+      />
+      {busy && (
+        <span className="absolute bottom-1.5 left-1.5 inline-flex items-center gap-1.5 rounded-full bg-black/60 px-2 py-0.5 text-[11px] font-medium text-white backdrop-blur">
+          <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+          Getting it ready…
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** Calls back once the video has shown its next frame. */
+function afterFrame(video: HTMLVideoElement, then: () => void) {
+  if (typeof video.requestVideoFrameCallback === 'function') video.requestVideoFrameCallback(() => then());
+  else setTimeout(then, 100);
+}
+
+/**
  * A round button laid over your camera's preview, before a call. The picture
  * under it is dark whatever the page's theme, so the button is too; one that is
  * on turns light, and one whose device is off turns red, as in the call.
@@ -344,10 +473,29 @@ function CompanyThumb({ theme }: { theme: CompanyTheme }) {
   return <img src={picture.src} alt="" className="h-full w-full object-cover" draggable={false} />;
 }
 
-function Tile({ label, selected, onSelect, children }: { label: string; selected: boolean; onSelect: () => void; children: ReactNode }) {
+/**
+ * One choice in the menu. Choosing keeps the menu open, so the preview shows it
+ * coming on and the next can be tried; `closes` is for one that opens something else.
+ */
+function Tile({
+  label,
+  selected,
+  onSelect,
+  closes = false,
+  children,
+}: {
+  label: string;
+  selected: boolean;
+  onSelect: () => void;
+  closes?: boolean;
+  children: ReactNode;
+}) {
   return (
     <DropdownMenuItem
-      onSelect={onSelect}
+      onSelect={(e) => {
+        if (!closes) e.preventDefault();
+        onSelect();
+      }}
       aria-label={label}
       aria-checked={selected}
       role="menuitemradio"

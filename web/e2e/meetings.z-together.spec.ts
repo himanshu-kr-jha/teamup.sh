@@ -186,7 +186,7 @@ test.describe('the new call features together', () => {
       await expect(olivia.page.getByText('Waiting for others')).toBeVisible();
 
       // Alice: camera on, microphone on, noise cancellation left on. Blur goes on
-      // once she is in: chosen here it leaks camera frames (see the test.fixme below).
+      // once she is in (chosen before joining is the test after this one).
       await joinThroughPrejoin(alice.page, call.id, async (page) => {
         await expect(noiseSwitch(page)).toBeChecked();
         await page.getByRole('button', { name: 'Turn your camera on' }).click();
@@ -200,6 +200,7 @@ test.describe('the new call features together', () => {
       await expect(alice.page.getByRole('button', { name: 'Turn your camera off' }).first()).toBeVisible({ timeout: 20_000 });
       await alice.page.getByTestId('background-effects').click();
       await alice.page.getByRole('menuitemradio', { name: 'Blur', exact: true }).click();
+      await alice.page.keyboard.press('Escape');
       await expect(alice.page.getByTestId('background-effects')).toHaveAttribute('aria-pressed', 'true');
       await expect(alice.page.getByTestId('background-effects').locator('.animate-spin')).toHaveCount(0, { timeout: 30_000 });
       await expect(micMenu(alice.page)).toHaveAttribute('data-noise-cancellation', 'on', { timeout: 20_000 });
@@ -422,12 +423,12 @@ test.describe('the new call features together', () => {
     await owner.dispose();
   });
 
-  // Found by this spec: with blur chosen on the screen before the call, Chrome warns
+  // Found by this spec: with blur chosen on the screen before the call, Chrome warned
   // "A VideoFrame was garbage collected without being closed" within seconds of joining
-  // a call somebody else is in, and on. Chosen in the call it does not. The preview's
-  // LocalVideoTrack is stopped on joining (PreJoinScreen.tsx, useCameraPreview) with
-  // its background processor still on it.
-  test.fixme('blur chosen before joining does not leak camera frames (PR #140 pre-join screen)', async ({ as }) => {
+  // a call somebody else is in. The browser's own frame streams, which the processor
+  // used, dropped frames unclosed when the preview's camera stopped on joining; the
+  // camera is now run frame by frame (cameraProcessor.ts, runFrames).
+  test('blur chosen before joining does not leak camera frames', async ({ as }) => {
     const owner = await apiAs('owner');
     const call = await createCall(owner, `Blur before ${Date.now()}`, [idOf('alice')]);
     const olivia = await as('owner');
@@ -437,6 +438,8 @@ test.describe('the new call features together', () => {
       await page.getByRole('button', { name: 'Turn your camera on' }).click();
       await page.getByTestId('background-effects').click();
       await page.getByRole('menuitemradio', { name: 'Blur', exact: true }).click();
+      // The menu stays open for the next choice; Escape closes it.
+      await page.keyboard.press('Escape');
       await expect(page.getByTestId('background-effects').locator('.animate-spin')).toHaveCount(0, { timeout: 30_000 });
     });
     await alice.page.waitForTimeout(15_000);

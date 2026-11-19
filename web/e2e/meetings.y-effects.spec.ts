@@ -182,6 +182,9 @@ test.describe('backgrounds', () => {
     }
     await expect(menu.getByRole('menuitemradio', { name: 'None', exact: true })).toHaveAttribute('aria-checked', 'true');
     await menu.getByRole('menuitemradio', { name: 'Night', exact: true }).click();
+    await expect(menu.getByRole('menuitemradio', { name: 'Night', exact: true })).toHaveAttribute('aria-checked', 'true');
+    // Choosing keeps the menu open, so the preview shows it; Escape closes it.
+    await olivia.page.keyboard.press('Escape');
     await expect(menu).toBeHidden();
     await expect(button).toHaveAttribute('aria-pressed', 'true');
 
@@ -254,6 +257,7 @@ test.describe('backgrounds', () => {
 
     await olivia.page.getByTestId('background-effects').click();
     await olivia.page.getByRole('menuitemradio', { name: 'Night', exact: true }).click();
+    await olivia.page.keyboard.press('Escape');
     await olivia.page.getByRole('button', { name: 'Turn your camera on' }).click();
     await expect
       .poll(async () => {
@@ -264,6 +268,7 @@ test.describe('backgrounds', () => {
     // Then changed while it is on: straight away, in place.
     await olivia.page.getByTestId('background-effects').click();
     await olivia.page.getByRole('menuitemradio', { name: 'Dawn', exact: true }).click();
+    await olivia.page.keyboard.press('Escape');
     await expect
       .poll(async () => {
         const c = await ownCameraColour(olivia.page);
@@ -296,8 +301,8 @@ test.describe('backgrounds', () => {
     };
     await expect.poll(grey, { timeout: 30_000 }).toBe(true);
 
-    // With a background too: Dawn, in black and white, is a light grey.
-    await button.click();
+    // With a background too: Dawn, in black and white, is a light grey. The menu
+    // stays open for the next choice.
     await menu.getByRole('menuitemradio', { name: 'Dawn', exact: true }).click();
     await expect
       .poll(async () => {
