@@ -293,10 +293,8 @@ test.describe('backgrounds', () => {
       // her camera goes back to how it is, with no message about it.
       await owner.del(`/org/call-pictures/${red.id}`);
       await olivia.page.reload();
-      await expect(olivia.page.getByRole('button', { name: /Turn your camera (on|off)/ })).toBeVisible({ timeout: 30_000 });
-      if (await olivia.page.getByRole('button', { name: 'Turn your camera on' }).isVisible()) {
-        await olivia.page.getByRole('button', { name: 'Turn your camera on' }).click();
-      }
+      // A reload goes straight back into the call, camera on as it was.
+      await expect(olivia.page.getByRole('button', { name: 'Turn your camera off' })).toBeVisible({ timeout: 30_000 });
       await expect(button).toHaveAttribute('aria-pressed', 'false', { timeout: 20_000 });
       await expect.poll(async () => (await ownCameraColour(olivia.page)) !== null && !(await isRed()), { timeout: 30_000 }).toBe(true);
       expect(await olivia.page.evaluate(() => localStorage.getItem('teamup.call.background'))).toBeNull();

@@ -152,7 +152,7 @@ test.describe('the organization’s background pictures', () => {
     await aliceApi.dispose();
 
     // Alice, before joining, chooses one; the menu has only the blurs and the organization's.
-    const call = await createCall(owner, `Pictures ${Date.now()}`, [idOf('alice')]);
+    const call = await createCall(owner, `Pictures ${Date.now()}`, [idOf('alice'), idOf('pat')]);
     const alice = await as('alice');
     await alice.page.goto(`/calls/${call.id}`);
     await expect(prejoinScreen(alice.page)).toBeVisible();
@@ -173,9 +173,8 @@ test.describe('the organization’s background pictures', () => {
     await alice.page.keyboard.press('Escape');
     await lobbyJoin(alice.page).click();
     await expect(alice.page.getByRole('button', { name: 'Leave the call' })).toBeVisible({ timeout: 30_000 });
-    if (await alice.page.getByRole('button', { name: 'Turn your camera on' }).isVisible()) {
-      await alice.page.getByRole('button', { name: 'Turn your camera on' }).click();
-    }
+    // In with the camera on, as chosen before joining.
+    await expect(alice.page.getByRole('button', { name: 'Turn your camera off' }).first()).toBeVisible({ timeout: 20_000 });
 
     // Olivia, in the call, receives Alice's video in front of it: a dark blue-grey.
     await joinCall(olivia.page, call.id);
