@@ -15,6 +15,7 @@ import { ChevronLeft, ChevronRight, MicOff, MonitorUp, NotebookPen, Pin, PinOff,
 import { isNotetaker, useNotesPaused } from './notetaker';
 import { HandBadge, HandsStrip } from './Hands';
 import { SpeakingBars } from './SpeakingBars';
+import { PresentingCard } from './PresentingCard';
 import { Button } from '@/shared/components/ui/button';
 import { callsApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
@@ -329,6 +330,9 @@ function ParticipantPanel({
 
   const name = nameOf(track);
   const isLocal = participant.isLocal;
+  // Your own shared screen is never shown to you: shown live, a whole screen or
+  // the tab TeamUp is in captures itself, over and over. A card says so instead.
+  const ownShare = !!presenting && isLocal;
   // A placeholder track has no publication at all, which is the same thing as
   // the camera being off. The guard is what lets VideoTrack be given a
   // reference it can actually render.
@@ -394,7 +398,9 @@ function ParticipantPanel({
         data-testid={presenting ? 'screen-tile' : 'participant-tile'}
         data-identity={participant.identity}
       >
-        {isTrackReference(track) && hasVideo ? (
+        {ownShare ? (
+          <PresentingCard size={!compact ? 'stage' : pinned ? 'corner' : 'strip'} />
+        ) : isTrackReference(track) && hasVideo ? (
           <VideoTrack
             trackRef={track}
             // A grid tile is 16:9 already, so covering it crops little. The stage
@@ -431,7 +437,8 @@ function ParticipantPanel({
 
         {!presenting && !notes && <HandBadge identity={participant.identity} small={compact} />}
 
-        {/* The name, and whether they can be heard. */}
+        {/* The name, and whether they can be heard. Your own share's card says it already. */}
+        {!ownShare && (
         <div className="absolute inset-x-0 bottom-0 flex items-center gap-1.5 bg-gradient-to-t from-black/70 to-transparent px-2 py-1.5 text-white">
           {!presenting && !notes && (
             <SpeakingBars participant={participant} speaking={speaking} muted={microphoneOff} size={compact ? 'sm' : 'md'} />
@@ -448,6 +455,7 @@ function ParticipantPanel({
             </span>
           )}
         </div>
+        )}
 
         {/* Controls, out of the way until wanted. A touch screen has no hover, so
             there they simply stay. */}
