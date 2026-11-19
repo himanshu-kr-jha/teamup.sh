@@ -107,10 +107,19 @@ export function IncomingCallDialog() {
   // The caller hung up, or the call was ended: stop ringing rather than
   // carrying on until the timeout.
   useEffect(() => {
-    return on('call.ended', (msg) => {
+    const offEnded = on('call.ended', (msg) => {
       const payload = msg.payload as any;
       if (payload?.callId) dismiss(payload.callId);
     });
+    // Answered on another of your devices: it stops ringing here too.
+    const offAnswered = on('call.answered', (msg) => {
+      const payload = msg.payload as any;
+      if (payload?.callId) dismiss(payload.callId);
+    });
+    return () => {
+      offEnded();
+      offAnswered();
+    };
   }, [on, dismiss]);
 
   useEffect(() => {

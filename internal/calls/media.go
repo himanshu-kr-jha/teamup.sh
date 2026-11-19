@@ -10,6 +10,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/livekit/protocol/livekit"
 	"github.com/twitchtv/twirp"
+
+	"github.com/teamup/teamup/internal/calls/participant"
 )
 
 // errNoMedia is asking LiveKit for something on an instance with no LiveKit.
@@ -32,14 +34,26 @@ type mediaServer interface {
 	// SendData delivers a packet from the server to everybody in a room, on a
 	// topic. A room that does not exist is not an error.
 	SendData(ctx context.Context, room, topic string, data []byte) error
-	// InRoom says whether somebody is connected to a room now.
+	// InRoom says whether somebody is connected to a room now, from any of their
+	// devices: the identity is compared by the person it belongs to
+	// (participant.Person), so a member asked about by their user id is in
+	// while their phone is, and a guest only as themselves.
 	InRoom(ctx context.Context, room, identity string) (bool, error)
+	// Connections is everybody connected to a room now, one entry per device,
+	// with their attributes. A room that does not exist has nobody in it.
+	Connections(ctx context.Context, room string) ([]Connection, error)
 	// Attributes are somebody's participant attributes, and whether they are in
 	// the room at all. Their not being there is not an error.
 	Attributes(ctx context.Context, room, identity string) (map[string]string, bool, error)
 	// SetAttributes changes some of somebody's participant attributes; an empty
 	// value removes one. The others are left as they are.
 	SetAttributes(ctx context.Context, room, identity string, attrs map[string]string) error
+}
+
+// Connection is one device connected to a room.
+type Connection struct {
+	Identity   string
+	Attributes map[string]string
 }
 
 // liveKit is the real server.
@@ -105,12 +119,37 @@ func (l liveKit) InRoom(ctx context.Context, room, identity string) (bool, error
 	if err != nil {
 		return false, err
 	}
+	who := participant.Person(identity)
 	for _, p := range res.GetParticipants() {
-		if p.GetIdentity() == identity && p.GetState() != livekit.ParticipantInfo_DISCONNECTED {
+		if p.GetState() == livekit.ParticipantInfo_DISCONNECTED {
+			continue
+		}
+		if p.GetIdentity() == identity || (who != "" && participant.Person(p.GetIdentity()) == who) {
 			return true, nil
 		}
 	}
 	return false, nil
+}
+
+func (l liveKit) Connections(ctx context.Context, room string) ([]Connection, error) {
+	if l.s.roomService == nil {
+		return nil, errNoMedia
+	}
+	res, err := l.s.roomService.ListParticipants(ctx, &livekit.ListParticipantsRequest{Room: room})
+	if twirpNotFound(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Connection, 0, len(res.GetParticipants()))
+	for _, p := range res.GetParticipants() {
+		if p.GetState() == livekit.ParticipantInfo_DISCONNECTED || p.GetIdentity() == "" {
+			continue
+		}
+		out = append(out, Connection{Identity: p.GetIdentity(), Attributes: p.GetAttributes()})
+	}
+	return out, nil
 }
 
 func (l liveKit) Attributes(ctx context.Context, room, identity string) (map[string]string, bool, error) {
@@ -251,10 +290,34 @@ func (s *Service) RemoveFromCalls(ctx context.Context, orgID, userID uuid.UUID) 
 	}
 }
 
+// putOut takes somebody out of a room from every device they are in it from.
 func (s *Service) putOut(ctx context.Context, room string, userID uuid.UUID) {
-	if err := s.mediaOf().RemoveParticipant(ctx, room, userID.String()); err != nil {
-		s.logger.Warn().Err(err).Str("room", room).Msg("could not remove somebody deactivated from a room")
+	media := s.mediaOf()
+	identities := []string{userID.String()}
+	if conns, err := media.Connections(ctx, room); err == nil {
+		// Every device they are in from. Asked for by their bare user id too
+		// when none is listed: one still connecting may not be listed yet, and
+		// removing somebody who is not there is not an error.
+		if devices := participant.DevicesOf(identitiesOf(conns), userID); len(devices) > 0 {
+			identities = devices
+		}
+	} else if !errors.Is(err, errNoMedia) {
+		s.logger.Warn().Err(err).Str("room", room).Msg("could not list a room to remove somebody deactivated; trying their user id")
 	}
+	for _, identity := range identities {
+		if err := media.RemoveParticipant(ctx, room, identity); err != nil {
+			s.logger.Warn().Err(err).Str("room", room).Msg("could not remove somebody deactivated from a room")
+		}
+	}
+}
+
+// identitiesOf is the identities of some connections.
+func identitiesOf(conns []Connection) []string {
+	out := make([]string, len(conns))
+	for i, c := range conns {
+		out[i] = c.Identity
+	}
+	return out
 }
 
 // isActivePerson says whether somebody still works here. Sessions end at once when

@@ -18,6 +18,7 @@ import (
 	lksdk "github.com/livekit/server-sdk-go/v2"
 	"github.com/rs/zerolog"
 
+	"github.com/teamup/teamup/internal/calls/participant"
 	"github.com/teamup/teamup/internal/tasks"
 	"github.com/teamup/teamup/internal/websocket"
 	apperrors "github.com/teamup/teamup/pkg/errors"
@@ -185,15 +186,52 @@ func (s *Service) SetClock(now func() time.Time) { s.clock = now }
 // memberTokenTTL is how long a member's call token can be used to join.
 const memberTokenTTL = 15 * time.Minute
 
+// Device is the browser somebody is joining a call from (companion mode): an id
+// the browser keeps, and whether it is a phone, a tablet or a laptop. The zero
+// Device is a page that did not say, which joins as the bare user id, as every
+// page did before companion mode.
+type Device struct {
+	ID   string `json:"id"`
+	Kind string `json:"kind"`
+}
+
+// clean drops whatever the browser sent that is not well formed, rather than
+// refusing to let somebody in over a label.
+func (d Device) clean() Device {
+	if !participant.ValidDevice(d.ID) {
+		return Device{}
+	}
+	if !participant.DeviceKinds[d.Kind] {
+		d.Kind = ""
+	}
+	return d
+}
+
+// identityFor is a member's identity in a room from this device.
+func (d Device) identityFor(userID string) string {
+	return participant.MemberIdentity(userID, d.clean().ID)
+}
+
 // GenerateToken creates a LiveKit access token
 func (s *Service) GenerateToken(ctx context.Context, roomName, userID, userName string, canPublish, canSubscribe bool) (string, error) {
+	return s.generateToken(roomName, userID, Device{}, userName, canPublish, canSubscribe)
+}
+
+// generateToken is a token for one person from one device: its identity is
+// "<userId>:<deviceId>" (participant.MemberIdentity), and the kind of device is
+// a participant attribute, which is what a tile says ("Asha (phone)").
+func (s *Service) generateToken(roomName, userID string, device Device, userName string, canPublish, canSubscribe bool) (string, error) {
 	if s.cfg.LiveKitAPIKey == "" || s.cfg.LiveKitAPISecret == "" {
 		return "", fmt.Errorf("LiveKit credentials not configured")
 	}
 
+	device = device.clean()
 	at := auth.NewAccessToken(s.cfg.LiveKitAPIKey, s.cfg.LiveKitAPISecret)
-	at.SetIdentity(userID)
+	at.SetIdentity(device.identityFor(userID))
 	at.SetName(userName)
+	if device.Kind != "" {
+		at.SetAttributes(map[string]string{participant.DeviceAttribute: device.Kind})
+	}
 	// Long enough to join with. Once in, LiveKit keeps the connection's own
 	// token fresh, so a call goes on for hours; a token copied out of a page
 	// is useless soon after, instead of for the library's default six hours.
@@ -561,6 +599,42 @@ func (s *Service) AnnounceCallOver(ctx context.Context, call *CallModel, reason,
 
 func (s *Service) GetToken(ctx context.Context, callID, userID, userName string) (string, error) {
 	return s.GenerateToken(ctx, callID, userID, userName, true, true)
+}
+
+// GetDeviceToken is a member's token to join a room from one of their devices.
+func (s *Service) GetDeviceToken(ctx context.Context, roomName, userID string, device Device, userName string) (string, error) {
+	return s.generateToken(roomName, userID, device, userName, true, true)
+}
+
+// OtherDevice is a device somebody is already in a call from, other than the
+// one asking to join: joining again asks whether this one is only a second
+// camera, or takes the call over.
+type OtherDevice struct {
+	Identity string `json:"identity"`
+	Kind     string `json:"kind,omitempty"`
+}
+
+// OtherDevices is where else this person is in the room right now, apart from
+// the device asking. The same device again (a reload, or a second tab of the
+// same browser) is not another device. A media server that cannot be asked
+// says nowhere: joining then simply joins.
+func (s *Service) OtherDevices(ctx context.Context, roomName string, userID uuid.UUID, device Device) []OtherDevice {
+	out := []OtherDevice{}
+	conns, err := s.mediaOf().Connections(ctx, roomName)
+	if err != nil {
+		if !errors.Is(err, errNoMedia) {
+			s.logger.Warn().Err(err).Msg("could not ask the media server where else somebody is in a call")
+		}
+		return out
+	}
+	me := device.identityFor(userID.String())
+	for _, c := range conns {
+		if c.Identity == me || !participant.IsMember(c.Identity, userID) {
+			continue
+		}
+		out = append(out, OtherDevice{Identity: c.Identity, Kind: c.Attributes[participant.DeviceAttribute]})
+	}
+	return out
 }
 
 // StartRecording asks LiveKit's Egress service to composite the room and write
@@ -1580,6 +1654,11 @@ func (s *Service) notePickedUp(ctx context.Context, call *CallModel, userID uuid
 		s.logger.Warn().Err(err).Msg("could not record that somebody picked up")
 	}
 	s.answeredAddedRing(ctx, call, userID)
+	// Rung on a laptop and a phone at once, and answered on one: the other
+	// stops ringing. Without this it rang on until the ring timed out.
+	if s.broadcaster != nil {
+		s.broadcaster.BroadcastToUser(userID.String(), protocol.NewMessage(protocol.TypeCallAnswered, map[string]any{"callId": call.ID.String()}))
+	}
 	if userID != call.CreatedBy {
 		if err := s.MarkAnswered(ctx, call.ID); err != nil {
 			s.logger.Warn().Err(err).Msg("could not record that a call was answered")
@@ -1653,8 +1732,8 @@ func (s *Service) MuteParticipant(ctx context.Context, roomName, identity string
 	return nil
 }
 
-// StillOccupiedBySomebodyElse reports whether anybody other than this person is
-// currently in the room.
+// StillOccupiedBySomebodyElse reports whether any connection other than this
+// one (an identity: one device of one person) is currently in the room.
 //
 // LiveKit is the authority: the database records who was invited and who
 // joined, but nothing tells it when somebody closes their laptop, so it cannot
@@ -1671,16 +1750,16 @@ func (s *Service) StillOccupiedBySomebodyElse(ctx context.Context, roomName, ide
 	if err != nil {
 		return false, fmt.Errorf("list call participants: %w", err)
 	}
-	for _, participant := range res.GetParticipants() {
-		id := participant.GetIdentity()
-		// The note-taker is not somebody, and somebody already on the way out
-		// is not still here.
-		if id == identity || strings.HasPrefix(id, NoteTakerIdentityPrefix) || participant.GetState() == livekit.ParticipantInfo_DISCONNECTED {
-			continue
+	// Somebody already on the way out is not still here.
+	var here []string
+	for _, p := range res.GetParticipants() {
+		if p.GetState() != livekit.ParticipantInfo_DISCONNECTED {
+			here = append(here, p.GetIdentity())
 		}
-		return true, nil
 	}
-	return false, nil
+	// The note-taker is not somebody. Another device of the same person is:
+	// the call goes on while any device of anyone is in it.
+	return participant.AnybodyBut(here, identity), nil
 }
 
 // AnybodyLeftToAnswer reports whether the call still has somebody who was

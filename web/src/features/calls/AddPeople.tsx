@@ -11,6 +11,7 @@ import { useToast } from '@/shared/hooks/useToast';
 import { useWebSocket } from '@/features/websocket/WSProvider';
 import { cn } from '@/shared/utils/cn';
 import { outcomeMessage, withRinging, withoutRinging, type RingOutcome, type Ringing } from './addPeople';
+import { personOf } from './devices';
 
 export interface AddedRings {
   ringing: Ringing[];
@@ -52,7 +53,7 @@ export function useAddedRings(callId: string): AddedRings {
 
   // Whoever has arrived is no longer being rung, whichever word came first.
   useEffect(() => {
-    setRinging((list) => withoutRinging(list, remote.map((p) => p.identity)));
+    setRinging((list) => withoutRinging(list, remote.map((p) => personOf(p.identity))));
   }, [remote]);
 
   const ring = useCallback(
@@ -113,7 +114,7 @@ function AddPeopleDialog({ open, onOpenChange, rings }: { open: boolean; onOpenC
   const { data } = useQuery({ queryKey: ['users'], queryFn: () => orgApi.listUsers(), enabled: open });
 
   const people = useMemo(() => {
-    const here = new Set([room.localParticipant.identity, ...remote.map((p) => p.identity), ...rings.ringing.map((p) => p.userId)]);
+    const here = new Set([personOf(room.localParticipant.identity), ...remote.map((p) => personOf(p.identity)), ...rings.ringing.map((p) => p.userId)]);
     return ((data?.data ?? []) as Array<{ id: string; name: string; email?: string; avatarUrl?: string | null; isActive?: boolean }>)
       .filter((u) => u.isActive !== false && !here.has(u.id))
       .map((u) => ({ id: u.id, name: u.name, email: u.email, avatarUrl: u.avatarUrl }));

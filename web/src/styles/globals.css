@@ -107,6 +107,17 @@
     word-break: break-word;
   }
 
+  /*
+   * While toasts are lifted over the minimised call window (ActiveCallProvider sets
+   * data-call-window), one arriving comes in from the side, where it stays, rather
+   * than from a full height below: that path crossed the window's title bar, and a
+   * drag or a click there in that moment went to the toast instead.
+   */
+  :root[data-call-window] li[data-state='open'][data-swipe-direction] {
+    --tw-enter-translate-y: 0;
+    --tw-enter-translate-x: 100%;
+  }
+
   .scrollbar-hide {
     -ms-overflow-style: none;
     scrollbar-width: none;

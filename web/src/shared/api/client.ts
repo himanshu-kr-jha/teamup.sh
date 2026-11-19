@@ -649,6 +649,28 @@ export const guestApi = {
     api.get<CallNotesState>(`/guest/${encodeURIComponent(token)}/notes`, { headers: { 'X-Guest-Key': key } }),
 };
 
+/** The browser a call is joined from (features/calls/devices.ts). */
+export interface CallDevice {
+  id: string;
+  kind: 'phone' | 'tablet' | 'laptop';
+}
+
+/** A device you are already in a call from, other than this one. */
+export interface OtherDevice {
+  identity: string;
+  kind?: 'phone' | 'tablet' | 'laptop';
+}
+
+export interface CallToken {
+  token: string;
+  roomName: string;
+  callType?: 'audio' | 'video';
+  /** This device's identity in the room: "<userId>:<deviceId>". */
+  identity?: string;
+  /** Where else you are in the call right now; a reload of this device is not another. */
+  otherDevices?: OtherDevice[];
+}
+
 /** One message in a meeting's own chat. senderId is the sender's identity in the room. */
 export interface MeetingChatMessage {
   id: string;
@@ -683,10 +705,15 @@ export const callsApi = {
   /** Whether a new call takes notes unless told otherwise. */
   notesDefault: () => api.get<NotesDefault>('/notes-default'),
   get: (id: string) => api.get(`/calls/${id}`),
-  getToken: (id: string) =>
-    api.post<{ token: string; roomName: string; callType?: 'audio' | 'video' }>(`/calls/${id}/token`),
+  /**
+   * A token to join from this device (companion mode): its identity, and where
+   * else you already are in the call, which asks how this device joins.
+   */
+  getToken: (id: string, device?: CallDevice) =>
+    api.post<CallToken>(`/calls/${id}/token`, device ? { device } : undefined),
   startRecording: (id: string) => api.post(`/calls/${id}/record`),
-  end: (id: string) => api.post(`/calls/${id}/end`),
+  /** Ends the call if nobody else, on any device, is in it; device is the one asking. */
+  end: (id: string, device?: CallDevice) => api.post(`/calls/${id}/end`, device ? { device } : undefined),
   /** Quietens somebody's microphone. Only the media server can do this, and
    *  it is one way - nobody turns another person's microphone back on. */
   muteParticipant: (callId: string, identity: string) =>
@@ -822,8 +849,11 @@ export const standingApi = {
   /** Archives it: the room goes and its history stays. */
   archive: (id: string) => api.delete(`/standing-meetings/${id}`),
   /** Opens today's occurrence. */
-  join: (id: string) =>
-    api.post<{ callId: string; roomName: string; token: string; date: string }>(`/standing-meetings/${id}/join`),
+  join: (id: string, device?: CallDevice) =>
+    api.post<{ callId: string; roomName: string; token: string; date: string; identity?: string; otherDevices?: OtherDevice[] }>(
+      `/standing-meetings/${id}/join`,
+      device ? { device } : undefined
+    ),
   /** Scope is decided by the server, by who is asking. */
   attendance: (id: string, params: { from: string; to: string; teamId?: string }) =>
     getList<AttendanceDay>(`/standing-meetings/${id}/attendance`, 'days', params),

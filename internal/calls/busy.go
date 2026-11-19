@@ -3,11 +3,11 @@ package calls
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/google/uuid"
 	"github.com/livekit/protocol/livekit"
 
+	"github.com/teamup/teamup/internal/calls/participant"
 	"github.com/teamup/teamup/internal/leave"
 	"github.com/teamup/teamup/pkg/protocol"
 )
@@ -65,7 +65,8 @@ func (s *Service) inAnotherCall(ctx context.Context, orgID, userID, callID uuid.
 			return false, fmt.Errorf("ask the media server who is in a call: %w", err)
 		}
 		for _, p := range res.GetParticipants() {
-			if p.GetIdentity() == userID.String() && p.GetState() != livekit.ParticipantInfo_DISCONNECTED {
+			// From any of their devices.
+			if participant.IsMember(p.GetIdentity(), userID) && p.GetState() != livekit.ParticipantInfo_DISCONNECTED {
 				return true, nil
 			}
 		}
@@ -177,7 +178,7 @@ func (s *Service) tellJoined(ctx context.Context, call *webhookCall, roomName st
 }
 
 // peopleInRoom counts the people connected to a call now, guests included and
-// the note-taker not. The media server is asked when there is one, because it
+// the note-taker not, each person once however many devices they are in from. The media server is asked when there is one, because it
 // alone knows about guests; without one, the attendance record answers.
 func (s *Service) peopleInRoom(ctx context.Context, callID uuid.UUID, roomName string) (int, error) {
 	if s.roomService != nil {
@@ -185,13 +186,15 @@ func (s *Service) peopleInRoom(ctx context.Context, callID uuid.UUID, roomName s
 		if err != nil {
 			return 0, fmt.Errorf("list call participants: %w", err)
 		}
-		seen := map[string]bool{}
+		var here []string
 		for _, p := range res.GetParticipants() {
-			if id := p.GetIdentity(); id != "" && !strings.HasPrefix(id, NoteTakerIdentityPrefix) {
-				seen[id] = true
+			if p.GetState() != livekit.ParticipantInfo_DISCONNECTED {
+				here = append(here, p.GetIdentity())
 			}
 		}
-		return len(seen), nil
+		// Each person once: somebody on a laptop and a phone is one person
+		// waiting, not a meeting.
+		return participant.CountPeople(here), nil
 	}
 	var n int
 	err := s.db.QueryRow(ctx, `

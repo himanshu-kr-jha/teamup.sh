@@ -23,6 +23,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog"
 
+	"github.com/teamup/teamup/internal/calls/participant"
 	"github.com/teamup/teamup/internal/mail"
 	apperrors "github.com/teamup/teamup/pkg/errors"
 )
@@ -32,10 +33,7 @@ const ConfigKey = "notetaker"
 
 // IdentityPrefix starts the note-taker's identity in a room, so the page and
 // the attendance record can tell it from a person.
-const IdentityPrefix = "notes-"
-
-// guestPrefix starts a guest's identity, as calls.GuestIdentityPrefix does.
-const guestPrefix = "guest-"
+const IdentityPrefix = participant.NoteTakerPrefix
 
 // ConfigStore reads and writes the organization's settings.
 type ConfigStore interface {
@@ -347,8 +345,8 @@ func (s *Service) joinRoom(sess *session) error {
 		if strings.HasPrefix(p.Identity(), IdentityPrefix) {
 			return
 		}
-		// A member, or a guest let in by the meeting's link.
-		if _, err := uuid.Parse(strings.TrimPrefix(p.Identity(), guestPrefix)); err != nil {
+		// A member from any of their devices, or a guest let in by the meeting's link.
+		if kind := participant.Parse(p.Identity()).Kind; kind != participant.Member && kind != participant.Guest {
 			return
 		}
 		s.logger.Debug().Str("who", p.Name()).Bool("speaking", p.IsSpeaking()).Msg("notetaker: speaking")
@@ -443,6 +441,9 @@ func (sess *session) want(sid string, on bool, set func(bool) error) error {
 	return nil
 }
 
+// recorderFor is the recorder of one microphone: one per device, since somebody
+// in from a laptop and a phone has a microphone on each. Both are said to be the
+// person (Speaker.UserID is their user id), so the minutes name them once.
 func (sess *session) recorderFor(identity, name string) *recorder {
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
@@ -452,7 +453,11 @@ func (sess *session) recorderFor(identity, name string) *recorder {
 	if name == "" {
 		name = "Somebody"
 	}
-	r := newRecorder(Speaker{UserID: identity, Name: name}, func(c Clip) {
+	speaker := identity
+	if who := participant.Parse(identity); who.Kind == participant.Member {
+		speaker = who.UserID.String()
+	}
+	r := newRecorder(Speaker{UserID: speaker, Name: name}, func(c Clip) {
 		select {
 		case sess.clips <- c:
 		default:

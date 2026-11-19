@@ -6,6 +6,7 @@ import {
   VideoTrack,
   isTrackReference,
   useIsSpeaking,
+  useParticipants,
   useSpeakingParticipants,
   useTracks,
 } from '@livekit/components-react';
@@ -35,6 +36,7 @@ import {
   stageShare,
 } from './tileLayout';
 import { firstNameOf } from './callTitle';
+import { deviceLabel, kindOf, personOf } from './devices';
 
 /** The narrowest a tile in the corner window gets before its row wraps. */
 const CORNER_TILE_MIN_WIDTH = 72;
@@ -59,6 +61,26 @@ export function isGuest(p: { identity: string }): boolean {
 /** Who is looking at the stage: a guest has no account to mute or remove with. */
 const ViewerContext = createContext<{ asGuest: boolean; canRemoveGuests: boolean }>({ asGuest: false, canRemoveGuests: false });
 
+/**
+ * How many devices each person is in the call from (companion mode), so the
+ * tiles of somebody on a laptop and a phone say which is which.
+ */
+const DevicesContext = createContext<ReadonlyMap<string, number>>(new Map());
+
+function useDevicesPerPerson(): ReadonlyMap<string, number> {
+  const key = useParticipants()
+    .map((p) => p.identity)
+    .join('|');
+  return useMemo(() => {
+    const count = new Map<string, number>();
+    for (const identity of key ? key.split('|') : []) {
+      const who = personOf(identity);
+      if (who) count.set(who, (count.get(who) ?? 0) + 1);
+    }
+    return count;
+  }, [key]);
+}
+
 export function CallStage({ callId, compact, asGuest = false }: { callId: string; compact: boolean; asGuest?: boolean }) {
   const { data: guestLink } = useQuery({
     queryKey: ['guest-link', callId],
@@ -66,16 +88,19 @@ export function CallStage({ callId, compact, asGuest = false }: { callId: string
     enabled: !asGuest,
   });
   const viewer = useMemo(() => ({ asGuest, canRemoveGuests: !asGuest && !!guestLink?.canManage }), [asGuest, guestLink?.canManage]);
+  const devices = useDevicesPerPerson();
   return (
     <ViewerContext.Provider value={viewer}>
-      <div className="flex h-full flex-col">
-        {/* A row of its own above the people, only while hands are up: laid over
-            them it covered a tile and its buttons when there was no room to spare. */}
-        {!compact && <HandsStrip />}
-        <div className="min-h-0 flex-1">
-          <Stage callId={callId} compact={compact} />
+      <DevicesContext.Provider value={devices}>
+        <div className="flex h-full flex-col">
+          {/* A row of its own above the people, only while hands are up: laid over
+              them it covered a tile and its buttons when there was no room to spare. */}
+          {!compact && <HandsStrip />}
+          <div className="min-h-0 flex-1">
+            <Stage callId={callId} compact={compact} />
+          </div>
         </div>
-      </div>
+      </DevicesContext.Provider>
     </ViewerContext.Provider>
   );
 }
@@ -328,7 +353,11 @@ function ParticipantPanel({
   const jobTitleOf = useJobTitles();
   const notesPaused = useNotesPaused();
 
-  const name = nameOf(track);
+  // "Asha (phone)" while Asha is in from more than one device.
+  const devices = useContext(DevicesContext);
+  const person = personOf(participant.identity);
+  const deviceCount = devices.get(person) ?? 1;
+  const name = presenting ? nameOf(track) : deviceLabel(nameOf(track), kindOf(participant), deviceCount);
   const isLocal = participant.isLocal;
   // Your own shared screen is never shown to you: shown live, a whole screen or
   // the tab TeamUp is in captures itself, over and over. A card says so instead.
@@ -341,9 +370,10 @@ function ParticipantPanel({
   const notes = isNotetaker(participant);
   // What they do at the company, beside their name; a guest has none.
   // A small tile has no room for it.
-  const jobTitle = notes || guest || presenting || compact ? '' : jobTitleOf(participant.identity);
-  // A small tile, as in the corner window, says first names, which fit.
-  const shownName = compact ? firstNameOf(name) : name;
+  const jobTitle = notes || guest || presenting || compact ? '' : jobTitleOf(person);
+  // A small tile, as in the corner window, says first names, which fit, and still
+  // which device it is.
+  const shownName = compact ? deviceLabel(firstNameOf(nameOf(track)), kindOf(participant), deviceCount) : name;
 
   const fullCaption = notes
     ? notesPaused
@@ -358,7 +388,7 @@ function ParticipantPanel({
     notes || presenting
       ? fullCaption
       : compact && isLocal
-        ? 'You'
+        ? deviceLabel('You', kindOf(participant), deviceCount)
         : `${shownName}${guest ? ' (guest)' : ''}${isLocal ? ' (you)' : ''}`;
 
   const remove = async () => {
@@ -397,6 +427,8 @@ function ParticipantPanel({
         )}
         data-testid={presenting ? 'screen-tile' : 'participant-tile'}
         data-identity={participant.identity}
+        data-person={person || undefined}
+        data-device={kindOf(participant)}
       >
         {ownShare ? (
           <PresentingCard size={!compact ? 'stage' : pinned ? 'corner' : 'strip'} />
@@ -425,9 +457,11 @@ function ParticipantPanel({
               </span>
             ) : (
               <PersonAvatar
-                // A member's identity is their id; a guest has none to look up.
-                userId={guest ? null : participant.identity}
-                name={name}
+                // A member's identity is their id, and the device they are in from;
+                // a guest has none to look up.
+                userId={guest ? null : person}
+                // Initials from the name, not from "Alice Archer (laptop)".
+                name={nameOf(track)}
                 className={compact ? SMALL_PICTURE : 'h-20 w-20'}
                 fallbackClassName={cn('bg-primary/20 font-semibold text-primary', compact ? SMALL_INITIALS : 'text-2xl')}
               />
