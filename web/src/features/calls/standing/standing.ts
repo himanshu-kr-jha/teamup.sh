@@ -34,10 +34,13 @@ export interface StandingMeeting {
   /** Joining counts from this many minutes before the start to this many after. */
   attendBeforeMinutes?: number;
   attendAfterMinutes?: number;
+  /** Whether notes are taken in each day's call; left out, the organization's default. */
+  takeNotes?: boolean;
 }
 
 export type StandingForm = Pick<StandingMeeting, 'name' | 'timeOfDay' | 'timeZone' | 'weekdays' | 'durationMinutes'> & {
   cameraRequired?: boolean;
+  takeNotes?: boolean;
   attendBeforeMinutes?: number;
   attendAfterMinutes?: number;
 };

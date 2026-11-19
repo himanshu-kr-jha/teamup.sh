@@ -29,6 +29,7 @@ import { cn } from '@/shared/utils/cn';
 import { Kbd } from './CheatSheet';
 import { usePlaces } from './places';
 import { rank } from './rank';
+import { personFacts, rankBy } from '@/shared/utils/peopleSearch';
 
 interface Item {
   key: string;
@@ -148,7 +149,7 @@ function Palette({ onDone }: { onDone: () => void }) {
 
     return [
       ...rank(pages, term, (p) => [p.label]),
-      ...rank(people, term, (u) => [u.name, u.email, u.jobTitle])
+      ...rankBy(people, term, (u) => personFacts(u))
         .slice(0, PER_GROUP)
         .map<Item>((u) => ({
           key: `u-${u.id}`,

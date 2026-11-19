@@ -14,6 +14,9 @@ type Segment struct {
 	Speaker   string    `json:"speaker"`
 	StartedAt time.Time `json:"startedAt"`
 	Text      string    `json:"text"`
+	// EndedAt is when they stopped, so a stretch that ran into a pause is
+	// known; the same as StartedAt for a line of chat.
+	EndedAt time.Time `json:"-"`
 }
 
 // ActionItem is something somebody is to do.
@@ -32,6 +35,8 @@ type Minutes struct {
 	Decisions     []string     `json:"decisions"`
 	ActionItems   []ActionItem `json:"actionItems"`
 	OpenQuestions []string     `json:"openQuestions"`
+	// Pauses is when notes were not taken: nothing said then is in them.
+	Pauses []Pause `json:"pauses,omitempty"`
 }
 
 // maxTranscriptChars keeps a very long meeting inside what a model reads at
@@ -44,7 +49,8 @@ Be faithful: include only what was said, never invent decisions, names or dates.
 Write in English, plainly, in short sentences.
 Answer with JSON only, no other text, in exactly this shape:
 {"summary": "three to six sentences", "decisions": ["..."], "actionItems": [{"owner": "a person's name, or \"Unassigned\"", "task": "...", "due": "only if a date or time was said"}], "openQuestions": ["..."]}
-Use empty lists where there is nothing to put.`
+Use empty lists where there is nothing to put.
+Lines from TeamUp mark where notes were paused. Nothing said then is in the transcript: never guess at it.`
 
 // Transcript is the meeting as lines of "[HH:MM] Name: text", in the meeting's
 // own time zone.
@@ -206,5 +212,12 @@ func (m Minutes) Text(loc *time.Location) string {
 		}
 	}
 	list("Open questions", m.OpenQuestions)
+	if len(m.Pauses) > 0 {
+		gaps := make([]string, 0, len(m.Pauses))
+		for _, p := range m.Pauses {
+			gaps = append(gaps, p.Text(loc))
+		}
+		list("Not written down", gaps)
+	}
 	return b.String()
 }

@@ -15,6 +15,7 @@ import { playSound, preloadSounds, type StopSound } from '@/shared/sounds';
 import { callsApi } from '@/shared/api/client';
 import { useActiveCall } from './ActiveCallProvider';
 import type { RingState } from './CallViewPage';
+import { incomingWording } from './addPeople';
 
 interface IncomingCall {
   callId: string;
@@ -23,6 +24,10 @@ interface IncomingCall {
   channelId?: string;
   /** A stand-up ringing everybody it is for as it starts: callerName is its name. */
   standing?: boolean;
+  /** Somebody in a call that is already going is ringing you into it. */
+  ongoing?: boolean;
+  /** Who else is in it, apart from whoever is calling. */
+  with?: string[];
 }
 
 /** How long to keep ringing before treating it as missed. */
@@ -61,6 +66,7 @@ export function IncomingCallDialog() {
     if (onItsPage) dismiss(onItsPage);
   }, [activeCall, onItsPage, dismiss, queue]);
 
+  const answerRef = useRef<HTMLButtonElement>(null);
   const stopToneRef = useRef<StopSound>();
   const giveUpTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
@@ -90,6 +96,8 @@ export function IncomingCallDialog() {
                 callType: payload.callType ?? 'video',
                 channelId: payload.channelId,
                 standing: payload.kind === 'standing',
+                ongoing: !!payload.ongoing,
+                with: Array.isArray(payload.with) ? payload.with : [],
               },
             ]
       );
@@ -151,7 +159,15 @@ export function IncomingCallDialog() {
 
   return (
     <Dialog open={!!call} onOpenChange={(open) => !open && call && decline()}>
-      <DialogContent className="max-w-sm">
+      <DialogContent
+        className="max-w-sm"
+        // Enter answers, as the ring invites: the focus starts on Answer, not on
+        // Decline, which comes first only in reading order.
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          answerRef.current?.focus();
+        }}
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             {call?.callType === 'audio' ? (
@@ -162,7 +178,7 @@ export function IncomingCallDialog() {
             {call?.standing ? 'Stand-up starting' : `Incoming ${call?.callType === 'audio' ? 'call' : 'video call'}`}
           </DialogTitle>
           <DialogDescription className="break-anywhere">
-            {call?.standing ? `${call.callerName} is starting now.` : `${call?.callerName} is calling.`}
+            {call && incomingWording(call.callerName, call)}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter className="gap-2 sm:justify-center">
@@ -170,7 +186,7 @@ export function IncomingCallDialog() {
             <PhoneOff className="mr-2 h-4 w-4" />
             {call?.standing ? 'Not now' : 'Decline'}
           </Button>
-          <Button onClick={answer}>
+          <Button ref={answerRef} onClick={answer}>
             <Phone className="mr-2 h-4 w-4" />
             {call?.standing ? 'Join' : 'Answer'}
           </Button>

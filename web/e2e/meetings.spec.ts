@@ -593,12 +593,12 @@ test.describe('6. calendar', () => {
     const dialog = mia.page.getByRole('dialog');
     await dialog.getByLabel('Name', { exact: true }).fill('Check in');
     await fillMeetingTime(mia.page, at(4, 10, 30), '1 hour');
-    await dialog.getByLabel('People', { exact: true }).fill('Pat');
-    await dialog.getByRole('button', { name: NAME('pat') }).click();
+    await dialog.getByLabel('Find people').fill('Pat');
+    await dialog.getByRole('checkbox', { name: NAME('pat') }).check();
     await expect(dialog.getByRole('status').filter({ hasText: 'You can still go ahead' })).toHaveCount(0);
     await expect(dialog.getByRole('button', { name: 'Schedule', exact: true })).toBeVisible();
-    await dialog.getByLabel('People', { exact: true }).fill('Alice');
-    await dialog.getByRole('button', { name: NAME('alice') }).click();
+    await dialog.getByLabel('Find people').fill('Alice');
+    await dialog.getByRole('checkbox', { name: NAME('alice') }).check();
     const warning = dialog.getByRole('status').filter({ hasText: 'You can still go ahead' });
     await expect(warning).toContainText(`${NAME('alice')}: focus time`);
     // Pat is free: the warning names nobody else.

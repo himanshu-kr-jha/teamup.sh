@@ -26,7 +26,7 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
-    id: '2026-11-19-d',
+    id: '2026-11-19-f',
     date: '2026-11-19',
     title: 'Backgrounds go on without freezing your video',
     changes: [
@@ -35,6 +35,120 @@ export const RELEASES: Release[] = [
         title: 'No more frozen video while a background goes on',
         body: 'Choosing a blur or a picture in a call no longer freezes your video for you or for others. Your camera keeps going as it is while the background gets ready, then switches over in one go. The menu now stays open and shows a preview of your camera with the background on, and the first background you choose comes on faster.',
         link: '/calls',
+      },
+    ],
+  },
+  {
+    id: '2026-11-19-e',
+    date: '2026-11-19',
+    title: 'Find people and teams by typing',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'Search when you invite people',
+        body: 'Starting a call, scheduling a meeting or choosing who a stand-up is for, type a few letters of a name, an email, a company role or a team. Press Enter when only one person is left, or use the arrow keys, and whoever you picked stays at the top.',
+      },
+      {
+        area: 'tasks',
+        title: 'Search in every list of people',
+        body: 'Assigning a task, adding people to it, filtering the board by person or team, and giving project access all have a search box now, so nobody has to scroll a long list to find somebody.',
+      },
+      {
+        area: 'app',
+        title: 'Teams are searchable too',
+        body: 'Find a team by its name or by somebody on it, on Organization, in a stand-up and in every team filter. Escape clears what you typed before it closes anything.',
+      },
+    ],
+  },
+  {
+    id: '2026-11-19-c',
+    date: '2026-11-19',
+    title: 'A fix for the camera warning in calls',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'No false camera warning',
+        body: 'The warning that TeamUp could not use your camera or microphone no longer shows while both work, and no longer appears when you close the screen-sharing picker. When something is wrong it says whether it is the camera or the microphone and why, goes away as soon as that device comes on, and can be dismissed.',
+      },
+    ],
+  },
+  {
+    id: '2026-11-19-b',
+    date: '2026-11-19',
+    title: 'Noise cancellation in calls',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'Background noise taken out of your microphone',
+        body: 'Noise behind you, such as a fan, traffic or the hum of a room, is filtered out on your own device before anybody hears it, while your voice comes through. It is on unless you turn it off.',
+      },
+      {
+        area: 'meetings',
+        title: 'Where to switch it',
+        body: 'Use the Noise cancellation switch on the screen before a call, or in the menu beside the microphone button during one. Your choice is kept for next time.',
+      },
+    ],
+  },
+  {
+    id: '2026-11-19-a',
+    date: '2026-11-19',
+    title: 'A call that survives a refresh',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'Refreshing the page keeps you in the call',
+        body: 'Reload the page during a call and you go straight back in, with your microphone and camera as they were. The others do not see you leave.',
+      },
+      {
+        area: 'meetings',
+        title: 'Back no longer leaves the call',
+        body: 'On a call, Back, or the back gesture on a phone, takes you to the page before with the call in the corner. Closing the tab asks first.',
+      },
+    ],
+  },
+  {
+    id: '2026-11-18-f',
+    date: '2026-11-18',
+    title: 'Meeting notes on and off, and paused in a call',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'Pause the notes in a call',
+        body: 'Anybody in a call can pause the notes with the notebook button under the call, and resume them later. Everybody sees who paused them and when, nothing said while they are paused is written down, and the minutes say where the gap was.',
+      },
+      {
+        area: 'meetings',
+        title: 'Take notes, or not, from the start',
+        body: 'Starting a call, scheduling a meeting or setting up a stand-up has a Take notes switch. Admins choose under Organization, Meeting notes whether notes are taken in every call or only when someone turns them on.',
+      },
+    ],
+  },
+  {
+    id: '2026-11-18-e',
+    date: '2026-11-18',
+    title: 'Add people to a call',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'Ring a colleague into the call you are in',
+        body: 'In a call, press Add people at the top, tick the colleagues you want and press Ring. Their phone rings as for any call, it says who is already in it, and answering brings them straight in. While it rings you can cancel it, and if they decline or do not answer everyone in the call is told, while the call carries on. Guests, next to it, is still for people from outside the company.',
+      },
+    ],
+  },
+  {
+    id: '2026-11-18-d',
+    date: '2026-11-18',
+    title: 'See who is talking, and raise your hand',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'A microphone that moves when someone speaks',
+        body: 'The microphone on each person in a call now shows three small bars that move with their voice, and your own microphone button moves with yours, so you can see you are being heard. If your system is set to reduce motion, the bars stay still and simply show who is speaking.',
+      },
+      {
+        area: 'meetings',
+        title: 'Raise your hand',
+        body: 'Press the hand button in a call, or Ctrl+Shift+H, to raise your hand. Everyone sees it on your picture with your place in line, and the organizer can lower hands from the list at the top of the call. Your hand comes down by itself once you have been speaking for a few seconds.',
       },
     ],
   },

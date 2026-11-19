@@ -32,10 +32,16 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.POST("/calls/:id/record", h.StartRecording)
 	rg.POST("/calls/:id/end", h.EndCall)
 	rg.POST("/calls/:id/decline", h.DeclineCall)
+	rg.POST("/calls/:id/ring", h.RingInto)
+	rg.DELETE("/calls/:id/ring/:userId", h.CancelRing)
 	rg.POST("/calls/:id/mute/:userId", h.MuteParticipant)
+	rg.PUT("/calls/:id/hand", h.putHand)
 	rg.DELETE("/calls/:id/record", h.StopRecording)
 
 	rg.GET("/calls/:id/log", h.GetCallLog)
+	rg.GET("/calls/:id/notes", h.getNotes)
+	rg.PUT("/calls/:id/notes", h.putNotes)
+	rg.GET("/notes-default", h.notesDefault)
 	rg.GET("/calls/:id/chat", h.listChat)
 	rg.POST("/calls/:id/chat", h.sendChat)
 	rg.POST("/calls/:id/knock", h.Knock)
@@ -134,6 +140,8 @@ func (h *Handler) CreateCall(c *gin.Context) {
 		ChannelID *string  `json:"channelId"`
 		CallType  string   `json:"callType" binding:"required,oneof=video audio"`
 		Invitees  []string `json:"invitees"`
+		// TakeNotes is the switch in the dialog; left out, the organization's default.
+		TakeNotes *bool `json:"takeNotes"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -182,6 +190,10 @@ func (h *Handler) CreateCall(c *gin.Context) {
 
 	call, err := h.service.CreateCall(ctx, orgID, userID, req.Title, req.CallType, channelID, invitees)
 	if err != nil {
+		httpx.Error(c, err, "failed to create call")
+		return
+	}
+	if err := h.service.ChooseNotes(ctx, orgID, call.ID, req.TakeNotes); err != nil {
 		httpx.Error(c, err, "failed to create call")
 		return
 	}
@@ -239,9 +251,17 @@ func (h *Handler) DeclineCall(c *gin.Context) {
 
 	// Nobody is rung for a meeting, so there is nothing to turn down, and an
 	// invitee must not be able to end one this way.
+	// Somebody rung into one while it is on can say no to that ring.
 	if call.ScheduledStart != nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "a scheduled meeting cannot be declined"})
-		return
+		rung, err := h.service.wasRungInto(ctx, id, userID)
+		if err != nil {
+			httpx.Error(c, err, "failed to decline call")
+			return
+		}
+		if !rung {
+			c.JSON(http.StatusConflict, gin.H{"error": "a scheduled meeting cannot be declined"})
+			return
+		}
 	}
 
 	// Only somebody who was actually called can decline it.

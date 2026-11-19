@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { ChevronLeft, Download, History, Video } from 'lucide-react';
@@ -6,7 +6,7 @@ import { Badge } from '@/shared/components/ui/badge';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
+import { SearchSelect, useTeamOptions } from '@/shared/components/SearchSelect';
 import { fieldWorkApi, standingApi } from '@/shared/api/client';
 import { Switch } from '@/shared/components/ui/switch';
 import { useAuth } from '@/features/auth/AuthProvider';
@@ -88,7 +88,8 @@ export function AttendancePage() {
   // The team filter's options are the same ones the task dashboard offers,
   // which are empty for somebody who answers for nobody.
   const { data: dashboard } = useDashboard(undefined);
-  const teams = dashboard?.teams ?? [];
+  const teams = useMemo(() => dashboard?.teams ?? [], [dashboard]);
+  const teamOptions = useTeamOptions(teams, [{ value: ALL_TEAMS, label: 'All teams' }]);
 
   const { user } = useAuth();
   const reviewer = can(user, PERMS.attendance);
@@ -175,19 +176,15 @@ export function AttendancePage() {
               </>
             )}
           {teams.length > 0 && (
-            <Select value={team ?? ALL_TEAMS} onValueChange={(v) => update({ team: v === ALL_TEAMS ? null : v })}>
-              <SelectTrigger className="h-9 w-full sm:w-48" aria-label="Filter by team">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={ALL_TEAMS}>All teams</SelectItem>
-                {teams.map((t) => (
-                  <SelectItem key={t.id} value={t.id}>
-                    {t.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <SearchSelect
+              value={team ?? ALL_TEAMS}
+              onChange={(v) => update({ team: v === ALL_TEAMS ? null : v })}
+              options={teamOptions}
+              aria-label="Filter by team"
+              searchPlaceholder="Search teams"
+              nobody="No team"
+              className="h-9 w-full sm:w-48"
+            />
           )}
           </div>
         </div>

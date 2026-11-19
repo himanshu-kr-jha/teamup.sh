@@ -812,6 +812,11 @@ The same menu has colour filters (warm, cool, black and white and others), appli
 MediaPipe's first run is slow, a fraction of a second with a graphics card and a few seconds without, so it is run once on a blank picture before the camera switches over: the camera keeps its plain picture meanwhile and the button shows a spinner until the effect is on screen.
 A change made while the camera is off is applied when it comes back on.
 
+Noise cancellation runs RNNoise on the microphone in the browser, in an AudioWorklet, from `@sapphi-red/web-noise-suppressor` (MIT, with RNNoise itself under BSD-3-Clause).
+Its worklet and WebAssembly (about 150 KB, 115 KB compressed) are part of the build under `/assets/`, so they too come from this server and never a CDN, and are fetched only once somebody's microphone goes through them.
+It is on unless a person turns it off, and the browser's own noise suppression is turned off while it runs; echo cancellation stays on.
+A browser without AudioWorklet or WebAssembly, or one where it fails to start, keeps the browser's own filter and says so.
+
 The ring of an incoming call, the ringback the caller hears, the end of a call and a new message are recorded sounds in `web/public/sounds/`, levelled to the same loudness.
 The joined and knock chimes are still synthesised.
 The bell in a conversation's header sets what that conversation interrupts each member with: every message, only messages that mention them, or nothing, mentions included (`channel_members.notify_level`).

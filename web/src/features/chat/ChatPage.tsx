@@ -1,6 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { useMediaQuery } from '@/shared/hooks/useMediaQuery';
-import { flushSync } from 'react-dom';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import {
   Hash, Send, Paperclip, Smile, Settings, ChevronLeft, MessageSquare, User,
@@ -341,15 +340,21 @@ export function ChatPage() {
     if (!mention) return;
     const caret = composerRef.current?.selectionStart ?? message.length;
     const next = insertMention(message, mention.start, caret, person);
-    // At once, not on the next frame: a key typed straight after picking would
-    // otherwise land before the caret is moved, and the caret then jump back over it.
-    flushSync(() => {
-      setMessage(next.text);
-      setMention(null);
-    });
-    composerRef.current?.focus();
-    composerRef.current?.setSelectionRange(next.caret, next.caret);
+    setMessage(next.text);
+    setMention(null);
+    mentionCaret.current = next.caret;
   };
+  // The caret goes after the name as soon as the new text is in the box, before
+  // the next key. Done a frame later, a fast typist's next letter landed first
+  // and was left behind the caret ("thanks @Alice or the notesf").
+  const mentionCaret = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const caret = mentionCaret.current;
+    if (caret === null || !composerRef.current) return;
+    mentionCaret.current = null;
+    composerRef.current.focus();
+    composerRef.current.setSelectionRange(caret, caret);
+  }, [message]);
 
   // Recording a voice message replaces the message box; a video message has a dialog.
   const [recordingVoice, setRecordingVoice] = useState(false);

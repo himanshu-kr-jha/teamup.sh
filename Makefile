@@ -1,4 +1,4 @@
-.PHONY: lint-go build build-frontend test lint docker helm migrate-up migrate-down migrate-version migrate-create run dev help test-services test-services-down test-go test-web e2e check deploy deploy-check
+.PHONY: lint-go build build-frontend test lint docker helm migrate-up migrate-down migrate-version migrate-create run dev help test-services test-services-down test-go test-web e2e check check-unlocked deploy deploy-check
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
@@ -221,7 +221,7 @@ lint-go:
 test-go:
 	@$(TEST_ENV) gofmt -l cmd internal pkg | (! grep .) || { echo "gofmt wants these formatted"; exit 1; }
 	@$(TEST_ENV) go vet ./...
-	@$(TEST_ENV) go test ./...
+	@$(TEST_ENV) scripts/with-test-lock.sh go test ./...
 
 test-web:
 	cd web && npm run --silent lint && npx tsc --noEmit && npx vitest run
@@ -230,9 +230,14 @@ test-web:
 # LiveKit's address at build time, so it is rebuilt with the test ports first.
 e2e:
 	@$(TEST_ENV) $(MAKE) --no-print-directory build
-	@web/e2e/run-meetings.sh $(ARGS)
+	@scripts/with-test-lock.sh web/e2e/run-meetings.sh $(ARGS)
 
-check: test-services test-web lint-go test-go e2e
+# The whole gate holds the test services' lock (scripts/with-test-lock.sh), so
+# another checkout's run cannot drop its test database or take its port halfway.
+check:
+	@scripts/with-test-lock.sh $(MAKE) --no-print-directory check-unlocked
+
+check-unlocked: test-services test-web lint-go test-go e2e
 	@echo "All checks passed."
 
 deploy:

@@ -34,8 +34,23 @@ function gridOf(columns: number, count: number, width: number, height: number, g
  * a laptop window stacking two faces looks like a mistake (decision 37). Two people
  * on a phone held upright still stack, simply because the space is taller than wide.
  */
-export function bestGrid(count: number, width: number, height: number, gap: number = TILE_GAP): Grid {
+export function bestGrid(
+  count: number,
+  width: number,
+  height: number,
+  gap: number = TILE_GAP,
+  /**
+   * The corner window keeps everybody on one row while each tile stays at least
+   * this wide: a short window wrapped to two rows cut its tiles in half and left
+   * one alone on the second row.
+   */
+  oneRowFrom?: number
+): Grid {
   if (count <= 0) return { columns: 0, rows: 0, tileWidth: 0, tileHeight: 0 };
+  if (oneRowFrom !== undefined && count > 1) {
+    const row = gridOf(count, count, width, height, gap);
+    if (row.tileWidth >= oneRowFrom) return row;
+  }
   if (count === 2 && width > height) {
     const sideBySide = gridOf(2, count, width, height, gap);
     if (sideBySide.tileWidth > 0) return sideBySide;

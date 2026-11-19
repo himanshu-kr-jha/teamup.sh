@@ -1,13 +1,17 @@
 import { useRef, useState, type ComponentType, type ReactNode } from 'react';
-import { MediaDeviceMenu, useRoomContext, useTrackToggle } from '@livekit/components-react';
+import { MediaDeviceMenu, useIsSpeaking, useLocalParticipant, useRoomContext, useTrackToggle } from '@livekit/components-react';
 import { Track } from 'livekit-client';
 import { Mic, MicOff, MonitorOff, MonitorUp, Video, VideoOff } from 'lucide-react';
 import { useToast } from '@/shared/hooks/useToast';
 import { BackgroundPicker } from './BackgroundPicker';
+import { MicrophoneMenu } from './NoiseControls';
 import { useMeetingChatPanel } from './MeetingChat';
 import { cn } from '@/shared/utils/cn';
 import { shortcutHint, type ShortcutId } from '@/shared/shortcuts/catalogue';
 import { useShortcut } from '@/shared/shortcuts/ShortcutsProvider';
+import { HandButton, useHands } from './Hands';
+import { SpeakingBars } from './SpeakingBars';
+import { deviceProblem, inCallText, wasReported, type InputDevice } from './mediaErrors';
 
 /** Whether this browser can capture a screen at all. Most phone browsers cannot. */
 export function canShareScreen(): boolean {
@@ -31,18 +35,26 @@ const CONTROLS: Record<
   [Track.Source.ScreenShare]: { on: 'Stop sharing your screen', off: 'Share your screen', IconOn: MonitorOff, IconOff: MonitorUp, shortcut: 'call.share' },
 };
 
+/**
+ * A camera or microphone that would not come on. The first time it is turned on
+ * the banner over the call says why (MediaErrorBanner); turning it back on after
+ * it was off fails only here, so that is a toast in the same words.
+ */
+function deviceFailed(say: (text: string) => void, error: unknown, device: InputDevice) {
+  if (!wasReported(error)) say(inCallText(deviceProblem(error), device));
+}
+
 function useToggle(source: ToggleSource) {
   const toast = useToast();
   return useTrackToggle({
     source,
     onDeviceError: (error: Error) => {
-      // Closing the browser's picker is changing your mind, not a failure.
-      if (error.name === 'NotAllowedError' && source === Track.Source.ScreenShare) return;
-      toast.error(
-        source === Track.Source.ScreenShare
-          ? 'Could not share your screen.'
-          : 'TeamUp could not use that device. Check the permission in your browser.'
-      );
+      if (source === Track.Source.ScreenShare) {
+        // Closing the browser's picker is changing your mind, not a failure.
+        if (error.name !== 'NotAllowedError') toast.error('Could not share your screen.');
+        return;
+      }
+      deviceFailed(toast.error, error, source === Track.Source.Camera ? 'camera' : 'microphone');
     },
   });
 }
@@ -68,30 +80,57 @@ function Toggle({ source, compact }: { source: ToggleSource; compact?: boolean }
       )}
     >
       <Icon className={compact ? 'h-4 w-4' : 'h-5 w-5'} aria-hidden="true" />
+      {/* Your voice going out, beside the microphone that carries it. */}
+      {!compact && source === Track.Source.Microphone && enabled && <OwnVoice />}
     </button>
   );
 }
 
-function WithDeviceMenu({ source, kind, label }: { source: ToggleSource; kind: MediaDeviceKind; label: string }) {
+/** Moving bars for whatever your own microphone hears. */
+function OwnVoice() {
+  const { localParticipant } = useLocalParticipant();
+  const speaking = useIsSpeaking(localParticipant);
+  return <SpeakingBars participant={localParticipant} speaking={speaking} muted={false} bare always size="md" className="-ml-0.5 h-5" />;
+}
+
+function WithDeviceMenu({ source, kind, label, menu }: { source: ToggleSource; kind: MediaDeviceKind; label: string; menu?: ReactNode }) {
   return (
     <div className="lk-button-group">
       <Toggle source={source} />
       <div className="lk-button-group-menu">
-        <MediaDeviceMenu kind={kind} aria-label={label} title={label} />
+        {menu ?? <MediaDeviceMenu kind={kind} aria-label={label} title={label} />}
       </div>
     </div>
   );
 }
 
-/** The full set, under the call. Anybody in a call can share (decision 20). */
+/**
+ * The full set, under the call. Anybody in a call can share (decision 20).
+ *
+ * On a phone they wrap onto a second row. LiveKit makes a button group as tall as
+ * its container, which in a row that wraps is the height of both rows, so the
+ * microphone and camera grew to double height and pushed the last row off the
+ * bottom of the screen; here a group is only as tall as its buttons.
+ */
 export function CallControls({ children }: { children?: ReactNode }) {
   const [shareable] = useState(canShareScreen);
   return (
-    <div className="flex flex-wrap items-center justify-center gap-2" role="group" aria-label="Call controls">
-      <WithDeviceMenu source={Track.Source.Microphone} kind="audioinput" label="Choose a microphone" />
+    <div
+      className="flex flex-wrap items-center justify-center gap-2 [&_.lk-button-group]:h-auto"
+      role="group"
+      aria-label="Call controls"
+    >
+      {/* Which microphone, and noise cancellation. */}
+      <WithDeviceMenu
+        source={Track.Source.Microphone}
+        kind="audioinput"
+        label="Choose a microphone"
+        menu={<MicrophoneMenu label="Choose a microphone" />}
+      />
       <WithDeviceMenu source={Track.Source.Camera} kind="videoinput" label="Choose a camera" />
       <BackgroundPicker />
       {shareable && <Toggle source={Track.Source.ScreenShare} />}
+      <HandButton />
       {children}
     </div>
   );
@@ -119,25 +158,29 @@ export function ShareUnavailableNote() {
 /**
  * The call's keys: Ctrl+D for the microphone and Ctrl+E for the camera, as in
  * other meeting apps, Ctrl+Shift+S to share, Ctrl+Alt+C for the chat (as in Google
- * Meet; the browser keeps Ctrl+Shift+C for inspecting the page), and
+ * Meet; the browser keeps Ctrl+Shift+C for inspecting the page), Ctrl+Shift+H
+ * to raise or lower your hand, and
  * Space held to talk while muted. Bound only while a call is open, so the
  * browser keeps Ctrl+D for bookmarks the rest of the time.
  */
 export function CallShortcuts() {
   const room = useRoomContext();
   const chat = useMeetingChatPanel();
+  const hands = useHands();
   const toast = useToast();
   // Space turned the microphone on, so letting go of it turns it off again.
   const talking = useRef(false);
 
-  const deviceFailed = () => toast.error('TeamUp could not use that device. Check the permission in your browser.');
+  const micFailed = (error: unknown) => deviceFailed(toast.error, error, 'microphone');
   const me = () => room.localParticipant;
 
   useShortcut('call.mic', () => {
-    void me().setMicrophoneEnabled(!me().isMicrophoneEnabled).catch(deviceFailed);
+    void me().setMicrophoneEnabled(!me().isMicrophoneEnabled).catch(micFailed);
   });
   useShortcut('call.camera', () => {
-    void me().setCameraEnabled(!me().isCameraEnabled).catch(deviceFailed);
+    void me()
+      .setCameraEnabled(!me().isCameraEnabled)
+      .catch((error: unknown) => deviceFailed(toast.error, error, 'camera'));
   });
   useShortcut('call.share', () => {
     if (!canShareScreen()) return false;
@@ -152,12 +195,16 @@ export function CallShortcuts() {
     if (!chat) return false;
     chat.setOpen(!chat.open);
   });
+  useShortcut('call.hand', () => {
+    if (!hands?.canRaise) return false;
+    hands.toggle();
+  });
   useShortcut(
     'call.talk',
     () => {
       if (me().isMicrophoneEnabled) return false;
       talking.current = true;
-      void me().setMicrophoneEnabled(true).catch(deviceFailed);
+      void me().setMicrophoneEnabled(true).catch(micFailed);
     },
     {
       release: () => {

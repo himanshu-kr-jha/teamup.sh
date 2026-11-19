@@ -46,6 +46,10 @@ fi
 # For specs that need to look at or move rows the UI cannot (psql is already required above).
 export E2E_DATABASE_URL="postgres://$PG_USER:$PG_PASSWORD@$PG_HOST:$PG_PORT/$DB_NAME?sslmode=disable"
 export E2E_PORT="$PORT"
+# Seed ids for the specs to read, one file per database and port: a run against
+# another database once overwrote a shared file under a run in progress, whose
+# specs then used people that were not in its organization.
+export E2E_STATE_FILE="${E2E_STATE_FILE:-${TMPDIR:-/tmp}/teamup-e2e-state-$DB_NAME-$PORT.json}"
 export TEAMUP_OUTBOUND_ALLOW="127.0.0.1,::1,localhost"
 export TEAMUP_PORT="$PORT" TEAMUP_BASE_URL="http://localhost:$PORT" TEAMUP_ENV=development TEAMUP_LOG_LEVEL=${E2E_LOG_LEVEL:-info}
 export TEAMUP_DATABASE_URL="postgres://$PG_USER:$PG_PASSWORD@$PG_HOST:$PG_PORT/$DB_NAME?sslmode=disable"
@@ -76,15 +80,33 @@ export TEAMUP_SETUP_OIDC_PROVIDER=google TEAMUP_SETUP_GOOGLE_CLIENT_ID=e2e.apps.
 
 cd "$ROOT"
 "$ROOT/bin/teamup" migrate up
-"$ROOT/bin/teamup" server >"$LOG" 2>&1 &
-SERVER=$!
-trap 'kill "$SERVER" 2>/dev/null || true; wait "$SERVER" 2>/dev/null || true' EXIT
-
-for _ in $(seq 1 60); do
-  curl -fsS "http://localhost:$PORT/readyz" >/dev/null 2>&1 && break
-  kill -0 "$SERVER" 2>/dev/null || { echo "server exited; see $LOG" >&2; exit 1; }
-  sleep 1
+# The test port (55470) sits in Linux's range for outgoing connections, so now
+# and then some connection on the machine is using it as its own end for a
+# moment, and the server cannot listen there: "address already in use". The
+# server of a run that has just ended can hold it for a few seconds too. Both
+# pass, so starting again a little later is the cure; anything that keeps the
+# port for longer is named.
+SERVER=
+trap 'if [ -n "$SERVER" ]; then kill "$SERVER" 2>/dev/null || true; wait "$SERVER" 2>/dev/null || true; fi' EXIT
+for attempt in $(seq 1 10); do
+  "$ROOT/bin/teamup" server >"$LOG" 2>&1 &
+  SERVER=$!
+  for _ in $(seq 1 60); do
+    curl -fsS "http://localhost:$PORT/readyz" >/dev/null 2>&1 && break
+    kill -0 "$SERVER" 2>/dev/null || break
+    sleep 1
+  done
+  kill -0 "$SERVER" 2>/dev/null && break
+  wait "$SERVER" 2>/dev/null || true
+  SERVER=
+  if ! grep -q "address already in use" "$LOG"; then
+    echo "server exited; see $LOG" >&2
+    exit 1
+  fi
+  echo "note: port $PORT is busy (attempt $attempt); trying again." >&2
+  sleep 3
 done
+[ -n "$SERVER" ] || { echo "Port $PORT stayed in use; see $LOG. Stop whatever holds it, or set E2E_PORT." >&2; exit 1; }
 curl -fsS "http://localhost:$PORT/readyz" >/dev/null || { echo "server never became ready; see $LOG" >&2; exit 1; }
 
 cd "$ROOT/web"

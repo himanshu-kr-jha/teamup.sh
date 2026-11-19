@@ -1,5 +1,8 @@
 // Finding somebody among the members: by what is written about them (name,
-// email, company role, teams, roles), narrowed by a team or a role.
+// email, company role, teams, roles), narrowed by a team or a role. The
+// matching itself is the app's one rule, in shared/utils/peopleSearch.
+
+import { matches, personFacts } from '@/shared/utils/peopleSearch';
 
 export interface Searchable {
   name: string;
@@ -18,16 +21,10 @@ export interface MemberFilter {
   role: string;
 }
 
-/** Lower case, without accents, so "jose" finds "José". */
-const fold = (s: string) => s.normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
-
 export function memberMatches(u: Searchable, f: MemberFilter): boolean {
   if (f.team && !(u.teams ?? []).includes(f.team)) return false;
   if (f.role && !(u.roles ?? []).includes(f.role)) return false;
-  const words = fold(f.query).split(/\s+/).filter(Boolean);
-  if (words.length === 0) return true;
-  const about = fold([u.name, u.email, u.jobTitle, ...(u.teams ?? []), ...(u.roles ?? [])].filter(Boolean).join(' '));
-  return words.every((w) => about.includes(w));
+  return matches(personFacts(u), f.query);
 }
 
 /** Whether somebody is narrowing the list at all. */

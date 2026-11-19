@@ -11,6 +11,14 @@ import {
 } from './tileLayout';
 
 describe('bestGrid', () => {
+  it('keeps the corner window on one row while tiles stay wide enough', () => {
+    // A phone's corner window, 280 by 150 for its tiles: three on a row are 88 wide.
+    expect(bestGrid(3, 280, 150, 8).columns).toBe(2);
+    expect(bestGrid(3, 280, 150, 8, 72)).toMatchObject({ columns: 3, rows: 1 });
+    // Too narrow for that, it wraps as before.
+    expect(bestGrid(4, 200, 150, 8, 72).rows).toBe(2);
+  });
+
   it('fills the space with one tile at 16:9', () => {
     const grid = bestGrid(1, 1600, 900, 8);
     expect(grid).toMatchObject({ columns: 1, rows: 1, tileWidth: 1600, tileHeight: 900 });

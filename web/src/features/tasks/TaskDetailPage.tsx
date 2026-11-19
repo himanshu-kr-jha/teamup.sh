@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { LinkedText } from '@/shared/components/LinkedText';
 import { useParams, useNavigate } from 'react-router-dom';
 import { ChevronLeft, Calendar, MessageSquare, MoreVertical, UserPlus, History, Paperclip, Plus } from 'lucide-react';
@@ -27,6 +27,8 @@ import { LabelBadge } from './LabelBadge';
 import { MAX_LABEL, colorFor, existingLabel } from './labels';
 import { ShowMoreButton, useShowMore } from '@/shared/components/ShowMore';
 import { PeoplePicker, addEach, addLabel } from '@/shared/components/PeoplePicker';
+import { SearchSelect, usePersonOptions } from '@/shared/components/SearchSelect';
+import { byName } from '@/shared/utils/peopleSearch';
 import { useUpload } from '@/features/files/useUpload';
 import { StagedFiles, type StagedFile } from '@/features/files/StagedFiles';
 import { filesFrom, pastedAttachments } from '@/features/files/pasted';
@@ -118,7 +120,11 @@ function TaskDetailView() {
     queryKey: ['assignable-users'],
     queryFn: () => tasksApi.assignableUsers(),
   });
-  const members = membersData?.data ?? [];
+  const members = useMemo(
+    () => [...(membersData?.data ?? [])].map((m) => ({ id: m.userId, name: m.name, email: m.email })).sort(byName),
+    [membersData]
+  );
+  const assigneeOptions = usePersonOptions(members);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const toast = useToast();
@@ -414,19 +420,14 @@ function TaskDetailView() {
                         task held by an organisation admin shows who has it and
                         why it cannot be moved, rather than a picker that 403s. */}
                     {mayReassign ? (
-                      <Select
+                      <SearchSelect
                         value=""
-                        onValueChange={(v) => updateTaskMutation.mutate({ assigneeId: v } as any)}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder={task.assigneeName ? 'Reassign' : 'Assign someone'} />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {members.map((m: any) => (
-                            <SelectItem key={m.userId} value={m.userId}>{m.name}</SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                        onChange={(v) => updateTaskMutation.mutate({ assigneeId: v } as any)}
+                        options={assigneeOptions}
+                        placeholder={task.assigneeName ? 'Reassign' : 'Assign someone'}
+                        searchPlaceholder="Search people"
+                        aria-label={task.assigneeName ? 'Reassign' : 'Assign someone'}
+                      />
                     ) : (
                       <p className="text-sm text-muted-foreground">
                         {task.can?.reason
@@ -1045,6 +1046,7 @@ function WatchersCard({ taskId }: { taskId: string }) {
           selected={picked}
           onChange={setPicked}
           empty="Everybody you can add is already on this task."
+          autoFocus
         />
       </FormDialog>
     </>

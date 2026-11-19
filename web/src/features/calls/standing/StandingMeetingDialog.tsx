@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, UsersRound } from 'lucide-react';
-import { PeoplePicker } from '@/shared/components/PeoplePicker';
+import { PeoplePicker, TeamPicker } from '@/shared/components/PeoplePicker';
 import { FormDialog } from '@/shared/components/FormDialog';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
 import { Switch } from '@/shared/components/ui/switch';
 import { standingApi } from '@/shared/api/client';
+import { TakeNotesSwitch, useNotesDefault } from '../notetaker';
 import { cn } from '@/shared/utils/cn';
 import {
   WEEKDAY_OPTIONS,
@@ -52,6 +53,7 @@ export function StandingMeetingDialog({
   const [form, setForm] = useState<StandingForm>(blank);
   const [lengthText, setLengthText] = useState('30');
   const [audience, setAudience] = useState<AudienceForm>({ everyone: false, teamIds: [], personIds: [] });
+  const notesDefault = useNotesDefault(open);
 
   // What this person may choose from: everybody only for an admin, otherwise the
   // teams they manage and the people under them. The server checks it again.
@@ -74,6 +76,7 @@ export function StandingMeetingDialog({
       cameraRequired: !!start.cameraRequired,
       attendBeforeMinutes: start.attendBeforeMinutes ?? 30,
       attendAfterMinutes: start.attendAfterMinutes ?? 30,
+      takeNotes: start.takeNotes,
     });
     setLengthText(String(start.durationMinutes));
     const a = meeting?.audience;
@@ -93,8 +96,6 @@ export function StandingMeetingDialog({
   const current = { ...form, durationMinutes: Number(lengthText) };
   const problem = standingFormProblem(current) ?? audienceProblem(audience);
 
-  const toggleTeam = (id: string) =>
-    setAudience((a) => ({ ...a, teamIds: a.teamIds.includes(id) ? a.teamIds.filter((t) => t !== id) : [...a.teamIds, id] }));
   // Somebody already chosen stays on the list while editing, even if the editor
   // could not choose them now, so saving does not quietly drop them.
   const teamChoices = useMemo(() => {
@@ -248,25 +249,11 @@ export function StandingMeetingDialog({
                 {teamChoices.length > 0 && (
                   <div className="space-y-1.5">
                     <p className="text-xs text-muted-foreground">Teams, with the teams beneath them</p>
-                    <div className="flex flex-wrap gap-1.5">
-                      {teamChoices.map((team) => {
-                        const on = audience.teamIds.includes(team.id);
-                        return (
-                          <button
-                            key={team.id}
-                            type="button"
-                            aria-pressed={on}
-                            onClick={() => toggleTeam(team.id)}
-                            className={cn(
-                              'rounded-full border px-3 py-1 text-sm transition-colors',
-                              on ? 'border-primary bg-primary text-primary-foreground' : 'border-input bg-background hover:bg-accent'
-                            )}
-                          >
-                            {team.name}
-                          </button>
-                        );
-                      })}
-                    </div>
+                    <TeamPicker
+                      teams={teamChoices}
+                      selected={audience.teamIds}
+                      onChange={(ids) => setAudience((a) => ({ ...a, teamIds: ids }))}
+                    />
                   </div>
                 )}
                 <div className="space-y-1.5">
@@ -340,6 +327,14 @@ export function StandingMeetingDialog({
           </span>
         </Label>
       </div>
+
+      {notesDefault?.available && (
+        <TakeNotesSwitch
+          id="standingNotes"
+          checked={form.takeNotes ?? notesDefault.everyCall}
+          onCheckedChange={(on) => setForm({ ...form, takeNotes: on })}
+        />
+      )}
     </FormDialog>
   );
 }

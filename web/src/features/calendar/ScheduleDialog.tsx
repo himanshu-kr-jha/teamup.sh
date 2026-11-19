@@ -1,14 +1,16 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { addHours, addMinutes, startOfDay } from 'date-fns';
-import { AlertTriangle, Loader2, Mail, Search, X } from 'lucide-react';
+import { AlertTriangle, Loader2, Mail, X } from 'lucide-react';
 import { FormDialog } from '@/shared/components/FormDialog';
+import { PeoplePicker } from '@/shared/components/PeoplePicker';
 import { Input } from '@/shared/components/ui/input';
 import { Label } from '@/shared/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/shared/components/ui/select';
 import { calendarApi, callsApi, meetingsApi } from '@/shared/api/client';
 import { apiErrorMessage } from '@/shared/api/errors';
 import { splitEmails } from '@/features/calls/GuestAccess';
+import { TakeNotesSwitch, useNotesDefault } from '@/features/calls/notetaker';
 import { useToast } from '@/shared/hooks/useToast';
 import { cn } from '@/shared/utils/cn';
 import { useAuth } from '@/features/auth/AuthProvider';
@@ -72,10 +74,12 @@ export function ScheduleDialog({
   const [start, setStart] = useState('');
   const [duration, setDuration] = useState(30);
   const [invited, setInvited] = useState<string[]>([]);
-  const [search, setSearch] = useState('');
   // People from outside, by email: emailed an invitation with the guest links.
   const [guests, setGuests] = useState<string[]>([]);
   const [guestDraft, setGuestDraft] = useState('');
+  // Notes in the meeting: the organization's default until changed here.
+  const notesDefault = useNotesDefault(open && !item);
+  const [takeNotes, setTakeNotes] = useState<boolean | null>(null);
   const editingId = open && item?.callId ? item.callId : undefined;
   const { data: guestLink } = useQuery({
     queryKey: ['guest-link', editingId],
@@ -90,9 +94,9 @@ export function ScheduleDialog({
     setStart(toInputValue(slot.start));
     setDuration(initialDuration(slot.start, slot.end, !!item));
     setInvited((item?.inviteeIds ?? startWith).filter((id) => id !== (item?.organizerId ?? user?.id)));
-    setSearch('');
     setGuestDraft('');
     setGuests([]);
+    setTakeNotes(null);
     // startWith is a new array on every render; it matters only on opening.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, item, slot]);
@@ -138,10 +142,7 @@ export function ScheduleDialog({
   const nameOf = (id: string) => (id === user?.id ? 'You' : people.find((p) => p.id === id)?.name ?? 'Somebody');
   const hours = timesOk ? timelineWindow(startDate!, endDate!) : null;
 
-  const filter = search.trim().toLowerCase();
-  const choices = people.filter(
-    (p) => p.id !== user?.id && !invited.includes(p.id) && (!filter || (p.name ?? '').toLowerCase().includes(filter))
-  );
+  const choices = useMemo(() => people.filter((p) => p.id !== user?.id), [people, user?.id]);
 
   return (
     <FormDialog
@@ -164,7 +165,7 @@ export function ScheduleDialog({
         };
         const { data: result } = item?.callId
           ? await meetingsApi.update(item.callId, body)
-          : await meetingsApi.create(body);
+          : await meetingsApi.create({ ...body, takeNotes: notesDefault?.available ? (takeNotes ?? notesDefault.everyCall) : undefined });
         // Anything still typed in the guests box counts, as if added.
         const wanted = [...new Set([...guests, ...splitEmails(guestDraft).map((e) => e.toLowerCase())])];
         const meetingId = item?.callId ?? result.meeting.id;
@@ -230,38 +231,15 @@ export function ScheduleDialog({
 
       <div className="space-y-2">
         <Label htmlFor="meetingPeople">People</Label>
-        <div className="relative">
-          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-          <Input
-            id="meetingPeople"
-            className="pl-9"
-            placeholder="Add somebody by name"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
-        </div>
-        {(filter !== '' || invited.length === 0) && (
-          <ul className="max-h-32 space-y-0.5 overflow-y-auto rounded-md border border-border p-1">
-            {choices.length === 0 ? (
-              <li className="px-2 py-1 text-sm text-muted-foreground">Nobody to add.</li>
-            ) : (
-              choices.map((person) => (
-                <li key={person.id}>
-                  <button
-                    type="button"
-                    className="w-full rounded px-2 py-1 text-left text-sm hover:bg-accent"
-                    onClick={() => {
-                      setInvited((current) => [...current, person.id]);
-                      setSearch('');
-                    }}
-                  >
-                    {person.name}
-                  </button>
-                </li>
-              ))
-            )}
-          </ul>
-        )}
+        <PeoplePicker
+          inputId="meetingPeople"
+          people={choices}
+          selected={invited}
+          onChange={setInvited}
+          empty="Nobody else is in this organization yet."
+          listClassName="max-h-40"
+          listOnlyWhileSearching
+        />
       </div>
 
       <div className="space-y-2">
@@ -338,6 +316,10 @@ export function ScheduleDialog({
           </ul>
         )}
       </div>
+
+      {!item && notesDefault?.available && (
+        <TakeNotesSwitch id="meetingNotes" checked={takeNotes ?? notesDefault.everyCall} onCheckedChange={setTakeNotes} />
+      )}
 
       {conflicts.length > 0 && (
         <div role="status" className="flex items-start gap-2 rounded-md border border-amber-500/50 bg-amber-50 p-2 text-sm text-amber-950 dark:bg-amber-950/40 dark:text-amber-100">
