@@ -21,6 +21,7 @@ import { useToast } from '@/shared/hooks/useToast';
 import { cn, formatDate, formatTime } from '@/shared/utils/cn';
 import { shortcutHint } from '@/shared/shortcuts/catalogue';
 import { MAX_CHAT_MESSAGE, chatFromPacket, mergeChat, startsGroup, unreadCount } from './meetingChat';
+import { personOf } from './devices';
 
 /**
  * A meeting's own chat, beside the video, as in a video meeting's side panel:
@@ -59,7 +60,8 @@ export function MeetingChatProvider({ transport, children }: { transport: ChatTr
   const [open, setOpenState] = useState(false);
   const [seen, setSeen] = useState<ReadonlySet<string>>(() => new Set());
   const [preview, setPreview] = useState<MeetingChatMessage | null>(null);
-  const [me, setMe] = useState(room.localParticipant.identity);
+  // You by the person, not the device: what you wrote from your phone is yours here too.
+  const [me, setMe] = useState(personOf(room.localParticipant.identity));
 
   const transportRef = useRef(transport);
   transportRef.current = transport;
@@ -92,14 +94,14 @@ export function MeetingChatProvider({ transport, children }: { transport: ChatTr
 
   useEffect(() => {
     void load();
-    const onConnected = () => setMe(room.localParticipant.identity);
+    const onConnected = () => setMe(personOf(room.localParticipant.identity));
     const onReconnected = () => void load();
     const onData = (payload: Uint8Array, from?: RemoteParticipant, _kind?: unknown, topic?: string) => {
       const m = chatFromPacket(payload, from, topic);
       if (!m) return;
       setMessages((known) => mergeChat(known, [m]));
       if (openRef.current) markSeen([m]);
-      else if (m.senderId !== room.localParticipant.identity) setPreview(m);
+      else if (personOf(m.senderId) !== personOf(room.localParticipant.identity)) setPreview(m);
     };
     room.on(RoomEvent.Connected, onConnected);
     room.on(RoomEvent.Reconnected, onReconnected);
@@ -136,7 +138,7 @@ export function MeetingChatProvider({ transport, children }: { transport: ChatTr
     [markSeen]
   );
 
-  const identity = me || room.localParticipant.identity;
+  const identity = me || personOf(room.localParticipant.identity);
   const value = useMemo<ChatState>(
     () => ({
       messages,

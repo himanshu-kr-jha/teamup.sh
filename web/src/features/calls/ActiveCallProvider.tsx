@@ -16,12 +16,14 @@ import {
   useConnectionState,
   useRoomContext,
 } from '@livekit/components-react';
-import { ConnectionState, RoomEvent, type RoomOptions } from 'livekit-client';
+import { ConnectionState, DisconnectReason, RoomEvent, type RoomOptions } from 'livekit-client';
 import { useQuery } from '@tanstack/react-query';
 import { CallStage } from './CallStage';
 import { ROOM_OPTIONS } from './roomOptions';
 import { MeetingChatButton, MeetingChatProvider, StageWithChat, UnreadChatMark, type ChatTransport } from './MeetingChat';
-import { NotesBanner, NotesButton, isNotetaker, memberNotes, useOtherPeople } from './notetaker';
+import { NotesBanner, NotesButton, isNotetaker, memberNotes, useOtherConnections, useOtherPeople } from './notetaker';
+import { countPeople, movedMessage, samePerson, thisDevice } from './devices';
+import { CompanionChoice, CompanionNote, DeviceMoves, SoundToggle, type CompanionAnswer } from './Companion';
 import { CallControls, CallShortcuts, CompactCallControls, ShareUnavailableNote } from './CallControls';
 import { GuestAccess } from './GuestAccess';
 import { HandsProvider } from './Hands';
@@ -54,7 +56,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/shared/components/ui/dialog';
-import { callsApi, presenceApi } from '@/shared/api/client';
+import { callsApi, presenceApi, type OtherDevice } from '@/shared/api/client';
 import { useChime } from '@/shared/hooks/useChime';
 import { playSound, preloadSounds } from '@/shared/sounds';
 import { useDesktopNotifications } from '@/shared/hooks/useDesktopNotifications';
@@ -95,6 +97,19 @@ interface ActiveCall {
   media?: JoinOptions;
   /** Gone back into after a reload of the page (callMemory.ts), rather than joined. */
   resumed?: boolean;
+  /**
+   * A second camera (companion mode): you are in the call from another device too,
+   * so this one starts with its microphone and its sound off, to avoid an echo.
+   */
+  companion?: boolean;
+  /** Your other devices in the call, told to leave once this one is in ("Use this device for everything"). */
+  takeOverFrom?: string[];
+}
+
+/** A call joined while you are already in it from another device, waiting on how this one should join. */
+interface PendingCompanion {
+  call: ActiveCall;
+  others: OtherDevice[];
 }
 
 /**
@@ -103,6 +118,10 @@ interface ActiveCall {
  * is off, and the browser's default devices are used.
  */
 export interface JoinOptions {
+  /** Joining as a second camera (companion mode): the sound off as well as the microphone. */
+  companion?: boolean;
+  /** A second camera's sound, off unless it was turned on (kept through a reload). */
+  soundOff?: boolean;
   mic?: boolean;
   camera?: boolean;
   audioInput?: string;
@@ -116,8 +135,8 @@ interface ActiveCallContextValue {
   activeCall: ActiveCall | null;
   /** Joins a call, or does nothing if already in it. */
   join: (callId: string, options?: JoinOptions) => Promise<void>;
-  /** Goes into a standing meeting's room, with the token its join gave. */
-  enter: (callId: string, token: string, options?: JoinOptions) => void;
+  /** Goes into a standing meeting's room, with the token its join gave, and where else you are in it. */
+  enter: (callId: string, token: string, options?: JoinOptions, others?: OtherDevice[]) => void;
   /** Leaves without ending it for anybody else. */
   leave: () => void;
   joining: boolean;
@@ -130,6 +149,10 @@ interface ActiveCallContextValue {
   watchDoor: (callId: string | null) => void;
   /** The call being gone back into after a reload, until it is joined or that fails. */
   resuming: string | null;
+  /** Whether this device's sound is off, as a second camera's is until turned on. */
+  soundOff: boolean;
+  /** Turns this device's sound on or off; a second camera starts with it off. */
+  setSound: (on: boolean) => void;
 }
 
 const ActiveCallContext = createContext<ActiveCallContextValue | undefined>(undefined);
@@ -191,11 +214,16 @@ function useJoinAnnouncements() {
       toastRef.current(message);
       if (document.visibilityState !== 'visible') notify({ title: 'TeamUp call', body: message, tag: 'call-joined' });
     };
-    // The note-taker is not somebody joining: no sound, no toast.
+    // The note-taker is not somebody joining: no sound, no toast. Nor is another
+    // device of somebody already here, yours included (companion mode).
     const presentNow = () => [...room.remoteParticipants.values()].filter((p) => !isNotetaker(p)).map((p) => p.identity);
     const onConnected = () => tracker.connected(presentNow(), Date.now());
     const onJoined = (participant: { identity: string; name?: string; isAgent?: boolean }) => {
       if (isNotetaker(participant) || !tracker.joined(participant.identity, Date.now())) return;
+      const already = [room.localParticipant.identity, ...room.remoteParticipants.keys()].some(
+        (id) => id !== participant.identity && samePerson(id, participant.identity)
+      );
+      if (already) return;
       pending.push(participant.name || participant.identity);
       clearTimeout(timer);
       timer = setTimeout(flush, BURST_WINDOW_MS);
@@ -285,6 +313,9 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
   const [joining, setJoining] = useState(false);
   const [failure, setFailure] = useState<JoinFailure | null>(null);
   const [watchedDoor, watchDoor] = useState<string | null>(null);
+  const [pending, setPending] = useState<PendingCompanion | null>(null);
+  const [soundOff, setSoundOff] = useState(false);
+  const setSound = useCallback((on: boolean) => setSoundOff(!on), []);
   const clearFailure = useCallback(() => setFailure(null), []);
   const toast = useToast();
   const location = useLocation();
@@ -302,6 +333,40 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
   // the caller to join a call already over and sit in it until it gave up.
   const missedEarlyRef = useRef(new Map<string, string>());
 
+  // Into the call, or, when you are in it already from another device, first asked
+  // how this one joins. A reload is not asked: it goes back in as it was.
+  const begin = useCallback((call: ActiveCall, others: OtherDevice[] | undefined) => {
+    if (call.resumed || !others?.length) {
+      setSoundOff(call.media?.soundOff ?? !!call.companion);
+      setActiveCall(call);
+      return;
+    }
+    setPending({ call, others });
+  }, []);
+
+  const answerPending = useCallback(
+    (answer: CompanionAnswer) => {
+      if (!pending) return;
+      const { call, others } = pending;
+      setPending(null);
+      if (answer === 'camera') {
+        // A second angle: the camera on, the microphone and the sound off.
+        setSoundOff(true);
+        setActiveCall({ ...call, companion: true, media: { ...call.media, companion: true, mic: false, camera: true } });
+      } else {
+        setSoundOff(false);
+        setActiveCall({ ...call, takeOverFrom: others.map((o) => o.identity) });
+      }
+    },
+    [pending]
+  );
+
+  const cancelPending = useCallback(() => {
+    // Not joining after all: off the call's own page, which would only ask again.
+    if (pending && window.location.pathname === `/calls/${pending.call.callId}`) navigate('/calls', { replace: true });
+    setPending(null);
+  }, [pending, navigate]);
+
   const join = useCallback(
     async (callId: string, options?: JoinOptions, resumed?: boolean) => {
       setFailure(null);
@@ -316,17 +381,21 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
       if (activeCall?.callId === callId) return;
       setJoining(true);
       try {
-        const res = await callsApi.getToken(callId);
+        const res = await callsApi.getToken(callId, thisDevice());
         const voice = res.data.callType === 'audio';
-        setActiveCall({
-          callId,
-          token: res.data.token,
-          voice,
-          standing: options?.standing,
-          // A voice call starts with the camera off, whatever a video call last chose.
-          media: voice && options ? { ...options, camera: false } : options,
-          resumed,
-        });
+        begin(
+          {
+            callId,
+            token: res.data.token,
+            voice,
+            standing: options?.standing,
+            // A voice call starts with the camera off, whatever a video call last chose.
+            media: voice && options ? { ...options, camera: false } : options,
+            resumed,
+            companion: options?.companion,
+          },
+          res.data.otherDevices
+        );
       } catch (err) {
         const why = classifyJoinError(err);
         setFailure(why);
@@ -338,7 +407,7 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
         setJoining(false);
       }
     },
-    [activeCall?.callId, navigate, toast]
+    [activeCall?.callId, navigate, toast, begin]
   );
 
   // A reload moments after being in a call goes straight back into it, with the
@@ -351,15 +420,20 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
     if (!resume || resumedRef.current) return;
     resumedRef.current = true;
     if (resume.background && !sameChoice(resume.background, currentBackgroundChoice())) setBackgroundChoice(resume.background);
-    const { mic, camera, audioInput, videoInput, audioOutput, standing } = resume;
-    void join(resume.callId, { mic, camera, audioInput, videoInput, audioOutput, standing }, true).finally(() => setResuming(null));
+    const { mic, camera, audioInput, videoInput, audioOutput, standing, companion, soundOff: off } = resume;
+    void join(resume.callId, { mic, camera, audioInput, videoInput, audioOutput, standing, companion, soundOff: off }, true).finally(() =>
+      setResuming(null)
+    );
   }, [resume, join]);
 
-  const enter = useCallback((callId: string, token: string, options?: JoinOptions) => {
-    setFailure(null);
-    latestCallIdRef.current = callId;
-    setActiveCall({ callId, token, standing: true, media: options });
-  }, []);
+  const enter = useCallback(
+    (callId: string, token: string, options?: JoinOptions, others?: OtherDevice[]) => {
+      setFailure(null);
+      latestCallIdRef.current = callId;
+      begin({ callId, token, standing: true, media: options }, others);
+    },
+    [begin]
+  );
 
   const leave = useCallback(() => {
     // The page going away closes the room too; that is a reload or a closed tab,
@@ -533,9 +607,24 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
   const callOptions = useMemo(() => withNoiseCapture(roomOptions, useAuthStore.getState().user?.id), [roomOptions]);
 
   const value = useMemo(
-    () => ({ activeCall, join, enter, leave, joining, failure, clearFailure, watchedDoor, watchDoor, resuming }),
-    [activeCall, join, enter, leave, joining, failure, clearFailure, watchedDoor, resuming]
+    () => ({ activeCall, join, enter, leave, joining, failure, clearFailure, watchedDoor, watchDoor, resuming, soundOff, setSound }),
+    [activeCall, join, enter, leave, joining, failure, clearFailure, watchedDoor, resuming, soundOff, setSound]
   );
+
+  // Another tab of this browser is the same device, and joining from it took the
+  // call over (LiveKit lets one connection per identity in): this tab says so,
+  // rather than seeming to have dropped. Moved to another of your devices, the
+  // same: said, and left without ending anything for anybody.
+  const onDisconnected = useCallback(
+    (reason?: DisconnectReason) => {
+      if (reason === DisconnectReason.DUPLICATE_IDENTITY && !isLeavingPage()) {
+        toast.toast('You joined this call in another tab, so it moved there.');
+      }
+      leave();
+    },
+    [leave, toast]
+  );
+  const here = useMemo(() => thisDevice().kind, []);
 
   return (
     <ActiveCallContext.Provider value={value}>
@@ -555,7 +644,7 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
           video={activeCall.media?.camera ?? false}
           audio={activeCall.media?.mic ?? !!activeCall.voice}
           data-lk-theme="default"
-          onDisconnected={leave}
+          onDisconnected={onDisconnected}
           onError={onRoomError}
           // The room element is never unmounted by navigation; only its frame
           // changes, so the media session survives moving around the app.
@@ -568,12 +657,36 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
             reachable={activeCall.callId in reach ? reach[activeCall.callId] : null}
             resumed={!!activeCall.resumed}
           />
-          <RoomAudioRenderer />
+          {/* A second camera's sound is off until turned on, or the two devices echo. */}
+          <RoomAudioRenderer muted={soundOff} volume={soundOff ? 0 : 1} />
           <CameraBackground />
-          <RememberCall userId={user?.id} callId={activeCall.callId} standing={!!activeCall.standing} />
+          <RememberCall
+            userId={user?.id}
+            callId={activeCall.callId}
+            standing={!!activeCall.standing}
+            companion={!!activeCall.companion}
+            soundOff={soundOff}
+            joiningWith={{ mic: activeCall.media?.mic ?? !!activeCall.voice, camera: activeCall.media?.camera ?? false }}
+          />
           <NoiseCancellation />
+          <DeviceMoves
+            takeOverFrom={activeCall.takeOverFrom}
+            here={here}
+            onMoved={(to) => {
+              toast.toast(movedMessage(to));
+              forgetCallHands(tabStorage(), activeCall.callId);
+              leave();
+            }}
+          />
         </LiveKitRoom>
       )}
+      <CompanionChoice
+        open={!!pending}
+        here={here}
+        others={pending?.others ?? []}
+        onAnswer={answerPending}
+        onCancel={cancelPending}
+      />
       {resuming && !activeCall && location.pathname !== `/calls/${resuming}` && <ReconnectingNote />}
     </ActiveCallContext.Provider>
   );
@@ -598,9 +711,17 @@ function CallFrame({
   const navigate = useNavigate();
   const toast = useToast();
   const room = useRoomContext();
-  // People, not the note-taker: alone with it is alone.
+  // People, not the note-taker: alone with it is alone. Your own other device is
+  // you, so alone with your phone is alone too.
   const remote = useOtherPeople();
   const alone = remote.length === 0;
+  const people = countPeople(remote.map((p) => p.identity)) + 1;
+  // Every other connection, your own devices included: the call is not over for
+  // anybody while your phone is still in it.
+  const connections = useOtherConnections();
+  const { activeCall, soundOff, setSound } = useActiveCall();
+  const companion = !!activeCall?.companion;
+  const here = useMemo(() => thisDevice().kind, []);
   // Once somebody has been in, being alone again is waiting, not ringing: the
   // ring that started the call is long over.
   // Somebody back after a reload had their call answered long before.
@@ -675,8 +796,11 @@ function CallFrame({
     if (lift === null) return;
     const root = document.documentElement;
     root.style.setProperty('--toast-window', `calc(${lift}px - var(--toast-bottom, 0px))`);
+    // Toasts arrive from the side meanwhile, never across the window (globals.css).
+    root.dataset.callWindow = 'lifted';
     return () => {
       root.style.removeProperty('--toast-window');
+      delete root.dataset.callWindow;
     };
   }, [expanded, position, size]);
 
@@ -694,13 +818,13 @@ function CallFrame({
     // Whoever hangs up alone ends the call, even if somebody else dropped out a
     // moment ago and may be reloading: they come back to "This call has ended",
     // which is the truth, rather than to a room the server may never close.
-    const lastOut = remote.length === 0;
+    const lastOut = connections.length === 0;
     try {
       if (lastOut) {
         // Nobody is left, so the call is over rather than merely empty. Left
         // open it would sit "active" in everybody's history until the room
         // timed out.
-        await callsApi.end(callId).catch(() => {
+        await callsApi.end(callId, thisDevice()).catch(() => {
           // The room's own timeout closes it if this does not.
         });
       }
@@ -710,11 +834,12 @@ function CallFrame({
       forgetCallHands(tabStorage(), callId);
       onLeave();
     }
-  }, [room, onLeave, remote.length, callId]);
+  }, [room, onLeave, connections.length, callId]);
 
   // While their phone rings, the caller hears it ring, as on a phone: only when
   // it really is ringing ("Ringing\u2026"), and only until somebody comes in.
-  const ringing = alone && reachNow === true;
+  // Not on a second camera, whose sound is off: the other device hears it.
+  const ringing = alone && reachNow === true && !soundOff;
   useEffect(() => {
     if (!ringing) return;
     const stop = playSound('ringback', { loop: true });
@@ -858,7 +983,7 @@ function CallFrame({
                     ? 'Reconnecting to the call\u2026'
                     : alone
                       ? waitingLabel(reachNow)
-                      : compactCount(remote.length + 1, expanded)}
+                      : compactCount(people, expanded)}
                 </span>
               </span>
             ) : (
@@ -867,7 +992,7 @@ function CallFrame({
                   ? 'Reconnecting to the call\u2026'
                   : alone
                     ? waitingLabel(reachNow)
-                    : `${compactCount(remote.length + 1, expanded)}`}
+                    : `${compactCount(people, expanded)}`}
               </span>
             )}
             {expanded ? (
@@ -930,6 +1055,8 @@ function CallFrame({
               ) : (
                 <CompactCallControls />
               )}
+              {/* A second camera's sound, in the corner window too. */}
+              {companion && <SoundToggle off={soundOff} onChange={setSound} />}
               <Button
                 variant="ghost"
                 size="icon"
@@ -951,7 +1078,9 @@ function CallFrame({
               </Button>
             </div>
 
-            <BlockedAudioPrompt compact={!expanded} />
+            {/* Sound that is off on purpose is not sound the browser blocked. */}
+            {!soundOff && <BlockedAudioPrompt compact={!expanded} />}
+            {soundOff && expanded && <CompanionNote kind={here} />}
             <RingingStrip rings={rings} compact={!expanded} />
 
             <div className="min-h-0 flex-1">

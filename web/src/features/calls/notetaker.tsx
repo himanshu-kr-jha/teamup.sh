@@ -10,6 +10,7 @@ import { useToast } from '@/shared/hooks/useToast';
 import { Label } from '@/shared/components/ui/label';
 import { Switch } from '@/shared/components/ui/switch';
 import { cn } from '@/shared/utils/cn';
+import { samePerson } from './devices';
 
 /** The note-taker's identity in a room starts with this (internal/notetaker). */
 export const NOTETAKER_PREFIX = 'notes-';
@@ -23,10 +24,23 @@ export function isNotetaker(p: { identity: string; isAgent?: boolean }): boolean
 
 /**
  * The other people in the call: everybody else connected, without the
- * note-taker, which is not a person. Counts, "Still there?" and whether you
- * are last out all go by this.
+ * note-taker, which is not a person, and without your own other devices
+ * (companion mode), which are you. Somebody else in from two devices is here
+ * twice, once per device; count people with countPeople. Waiting, "Still
+ * there?" and the count in the header go by this.
  */
 export function useOtherPeople() {
+  const room = useRoomContext();
+  const me = room.localParticipant.identity;
+  return useRemoteParticipants().filter((p) => !isNotetaker(p) && !samePerson(p.identity, me));
+}
+
+/**
+ * Every other connection to the call, your own other devices included, and the
+ * note-taker not. Whether you are last out goes by this: the call does not end
+ * while your phone is still in it.
+ */
+export function useOtherConnections() {
   return useRemoteParticipants().filter((p) => !isNotetaker(p));
 }
 

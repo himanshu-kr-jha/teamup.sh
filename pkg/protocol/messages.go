@@ -58,6 +58,9 @@ const (
 	// How that ring ended, to everybody in the call: answered, declined,
 	// no_answer, busy, on_leave or cancelled.
 	TypeCallRingResult = "call.ring.result"
+	// Somebody picked a call up, to all of their own sessions: a ring still
+	// showing on another of their devices stops (companion mode).
+	TypeCallAnswered = "call.answered"
 
 	// Notifications
 	TypeNotificationNew  = "notification.new"

@@ -534,6 +534,10 @@ type StandingJoin struct {
 	RoomName string    `json:"roomName"`
 	Token    string    `json:"token"`
 	Date     string    `json:"date"`
+	// Identity is this device's identity in the room, and OtherDevices where
+	// else the person already is in it (companion mode).
+	Identity     string        `json:"identity"`
+	OtherDevices []OtherDevice `json:"otherDevices"`
 }
 
 // JoinStandingMeeting finds or makes the occurrence running now, and hands out a
@@ -541,7 +545,8 @@ type StandingJoin struct {
 // same statement brings an occurrence back if its room emptied earlier in the day.
 //
 // The date is the date of the slot in the meeting's zone, wherever the server is.
-func (s *Service) JoinStandingMeeting(ctx context.Context, orgID, id, userID uuid.UUID) (*StandingJoin, error) {
+func (s *Service) JoinStandingMeeting(ctx context.Context, orgID, id, userID uuid.UUID, from Device) (*StandingJoin, error) {
+	from = from.clean()
 	m, err := s.standingMeeting(ctx, orgID, id)
 	if err != nil {
 		return nil, err
@@ -578,10 +583,12 @@ func (s *Service) JoinStandingMeeting(ctx context.Context, orgID, id, userID uui
 		return nil, err
 	}
 
-	out.Token, err = s.GetToken(ctx, out.RoomName, userID.String(), s.DisplayName(ctx, userID))
+	out.Token, err = s.GetDeviceToken(ctx, out.RoomName, userID.String(), from, s.DisplayName(ctx, userID))
 	if err != nil {
 		return nil, err
 	}
+	out.Identity = from.identityFor(userID.String())
+	out.OtherDevices = s.OtherDevices(ctx, out.RoomName, userID, from)
 	return out, nil
 }
 
@@ -1163,7 +1170,7 @@ func (h *Handler) JoinStandingMeeting(c *gin.Context) {
 	if !ok {
 		return
 	}
-	joined, err := h.service.JoinStandingMeeting(c.Request.Context(), orgID, id, userID)
+	joined, err := h.service.JoinStandingMeeting(c.Request.Context(), orgID, id, userID, deviceOf(c))
 	if err != nil {
 		httpx.Error(c, err, "failed to join standing meeting")
 		return

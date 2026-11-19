@@ -11,7 +11,7 @@ import type { PersonKey } from './support/people';
 // is on is somebody talking. A video call starts with everybody's microphone off.
 
 const tile = (page: Page, who: PersonKey) =>
-  page.locator(`[data-testid="participant-tile"][data-identity="${idOf(who)}"]`).first();
+  page.locator(`[data-testid="participant-tile"][data-person="${idOf(who)}"]`).first();
 const bars = (page: Page, who: PersonKey) => tile(page, who).getByTestId('speaking-bars');
 const badge = (page: Page, who: PersonKey) => tile(page, who).getByTestId('hand-badge');
 const chip = (page: Page) => page.getByTestId('hands-chip');

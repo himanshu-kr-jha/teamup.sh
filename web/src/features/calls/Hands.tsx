@@ -33,8 +33,10 @@ import {
   newlyRaised,
   raisedMessage,
   type RaisedHand,
+  loweredBySomebodyElse,
 } from './handQueue';
 import { forgetCallHands, forgetHand, loadHand, saveHand, tabStorage } from './handProofStore';
+import { personOf } from './devices';
 
 /**
  * Raised hands in a call. The hand itself lives on the media server, as a
@@ -136,7 +138,8 @@ export function HandsProvider({ callId, asGuest = false, children }: { callId: s
 
     const look = () => {
       const after = read();
-      const me = room.localParticipant.identity;
+      // You by the person: a hand raised from your other device is yours too.
+      const me = personOf(room.localParticipant.identity);
       // While the connection is being made again, people and hands come and go
       // as the room is rebuilt: none of that is news.
       const connected = room.state === ConnectionState.Connected;
@@ -148,13 +151,16 @@ export function HandsProvider({ callId, asGuest = false, children }: { callId: s
       const wasUp = before.some((h) => h.identity === me);
       const isUp = after.some((h) => h.identity === me);
       if (isUp) {
-        const at = ownAttribute() ?? '';
+        const at = ownAttribute() ?? after.find((h) => h.identity === me)?.raisedAt ?? '';
         if (kept.current?.raisedAt !== at) keep({ raisedAt: at });
       } else if (wasUp && connected) {
         // Taken down while connected: by you, by speaking, or by the organizer.
         if (primed) {
           if (lowering.current === 'auto') toastRef.current.toast(AUTO_LOWERED_MESSAGE);
-          else if (lowering.current === null) toastRef.current.toast(LOWERED_FOR_YOU_MESSAGE);
+          // Lowered by you on your other device is not news; by the organizer it is.
+          else if (lowering.current === null && loweredBySomebodyElse(room.localParticipant.attributes, me)) {
+            toastRef.current.toast(LOWERED_FOR_YOU_MESSAGE);
+          }
         }
         lowering.current = null;
         keep(null);
@@ -225,13 +231,13 @@ export function HandsProvider({ callId, asGuest = false, children }: { callId: s
   // Its audio context otherwise runs until the tab closes.
   useEffect(() => closeChime, [closeChime]);
 
-  const me = room.localParticipant.identity;
+  const me = personOf(room.localParticipant.identity);
   const mine = queue.find((h) => h.identity === me) ?? null;
 
   /** Asks the server; true if it was done. Says nothing either way. */
   const send = useCallback(
     async (raised: boolean, identity?: string): Promise<boolean> => {
-      const own = !identity || identity === room.localParticipant.identity;
+      const own = !identity || identity === personOf(room.localParticipant.identity);
       try {
         const res = await callsApi.setHand(callId, raised, own ? {} : { userId: identity });
         if (own && res.data.raised && res.data.raisedAt) keep({ raisedAt: res.data.raisedAt, proof: res.data.proof });
@@ -246,7 +252,7 @@ export function HandsProvider({ callId, asGuest = false, children }: { callId: s
   /** What a click asks for, with a word if it could not be done. */
   const change = useCallback(
     async (raised: boolean, identity?: string) => {
-      const own = !identity || identity === room.localParticipant.identity;
+      const own = !identity || identity === personOf(room.localParticipant.identity);
       if (own) {
         setPending(true);
         if (!raised) lowering.current = 'self';
@@ -361,10 +367,13 @@ export function HandButton() {
   );
 }
 
-/** A raised hand on somebody's tile, with their place in the queue. */
+/**
+ * A raised hand on somebody's tile, with their place in the queue. Somebody in
+ * from two devices has it on one tile only, so one hand looks like one.
+ */
 export function HandBadge({ identity, small }: { identity: string; small: boolean }) {
   const hands = useHands();
-  const hand = hands?.queue.find((h) => h.identity === identity);
+  const hand = hands?.queue.find((h) => h.device === identity);
   if (!hand) return null;
   return (
     <span

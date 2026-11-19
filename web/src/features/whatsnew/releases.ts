@@ -26,6 +26,23 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-19-g',
+    date: '2026-11-19',
+    title: 'Be in a call from your laptop and your phone',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'A second device no longer drops the first',
+        body: 'Join a call from your phone while you are in it on your laptop, and both stay in. Everybody sees one of you: the count, raised hands, notes and attendance count you once, and your tiles say which is which, such as "Asha (phone)".',
+      },
+      {
+        area: 'meetings',
+        title: 'Camera only, or move the call',
+        body: 'Joining from the second device asks how. Camera only adds a second angle, with that device\'s microphone and sound off so nothing echoes; its sound button turns the sound on and off again, in the corner window too. Use this device for everything moves the call over, and the other device leaves and says where it went.',
+      },
+    ],
+  },
+  {
     id: '2026-11-19-f',
     date: '2026-11-19',
     title: 'Backgrounds go on without freezing your video',

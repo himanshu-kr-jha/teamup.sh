@@ -402,7 +402,15 @@ func TestAcceptingOverTheSocketFollowsTheSameRulesAsTheToken(t *testing.T) {
 		e.svc.HandleCallAccept(context.Background(), conn, &protocol.Message{Type: protocol.TypeCallAccept, Payload: raw})
 		sockets.mu.Lock()
 		defer sockets.mu.Unlock()
-		return len(sockets.toUser[who.String()])
+		// The grant. Picking up also tells their own other devices to stop
+		// ringing (call.answered), which is not what this is about.
+		grants := 0
+		for _, msg := range sockets.toUser[who.String()] {
+			if msg.Type != protocol.TypeCallAnswered {
+				grants++
+			}
+		}
+		return grants
 	}
 
 	if n := accept(knocker, call.RoomName); n != 0 {

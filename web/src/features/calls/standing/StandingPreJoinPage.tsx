@@ -7,6 +7,7 @@ import { useToast } from '@/shared/hooks/useToast';
 import { useActiveCall } from '../ActiveCallProvider';
 import { PreJoinScreen } from '../PreJoinScreen';
 import type { JoinChoice } from '../prejoin';
+import { thisDevice } from '../devices';
 
 /**
  * The screen before today's room of a standing meeting, reached from its Join
@@ -40,17 +41,23 @@ export function StandingPreJoinPage() {
 
   const join = async (choice: JoinChoice) => {
     try {
-      const { data } = await standingApi.join(id);
+      const { data } = await standingApi.join(id, thisDevice());
       // Already in today's room: back to it, rather than into it a second time.
       if (activeCall?.callId !== data.callId) {
-        enter(data.callId, data.token, {
-          mic: choice.mic,
-          camera: choice.camera,
-          audioInput: choice.audioInput,
-          videoInput: choice.videoInput,
-          audioOutput: choice.audioOutput,
-          standing: true,
-        });
+        // Already in it from another device: asked how this one joins.
+        enter(
+          data.callId,
+          data.token,
+          {
+            mic: choice.mic,
+            camera: choice.camera,
+            audioInput: choice.audioInput,
+            videoInput: choice.videoInput,
+            audioOutput: choice.audioOutput,
+            standing: true,
+          },
+          data.otherDevices
+        );
       }
       navigate(`/calls/${data.callId}`, { replace: true });
     } catch (err) {

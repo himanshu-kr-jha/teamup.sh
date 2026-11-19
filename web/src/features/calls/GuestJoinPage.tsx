@@ -36,9 +36,10 @@ import {
   StageWithChat,
   type ChatTransport,
 } from "./MeetingChat";
-import { NotesBanner, guestNotes, isNotetaker } from "./notetaker";
+import { NotesBanner, guestNotes } from "./notetaker";
 import { CameraBackground } from "./BackgroundPicker";
 import { ROOM_OPTIONS } from './roomOptions';
+import { countPeople } from './devices';
 
 const NAME_KEY = "teamup.guestName";
 
@@ -523,8 +524,9 @@ function GuestRoom({
 }
 
 function GuestCount() {
-  const people = useParticipants().filter((p) => !isNotetaker(p));
-  return <span className="text-muted-foreground"> · {people.length}</span>;
+  // Each person once, whatever number of devices they are in from (companion mode).
+  const people = countPeople(useParticipants().map((p) => p.identity));
+  return <span className="text-muted-foreground"> · {people}</span>;
 }
 
 function LeaveButton() {
