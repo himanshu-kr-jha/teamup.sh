@@ -43,6 +43,10 @@ type ScrumParticipant struct {
 	UserID uuid.UUID  `json:"userId"`
 	Name   string     `json:"name"`
 	Counts TaskCounts `json:"counts"`
+	// Position is their row in the holder's table, from 0. Leads are the managers
+	// of their teams. Both are null on a scrum saved before the table kept them.
+	Position *int     `json:"position"`
+	Leads    []string `json:"leads"`
 }
 
 // ScrumEntry is one task as it stood when the scrum was saved.
@@ -57,6 +61,9 @@ type ScrumEntry struct {
 	CompletedAt *time.Time `json:"completedAt"`
 	// AddedTo marks a task they were on and not assigned to when it was saved.
 	AddedTo bool `json:"addedTo"`
+	// Position is the task's column in the person's row, from 0, for open work
+	// on a scrum that kept the order. Null for done work and older scrums.
+	Position *int `json:"position"`
 }
 
 // Scrum is a saved scrum in full. It never changes once written.
@@ -67,11 +74,20 @@ type Scrum struct {
 }
 
 // SaveScrum writes the snapshot: everybody the caller answers for, with or without
-// work, and what each of them had on. Only somebody who answers for other people
-// may hold one.
-func (s *Service) SaveScrum(ctx context.Context, orgID, callerID uuid.UUID, isOrgAdmin bool, teamID *uuid.UUID, notes string) (*Scrum, error) {
+// work, what each of them had on, who leads them, and the order the holder had the
+// table in. Only somebody who answers for other people may hold one.
+//
+// The order is what the holder saw. Anybody or anything it does not mention, such
+// as a task created a moment ago, goes after the rest, so nothing is left out.
+func (s *Service) SaveScrum(ctx context.Context, orgID, callerID uuid.UUID, isOrgAdmin bool, teamID *uuid.UUID, notes string, order *ScrumOrder) (*Scrum, error) {
 	if len(notes) > scrumNotesMaxLength {
 		return nil, apperrors.New(apperrors.CodeBadRequest, "notes are too long")
+	}
+	if order.tooLong() {
+		return nil, apperrors.New(apperrors.CodeBadRequest, "that order is too long")
+	}
+	if order == nil {
+		order = &ScrumOrder{}
 	}
 	a, err := s.resolveAudience(ctx, orgID, callerID, isOrgAdmin, teamID)
 	if err != nil {
@@ -113,7 +129,12 @@ func (s *Service) SaveScrum(ctx context.Context, orgID, callerID uuid.UUID, isOr
 	if err != nil {
 		return nil, err
 	}
-	if err := insertScrumRows(ctx, tx, id, a.People, work); err != nil {
+	leads, err := loadLeads(ctx, tx, orgID, a.ids())
+	if err != nil {
+		return nil, err
+	}
+	people := arranged(a.People, func(p audiencePerson) uuid.UUID { return p.ID }, order.People)
+	if err := insertScrumRows(ctx, tx, id, people, work, leads, order.Tasks); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -122,30 +143,37 @@ func (s *Service) SaveScrum(ctx context.Context, orgID, callerID uuid.UUID, isOr
 	return s.loadScrum(ctx, orgID, id)
 }
 
-func insertScrumRows(ctx context.Context, tx pgx.Tx, scrumID uuid.UUID, people []audiencePerson, work map[uuid.UUID]*TaskBuckets) error {
+// insertScrumRows copies people in the order given, and each person's open work in
+// the order taskOrder gives for them; done work keeps no position.
+func insertScrumRows(ctx context.Context, tx pgx.Tx, scrumID uuid.UUID, people []audiencePerson, work map[uuid.UUID]*TaskBuckets,
+	leads map[uuid.UUID][]PersonRef, taskOrder map[uuid.UUID][]uuid.UUID) error {
 	participants := make([][]any, 0, len(people))
 	entries := [][]any{}
-	for _, p := range people {
+	for row, p := range people {
 		buckets := work[p.ID]
 		n := buckets.counts()
-		participants = append(participants, []any{scrumID, p.ID, p.Name, n.Pending, n.Ongoing, n.Blocked, n.Overdue, n.Completed, n.AddedTo})
-		// Overdue is left out: every overdue task is also in one of these.
-		for _, bucket := range [][]TaskSummary{buckets.Pending, buckets.Ongoing, buckets.Blocked, buckets.Completed} {
-			for _, t := range bucket {
-				entries = append(entries, []any{scrumID, p.ID, t.ID, t.Title, t.Status, t.Priority, t.Overdue, t.DueDate, t.CompletedAt, false})
-			}
-		}
+		participants = append(participants, []any{scrumID, p.ID, p.Name, n.Pending, n.Ongoing, n.Blocked, n.Overdue, n.Completed, n.AddedTo,
+			row, leadNames(leads[p.ID])})
+		added := make(map[uuid.UUID]bool, len(buckets.AddedTo))
 		for _, t := range buckets.AddedTo {
-			entries = append(entries, []any{scrumID, p.ID, t.ID, t.Title, t.Status, t.Priority, t.Overdue, t.DueDate, t.CompletedAt, true})
+			added[t.ID] = true
+		}
+		// Overdue is left out: every overdue task is also in one of the others.
+		open := arranged(buckets.open(), func(t TaskSummary) uuid.UUID { return t.ID }, taskOrder[p.ID])
+		for col, t := range open {
+			entries = append(entries, []any{scrumID, p.ID, t.ID, t.Title, t.Status, t.Priority, t.Overdue, t.DueDate, t.CompletedAt, added[t.ID], col})
+		}
+		for _, t := range buckets.Completed {
+			entries = append(entries, []any{scrumID, p.ID, t.ID, t.Title, t.Status, t.Priority, t.Overdue, t.DueDate, t.CompletedAt, false, nil})
 		}
 	}
 	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"scrum_participants"},
-		[]string{"scrum_id", "user_id", "name", "pending", "ongoing", "blocked", "overdue", "completed", "added_to"},
+		[]string{"scrum_id", "user_id", "name", "pending", "ongoing", "blocked", "overdue", "completed", "added_to", "position", "leads"},
 		pgx.CopyFromRows(participants)); err != nil {
 		return fmt.Errorf("save scrum participants: %w", err)
 	}
 	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"scrum_entries"},
-		[]string{"scrum_id", "user_id", "task_id", "title", "status", "priority", "overdue", "due_date", "completed_at", "added_to"},
+		[]string{"scrum_id", "user_id", "task_id", "title", "status", "priority", "overdue", "due_date", "completed_at", "added_to", "position"},
 		pgx.CopyFromRows(entries)); err != nil {
 		return fmt.Errorf("save scrum entries: %w", err)
 	}
@@ -239,7 +267,8 @@ func (s *Service) GetScrum(ctx context.Context, orgID, callerID, id uuid.UUID, i
 }
 
 // loadScrum reads a scrum and its copied rows, in an order that only depends on
-// what was copied, so the same scrum always reads back the same.
+// what was copied, so the same scrum always reads back the same: the holder's
+// order where it was kept, and by name and title before that.
 func (s *Service) loadScrum(ctx context.Context, orgID, id uuid.UUID) (*Scrum, error) {
 	summary, err := scanScrumSummary(s.db.QueryRow(ctx,
 		`SELECT `+scrumSummaryColumns+` FROM scrums s WHERE s.id = $1 AND s.org_id = $2`, id, orgID))
@@ -252,8 +281,8 @@ func (s *Service) loadScrum(ctx context.Context, orgID, id uuid.UUID) (*Scrum, e
 	out := &Scrum{ScrumSummary: summary, Participants: []ScrumParticipant{}, Entries: []ScrumEntry{}}
 
 	rows, err := s.db.Query(ctx, `
-		SELECT user_id, name, pending, ongoing, blocked, overdue, completed, added_to
-		FROM scrum_participants WHERE scrum_id = $1 ORDER BY name, user_id`, id)
+		SELECT user_id, name, pending, ongoing, blocked, overdue, completed, added_to, position, leads
+		FROM scrum_participants WHERE scrum_id = $1 ORDER BY position NULLS LAST, name, user_id`, id)
 	if err != nil {
 		return nil, fmt.Errorf("load scrum participants: %w", err)
 	}
@@ -261,7 +290,7 @@ func (s *Service) loadScrum(ctx context.Context, orgID, id uuid.UUID) (*Scrum, e
 	for rows.Next() {
 		var p ScrumParticipant
 		n := &p.Counts
-		if err := rows.Scan(&p.UserID, &p.Name, &n.Pending, &n.Ongoing, &n.Blocked, &n.Overdue, &n.Completed, &n.AddedTo); err != nil {
+		if err := rows.Scan(&p.UserID, &p.Name, &n.Pending, &n.Ongoing, &n.Blocked, &n.Overdue, &n.Completed, &n.AddedTo, &p.Position, &p.Leads); err != nil {
 			return nil, fmt.Errorf("scan scrum participant: %w", err)
 		}
 		out.Participants = append(out.Participants, p)
@@ -271,15 +300,15 @@ func (s *Service) loadScrum(ctx context.Context, orgID, id uuid.UUID) (*Scrum, e
 	}
 
 	entries, err := s.db.Query(ctx, `
-		SELECT user_id, task_id, title, status, priority, overdue, due_date, completed_at, added_to
-		FROM scrum_entries WHERE scrum_id = $1 ORDER BY title, task_id, user_id`, id)
+		SELECT user_id, task_id, title, status, priority, overdue, due_date, completed_at, added_to, position
+		FROM scrum_entries WHERE scrum_id = $1 ORDER BY position NULLS LAST, title, task_id, user_id`, id)
 	if err != nil {
 		return nil, fmt.Errorf("load scrum entries: %w", err)
 	}
 	defer entries.Close()
 	for entries.Next() {
 		var e ScrumEntry
-		if err := entries.Scan(&e.UserID, &e.TaskID, &e.Title, &e.Status, &e.Priority, &e.Overdue, &e.DueDate, &e.CompletedAt, &e.AddedTo); err != nil {
+		if err := entries.Scan(&e.UserID, &e.TaskID, &e.Title, &e.Status, &e.Priority, &e.Overdue, &e.DueDate, &e.CompletedAt, &e.AddedTo, &e.Position); err != nil {
 			return nil, fmt.Errorf("scan scrum entry: %w", err)
 		}
 		out.Entries = append(out.Entries, e)
@@ -295,6 +324,8 @@ func (h *Handler) SaveScrum(c *gin.Context) {
 	var req struct {
 		TeamID *string `json:"teamId"`
 		Notes  string  `json:"notes"`
+		// The order the holder had the table in. Optional.
+		Order *ScrumOrder `json:"order"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -305,7 +336,7 @@ func (h *Handler) SaveScrum(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid teamId"})
 		return
 	}
-	scrum, err := h.service.SaveScrum(c.Request.Context(), cl.OrgID, cl.UserID, isOrgAdmin(c), teamID, req.Notes)
+	scrum, err := h.service.SaveScrum(c.Request.Context(), cl.OrgID, cl.UserID, isOrgAdmin(c), teamID, req.Notes, req.Order)
 	if err != nil {
 		httpx.Error(c, err, "failed to save scrum")
 		return

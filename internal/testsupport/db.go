@@ -46,7 +46,7 @@ var tablesToClean = []string{
 	"audit_logs", "linked_identities", "refresh_tokens", "signing_keys", "org_configs",
 	"notifications", "push_subscriptions", "user_presence",
 	"call_notes_changes", "call_events", "call_sessions", "call_knock_requests", "call_participants", "calls", "standing_meeting_schedules", "standing_meeting_teams", "standing_meeting_people", "standing_meetings", "backup_runs", "calendar_blocks",
-	"scrum_entries", "scrum_participants", "scrums",
+	"scrum_people_orders", "scrum_task_orders", "scrum_entries", "scrum_participants", "scrums",
 	"sprint_tasks", "task_branches", "task_key_aliases", "task_activities", "task_watchers", "task_attachments",
 	"task_comments", "task_labels", "labels", "tasks", "sprints", "projects",
 	"multipart_uploads", "attachments", "message_reactions", "messages",

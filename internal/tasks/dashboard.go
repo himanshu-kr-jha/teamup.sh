@@ -446,9 +446,11 @@ func loadWork(ctx context.Context, q querier, orgID uuid.UUID, people []uuid.UUI
 
 // DashboardPerson is one person's summarised work.
 type DashboardPerson struct {
-	UserID            uuid.UUID    `json:"userId"`
-	Name              string       `json:"name"`
-	Teams             []TeamRef    `json:"teams"`
+	UserID uuid.UUID `json:"userId"`
+	Name   string    `json:"name"`
+	Teams  []TeamRef `json:"teams"`
+	// Leads are the managers of every team they are on, never themselves.
+	Leads             []PersonRef  `json:"leads"`
 	Counts            TaskCounts   `json:"counts"`
 	Tasks             *TaskBuckets `json:"tasks"`
 	NewSinceLastScrum []uuid.UUID  `json:"newSinceLastScrum"`
@@ -478,6 +480,10 @@ func (s *Service) Dashboard(ctx context.Context, orgID, callerID uuid.UUID, isOr
 	if err != nil {
 		return nil, err
 	}
+	leads, err := loadLeads(ctx, s.db, orgID, a.ids())
+	if err != nil {
+		return nil, err
+	}
 
 	d := &Dashboard{Scope: a.Scope, Teams: a.Teams, People: make([]DashboardPerson, 0, len(a.People)), LastScrumAt: last}
 	if a.Scope == scopeSelf {
@@ -486,7 +492,7 @@ func (s *Service) Dashboard(ctx context.Context, orgID, callerID uuid.UUID, isOr
 	for _, p := range a.People {
 		buckets := work[p.ID]
 		entry := DashboardPerson{
-			UserID: p.ID, Name: p.Name, Teams: p.Teams,
+			UserID: p.ID, Name: p.Name, Teams: p.Teams, Leads: leads[p.ID],
 			Counts: buckets.counts(), Tasks: buckets, NewSinceLastScrum: []uuid.UUID{},
 		}
 		for _, open := range [][]TaskSummary{buckets.Pending, buckets.Ongoing, buckets.Blocked} {
