@@ -29,6 +29,13 @@ if [ -z "$LOCK" ]; then
   fi
 fi
 
+# Each set of test services (TEAMUP_TEST_SLOT, web/e2e/test-services.env) has
+# a lock of its own, so runs on different slots go side by side.
+case "${TEAMUP_TEST_SLOT:-0}" in
+  0) ;;
+  *) LOCK="${LOCK%.lock}-s${TEAMUP_TEST_SLOT}.lock" ;;
+esac
+
 if [ "${TEAMUP_TESTS_LOCK_HELD:-}" = "$LOCK" ]; then
   exec "$@"
 fi

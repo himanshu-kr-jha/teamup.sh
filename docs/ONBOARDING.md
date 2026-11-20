@@ -127,10 +127,14 @@ Things worth knowing:
 - **After adding a migration**, run `scripts/test-services.sh migrate`, or every database test fails on a missing column.
 - **One browser spec:** `make e2e ARGS="e2e/meetings.y-more.spec.ts"`, or one test by name: `make e2e ARGS='-g "month"'`.
 - **A failing browser test** leaves a screenshot and a trace in `web/test-results/`; `npx playwright show-trace <path>/trace.zip` replays it.
-  The server under test logs to `/tmp/teamup-e2e-server.log`; `E2E_LOG_LEVEL=debug make e2e ARGS=...` makes it say more.
+  The server under test logs to `/tmp/teamup-e2e-server-<port>.log` (`/tmp/teamup-e2e-server-18470.log` for `make e2e`); `E2E_LOG_LEVEL=debug make e2e ARGS=...` makes it say more.
 - The test browser's microphone plays `web/e2e/fixtures/speech.wav` and its camera is Chromium's test pattern, so calls, recordings and the note-taker all have something to hear and see.
 - Browser specs share one seeded organization and run in file order, one at a time.
   A test that changes something global, such as the organization's colour, puts it back in `afterAll`.
+- **Several test runs at once:** each checkout can use its own set of test services, so runs do not wait for each other.
+  Prefix commands with `TEAMUP_TEST_SLOT=1` (up to 9), starting with `TEAMUP_TEST_SLOT=1 scripts/test-services.sh up`; for example `TEAMUP_TEST_SLOT=1 make check`.
+  A slot has its own containers, ports, databases and lock; slot 0, the default, is the usual set.
+  Each running slot costs memory and CPU, so a laptop with 16 GB is comfortable with two or three at once; browser tests that hold calls get timing-sensitive on a busy machine.
 - `WEBHOOKS NEVER ARRIVED` means the LiveKit test container posts to a different port than the server listens on; `scripts/test-services.sh down` then `up` fixes it.
 
 ## 5. Making a change

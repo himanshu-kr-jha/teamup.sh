@@ -7,12 +7,13 @@
 #   scripts/test-services.sh migrate  bring the test database up to the newest migration
 #   scripts/test-services.sh down     stop and remove them (their data goes with them)
 #
-# They are plain containers named teamup-cal-test-*, bound to 127.0.0.1 only,
+# They are plain containers named teamup-cal-test-* (or teamup-test-s<n>-* for
+# TEAMUP_TEST_SLOT=n, see web/e2e/test-services.env), bound to 127.0.0.1 only,
 # on the ports web/e2e/test-services.env names. They are separate from the
 # development stack ./setup.sh starts, so a test run never touches your data.
 #
 # LiveKit posts its webhooks to the port the server under test listens on
-# (E2E_PORT, 18470). That is fixed when the container is created, so if you
+# (E2E_PORT, 18470 in slot 0). That is fixed when the container is created, so if you
 # change E2E_PORT, run `down` and `up` again. The port sits below Linux's range
 # for outgoing connections (32768-60999), so no passing connection can hold it
 # while the server starts; 55470, before, sometimes could, for minutes.
@@ -32,7 +33,7 @@ case "${1:-}" in
     ;;
 esac
 
-PREFIX=teamup-cal-test
+PREFIX=$E2E_SERVICES_PREFIX
 # The same versions production runs, so a test cannot pass on something production does not have.
 PG_IMAGE=postgres:16-alpine
 REDIS_IMAGE=redis:7-alpine
@@ -60,8 +61,8 @@ livekit_config() {
   cat <<EOF
 port: 7880
 rtc:
-  tcp_port: 55465
-  udp_port: 55466
+  tcp_port: ${E2E_LIVEKIT_TCP_PORT}
+  udp_port: ${E2E_LIVEKIT_UDP_PORT}
   use_external_ip: false
   node_ip: 127.0.0.1
 keys:
@@ -109,17 +110,18 @@ migrate() {
 up() {
   command -v docker >/dev/null || { say "Docker is needed: https://docs.docker.com/engine/install/" >&2; exit 1; }
   say "Starting the test services"
-  ensure "$PREFIX-pg" -p 127.0.0.1:55461:5432 \
+  ensure "$PREFIX-pg" -p "127.0.0.1:$E2E_PG_SERVICE_PORT:5432" \
     -e POSTGRES_USER=teamup -e POSTGRES_PASSWORD=teamup -e POSTGRES_DB=postgres "$PG_IMAGE"
-  ensure "$PREFIX-redis" -p 127.0.0.1:55462:6379 "$REDIS_IMAGE"
-  ensure "$PREFIX-minio" -p 127.0.0.1:55463:9000 \
+  ensure "$PREFIX-redis" -p "127.0.0.1:$E2E_REDIS_SERVICE_PORT:6379" "$REDIS_IMAGE"
+  ensure "$PREFIX-minio" -p "127.0.0.1:$E2E_MINIO_SERVICE_PORT:9000" \
     -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin "$MINIO_IMAGE" server /data
   # One TCP and one UDP port for media. Never publish a UDP range: Docker makes a
   # process per port, and a range of thousands takes minutes and gigabytes.
   ensure "$PREFIX-livekit" --add-host host.docker.internal:host-gateway \
-    -p 127.0.0.1:55464:7880 -p 127.0.0.1:55465:55465/tcp -p 127.0.0.1:55466:55466/udp \
+    -p "127.0.0.1:$E2E_LIVEKIT_SERVICE_PORT:7880" \
+    -p "127.0.0.1:$E2E_LIVEKIT_TCP_PORT:$E2E_LIVEKIT_TCP_PORT/tcp" -p "127.0.0.1:$E2E_LIVEKIT_UDP_PORT:$E2E_LIVEKIT_UDP_PORT/udp" \
     -e LIVEKIT_CONFIG="$(livekit_config)" "$LIVEKIT_IMAGE"
-  ensure "$PREFIX-mailpit" -p 127.0.0.1:55480:1025 -p 127.0.0.1:55481:8025 \
+  ensure "$PREFIX-mailpit" -p "127.0.0.1:$E2E_MAILPIT_SMTP_PORT:1025" -p "127.0.0.1:$E2E_MAILPIT_API_PORT:8025" \
     "$MAILPIT_IMAGE" --smtp-auth-accept-any --smtp-auth-allow-insecure
   if [ ! -f "$ROOT/cmd/teamup/web/dist/index.html" ]; then
     # The binary embeds the web app and will not compile without it.
@@ -132,7 +134,7 @@ up() {
 }
 
 status() {
-  for s in pg:55461 redis:55462 minio:55463 livekit:55464 mailpit:55481; do
+  for s in pg:$E2E_PG_SERVICE_PORT redis:$E2E_REDIS_SERVICE_PORT minio:$E2E_MINIO_SERVICE_PORT livekit:$E2E_LIVEKIT_SERVICE_PORT mailpit:$E2E_MAILPIT_API_PORT; do
     name="$PREFIX-${s%%:*}"
     if running "$name"; then state="running"; else state="not running"; fi
     printf '  %-26s %-12s 127.0.0.1:%s\n' "$name" "$state" "${s##*:}"

@@ -19,7 +19,7 @@ PG_PASSWORD="${E2E_PG_PASSWORD:-teamup}"
 DB_NAME="${E2E_DB_NAME:-teamup_e2e}"
 PORT="${E2E_PORT:-18321}"
 REDIS_URL="${E2E_REDIS_URL:-redis://localhost:6379/9}"
-LOG="${E2E_SERVER_LOG:-${TMPDIR:-/tmp}/teamup-e2e-server.log}"
+LOG="${E2E_SERVER_LOG:-${TMPDIR:-/tmp}/teamup-e2e-server-$PORT.log}"
 
 case "$DB_NAME" in
   *e2e*) ;;
