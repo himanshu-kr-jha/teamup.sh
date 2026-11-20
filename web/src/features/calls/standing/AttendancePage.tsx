@@ -330,7 +330,10 @@ function DayCard({ day, meetingId, reviewer }: { day: AttendanceDay; meetingId: 
                 <PersonDetails person={person} />
                 {attended(person) && (
                   <p className="mt-0.5 text-xs tabular-nums text-muted-foreground">
-                    {clock(person.firstJoinAt)} to {lastLeave(person)}, {formatMinutes(person.minutesPresent)}
+                    {/* Between the first join and the last leave they may have been gone for hours. */}
+                    First join {clock(person.firstJoinAt)},{' '}
+                    {person.lastLeaveAt ? `last leave ${formatTime(person.lastLeaveAt)}` : 'still there'},{' '}
+                    {formatMinutes(person.minutesPresent)} present
                     {person.minutesLate > 0 && (
                       <span className={DANGER_TEXT}>, {formatMinutes(person.minutesLate)} late</span>
                     )}
