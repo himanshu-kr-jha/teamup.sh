@@ -9,6 +9,11 @@ export interface TeamRef {
   name: string;
 }
 
+export interface PersonRef {
+  id: string;
+  name: string;
+}
+
 export interface TaskCounts {
   pending: number;
   ongoing: number;
@@ -44,6 +49,8 @@ export interface DashboardPerson {
   userId: string;
   name: string;
   teams: TeamRef[];
+  /** The managers of every team they are on, never themselves. */
+  leads: PersonRef[];
   counts: TaskCounts;
   tasks: TaskBuckets;
   newSinceLastScrum: string[];
@@ -76,6 +83,10 @@ export interface ScrumParticipant {
   userId: string;
   name: string;
   counts: TaskCounts;
+  /** Their row in the holder's table, from 0. Null or absent on a scrum saved before the table. */
+  position?: number | null;
+  /** Their leads' names when it was saved. Null or absent on a scrum saved before the table. */
+  leads?: string[] | null;
 }
 
 export interface ScrumEntry {
@@ -89,6 +100,15 @@ export interface ScrumEntry {
   completedAt: string | null;
   /** They were on this task, not assigned to it. Absent on an old scrum. */
   addedTo?: boolean;
+  /** Its column in the person's row, from 0. Null for done work and older scrums. */
+  position?: number | null;
+}
+
+/** One viewer's own arrangement of the scrum table: people top to bottom, tasks left to right. */
+export interface ScrumOrder {
+  people: string[];
+  /** By person id. */
+  tasks: Record<string, string[]>;
 }
 
 export interface Scrum extends ScrumSummary {

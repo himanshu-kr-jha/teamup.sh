@@ -958,9 +958,9 @@ test.describe('7. the standing meeting', () => {
   });
 });
 
-/** One person's card on the scrum tab (or in a saved scrum). */
+/** One person's row in the scrum table (live or saved). */
 const scrumCard = (page: Page, name: string) =>
-  page.locator('section', { has: page.getByRole('heading', { level: 2, name, exact: true }) });
+  page.locator('tr', { has: page.getByTestId('scrum-person-name').getByText(name, { exact: true }) });
 
 async function taskIdByTitle(title: string): Promise<string> {
   const api = await apiAs('owner');

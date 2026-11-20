@@ -4,6 +4,7 @@ import type {
   Contributions,
   Dashboard,
   Scrum,
+  ScrumOrder,
   ScrumSummary,
 } from '@/shared/types/dashboard';
 import { signOutLocally } from '@/features/auth/session';
@@ -575,8 +576,16 @@ export const tasksApi = {
 };
 
 export const scrumsApi = {
-  /** Saves the snapshot. It can never be edited afterwards. */
-  complete: (data: { teamId?: string; notes?: string }) => api.post<Scrum>('/scrums', data),
+  /** Saves the snapshot, in the order the table is in. It can never be edited afterwards. */
+  complete: (data: { teamId?: string; notes?: string; order?: ScrumOrder }) => api.post<Scrum>('/scrums', data),
+  /** The caller's own arrangement of the scrum table for one view. Nobody else sees it. */
+  order: (teamId?: string) => api.get<ScrumOrder>('/scrums/order', { params: { teamId } }),
+  /** Keeps the order of people for one view: no team is everybody the caller answers for. */
+  setPeopleOrder: (data: { teamId?: string; people: string[] }) =>
+    api.put<{ people: string[] }>('/scrums/order', data),
+  /** Keeps which of a person's tasks is Task 1, 2, 3, in every view. */
+  setTaskOrder: (personId: string, tasks: string[]) =>
+    api.put<{ tasks: string[] }>(`/scrums/order/tasks/${personId}`, { tasks }),
   get: (id: string) => api.get<Scrum>(`/scrums/${id}`),
   /** Newest first. `before` is the last item's createdAt. */
   list: (params: { teamId?: string; limit?: number; before?: string }) =>

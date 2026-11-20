@@ -1,17 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import type { DashboardPerson, Scrum, TaskCounts, TaskSummary } from '@/shared/types/dashboard';
+import type { DashboardPerson, TaskCounts, TaskSummary } from '@/shared/types/dashboard';
 import {
   bucketSections,
   completedCaption,
   defaultRange,
-  groupSnapshot,
   hiddenSides,
   nextBefore,
   notesByteLength,
   orderContributions,
   orderPeople,
   orderTasks,
-  personForScrum,
   rangeProblem,
   rangeToApi,
   readRange,
@@ -41,6 +39,7 @@ function person(over: Partial<DashboardPerson> = {}): DashboardPerson {
     userId: over.name ?? 'u',
     name: 'Someone',
     teams: [],
+    leads: [],
     counts: noCounts,
     tasks: { pending: [], ongoing: [], blocked: [], overdue: [], completed: [], addedTo: [] },
     newSinceLastScrum: [],
@@ -144,119 +143,6 @@ describe('bucketSections', () => {
       ],
     });
     expect(completed.tasks.map((t) => t.title)).toEqual(['newer', 'older']);
-  });
-});
-
-describe('personForScrum', () => {
-  it('reads blocked, ongoing, pending, done, and leaves out overdue as its own heading', () => {
-    const row = personForScrum(
-      person({
-        tasks: {
-          pending: [task({ title: 'p' })],
-          ongoing: [task({ title: 'g', status: 'in_progress' })],
-          blocked: [task({ title: 'b', status: 'blocked' })],
-          overdue: [task({ title: 'b', status: 'blocked', overdue: true })],
-          completed: [task({ title: 'd', status: 'done' })],
-          addedTo: [],
-        },
-      })
-    );
-    expect(row.sections.map((s) => s.label)).toEqual(['Blocked', 'Ongoing', 'Pending', 'Done']);
-  });
-
-  it('flags tasks new since the last scrum', () => {
-    const row = personForScrum(
-      person({
-        tasks: { pending: [task({ id: 'fresh' }), task({ id: 'old' })], ongoing: [], blocked: [], overdue: [], completed: [], addedTo: [] },
-        newSinceLastScrum: ['fresh'],
-      })
-    );
-    const flags = Object.fromEntries(row.sections[0].tasks.map((t) => [t.id, t.isNew]));
-    expect(flags).toEqual({ fresh: true, old: false });
-  });
-
-  it('still produces a row for somebody with no work', () => {
-    expect(personForScrum(person({ name: 'Idle' })).sections).toEqual([]);
-  });
-});
-
-describe('groupSnapshot', () => {
-  const entry = (userId: string, taskId: string, status: string) => ({
-    userId,
-    taskId,
-    title: taskId,
-    status,
-    priority: 'medium',
-    overdue: false,
-    dueDate: null,
-    completedAt: null,
-  });
-  const scrum = (over: Partial<Scrum>): Scrum => ({
-    id: 's',
-    teamId: null,
-    teamName: null,
-    scope: 'team',
-    heldById: null,
-    heldByName: 'Boss',
-    notes: '',
-    doneSince: '2026-11-01T00:00:00Z',
-    createdAt: '2026-11-06T00:00:00Z',
-    participantCount: 0,
-    entryCount: 0,
-    participants: [],
-    entries: [],
-    ...over,
-  });
-
-  it('files every entry under its person and status', () => {
-    const rows = groupSnapshot(
-      scrum({
-        participants: [
-          { userId: 'a', name: 'Ann', counts: { ...noCounts, pending: 1, ongoing: 2, completed: 1 } },
-          { userId: 'b', name: 'Ben', counts: { ...noCounts, blocked: 1 } },
-        ],
-        entries: [
-          entry('a', 'a1', 'todo'),
-          entry('a', 'a2', 'in_progress'),
-          entry('a', 'a3', 'in_review'),
-          entry('a', 'a4', 'done'),
-          entry('b', 'b1', 'blocked'),
-        ],
-      })
-    );
-    const ben = rows.find((r) => r.userId === 'b')!;
-    const ann = rows.find((r) => r.userId === 'a')!;
-    expect(ben.sections.map((s) => [s.label, s.tasks.map((t) => t.id)])).toEqual([['Blocked', ['b1']]]);
-    expect(ann.sections.map((s) => s.label)).toEqual(['Ongoing', 'Pending', 'Done']);
-    expect(ann.sections[0].tasks.map((t) => t.id).sort()).toEqual(['a2', 'a3']);
-  });
-
-  it('keeps a participant who had no work, and orders people as the live view does', () => {
-    const rows = groupSnapshot(
-      scrum({
-        participants: [
-          { userId: 'i', name: 'Idle', counts: noCounts },
-          { userId: 'w', name: 'Worker', counts: { ...noCounts, blocked: 1 } },
-        ],
-        entries: [entry('w', 'w1', 'blocked')],
-      })
-    );
-    expect(rows.map((r) => r.name)).toEqual(['Worker', 'Idle']);
-    expect(rows[1].sections).toEqual([]);
-  });
-
-  it('marks nothing as new, because a saved scrum has no such idea', () => {
-    const [row] = groupSnapshot(
-      scrum({
-        participants: [{ userId: 'a', name: 'Ann', counts: { ...noCounts, pending: 1 } }],
-        entries: [entry('a', 'a1', 'todo')],
-      })
-    );
-    expect(row.sections[0].tasks[0].isNew).toBe(false);
-  });
-
-  it('copes with a scrum of nobody', () => {
-    expect(groupSnapshot(scrum({}))).toEqual([]);
   });
 });
 
@@ -380,36 +266,5 @@ describe('added to', () => {
       person({ name: 'Zed', counts: { ...noCounts, addedTo: 1 } }),
     ]);
     expect(ordered.map((p) => p.name)).toEqual(['Zed', 'Idle']);
-  });
-
-  it('gets a section in a live scrum', () => {
-    const row = personForScrum(person({ tasks: { ...empty, addedTo: [task({ title: 'Theirs' })] } }));
-    expect(row.sections.map((s) => s.label)).toEqual(['Added to']);
-    expect(row.sections[0].tasks[0].title).toBe('Theirs');
-  });
-
-  it('puts a saved added-to entry under Added to whatever its status', () => {
-    const entry = { userId: 'a', title: 'T', priority: 'medium', overdue: false, dueDate: null, completedAt: null };
-    const rows = groupSnapshot({
-      participants: [{ userId: 'a', name: 'Ann', counts: { ...noCounts, pending: 1, addedTo: 1 } }],
-      entries: [
-        { ...entry, taskId: '1', status: 'todo', addedTo: false },
-        { ...entry, taskId: '2', status: 'in_progress', addedTo: true },
-      ],
-    });
-    expect(rows[0].sections.map((s) => [s.label, s.tasks.length])).toEqual([
-      ['Pending', 1],
-      ['Added to', 1],
-    ]);
-  });
-
-  it('reads a scrum saved before added-to existed as no added-to, not as broken', () => {
-    const entry = { userId: 'a', taskId: '1', title: 'T', status: 'todo', priority: 'medium', overdue: false, dueDate: null, completedAt: null };
-    const rows = groupSnapshot({
-      participants: [{ userId: 'a', name: 'Ann', counts: { pending: 1, ongoing: 0, blocked: 0, overdue: 0, completed: 0 } as TaskCounts }],
-      entries: [entry],
-    });
-    expect(rows[0].counts.addedTo).toBe(0);
-    expect(rows[0].sections.map((s) => s.label)).toEqual(['Pending']);
   });
 });

@@ -5,8 +5,10 @@ import { Badge } from '@/shared/components/ui/badge';
 import { Button } from '@/shared/components/ui/button';
 import { scrumsApi } from '@/shared/api/client';
 import { formatDate, formatTime } from '@/shared/utils/cn';
-import { groupSnapshot, nextBefore, scrumLabel } from './logic';
-import { EmptyState, ErrorState, LoadingState, ScrumPersonCard, TeamFilter, ViewFrame } from './parts';
+import { nextBefore, scrumLabel } from './logic';
+import { EmptyState, ErrorState, LoadingState, TeamFilter, ViewFrame } from './parts';
+import { ScrumTable } from './ScrumTable';
+import { savedScrumRows } from './scrumTable';
 import { useDashboard } from './useDashboard';
 import { useTabParams } from './useTabParams';
 
@@ -90,7 +92,7 @@ function ScrumList() {
   );
 }
 
-/** A completed scrum, exactly as it stood. Nothing here can be changed. */
+/** A completed scrum, exactly as it stood and in the order its holder had it. Nothing here can be changed. */
 function SavedScrum({ id }: { id: string }) {
   const { linkTo } = useTabParams();
   const { data, error, isPending, refetch } = useQuery({
@@ -101,7 +103,7 @@ function SavedScrum({ id }: { id: string }) {
   });
 
   return (
-    <ViewFrame>
+    <ViewFrame wide>
       <Button asChild variant="ghost" size="sm" className="-ml-2">
         <Link to={linkTo('history')}>
           <ChevronLeft className="mr-1 h-4 w-4" aria-hidden />
@@ -133,11 +135,10 @@ function SavedScrum({ id }: { id: string }) {
           {data.participants.length === 0 ? (
             <EmptyState title="Nobody was on this scrum" />
           ) : (
-            <div className="space-y-2">
-              {groupSnapshot(data).map((row) => (
-                <ScrumPersonCard key={row.userId} row={row} />
-              ))}
-            </div>
+            <ScrumTable
+              rows={savedScrumRows(data)}
+              caption={`Saved scrum of ${when(data.createdAt)}: each person's lead, open tasks and what they had finished`}
+            />
           )}
         </>
       )}
