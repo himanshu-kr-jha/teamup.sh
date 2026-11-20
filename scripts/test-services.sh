@@ -12,8 +12,10 @@
 # development stack ./setup.sh starts, so a test run never touches your data.
 #
 # LiveKit posts its webhooks to the port the server under test listens on
-# (E2E_PORT, 55470). That is fixed when the container is created, so if you
-# change E2E_PORT, run `down` and `up` again.
+# (E2E_PORT, 18470). That is fixed when the container is created, so if you
+# change E2E_PORT, run `down` and `up` again. The port sits below Linux's range
+# for outgoing connections (32768-60999), so no passing connection can hold it
+# while the server starts; 55470, before, sometimes could, for minutes.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

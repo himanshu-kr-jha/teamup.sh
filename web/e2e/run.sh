@@ -80,12 +80,12 @@ export TEAMUP_SETUP_OIDC_PROVIDER=google TEAMUP_SETUP_GOOGLE_CLIENT_ID=e2e.apps.
 
 cd "$ROOT"
 "$ROOT/bin/teamup" migrate up
-# The test port (55470) sits in Linux's range for outgoing connections, so now
-# and then some connection on the machine is using it as its own end for a
-# moment, and the server cannot listen there: "address already in use". The
-# server of a run that has just ended can hold it for a few seconds too. Both
-# pass, so starting again a little later is the cure; anything that keeps the
-# port for longer is named.
+# The server of a run that has just ended can hold the test port for a few
+# seconds, and then the server cannot listen there: "address already in use".
+# That passes, so starting again a little later is the cure; anything that
+# keeps the port for longer is named. (The meetings port, 18470, is below
+# Linux's range for outgoing connections, so a passing connection cannot be
+# what holds it, as it could when it was 55470.)
 SERVER=
 trap 'if [ -n "$SERVER" ]; then kill "$SERVER" 2>/dev/null || true; wait "$SERVER" 2>/dev/null || true; fi' EXIT
 for attempt in $(seq 1 10); do
