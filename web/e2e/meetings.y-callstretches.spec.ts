@@ -68,8 +68,8 @@ test('a stand-up somebody leaves and looks into again much later is two blocks o
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.goto(`/calendar?view=day&date=${dayParam(day)}`);
     const main = page.getByRole('main');
-    const morning = main.getByRole('button', { name: `${name}, 8:30 AM to 9:35 AM` });
-    const evening = main.getByRole('button', { name: `${name}, 8:17 PM to 8:18 PM` });
+    const morning = main.getByRole('button', { name: new RegExp(`^${name}, 0?8:30 AM to 0?9:35 AM$`) });
+    const evening = main.getByRole('button', { name: new RegExp(`^${name}, 0?8:17 PM to 0?8:18 PM$`) });
     await expect(morning).toBeVisible();
     await expect(evening).toBeVisible();
     // Nothing of it runs through the day between them.
