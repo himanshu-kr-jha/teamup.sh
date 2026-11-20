@@ -23,6 +23,7 @@ require (
 	github.com/twitchtv/twirp v8.1.3+incompatible
 	github.com/xuri/excelize/v2 v2.11.1
 	golang.org/x/crypto v0.59.0
+	golang.org/x/image v0.45.0
 	golang.org/x/oauth2 v0.38.0
 	google.golang.org/protobuf v1.36.12
 	nhooyr.io/websocket v1.8.11

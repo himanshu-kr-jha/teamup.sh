@@ -158,7 +158,7 @@ test('an administrator puts in the company backgrounds, and a person in a call w
     const olivia = await as('owner', { width: 1920, height: 1080 });
     await olivia.page.goto('/organization');
     await olivia.page.getByRole('tab', { name: 'Appearance' }).click();
-    const heading = olivia.page.getByText('Call backgrounds', { exact: true });
+    const heading = olivia.page.getByText('Company backgrounds', { exact: true });
     await expect(olivia.page.getByText('No dark background')).toBeVisible();
     await olivia.page.getByLabel('Dark background file').setInputFiles(TEMPLATE('dark').pathname);
     await expect(olivia.page.getByText('The dark call background is saved.', { exact: false }).first()).toBeVisible();

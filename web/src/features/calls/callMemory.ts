@@ -44,9 +44,10 @@ const text = (value: unknown, max = 256): string | undefined =>
 function background(value: unknown): BackgroundChoice | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const v = value as { kind?: unknown; strength?: unknown; id?: unknown; theme?: unknown };
-  if (v.kind === 'none' || v.kind === 'custom') return { kind: v.kind } as BackgroundChoice;
+  if (v.kind === 'none') return { kind: 'none' };
   if (v.kind === 'blur' && (v.strength === 'light' || v.strength === 'strong')) return { kind: 'blur', strength: v.strength };
-  if (v.kind === 'image' && text(v.id, 64)) return { kind: 'image', id: text(v.id, 64) } as BackgroundChoice;
+  const id = text(v.id, 64);
+  if (v.kind === 'picture' && id) return { kind: 'picture', id };
   if (v.kind === 'company' && (v.theme === 'dark' || v.theme === 'light')) return { kind: 'company', theme: v.theme };
   return undefined;
 }
