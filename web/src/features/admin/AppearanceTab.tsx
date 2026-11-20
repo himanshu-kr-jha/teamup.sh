@@ -12,6 +12,7 @@ import { BRAND_PRESETS, DEFAULT_BRAND_HEX, isHexColor, textOn, tokensFor } from 
 import { cn } from '@/shared/utils/cn';
 import { BRANDING_QUERY_KEY, useBranding } from '@/features/branding/useBranding';
 import { CallBackgroundsCard } from './CallBackgroundsCard';
+import { CallPicturesCard } from './CallPicturesCard';
 
 /** The largest logo the server takes. */
 const MAX_LOGO_BYTES = 512 * 1024;
@@ -283,6 +284,7 @@ export function AppearanceTab() {
           </div>
         </CardContent>
       </Card>
+      <CallPicturesCard />
       <CallBackgroundsCard />
     </div>
   );

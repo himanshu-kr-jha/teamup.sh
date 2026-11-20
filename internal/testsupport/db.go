@@ -43,7 +43,7 @@ const EnvDatabaseURL = "TEAMUP_TEST_DATABASE_URL"
 // migrations honest: a new table holding state has to be added here.
 var tablesToClean = []string{
 	"attendance_reviews", "field_checkins", "password_resets", "standing_rings", "leave_changes", "leave_periods", "org_holidays",
-	"audit_logs", "linked_identities", "refresh_tokens", "signing_keys", "org_configs",
+	"audit_logs", "linked_identities", "refresh_tokens", "signing_keys", "org_call_pictures", "org_configs",
 	"notifications", "push_subscriptions", "user_presence",
 	"call_notes_changes", "call_events", "call_sessions", "call_knock_requests", "call_participants", "calls", "standing_meeting_schedules", "standing_meeting_teams", "standing_meeting_people", "standing_meetings", "backup_runs", "calendar_blocks",
 	"scrum_people_orders", "scrum_task_orders", "scrum_entries", "scrum_participants", "scrums",

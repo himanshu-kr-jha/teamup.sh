@@ -1,6 +1,8 @@
 import type { Browser, Page } from '@playwright/test';
 import { expect, openSession, test, type Session } from './support/fixtures';
+import type { Api } from './support/api';
 import { apiAs, createCall, idOf, joinCall, lobbyJoin, prejoinScreen } from './support/meetings';
+import { COLOURS, addOrgPictures, removeOrgPictures, type OrgPicture } from './support/orgPictures';
 
 // The owner's report of 18 November 2026: putting a background on with the camera
 // on took a long time, and the video stood still meanwhile, for you and for the
@@ -129,6 +131,17 @@ const allowed = (usual: number) => Math.max(600, Math.round(usual * 2.5));
 test.describe('putting a background on in a call', () => {
   let apart: Browser | undefined;
   let away: Page | undefined;
+  // The organization's own picture, the only kind there is, for a picture to go on.
+  let admin: Api;
+  let pictures: OrgPicture[] = [];
+  test.beforeAll(async () => {
+    admin = await apiAs('owner');
+    pictures = await addOrgPictures(admin, { Night: COLOURS.night });
+  });
+  test.afterAll(async () => {
+    await removeOrgPictures(admin, pictures);
+    await admin.dispose();
+  });
   test.afterEach(async () => {
     // Hung up first, as a person would, so the media server does not hold her
     // in this call while the next test rings her.
@@ -200,8 +213,12 @@ test.describe('putting a background on in a call', () => {
     await alice.page.waitForTimeout(2_000);
     const off = await gaps(alice.page, from);
     console.log(`off: longest ${off.longest} ms, usual ${off.usual} ms`);
+    // Measured against the pace the video had with the background on: the last
+    // frame before the switch comes at that pace, and the plain camera's quicker
+    // one after it made a busy machine's ordinary gap (733 ms against 550 ms
+    // frames) look like a freeze.
     expect(off.longest, `Olivia's video stood still for ${off.longest} ms while the background came off`).toBeLessThanOrEqual(
-      allowed(off.usual)
+      allowed(Math.max(off.usual, change.usual))
     );
 
     // Closing the picker lets the preview's copy of the camera go, and its processor.

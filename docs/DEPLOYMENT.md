@@ -806,7 +806,8 @@ The renewal hooks are the ones from step 6.
 Blurring or replacing the background behind a camera happens in the browser, before the video is sent, with LiveKit's track processor and Google's MediaPipe selfie segmenter.
 TeamUp serves both itself, so no call depends on a CDN and a network that blocks CDNs still works: the runtime at `/mediapipe/tasks-vision-<version>/wasm/`, copied out of `node_modules` by the build, and the model at `/mediapipe/selfie_segmenter.tflite`, kept in `web/public/mediapipe/`.
 The runtime is about 9 MB a variant, 3 MB once nginx compresses it, and is fetched only by somebody who turns an effect on; its folder is named by version, so browsers keep it.
-The background pictures are drawn by `web/scripts/make-backgrounds.py` and live in `web/public/backgrounds/`; anybody can also add their own, which stays in their browser.
+The only background pictures are the organization's own: an administrator adds them on Organization > Appearance, and they are kept in the database (`org_call_pictures`), each cut to 16:9 at most 1920 x 1080 with a small copy for the menu.
+Nobody can use a picture of their own, and guests, who are not of the organization, have the blurs only.
 A browser without WebGL or the media APIs the processor needs shows the button greyed out.
 The same menu has colour filters (warm, cool, black and white and others), applied in the same processor, so they work with or without a background; Safari before 18 cannot draw a filtered frame and does not offer them.
 MediaPipe's first run is slow, a fraction of a second with a graphics card and a few seconds without, so it is run once on a blank picture before the camera switches over: the camera keeps its plain picture meanwhile and the button shows a spinner until the effect is on screen.

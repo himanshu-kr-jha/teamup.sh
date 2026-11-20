@@ -25,12 +25,16 @@ function localDay(offset: number): string {
 
 const clean = () => sql(`DELETE FROM leave_changes; DELETE FROM leave_periods; DELETE FROM org_holidays`);
 
-/** A daily scrum at 09:00 UTC, made days ago, for everybody, with everybody already in the organization. */
+/**
+ * A daily scrum, made days ago, for everybody, with everybody already in the
+ * organization. At the hour half a day from now: at a fixed hour it rang everybody
+ * ("Stand-up starting") over the tests that ran at that hour, as CI did at 09:02 UTC.
+ */
 async function dailyScrum(name: string): Promise<string> {
   const owner = await apiAs('owner');
   const created = await owner.post('/standing-meetings', {
     name,
-    timeOfDay: '09:00',
+    timeOfDay: `${String((new Date().getUTCHours() + 12) % 24).padStart(2, '0')}:00`,
     timeZone: 'UTC',
     weekdays: [1, 2, 3, 4, 5, 6, 7],
     durationMinutes: 15,
