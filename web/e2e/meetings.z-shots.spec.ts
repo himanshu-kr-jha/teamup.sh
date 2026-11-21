@@ -101,7 +101,10 @@ for (const viewport of VIEWPORTS) {
         found.push(...layout.problems.map((p) => `${label} ${name}: ${p}`));
         notes.push(...layout.notes.map((p) => `${label} ${name}: ${p}`));
       };
-      const idle = (page: Page) => expect(page.getByRole('status')).toHaveCount(0);
+      // Nothing still loading. Not every status: a table you can drag rows of keeps
+      // one for what a screen reader hears while dragging.
+      const idle = (page: Page) =>
+        expect(page.getByRole('status').and(page.locator(':not([id^="DndLiveRegion"])'))).toHaveCount(0);
 
       const owner = await open('owner');
       const mia = await open('mia');

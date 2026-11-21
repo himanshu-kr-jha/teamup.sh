@@ -26,6 +26,25 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-20',
+    date: '2026-11-20',
+    title: 'The scrum is a table you arrange yourself',
+    changes: [
+      {
+        area: 'tasks',
+        title: 'One row per person, their tasks across',
+        body: 'The Scrum tab now reads like a team sheet: each person, their lead, then their open tasks as Task 1, Task 2, Task 3 and on, each with its due date and status, and what they finished since the last scrum at the end. Blocked and late tasks are marked in red, tasks somebody was added to say so, and any task opens with a click. On a phone the names stay put while the tasks scroll sideways.',
+        link: '/tasks?tab=scrum',
+      },
+      {
+        area: 'tasks',
+        title: 'Put people and tasks in your own order',
+        body: 'Drag the handle beside a name to move the person, or the handle on a task to make it Task 1. From the keyboard, press Space on a handle, move it with the arrow keys and press Space again. Your order is kept for you on every device, for each team you look at, and nobody else sees it. Anybody or anything new goes at the end. A completed scrum keeps the order and the leads you had, and History shows it as the same table.',
+        link: '/tasks?tab=scrum',
+      },
+    ],
+  },
+  {
     id: '2026-11-19-h',
     date: '2026-11-19',
     title: 'Your organization’s own call backgrounds',

@@ -9,15 +9,14 @@ import { apiErrorMessage, isClientError } from '@/shared/api/errors';
 import type { TaskCounts, TeamRef } from '@/shared/types/dashboard';
 import { cn } from '@/shared/utils/cn';
 import { DANGER_TEXT, taskDateLabel } from '../dueDate';
-import type { BucketSection, ScrumRow } from './logic';
+import type { BucketSection } from './logic';
 import { useTabParams } from './useTabParams';
-import { PersonAvatar } from '@/shared/components/UserAvatar';
 
-/** The scrolling page every dashboard view sits in. */
-export function ViewFrame({ children }: { children: ReactNode }) {
+/** The scrolling page every dashboard view sits in. `wide` is for a table that wants the room. */
+export function ViewFrame({ children, wide = false }: { children: ReactNode; wide?: boolean }) {
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-5xl space-y-4 p-3 md:p-6">{children}</div>
+      <div className={cn('mx-auto space-y-4 p-3 md:p-6', wide ? 'max-w-[100rem]' : 'max-w-5xl')}>{children}</div>
     </div>
   );
 }
@@ -180,49 +179,5 @@ export function BucketList({ sections }: { sections: BucketSection[] }) {
         </section>
       ))}
     </div>
-  );
-}
-
-/** One person on a scrum call, live or saved. */
-export function ScrumPersonCard({ row }: { row: ScrumRow }) {
-  return (
-    <section className="rounded-lg border border-border bg-card p-3 md:px-4">
-      <header className="flex flex-wrap items-center gap-x-2">
-        <PersonAvatar userId={row.userId} name={row.name} className="h-7 w-7" fallbackClassName="text-[10px]" decorative />
-        <h2 className="min-w-0 break-anywhere text-sm font-semibold">{row.name}</h2>
-        {row.teams.length > 0 && (
-          <p className="min-w-0 break-anywhere text-xs text-muted-foreground">
-            {row.teams.map((t) => t.name).join(', ')}
-          </p>
-        )}
-        {row.counts.overdue > 0 && (
-          <p className={cn('ml-auto text-xs tabular-nums', DANGER_TEXT)}>{row.counts.overdue} overdue</p>
-        )}
-      </header>
-
-      {row.sections.length === 0 ? (
-        <p className="mt-1 text-sm text-muted-foreground">No tasks</p>
-      ) : (
-        <div className="mt-2 space-y-2 md:space-y-1">
-          {row.sections.map((section) => (
-            <div key={section.key} className="md:grid md:grid-cols-[6rem_minmax(0,1fr)] md:gap-x-3">
-              <h3
-                className={cn(
-                  'flex items-center gap-1.5 self-start text-xs font-medium text-muted-foreground md:py-2',
-                  section.key === 'blocked' && DANGER_TEXT
-                )}
-              >
-                {section.label} <Count value={section.tasks.length} />
-              </h3>
-              <ul className="divide-y divide-border">
-                {section.tasks.map((task) => (
-                  <TaskRow key={task.id} task={task} />
-                ))}
-              </ul>
-            </div>
-          ))}
-        </div>
-      )}
-    </section>
   );
 }

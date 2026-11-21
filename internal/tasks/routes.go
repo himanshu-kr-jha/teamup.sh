@@ -49,6 +49,9 @@ func RegisterRoutes(rg *gin.RouterGroup, service *Service) {
 	rg.POST("/labels", h.CreateLabel)
 	rg.POST("/scrums", h.SaveScrum)
 	rg.GET("/scrums", h.ListScrums)
+	rg.GET("/scrums/order", h.ScrumOrder)
+	rg.PUT("/scrums/order", h.SetScrumPeopleOrder)
+	rg.PUT("/scrums/order/tasks/:personId", h.SetScrumTaskOrder)
 	rg.GET("/scrums/:id", h.GetScrum)
 	registerProjectRoutes(rg, h)
 }

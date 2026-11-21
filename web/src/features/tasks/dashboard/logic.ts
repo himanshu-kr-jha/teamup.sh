@@ -1,12 +1,9 @@
 import type {
   ContributionPerson,
-  DashboardPerson,
   DashboardScope,
-  Scrum,
   TaskBuckets,
   TaskCounts,
   TaskSummary,
-  TeamRef,
 } from '@/shared/types/dashboard';
 import { formatDate } from '@/shared/utils/cn';
 
@@ -95,87 +92,6 @@ export function bucketSections(buckets: TaskBuckets): BucketSection[] {
     { key: 'completed', label: 'Completed', tasks: latestFinishedFirst(buckets.completed) },
   ];
   return all.filter((section) => section.tasks.length > 0);
-}
-
-/** A task as a scrum row shows it, whether it is live or frozen in a saved scrum. */
-export interface ScrumTask {
-  id: string;
-  title: string;
-  status: string;
-  priority: string;
-  overdue: boolean;
-  dueDate: string | null;
-  completedAt: string | null;
-  isNew: boolean;
-}
-
-export type ScrumSectionKey = 'blocked' | 'ongoing' | 'pending' | 'addedTo' | 'done';
-
-export interface ScrumSection {
-  key: ScrumSectionKey;
-  label: string;
-  tasks: ScrumTask[];
-}
-
-export interface ScrumRow {
-  userId: string;
-  name: string;
-  teams: TeamRef[];
-  counts: TaskCounts;
-  sections: ScrumSection[];
-}
-
-function scrumSections(groups: Record<ScrumSectionKey, ScrumTask[]>): ScrumSection[] {
-  const all: ScrumSection[] = [
-    { key: 'blocked', label: 'Blocked', tasks: orderTasks(groups.blocked) },
-    { key: 'ongoing', label: 'Ongoing', tasks: orderTasks(groups.ongoing) },
-    { key: 'pending', label: 'Pending', tasks: orderTasks(groups.pending) },
-    { key: 'addedTo', label: 'Added to', tasks: orderTasks(groups.addedTo) },
-    { key: 'done', label: 'Done', tasks: latestFinishedFirst(groups.done) },
-  ];
-  return all.filter((section) => section.tasks.length > 0);
-}
-
-/** One person's live work, arranged for a call. Overdue is flagged on the task, not given a heading. */
-export function personForScrum(person: DashboardPerson): ScrumRow {
-  const isNew = new Set(person.newSinceLastScrum);
-  const mark = (tasks: TaskSummary[]): ScrumTask[] => tasks.map((t) => ({ ...t, isNew: isNew.has(t.id) }));
-  return {
-    userId: person.userId,
-    name: person.name,
-    teams: person.teams,
-    counts: person.counts,
-    sections: scrumSections({
-      blocked: mark(person.tasks.blocked),
-      ongoing: mark(person.tasks.ongoing),
-      pending: mark(person.tasks.pending),
-      addedTo: mark(person.tasks.addedTo ?? []),
-      done: mark(person.tasks.completed),
-    }),
-  };
-}
-
-function sectionForStatus(status: string): ScrumSectionKey {
-  if (status === 'blocked') return 'blocked';
-  if (status === 'done') return 'done';
-  return status === 'todo' ? 'pending' : 'ongoing';
-}
-
-/** A saved scrum's flat entries, grouped back into the rows the live view draws. */
-export function groupSnapshot(scrum: Pick<Scrum, 'participants' | 'entries'>): ScrumRow[] {
-  const rows = scrum.participants.map((participant) => {
-    const groups: Record<ScrumSectionKey, ScrumTask[]> = { blocked: [], ongoing: [], pending: [], addedTo: [], done: [] };
-    for (const { taskId, userId, addedTo, ...entry } of scrum.entries) {
-      if (userId === participant.userId) {
-        const section = addedTo ? 'addedTo' : sectionForStatus(entry.status);
-        groups[section].push({ ...entry, id: taskId, isNew: false });
-      }
-    }
-    // A scrum saved before added-to existed has nothing to say about it: zero.
-    const counts = { ...participant.counts, addedTo: participant.counts.addedTo ?? 0 };
-    return { ...participant, counts, teams: [], sections: scrumSections(groups) };
-  });
-  return orderPeople(rows);
 }
 
 export interface DateRange {

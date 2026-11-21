@@ -9,9 +9,9 @@ import { createTaskInUi, expect, localDay, openTasks, signIn, tabNames, test, ti
 
 const SIX_TABS = ['Overview', 'By person', 'Scrum', 'History', 'Contribution', 'Board'];
 
-/** One person's card on the scrum tab (or in a saved scrum). */
+/** One person's row in the scrum table (live or saved). */
 const scrumCard = (page: Page, name: string): Locator =>
-  page.locator('section', { has: page.getByRole('heading', { level: 2, name, exact: true }) });
+  page.locator('tr', { has: page.getByTestId('scrum-person-name').getByText(name, { exact: true }) });
 
 /** A person's row in the Overview table. */
 const overviewRow = (page: Page, name: string): Locator => page.getByRole('row', { name: new RegExp(`^${name}`) });
@@ -163,7 +163,7 @@ test.describe('2. manager sees the people on their teams', () => {
     await expect(scrumCard(page, 'Alice Archer')).toBeVisible();
     await expect(scrumCard(page, 'Pat Platform')).toBeVisible();
     await expect(scrumCard(page, 'Ann Idle')).toBeVisible();
-    await expect(scrumCard(page, 'Ann Idle')).toContainText('No tasks');
+    await expect(scrumCard(page, 'Ann Idle')).toContainText('No open tasks');
     await expect(scrumCard(page, 'Sam Sales')).toHaveCount(0);
     await expect(scrumCard(page, 'Alice Archer')).toContainText(TASKS.aliceBlocked);
     await expect(scrumCard(page, 'Pat Platform')).toContainText('1 overdue');
@@ -184,7 +184,7 @@ test.describe('3. the scrum summary is live', () => {
     await expect(alice.page.getByRole('link', { name: title })).toBeVisible();
 
     // The 30 second poll, or a task notification, whichever comes first.
-    const row = scrumCard(mia.page, 'Alice Archer').locator('li', { hasText: title });
+    const row = scrumCard(mia.page, 'Alice Archer').locator('td', { hasText: title });
     await expect(row).toBeVisible({ timeout: 45_000 });
     await expect(row.getByText('New', { exact: true })).toBeVisible();
   });
@@ -204,7 +204,7 @@ test.describe('3. the scrum summary is live', () => {
       Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
       document.dispatchEvent(new Event('visibilitychange', { bubbles: true }));
     });
-    await expect(scrumCard(mia.page, 'Pat Platform').locator('li', { hasText: title })).toBeVisible({ timeout: 5_000 });
+    await expect(scrumCard(mia.page, 'Pat Platform').locator('td', { hasText: title })).toBeVisible({ timeout: 5_000 });
   });
 });
 
@@ -229,8 +229,7 @@ test.describe('5a and 4. finishing work, completing a scrum, and what is frozen'
 
     await openTasks(mia.page, '?tab=scrum');
     const aliceCard = scrumCard(mia.page, 'Alice Archer');
-    await expect(aliceCard).toContainText(TASKS.aliceReport);
-    await expect(aliceCard.getByRole('heading', { level: 3, name: /^Done/ })).toBeVisible();
+    await expect(aliceCard.getByTestId('scrum-done')).toContainText(TASKS.aliceReport);
     await expect(mia.page.getByText(/^1 done/)).toBeVisible();
   });
 
@@ -264,7 +263,7 @@ test.describe('5a and 4. finishing work, completing a scrum, and what is frozen'
     await expect(scrumCard(mia.page, 'Alice Archer')).toContainText(TASKS.aliceReport);
     await expect(scrumCard(mia.page, 'Alice Archer')).toContainText(TASKS.aliceApi);
     await expect(scrumCard(mia.page, 'Pat Platform')).toContainText(TASKS.patLogs);
-    await expect(scrumCard(mia.page, 'Ann Idle')).toContainText('No tasks');
+    await expect(scrumCard(mia.page, 'Ann Idle')).toContainText('No open tasks');
     const savedUrl = mia.page.url();
 
     // Rename one task and delete another, as the people who own them.
@@ -302,7 +301,7 @@ test.describe('5a and 4. finishing work, completing a scrum, and what is frozen'
     await openTasks(alice.page);
     await createTaskInUi(alice.page, { title, assignee: PEOPLE.alice.name });
 
-    const fresh = scrumCard(mia.page, 'Alice Archer').locator('li', { hasText: title });
+    const fresh = scrumCard(mia.page, 'Alice Archer').locator('td', { hasText: title });
     await expect(fresh).toBeVisible({ timeout: 45_000 });
     await expect(fresh.getByText('New', { exact: true })).toBeVisible();
     await expect(mia.page.getByText('New', { exact: true })).toHaveCount(1);
