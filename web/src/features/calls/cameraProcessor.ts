@@ -322,6 +322,9 @@ const canRunFrames = () =>
 /** How often the copy is looked at for a new frame: twice a 30 fps camera's rate. */
 const TICK_MS = 1000 / 60;
 
+/** The rest left after each frame, as a share of the time it took (runFrames). */
+const REST_SHARE = 0.5;
+
 /**
  * Calls `onTick` every `ms`, from a worker's timer: a hidden tab's own timers
  * slow to once a second, and a video in it shows no frames to wait for, which
@@ -414,9 +417,15 @@ function runFrames(transformer: TeamUpTransformer, input: MediaStreamTrack, held
   // skipped, as the browser's own stream would drop it.
   let working = false;
   let last = -1;
+  // And a rest after each, of half as long as it took. A frame holds the page
+  // while it is worked on: about 10 ms with a graphics card, which this leaves
+  // at the camera's own pace, but a few hundred without one, when back to back
+  // they left the page no time for anything else: joining the call, starting
+  // the microphone and its noise cancellation, answering a click.
+  let restUntil = 0;
   const stopTicking = ticker(TICK_MS, () => {
     if (working || !feeding || stopped || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA || video.videoWidth === 0) return;
-    if (video.currentTime === last) return;
+    if (video.currentTime === last || performance.now() < restUntil) return;
     last = video.currentTime;
     let frame: VideoFrame;
     try {
@@ -425,6 +434,7 @@ function runFrames(transformer: TeamUpTransformer, input: MediaStreamTrack, held
       return;
     }
     working = true;
+    const started = performance.now();
     busy = (async () => {
       try {
         await transformer.transform(frame, controller);
@@ -433,6 +443,8 @@ function runFrames(transformer: TeamUpTransformer, input: MediaStreamTrack, held
         frame.close();
       } finally {
         working = false;
+        const now = performance.now();
+        restUntil = now + (now - started) * REST_SHARE;
       }
     })();
   });
