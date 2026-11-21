@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { LinkedText } from '@/shared/components/LinkedText';
-import { useParams, useNavigate } from 'react-router-dom';
+import { Link, useParams, useNavigate } from 'react-router-dom';
 import { ChevronLeft, Calendar, MessageSquare, MoreVertical, UserPlus, History, Paperclip, Plus } from 'lucide-react';
 import { Button } from '@/shared/components/ui/button';
 import { Input } from '@/shared/components/ui/input';
@@ -36,7 +36,9 @@ import { cn } from '@/shared/utils/cn';
 import { restrictionNote, type TaskAbilities } from './abilities';
 import { useReadTaskWhileOpen } from '@/features/notifications/unreadTasks';
 import { activityLine } from './activityText';
-import { endOfDueDay } from './dueDate';
+import { DANGER_TEXT, endOfDueDay } from './dueDate';
+import { BlockedOnDialog } from './BlockedOnDialog';
+import type { BlockedOn } from '@/shared/types/dashboard';
 import { liveTaskQuery } from './liveQuery';
 import { CreateTaskDialog } from './CreateTaskDialog';
 import { useShortcut } from '@/shared/shortcuts/ShortcutsProvider';
@@ -63,6 +65,8 @@ interface Task {
   updatedAt: string;
   /** What this caller may do to it, worked out by the server. */
   can?: TaskAbilities;
+  /** What it is blocked on, when it is blocked. */
+  blockedOn?: BlockedOn;
 }
 
 const statusColors = {
@@ -132,6 +136,7 @@ function TaskDetailView() {
   const [editing, setEditing] = useState(false);
   const [showCommentForm, setShowCommentForm] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
+  const [blockingOpen, setBlockingOpen] = useState(false);
   const [commentText, setCommentText] = useState('');
   // Uploaded but not yet posted, so a file arrives with the words that explain
   // it rather than on its own the moment it finishes uploading.
@@ -158,7 +163,7 @@ function TaskDetailView() {
   useReadTaskWhileOpen(task?.id);
 
   const updateTaskMutation = useMutation({
-    mutationFn: (data: Partial<Task>) => tasksApi.update(taskId!, data),
+    mutationFn: (data: Partial<Omit<Task, 'blockedOn'>>) => tasksApi.update(taskId!, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['task', taskId] });
       queryClient.invalidateQueries({ queryKey: ['tasks'] });
@@ -215,6 +220,11 @@ function TaskDetailView() {
   }
 
   const handleStatusChange = (status: typeof statuses[number]) => {
+    // Blocked asks what it is blocked on first.
+    if (status === 'blocked' && task.status !== 'blocked') {
+      setBlockingOpen(true);
+      return;
+    }
     updateTaskMutation.mutate({ status });
   };
 
@@ -228,10 +238,27 @@ function TaskDetailView() {
   // offer it and let the API decide — is the safe fallback.
   const mayDelete = task.can?.delete !== false;
   const mayReassign = task.can?.reassign !== false;
+  const mayChange = task.can?.edit !== false;
   const restriction = restrictionNote(task.can);
 
   return (
     <div className="flex h-full flex-col bg-background">
+      <BlockedOnDialog
+        open={blockingOpen}
+        onOpenChange={setBlockingOpen}
+        taskId={task.id}
+        taskTitle={task.title}
+        current={task.status === 'blocked' ? task.blockedOn : null}
+        editing={task.status === 'blocked'}
+        onSave={async (blockedOn) => {
+          await tasksApi.update(task.id, task.status === 'blocked' ? { blockedOn } : { status: 'blocked', blockedOn });
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: ['task', taskId] }),
+            queryClient.invalidateQueries({ queryKey: ['tasks'] }),
+            queryClient.invalidateQueries({ queryKey: ['task-activities', taskId] }),
+          ]);
+        }}
+      />
       <TaskShortcuts
         task={task}
         onEdit={() => setEditing(true)}
@@ -388,6 +415,10 @@ function TaskDetailView() {
                     <LabelBadge key={label.name} name={label.name} color={label.color} />
                   ))}
                 </div>
+
+                {task.status === 'blocked' && (
+                  <BlockedOnPanel blockedOn={task.blockedOn} mayChange={mayChange} onChange={() => setBlockingOpen(true)} />
+                )}
 
                 {/* What was done for it in GitHub, under what it is. */}
                 {task.key && <DevelopmentCard taskId={taskId!} taskKey={task.key} title={task.title} projectId={task.projectId} />}
@@ -1050,5 +1081,49 @@ function WatchersCard({ taskId }: { taskId: string }) {
         />
       </FormDialog>
     </>
+  );
+}
+
+/** What a blocked task is waiting for, under what it is, with a way to change it. */
+function BlockedOnPanel({
+  blockedOn,
+  mayChange,
+  onChange,
+}: {
+  blockedOn?: BlockedOn;
+  mayChange: boolean;
+  onChange: () => void;
+}) {
+  const note = blockedOn?.note?.trim();
+  return (
+    <section
+      aria-label="Blocked on"
+      data-testid="task-blocked-on"
+      className="rounded-lg border border-red-200 bg-red-50 p-3 dark:border-red-900/60 dark:bg-red-950/30"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 space-y-1">
+          <h2 className={cn('text-sm font-semibold', DANGER_TEXT)}>Blocked on</h2>
+          <p className={cn('whitespace-pre-wrap break-anywhere text-sm', !note && 'text-muted-foreground')}>
+            {note || 'No reason given'}
+          </p>
+          {blockedOn?.user && <p className="text-sm text-muted-foreground">Waiting on {blockedOn.user.name}</p>}
+          {blockedOn?.task && (
+            <p className="break-anywhere text-sm text-muted-foreground">
+              Waiting for{' '}
+              <Link to={`/tasks/${blockedOn.task.id}`} className="font-medium text-foreground hover:underline">
+                {blockedOn.task.key ? `${blockedOn.task.key} ` : ''}
+                {blockedOn.task.title}
+              </Link>
+            </p>
+          )}
+        </div>
+        {mayChange && (
+          <Button variant="outline" size="sm" className="shrink-0" onClick={onChange}>
+            {note ? 'Change' : 'Say why'}
+          </Button>
+        )}
+      </div>
+    </section>
   );
 }

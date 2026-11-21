@@ -26,6 +26,25 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-21',
+    date: '2026-11-21',
+    title: 'Say what a blocked task is blocked on',
+    changes: [
+      {
+        area: 'tasks',
+        title: 'Blocked asks why',
+        body: 'Marking a task Blocked, from the board, its menu or the task page, now asks what it is blocked on: a short note, and if you like the person and the task it is waiting for. The reason shows on the card and on the task, where you can change it, and it goes away by itself when the task moves on. The task\'s history keeps what it said.',
+        link: '/tasks?tab=board',
+      },
+      {
+        area: 'tasks',
+        title: 'Blocked on, at the end of the scrum',
+        body: 'In the Scrum tab, blocked tasks now sit in their own Blocked on column after Done, each with what it is waiting for, instead of among Task 1, 2, 3. A task keeps its place in your order and goes back there once it is unblocked. Saved scrums keep the reasons as they were.',
+        link: '/tasks?tab=scrum',
+      },
+    ],
+  },
+  {
     id: '2026-11-20',
     date: '2026-11-20',
     title: 'The scrum is a table you arrange yourself',

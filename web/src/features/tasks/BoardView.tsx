@@ -35,6 +35,8 @@ import {
 import { ErrorState, LoadingState } from './dashboard/parts';
 import { PersonAvatar } from '@/shared/components/UserAvatar';
 import { BoardDnd, centreOnPointer, DraggableTask, DragOverlay, DropColumn, type DragData } from './boardDrag';
+import { BlockedOnDialog, blockedOnWords } from './BlockedOnDialog';
+import type { BlockedOn } from '@/shared/types/dashboard';
 import { useShortcut } from '@/shared/shortcuts/ShortcutsProvider';
 import { shortcutHint } from '@/shared/shortcuts/catalogue';
 
@@ -59,6 +61,8 @@ interface Task {
   can?: TaskAbilities;
   /** How it is the caller's, when they asked for their own. */
   mine?: Mine[];
+  /** What it is blocked on, when it is blocked. */
+  blockedOn?: BlockedOn;
 }
 
 const statusColors = {
@@ -190,6 +194,16 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
     },
     onSettled: () => queryClient.invalidateQueries({ queryKey: ['tasks'] }),
   });
+  // Blocking a task asks what it is blocked on first, from the menu or a drop
+  // on the Blocked column alike; until that is answered the card stays put.
+  const [blocking, setBlocking] = useState<{ id: string; title: string } | null>(null);
+  const changeTask = ({ id, data }: { id: string; data: any }) => {
+    if (data?.status === 'blocked' && !data.blockedOn) {
+      setBlocking({ id, title: tasks.find((t) => t.id === id)?.title ?? 'this task' });
+      return;
+    }
+    updateTaskMutation.mutate({ id, data });
+  };
   const [dragging, setDragging] = useState<DragData | null>(null);
   const draggedTask = dragging ? tasks.find((t) => t.id === dragging.taskId) : undefined;
   const titleOf = (status: string) => columns.find((c) => c.id === status)?.title ?? status;
@@ -400,13 +414,27 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
         <div className="flex shrink-0 gap-2 border-b border-border px-3 py-2 md:hidden">{mineFilter(true)}</div>
       )}
 
+      {blocking && (
+        <BlockedOnDialog
+          open
+          onOpenChange={(open) => !open && setBlocking(null)}
+          taskId={blocking.id}
+          taskTitle={blocking.title}
+          onSave={async (blockedOn) => {
+            await tasksApi.update(blocking.id, { status: 'blocked', blockedOn });
+            await queryClient.invalidateQueries({ queryKey: ['tasks'] });
+            toast.success('Moved to Blocked.');
+          }}
+        />
+      )}
+
       <BoardDnd
         titleOf={titleOf}
         onDragStart={setDragging}
         onDragEnd={() => setDragging(null)}
         onMove={({ taskId, to }) => {
-          updateTaskMutation.mutate({ id: taskId, data: { status: to } });
-          toast.success(`Moved to ${titleOf(to)}.`);
+          changeTask({ id: taskId, data: { status: to } });
+          if (to !== 'blocked') toast.success(`Moved to ${titleOf(to)}.`);
         }}
       >
       {/* Phone: one column at a time, picked here. Columns side by side on a
@@ -477,7 +505,7 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
               ) : (
                 onPhone.map((task) => (
                   <DraggableTask key={task.id} surface="phone" data={dragData(task)} disabled={task.can?.edit === false}>
-                    <TaskCard task={task} onUpdate={updateTaskMutation.mutate} showMine={showMine} />
+                    <TaskCard task={task} onUpdate={changeTask} showMine={showMine} />
                   </DraggableTask>
                 ))
               )}
@@ -502,7 +530,7 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
                     <div className={cn('min-h-[6rem] flex-1 overflow-y-auto rounded-b-lg p-2 space-y-2', column.body)}>
                       {filteredTasks.filter((t) => t.status === column.id).map((task) => (
                         <DraggableTask key={task.id} surface="wide" data={dragData(task)} disabled={task.can?.edit === false}>
-                          <TaskCard task={task} onUpdate={updateTaskMutation.mutate} showMine={showMine} />
+                          <TaskCard task={task} onUpdate={changeTask} showMine={showMine} />
                         </DraggableTask>
                       ))}
                       {countIn(column.id) === 0 && (
@@ -519,7 +547,7 @@ export function BoardView({ managesSomebody }: { managesSomebody: boolean }) {
             ) : (
               <div className="hidden space-y-4 md:block">
                 {filteredTasks.map((task) => (
-                  <TaskCard key={task.id} task={task} onUpdate={updateTaskMutation.mutate} showMine={showMine} />
+                  <TaskCard key={task.id} task={task} onUpdate={changeTask} showMine={showMine} />
                 ))}
               </div>
             )}
@@ -617,6 +645,13 @@ function TaskCard({
         <p className="mb-2 flex items-start gap-1.5 text-xs text-muted-foreground">
           <Lock className="mt-0.5 h-3 w-3 shrink-0" aria-hidden />
           <span className="break-anywhere">{restriction}</span>
+        </p>
+      )}
+
+      {task.status === 'blocked' && (
+        <p className={cn('mb-2 line-clamp-2 break-anywhere text-xs', DANGER_TEXT)} data-testid="task-blocked-on">
+          Blocked on:{' '}
+          {blockedOnWords({ note: task.blockedOn?.note, who: task.blockedOn?.user?.name, task: task.blockedOn?.task?.title })}
         </p>
       )}
 
