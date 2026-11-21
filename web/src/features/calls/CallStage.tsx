@@ -12,7 +12,8 @@ import {
 } from '@livekit/components-react';
 import { Track } from 'livekit-client';
 import type { TrackReferenceOrPlaceholder } from '@livekit/components-react';
-import { ChevronLeft, ChevronRight, MicOff, MonitorUp, NotebookPen, Pin, PinOff, UserX } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Loader2, MicOff, MonitorUp, NotebookPen, Pin, PinOff, UserX } from 'lucide-react';
+import { useStartingBackground } from './background';
 import { isNotetaker, useNotesPaused } from './notetaker';
 import { HandBadge, HandsStrip } from './Hands';
 import { SpeakingBars } from './SpeakingBars';
@@ -359,6 +360,8 @@ function ParticipantPanel({
   const deviceCount = devices.get(person) ?? 1;
   const name = presenting ? nameOf(track) : deviceLabel(nameOf(track), kindOf(participant), deviceCount);
   const isLocal = participant.isLocal;
+  // Your camera, held back until your background is ready, says so where it will show.
+  const startingBackground = useStartingBackground() && isLocal && !presenting;
   // Your own shared screen is never shown to you: shown live, a whole screen or
   // the tab TeamUp is in captures itself, over and over. A card says so instead.
   const ownShare = !!presenting && isLocal;
@@ -445,7 +448,7 @@ function ParticipantPanel({
         ) : (
           // A camera that is off should show the person, not a black rectangle.
           // On a small tile the picture sits above the name rather than under it.
-          <div className={cn('flex h-full w-full items-center justify-center', compact && 'pb-6')}>
+          <div className={cn('flex h-full w-full flex-col items-center justify-center gap-2', compact && 'pb-6')}>
             {notes ? (
               <span
                 className={cn(
@@ -465,6 +468,12 @@ function ParticipantPanel({
                 className={compact ? SMALL_PICTURE : 'h-20 w-20'}
                 fallbackClassName={cn('bg-primary/20 font-semibold text-primary', compact ? SMALL_INITIALS : 'text-2xl')}
               />
+            )}
+            {startingBackground && (
+              <p role="status" data-testid="starting-background" className="flex items-center gap-1.5 px-2 text-center text-xs text-white/85">
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden="true" />
+                <span className={cn(compact && 'sr-only')}>Starting your background…</span>
+              </p>
             )}
           </div>
         )}

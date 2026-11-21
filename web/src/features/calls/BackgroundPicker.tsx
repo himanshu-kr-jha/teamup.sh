@@ -17,6 +17,7 @@ import { cn } from '@/shared/utils/cn';
 import {
   LOOKS,
   applyCameraEffects,
+  hasCameraEffects,
   preloadCameraEffects,
   lookFilter,
   lookWash,
@@ -374,8 +375,8 @@ function EffectsPreview({ track }: { track: LocalVideoTrack }) {
     const el = copy.current;
     if (!el) return;
     const show = (shown: boolean) => (el.dataset.shown = String(shown));
-    if (track.getProcessor()) {
-      const changed = () => !track.getProcessor() && setRound((r) => r + 1);
+    if (hasCameraEffects(track)) {
+      const changed = () => !hasCameraEffects(track) && setRound((r) => r + 1);
       track.on(TrackEvent.TrackProcessorUpdate, changed);
       return () => {
         track.off(TrackEvent.TrackProcessorUpdate, changed);
@@ -396,7 +397,7 @@ function EffectsPreview({ track }: { track: LocalVideoTrack }) {
     });
     const changed = () => {
       const shownSent = sent.current;
-      if (!track.getProcessor() || !shownSent) return;
+      if (!hasCameraEffects(track) || !shownSent) return;
       // The camera has taken the processor: once its own picture shows it, the copy goes.
       afterFrame(shownSent, () => {
         if (stopped) return;

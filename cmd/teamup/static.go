@@ -46,8 +46,8 @@ func registerStatic(router gin.IRoutes, site fs.FS) {
 // files have no modification time, so without this a browser would fetch them
 // again every time; that matters for the MediaPipe runtime, about 9 MB, fetched
 // when a background effect starts. Its folder is named by version, and assets'
-// names carry a content hash, so both can be kept for good. The rest (sounds,
-// fonts, the model, icons) keep their names across releases, so a day.
+// names carry a content hash (the segmentation model's too), so both can be kept for good. The rest (sounds,
+// fonts, icons) keep their names across releases, so a day.
 func staticCache(folder string) func(*gin.Context) {
 	return func(c *gin.Context) {
 		value := "public, max-age=86400"

@@ -10,7 +10,7 @@
 // model are served by TeamUp itself (vite.config.ts, public/mediapipe/).
 
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import type { LocalVideoTrack } from 'livekit-client';
+import type { LocalVideoTrack, ProcessorOptions, Room, RoomOptions, Track, TrackProcessor } from 'livekit-client';
 import type { SwitchBackgroundProcessorOptions } from '@livekit/track-processors';
 import type { CallBackgrounds } from '@/shared/api/client';
 
@@ -84,6 +84,7 @@ export function setBackgroundChoice(choice: BackgroundChoice) {
   } catch {
     // Private browsing: it still applies to this call, it is just not remembered.
   }
+  syncKeep();
   listeners.forEach((l) => l());
 }
 
@@ -197,6 +198,7 @@ export function setLook(look: LookId) {
   } catch {
     // Not remembered, but still applied to this call.
   }
+  syncKeep();
   listeners.forEach((l) => l());
 }
 
@@ -226,6 +228,182 @@ export function supportsLooks(): boolean {
 
 // ── Putting them on the camera ────────────────────────────────────────────
 
+/** Whether a background or a look is chosen: anything that has to go on the camera. */
+export function wantsEffects(): boolean {
+  return currentBackgroundChoice().kind !== 'none' || currentLookChoice() !== 'natural';
+}
+
+type EffectsModule = typeof import('./cameraProcessor');
+let effectsModule: Promise<EffectsModule> | null = null;
+
+/**
+ * The processor's code, loaded once, told whether to keep a processor made ready
+ * from one camera to the next: while anything is chosen, so the next call's
+ * camera does not set MediaPipe up again.
+ */
+function loadEffects(): Promise<EffectsModule> {
+  effectsModule ??= import('./cameraProcessor').catch((err) => {
+    effectsModule = null;
+    throw err;
+  });
+  return effectsModule.then((m) => {
+    m.keepEffects(wantsEffects());
+    return m;
+  });
+}
+
+function syncKeep() {
+  effectsModule?.then((m) => m.keepEffects(wantsEffects())).catch(() => undefined);
+}
+
+// Cameras waiting for their background before they are sent, for "Starting your background".
+let starting = 0;
+const startingListeners = new Set<() => void>();
+const setStarting = (delta: number) => {
+  starting = Math.max(0, starting + delta);
+  startingListeners.forEach((l) => l());
+};
+
+/** Whether a camera is being held back until its background is ready. */
+export function useStartingBackground(): boolean {
+  return useSyncExternalStore(
+    (l) => {
+      startingListeners.add(l);
+      return () => startingListeners.delete(l);
+    },
+    () => starting > 0,
+    () => false
+  );
+}
+
+/**
+ * What a camera starts with, before the organization's pictures are known: the
+ * chosen blur, or for a picture the strong blur, which hides the room as well,
+ * until the picture itself is put on in place (useCameraEffects).
+ */
+function startingSetting(): { background: import('./cameraProcessor').BackgroundSetting; look: { filter: string; wash: string } } {
+  const choice = currentBackgroundChoice();
+  const look = currentLookChoice();
+  return {
+    background: choice.kind === 'none' ? null : { blurRadius: BLUR_RADIUS[choice.kind === 'blur' ? choice.strength : 'strong'] },
+    look: { filter: lookFilter(look), wash: lookWash(look) },
+  };
+}
+
+/**
+ * The processor every camera is opened with, so that one with a background
+ * chosen is sent with it from the first frame and never as the room behind you
+ * is: LiveKit puts it on before publishing, and publishes once it is ready.
+ * Without anything chosen when the camera opens it does nothing, and loads
+ * nothing; the camera is sent as it is.
+ *
+ * If the processor cannot be made on this device, nothing is sent rather than
+ * the room: useCameraEffects then says so and goes back to no background, as it
+ * does for any effect that fails.
+ */
+export class NewCameraProcessor implements TrackProcessor<Track.Kind.Video> {
+  readonly name = 'teamup-camera';
+  /** Published in a call (onPublish), so a camera restarted later is not held. */
+  private published = false;
+
+  /**
+   * `inCall`: the camera of a call, whose frames are worked on only once it is
+   * published (processorForNewCamera). The preview before a call is never
+   * published, so it is not held.
+   */
+  constructor(private readonly inCall = false) {}
+
+  async onPublish(room: Room) {
+    this.published = true;
+    await this.inner?.onPublish?.(room);
+  }
+  /** The processor doing the work, once there is one. */
+  inner?: TrackProcessor<Track.Kind.Video>;
+  /** A track that never shows a frame, sent in place of the camera when the processor failed. */
+  private blank?: MediaStreamTrack;
+
+  get processedTrack(): MediaStreamTrack | undefined {
+    return this.inner?.processedTrack ?? this.blank;
+  }
+
+  /** Whether this does nothing, and the camera goes as it is. */
+  get idle(): boolean {
+    return !this.inner && !this.blank;
+  }
+
+  async init(opts: ProcessorOptions<Track.Kind.Video>) {
+    if (!wantsEffects()) return;
+    const { background, look } = startingSetting();
+    const settings = opts.track.getSettings();
+    setStarting(1);
+    try {
+      const m = await loadEffects();
+      const inner = m.processorForNewCamera(
+        background,
+        look,
+        { width: settings.width, height: settings.height },
+        this.inCall && !this.published
+      );
+      if (!inner) return;
+      await inner.init(opts);
+      this.inner = inner;
+    } catch {
+      this.inner = undefined;
+      this.blank = document.createElement('canvas').captureStream(0).getVideoTracks()[0];
+    } finally {
+      setStarting(-1);
+    }
+  }
+
+  async restart(opts: ProcessorOptions<Track.Kind.Video>) {
+    if (this.inner) return this.inner.restart(opts);
+    await this.destroy();
+    await this.init(opts);
+  }
+
+  async destroy() {
+    const inner = this.inner;
+    this.inner = undefined;
+    this.blank?.stop();
+    this.blank = undefined;
+    await inner?.destroy();
+  }
+}
+
+/**
+ * A call's room options with NewCameraProcessor on every camera it opens. A new
+ * one for each room, which LiveKit builds once.
+ */
+export function withCameraEffects(options: RoomOptions): RoomOptions {
+  return { ...options, videoCaptureDefaults: { ...options.videoCaptureDefaults, processor: new NewCameraProcessor(true) } };
+}
+
+/**
+ * Whether a camera has an effect on it, or is held back for one: not when all
+ * it has is an idle NewCameraProcessor, which every camera in a call opens with.
+ */
+export function hasCameraEffects(track: LocalVideoTrack): boolean {
+  const held = track.getProcessor();
+  return held instanceof NewCameraProcessor ? !held.idle : !!held;
+}
+
+/** The processor that does the work on a track, under NewCameraProcessor if that is what is on it. */
+function workingProcessor(track: LocalVideoTrack) {
+  const held = track.getProcessor();
+  return held instanceof NewCameraProcessor ? held.inner : held;
+}
+
+/**
+ * Starts setting up the processor now, for somebody with a background chosen,
+ * so the camera is quick to start: on the screen before a call.
+ */
+export function warmCameraEffects() {
+  if (!wantsEffects()) return;
+  void loadEffects()
+    .then((m) => m.warmEffects())
+    .catch(() => undefined);
+}
+
 /**
  * Keeps your camera as chosen, background and look together: switched in place
  * when either changes, so there is no flicker and no need to turn the camera off
@@ -246,12 +424,15 @@ export async function applyCameraEffects(
   const options = processorOptions(choice, picture);
   const filter = { filter: lookFilter(look), wash: lookWash(look) };
   const plainLook = !filter.filter && !filter.wash;
-  const running = track.getProcessor();
+  const held = track.getProcessor();
+  const running = workingProcessor(track);
   if (!options && plainLook) {
     if (running) await takeEffectsOff(track);
+    // One that failed sends nothing; with nothing chosen, the camera goes as it is.
+    else if (held?.processedTrack) await plainCamera(track);
     return;
   }
-  const m = await import('./cameraProcessor');
+  const m = await loadEffects();
   const background: import('./cameraProcessor').BackgroundSetting = !options
     ? null
     : options.mode === 'background-blur'
@@ -263,7 +444,8 @@ export async function applyCameraEffects(
     await m.updateCameraProcessor(running, background, filter);
     return;
   }
-  if (running) await track.stopProcessor();
+  // An idle one is simply replaced, once the new one is ready (setProcessor).
+  if (held && !(held instanceof NewCameraProcessor && held.idle)) await track.stopProcessor();
   const settings = track.getSourceTrackSettings();
   await m.attachCameraProcessor(
     (processor) => track.setProcessor(processor),
@@ -280,15 +462,24 @@ export async function applyCameraEffects(
  * others see never waits for it.
  */
 async function takeEffectsOff(track: LocalVideoTrack) {
-  const running = track.getProcessor();
+  const running = workingProcessor(track);
   if (!running) return;
-  const m = await import('./cameraProcessor');
+  const m = await loadEffects();
   if (m.isCameraProcessor(running)) {
     await m.updateCameraProcessor(running, null, { filter: '', wash: '' });
     const camera = m.cameraUnder(running);
     if (camera?.readyState === 'live') await track.sender?.replaceTrack(camera).catch(() => undefined);
   }
-  await track.stopProcessor();
+  await plainCamera(track);
+}
+
+/**
+ * Leaves the camera as it is, with an idle NewCameraProcessor on it rather than
+ * none: LiveKit restarts it when the camera comes back on, so a background chosen
+ * while the camera was off is on it before its first frame goes out.
+ */
+async function plainCamera(track: LocalVideoTrack) {
+  await track.setProcessor(new NewCameraProcessor());
 }
 
 /**
@@ -299,7 +490,7 @@ async function takeEffectsOff(track: LocalVideoTrack) {
 export function preloadCameraEffects(whenIdle = false) {
   const saveData = (navigator as Navigator & { connection?: { saveData?: boolean } }).connection?.saveData;
   if (whenIdle && saveData) return () => undefined;
-  const load = () => void import('./cameraProcessor').then((m) => m.preloadEffects()).catch(() => undefined);
+  const load = () => void loadEffects().then((m) => m.preloadEffects()).catch(() => undefined);
   if (!whenIdle) {
     load();
     return () => undefined;

@@ -29,6 +29,22 @@ function wasmBinary(): Promise<ArrayBuffer> {
   return wasm;
 }
 
+let worklet: Promise<unknown> | null = null;
+
+/**
+ * Fetches RNNoise's WebAssembly and worklet ahead, so turning it on in the next
+ * call does not wait for the network: the WebAssembly is kept for the page, and
+ * both are kept by the browser for good (their names carry a content hash).
+ */
+export function preloadRnnoise(): void {
+  void wasmBinary().catch(() => undefined);
+  worklet ??= fetch(workletUrl, { priority: 'low' } as RequestInit)
+    .then((r) => r.arrayBuffer())
+    .catch(() => {
+      worklet = null;
+    });
+}
+
 /** A microphone track run through RNNoise, and how to let it all go. */
 export interface Denoised {
   track: MediaStreamTrack;

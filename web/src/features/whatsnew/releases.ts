@@ -26,6 +26,29 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-21',
+    date: '2026-11-21',
+    title: 'Your camera and microphone start sooner',
+    changes: [
+      {
+        area: 'meetings',
+        title: 'Your background is ready when you join',
+        body: 'With a blur or a background chosen, it gets ready while you are on the screen before the call and stays ready for your next call, so your camera comes on without the wait.',
+        link: '/calls',
+      },
+      {
+        area: 'meetings',
+        title: 'Your room stays hidden from the first moment',
+        body: 'Your camera now goes out with your background from its very first picture. If the background is still getting ready, your tile says "Starting your background" and nothing is sent until it is.',
+      },
+      {
+        area: 'meetings',
+        title: 'Your microphone level shows at once',
+        body: 'On the screen before a call, the level moves as soon as your microphone is on, and noise cancellation joins in a moment later.',
+      },
+    ],
+  },
+  {
     id: '2026-11-20',
     date: '2026-11-20',
     title: 'The scrum is a table you arrange yourself',

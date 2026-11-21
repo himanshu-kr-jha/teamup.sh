@@ -18,12 +18,21 @@
 //    picker's preview, and is then handed to the camera itself (openPreview).
 //  - It keeps MediaPipe when LiveKit restarts it, as it does when the camera comes
 //    back on or another one is picked, so that is quick as well.
+//  - It is kept, made ready, when its camera stops, for as long as a background
+//    or a look is chosen: the preview's camera stopping on Join, or a call
+//    ending, hands it to the next camera instead of throwing away what took a
+//    second or more to set up (keepEffects).
+//  - It can go on a camera before the camera is sent at all (processorForNewCamera),
+//    so somebody who has chosen a background never sends the room behind them,
+//    not even its first frame.
 //  - It says when a frame has gone out, so the picker can show it is working
 //    until the change is really on screen.
 
 import { FilesetResolver } from '@mediapipe/tasks-vision';
 import type { ProcessorOptions, Track } from 'livekit-client';
 import { frameStream } from './frameStream';
+// Named by its content when built, so the server lets browsers keep it for good.
+import modelUrl from './assets/selfie_segmenter.tflite?url';
 import {
   BackgroundProcessorWrapper,
   BackgroundTransformer,
@@ -38,7 +47,7 @@ type DestroyOptions = Parameters<BackgroundTransformer['destroy']>[0];
 /** Where MediaPipe's runtime and the model are: served by TeamUp itself (vite.config.ts). */
 const ASSETS = {
   tasksVisionFileSet: __MEDIAPIPE_WASM__,
-  modelAssetPath: '/mediapipe/selfie_segmenter.tflite',
+  modelAssetPath: modelUrl,
 };
 
 /** The longest the camera waits for the preview to show a change before taking it anyway. */
@@ -58,6 +67,8 @@ class TeamUpTransformer extends BackgroundTransformer {
 
   /** MediaPipe and the drawing are set up and have run once: frames can come. */
   private ready = false;
+  /** Setting it up, once: whoever asks while it is under way waits for the same. */
+  private preparing?: Promise<void>;
   /** Let go of for good: MediaPipe closed. Once is enough, whoever asks. */
   private gone = false;
   /** Called when a camera starts sending its frames through, made ready or not. */
@@ -69,18 +80,39 @@ class TeamUpTransformer extends BackgroundTransformer {
    * runs a blank picture through it once. Every first run is slow and holds the
    * page while it lasts; done here, the camera goes on showing as it is meanwhile.
    */
-  async prepare(width: number, height: number) {
-    await super.init({ outputCanvas: new OffscreenCanvas(width, height), inputElement: document.createElement('video') });
-    this.warmUp(width, height, true);
-    this.ready = true;
+  prepare(width: number, height: number): Promise<void> {
+    this.preparing ??= (async () => {
+      // A download of the same files already under way is waited for: two at
+      // once are both fetched in full, as neither is in the cache yet, and the
+      // runtime is 9 MB.
+      await preloading;
+      await super.init({ outputCanvas: new OffscreenCanvas(width, height), inputElement: document.createElement('video') });
+      this.warmUp(width, height, true);
+      this.ready = true;
+    })();
+    return this.preparing;
   }
+
+  /** Takes frames again, as one handed on by a camera that stopped does not. */
+  takeFrames() {
+    this.isDisabled = false;
+  }
+
+  /**
+   * What has to be done before a camera's frames may come: for one put on a
+   * camera before it is sent, its background set. Awaited by attach, so no frame
+   * goes out without it.
+   */
+  before?: Promise<void>;
 
   /**
    * Readies it for a camera's frames, made ready first if it was not (it always
    * is when it comes from attachCameraProcessor), and says so to onAttach.
    */
   async attach(size: { width: number; height: number }, inputElement: HTMLVideoElement) {
-    if (!this.ready || !this.imageSegmenter) await this.prepare(size.width, size.height);
+    if (this.gone) throw new Error('This camera processor has been let go of.');
+    await this.prepare(size.width, size.height);
+    await this.before;
     this.inputVideo = inputElement;
     this.isDisabled = false;
     this.onAttach?.();
@@ -101,14 +133,25 @@ class TeamUpTransformer extends BackgroundTransformer {
 
   /**
    * A restart (the camera back on, or another camera) keeps MediaPipe and the
-   * drawing; only the stream goes, and init makes a new one. Anything else lets
-   * it all go.
+   * drawing; only the stream goes, and init makes a new one. A camera that stops
+   * hands it on, made ready, to the next one while effects are wanted (park).
+   * Anything else lets it all go.
    */
   async destroy(options?: DestroyOptions) {
     if (options?.willProcessorRestart && this.ready) {
       this.isDisabled = true;
       return;
     }
+    this.isDisabled = true;
+    this.onAttach = undefined;
+    this.before = undefined;
+    this.waiting.splice(0).forEach((r) => r());
+    if (this.ready && !this.gone && park(this)) return;
+    await this.dispose(options);
+  }
+
+  /** Lets MediaPipe and the drawing go, for good. */
+  async dispose(options?: DestroyOptions) {
     if (this.gone) return;
     this.gone = true;
     this.ready = false;
@@ -315,6 +358,8 @@ interface Frames {
   track: MediaStreamTrack;
   /** Stops running frames through, the output keeping the last one. */
   pause(): void;
+  /** Starts running frames through, for one made held. */
+  go(): void;
   /** Stops for good, and resolves once the frame in hand, if any, has been closed. */
   stop(): Promise<void>;
 }
@@ -332,7 +377,7 @@ interface Frames {
  * reports them as "garbage collected without being closed", some seconds after a
  * call is left.
  */
-function runFrames(transformer: TeamUpTransformer, input: MediaStreamTrack): Frames {
+function runFrames(transformer: TeamUpTransformer, input: MediaStreamTrack, held = false): Frames {
   const video = document.createElement('video');
   video.muted = true;
   video.playsInline = true;
@@ -343,7 +388,7 @@ function runFrames(transformer: TeamUpTransformer, input: MediaStreamTrack): Fra
   const ctx = canvas.getContext('2d', { alpha: false });
   const output = canvas.captureStream().getVideoTracks()[0];
 
-  let feeding = true;
+  let feeding = !held;
   let stopped = false;
   let busy: Promise<void> = Promise.resolve();
   const controller = {
@@ -398,6 +443,9 @@ function runFrames(transformer: TeamUpTransformer, input: MediaStreamTrack): Fra
     pause: () => {
       feeding = false;
     },
+    go: () => {
+      if (!stopped) feeding = true;
+    },
     stop: () =>
       (stopping ??= (async () => {
         feeding = false;
@@ -411,29 +459,56 @@ function runFrames(transformer: TeamUpTransformer, input: MediaStreamTrack): Fra
   };
 }
 
+/** Cameras letting go of their processor right now, which may hand it on (park). */
+const lettingGo = new Set<Promise<void>>();
+
 /**
  * The processor LiveKit puts on the camera: the frames of a copy of the camera,
  * run through a processor made ready (runFrames). LiveKit restarts it with the
  * new camera when the camera comes back on or another is picked, and destroys it
  * when it is taken off or the camera stops.
+ *
+ * Given a transformer, or how to get one when the camera starts: one put on a
+ * camera before it is sent takes the processor made ready only then, which may
+ * be the one the preview's camera is still handing on.
  */
 class CameraFramesProcessor {
   readonly name = PROCESSOR_NAME;
   processedTrack?: MediaStreamTrack;
   /** The camera as it is, under the processor. */
   source?: MediaStreamTrack;
+  transformer?: TeamUpTransformer;
   private frames?: Frames;
+  /** Sent in a call: LiveKit has published it (onPublish). */
+  private published = false;
 
-  constructor(readonly transformer: TeamUpTransformer) {}
+  /**
+   * `holdUntilPublished`, for a camera opened in a call: no frame is worked on
+   * until LiveKit has published it. Nobody would see them meanwhile, and on a
+   * computer without a graphics card each one holds the page for a few hundred
+   * milliseconds, which held up the publishing itself by seconds.
+   */
+  constructor(
+    private readonly given: TeamUpTransformer | (() => Promise<TeamUpTransformer>),
+    private readonly holdUntilPublished = false
+  ) {
+    if (given instanceof TeamUpTransformer) this.transformer = given;
+  }
+
+  async onPublish() {
+    this.published = true;
+    this.frames?.go();
+  }
 
   async init(opts: ProcessorOptions<Track.Kind>) {
     this.source = opts.track;
+    const transformer = (this.transformer ??= await (this.given as () => Promise<TeamUpTransformer>)());
     const settings = opts.track.getSettings();
-    await this.transformer.attach(
+    await transformer.attach(
       { width: settings.width || DEFAULT_SIZE.width, height: settings.height || DEFAULT_SIZE.height },
       opts.element instanceof HTMLVideoElement ? opts.element : document.createElement('video')
     );
-    this.frames = runFrames(this.transformer, opts.track.clone());
+    this.frames = runFrames(transformer, opts.track.clone(), this.holdUntilPublished && !this.published);
     this.processedTrack = this.frames.track;
   }
 
@@ -443,16 +518,24 @@ class CameraFramesProcessor {
   }
 
   async destroy() {
-    await this.frames?.stop();
-    this.frames = undefined;
-    await this.transformer.destroy();
+    const going = (async () => {
+      await this.frames?.stop();
+      this.frames = undefined;
+      await this.transformer?.destroy();
+    })();
+    lettingGo.add(going);
+    try {
+      await going;
+    } finally {
+      lettingGo.delete(going);
+    }
   }
 }
 
 type CameraProcessor = CameraFramesProcessor | BackgroundProcessorWrapper;
 
 /** Whether this is a processor made here, which can be changed in place. */
-export function isCameraProcessor(processor: unknown): processor is CameraProcessor {
+export function isCameraProcessor(processor: unknown): processor is CameraProcessor & { transformer: TeamUpTransformer } {
   return (
     (processor instanceof CameraFramesProcessor || processor instanceof BackgroundProcessorWrapper) &&
     processor.name === PROCESSOR_NAME &&
@@ -461,8 +544,12 @@ export function isCameraProcessor(processor: unknown): processor is CameraProces
 }
 
 /** Changes a running processor in place, no restart and so no flicker, and resolves once it shows. */
-export async function updateCameraProcessor(processor: CameraProcessor, background: BackgroundSetting, look: Look) {
-  const transformer = processor.transformer as TeamUpTransformer;
+export async function updateCameraProcessor(
+  processor: CameraProcessor & { transformer: TeamUpTransformer },
+  background: BackgroundSetting,
+  look: Look
+) {
+  const transformer = processor.transformer;
   await transformer.set(background, look);
   await transformer.nextFrame();
 }
@@ -489,8 +576,8 @@ class Spare {
   readonly pipes = new Set<Frames>();
   private noPipes: (() => void)[] = [];
 
-  constructor(width: number, height: number) {
-    this.transformer = new TeamUpTransformer({ ...backgroundOptions(null), assetPaths: ASSETS });
+  constructor(width: number, height: number, made?: TeamUpTransformer) {
+    this.transformer = made ?? new TeamUpTransformer({ ...backgroundOptions(null), assetPaths: ASSETS });
     this.ready = this.transformer.prepare(width, height);
   }
 
@@ -518,10 +605,13 @@ class Spare {
    */
   pipe(source: MediaStreamTrack): Frames | null {
     if (!canRunFrames()) return null;
+    // One handed on from a camera that stopped takes frames again.
+    this.transformer.takeFrames();
     const frames = runFrames(this.transformer, source);
     const pipe: Frames = {
       track: frames.track,
       pause: frames.pause,
+      go: frames.go,
       stop: () => {
         if (this.pipes.delete(pipe) && this.pipes.size === 0) this.noPipes.splice(0).forEach((r) => r());
         return frames.stop();
@@ -533,6 +623,49 @@ class Spare {
 }
 
 let spare: Spare | null = null;
+
+/**
+ * Whether a background or a look is chosen, so a processor made ready is kept
+ * for the next camera rather than let go of (background.ts says).
+ */
+let keep = false;
+
+/**
+ * Keeps the processor made ready from one camera to the next, or stops keeping
+ * it and lets go of one nobody is using.
+ */
+export function keepEffects(on: boolean) {
+  keep = on;
+  if (on || !spare || spare.holders > 0 || spare.taken) return;
+  const gone = spare;
+  spare = null;
+  gone.pipes.forEach((p) => void p.stop());
+  gone.ready.then(
+    () => gone.transformer.dispose(),
+    () => undefined
+  );
+}
+
+/**
+ * Takes a processor whose camera has stopped as the one made ready for the next,
+ * while effects are wanted and there is not one already. False lets it go.
+ */
+function park(transformer: TeamUpTransformer): boolean {
+  if (!keep) return false;
+  if (spare) return spare.transformer === transformer;
+  spare = new Spare(DEFAULT_SIZE.width, DEFAULT_SIZE.height, transformer);
+  return true;
+}
+
+/**
+ * Starts making the processor ready now, if it is not already, so the next
+ * camera finds it so: on the screen before a call, for somebody with a
+ * background chosen.
+ */
+export function warmEffects(size: { width?: number; height?: number } = {}) {
+  if (!supportsBackgroundProcessors()) return;
+  leaseSpare(size.width, size.height).release();
+}
 
 interface Lease {
   spare: Spare;
@@ -560,12 +693,13 @@ function leaseSpare(width = DEFAULT_SIZE.width, height = DEFAULT_SIZE.height): L
       held.holders--;
       if (held.holders > 0 || held.taken) return;
       held.pipes.forEach((p) => void p.stop());
-      // Kept a moment, for the choice made just before the picker closed.
+      // Kept a moment, for the choice made just before the picker closed; and
+      // for good while effects are wanted, for the next camera.
       setTimeout(() => {
-        if (held.holders > 0 || held.taken) return;
+        if (held.holders > 0 || held.taken || (keep && spare === held)) return;
         if (spare === held) spare = null;
         held.ready.then(
-          () => held.transformer.destroy(),
+          () => held.transformer.dispose(),
           () => undefined
         );
       }, SPARE_LINGER_MS);
@@ -620,7 +754,7 @@ export async function attachCameraProcessor(
       await put(processor);
     } catch (err) {
       made.pipes.forEach((p) => void p.stop());
-      await transformer.destroy();
+      await transformer.dispose();
       throw err;
     }
     if (processor.source?.readyState !== 'live') {
@@ -634,6 +768,51 @@ export async function attachCameraProcessor(
   } finally {
     lease.release();
   }
+}
+
+/**
+ * A processor for a camera about to be opened, so that it is sent through it
+ * from its very first frame: LiveKit puts it on the camera before publishing it
+ * (createLocalTracks), and publishes only once init has resolved, which is once
+ * the background is set and a blank picture has been run through it. Nothing is
+ * sent meanwhile. It takes the processor made ready ahead, the one the preview's
+ * camera has just handed on included, so in a second call this is quick.
+ */
+export function processorForNewCamera(
+  background: BackgroundSetting,
+  look: Look,
+  size: { width?: number; height?: number } = {},
+  holdUntilPublished = false
+): CameraProcessor | null {
+  if (!supportsBackgroundProcessors()) return null;
+  const take = async () => {
+    // The preview's camera stops as Join is pressed, and hands its processor on
+    // a moment later: waited for, rather than making a second one.
+    await Promise.all([...lettingGo]);
+    const lease = leaseSpare(size.width, size.height);
+    const made = lease.spare;
+    made.taken = true;
+    if (spare === made) spare = null;
+    made.pipes.forEach((p) => void p.stop());
+    lease.release();
+    const { transformer } = made;
+    try {
+      await made.ready;
+      await transformer.set(background, look);
+      transformer.warmUp(size.width || DEFAULT_SIZE.width, size.height || DEFAULT_SIZE.height, false);
+    } catch (err) {
+      await transformer.dispose();
+      throw err;
+    }
+    return transformer;
+  };
+  if (canRunFrames()) return new CameraFramesProcessor(take, holdUntilPublished);
+  // LiveKit's own needs its transformer at once; it waits in attach for the rest.
+  const transformer = new TeamUpTransformer({ ...backgroundOptions(null), assetPaths: ASSETS });
+  transformer.before = transformer
+    .prepare(size.width || DEFAULT_SIZE.width, size.height || DEFAULT_SIZE.height)
+    .then(() => transformer.set(background, look));
+  return new BackgroundProcessorWrapper(transformer, PROCESSOR_NAME);
 }
 
 /** A preview of the effects on a copy of the camera, before the camera itself has them. */

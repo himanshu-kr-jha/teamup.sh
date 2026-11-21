@@ -78,9 +78,9 @@ import { useAuth } from '@/features/auth/AuthProvider';
 import { MediaErrorBanner } from './MediaErrorBanner';
 import { forgetCall, recallCall, type CallMemory } from './callMemory';
 import { RememberCall, isLeavingPage, useBackStaysInApp } from './CallContinuity';
-import { currentBackgroundChoice, sameChoice, setBackgroundChoice } from './background';
+import { currentBackgroundChoice, preloadCameraEffects, sameChoice, setBackgroundChoice, wantsEffects, withCameraEffects } from './background';
 import { useAuthStore } from '@/shared/store/authStore';
-import { withNoiseCapture } from './noiseCancellation';
+import { preloadNoiseCancellation, withNoiseCapture } from './noiseCancellation';
 import { NoiseCancellation } from './NoiseControls';
 
 interface ActiveCall {
@@ -603,8 +603,18 @@ export function ActiveCallProvider({ children }: { children: ReactNode }) {
   const expanded = !!activeCall && location.pathname === `/calls/${activeCall.callId}`;
 
   // The microphone captured for the noise cancellation chosen as the call starts;
-  // changing it during the call is NoiseCancellation's to do, not a new room.
-  const callOptions = useMemo(() => withNoiseCapture(roomOptions, useAuthStore.getState().user?.id), [roomOptions]);
+  // changing it during the call is NoiseCancellation's to do, not a new room. And
+  // the camera opened with your background on it before it is sent (NewCameraProcessor).
+  const callOptions = useMemo(
+    () => withCameraEffects(withNoiseCapture(roomOptions, useAuthStore.getState().user?.id)),
+    [roomOptions]
+  );
+
+  // Somebody who has a background chosen will want it in their next call: what it
+  // needs is fetched into the browser's cache once the page has nothing else to do.
+  useEffect(() => (wantsEffects() ? preloadCameraEffects(true) : undefined), []);
+  // Noise cancellation's too, for everybody who has it on.
+  useEffect(() => preloadNoiseCancellation(user?.id, true), [user?.id]);
 
   const value = useMemo(
     () => ({ activeCall, join, enter, leave, joining, failure, clearFailure, watchedDoor, watchDoor, resuming, soundOff, setSound }),

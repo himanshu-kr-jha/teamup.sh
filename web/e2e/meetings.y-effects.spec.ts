@@ -224,7 +224,8 @@ test.describe('backgrounds', () => {
 
     // Its runtime and model came from TeamUp, not from a CDN, and the picture from the organization.
     expect(fetched.some((u) => /\/mediapipe\/tasks-vision-[\d.]+\/wasm\/vision_wasm/.test(u))).toBe(true);
-    expect(fetched.some((u) => u.endsWith('/mediapipe/selfie_segmenter.tflite'))).toBe(true);
+    // The model is named by its content, so the browser keeps it for good.
+    expect(fetched.some((u) => /\/assets\/selfie_segmenter-[\w-]+\.tflite$/.test(u))).toBe(true);
     expect(fetched.some((u) => u.endsWith(night.url))).toBe(true);
     expect(fetched.filter((u) => /jsdelivr|googleapis|unpkg/.test(u))).toEqual([]);
     expect(fetched.filter((u) => u.includes('/backgrounds/'))).toEqual([]);

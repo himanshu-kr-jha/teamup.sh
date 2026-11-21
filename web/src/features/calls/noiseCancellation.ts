@@ -129,6 +129,29 @@ export function noiseStatus(wanted: boolean, possible: boolean, attached: boolea
   return attached ? 'on' : 'starting';
 }
 
+/**
+ * Fetches what noise cancellation needs ahead, for somebody who has it on (as
+ * everybody has by default): at once on the screen before a call, or once the
+ * page has nothing else to do. Not on a connection that asks to save data, unless
+ * it is wanted now.
+ */
+export function preloadNoiseCancellation(userId: string | undefined, whenIdle = false): () => void {
+  if (!readNoiseChoice(userId) || !noiseCancellationPossible()) return () => undefined;
+  const saveData = (globalThis.navigator as Navigator & { connection?: { saveData?: boolean } } | undefined)?.connection?.saveData;
+  if (whenIdle && saveData) return () => undefined;
+  const load = () => void import('./rnnoise').then((m) => m.preloadRnnoise()).catch(() => undefined);
+  if (!whenIdle) {
+    load();
+    return () => undefined;
+  }
+  if (typeof requestIdleCallback === 'function') {
+    const id = requestIdleCallback(load, { timeout: 10_000 });
+    return () => cancelIdleCallback(id);
+  }
+  const timer = setTimeout(load, 3_000);
+  return () => clearTimeout(timer);
+}
+
 // ── What the microphone is asked for ─────────────────────────────────────
 
 /**

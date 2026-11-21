@@ -13,6 +13,7 @@ import { useShortcut } from '@/shared/shortcuts/ShortcutsProvider';
 import { formatDate, formatTime, cn } from '@/shared/utils/cn';
 import { useActiveCall } from './ActiveCallProvider';
 import { BackgroundPicker, previewButtonClass, useCameraEffects } from './BackgroundPicker';
+import { NewCameraProcessor, useBackgroundChoice, useLook, warmCameraEffects } from './background';
 import type { LobbyKind } from './lobby';
 import {
   deviceLabel,
@@ -27,7 +28,14 @@ import {
   type DeviceProblem,
   type JoinChoice,
 } from './prejoin';
-import { captureFor, markNoiseUnavailable, noiseStatus, useNoiseCancellationPossible, useNoiseChoice } from './noiseCancellation';
+import {
+  captureFor,
+  markNoiseUnavailable,
+  noiseStatus,
+  preloadNoiseCancellation,
+  useNoiseCancellationPossible,
+  useNoiseChoice,
+} from './noiseCancellation';
 import { NoiseSwitch } from './NoiseControls';
 
 /** What the screen shows of the call it is in front of. */
@@ -106,6 +114,15 @@ export function PreJoinScreen({
   const { devices, known, refresh } = useDevices();
   const [releasing, setReleasing] = useState(false);
 
+  // With a background chosen, it is made ready as the screen opens, whether the
+  // camera is on here or only comes on in the call, so it is not what you wait for.
+  useEffect(() => warmCameraEffects(), []);
+  // And noise cancellation's files, for the microphone here and in the call.
+  useEffect(() => preloadNoiseCancellation(userId), [userId]);
+  const background = useBackgroundChoice();
+  const look = useLook();
+  const effects = background.kind !== 'none' || look !== 'natural';
+
   const camera = useCameraPreview(choice.camera && !releasing && !elsewhere, choice.videoInput, (problem) => {
     setCamProblem(problem);
     setChoice((c) => ({ ...c, camera: false }));
@@ -176,7 +193,7 @@ export function PreJoinScreen({
                 {choice.camera && !elsewhere ? (
                   <>
                     <Loader2 className="h-7 w-7 animate-spin" aria-hidden="true" />
-                    <p className="text-sm">Starting your camera…</p>
+                    <p className="text-sm">{effects ? 'Starting your background…' : 'Starting your camera…'}</p>
                   </>
                 ) : (
                   <>
@@ -429,7 +446,9 @@ function useCameraPreview(on: boolean, deviceId: string | undefined, onProblem: 
   useEffect(() => {
     if (!on) return;
     let live = true;
-    createLocalVideoTrack({ deviceId, facingMode: 'user', resolution: { width: 1280, height: 720 } })
+    // Opened with the background on it, as the call's camera is, so even here the
+    // room behind you shows only once it is hidden.
+    createLocalVideoTrack({ deviceId, facingMode: 'user', resolution: { width: 1280, height: 720 }, processor: new NewCameraProcessor() })
       .then((made) => {
         if (!live) {
           made.stop();
@@ -483,6 +502,14 @@ function useMicrophone(on: boolean, deviceId: string | undefined, rnnoise: boole
         return;
       }
       const held: { raw: MediaStream; close?: () => void } = { raw };
+      // The level shows at once, and goes through RNNoise as soon as that has
+      // started, rather than waiting for it.
+      if (!live) {
+        release(held);
+        return;
+      }
+      current.current = held;
+      setStream(raw);
       let shown = raw;
       if (rnnoise) {
         try {

@@ -39,6 +39,7 @@ import {
 import { NotesBanner, guestNotes } from "./notetaker";
 import { CameraBackground } from "./BackgroundPicker";
 import { ROOM_OPTIONS } from './roomOptions';
+import { withCameraEffects } from './background';
 import { countPeople } from './devices';
 
 const NAME_KEY = "teamup.guestName";
@@ -462,12 +463,14 @@ function GuestRoom({
     [joined.link, joined.key],
   );
   const notes = useMemo(() => guestNotes(joined.link, joined.key), [joined.link, joined.key]);
+  // A guest's blur, too, is on the camera before it is sent.
+  const options = useMemo(() => withCameraEffects(ROOM_OPTIONS), []);
   return (
     <LiveKitRoom
       token={joined.token}
       serverUrl={liveKitURL()}
       connect
-      options={ROOM_OPTIONS}
+      options={options}
       audio={joined.mic}
       video={joined.camera}
       data-lk-theme="default"
