@@ -9,6 +9,7 @@ import {
   orderOf,
   savedScrumRows,
   taskColumnCount,
+  withHiddenKept,
 } from './scrumTable';
 
 const noCounts: TaskCounts = {
@@ -91,7 +92,11 @@ describe('the default order of a row', () => {
         addedTo: [task({ id: 'theirs', dueDate: '2026-11-01T00:00:00Z' })],
       },
     });
-    expect(ids(liveScrumRows([p], undefined)[0].open)).toEqual(['soon', 'later', 'undated', 'theirs']);
+    const [row] = liveScrumRows([p], undefined);
+    expect(row.order).toEqual(['soon', 'later', 'undated', 'theirs']);
+    // The blocked one keeps its place in the order but is not in Task 1..N.
+    expect(ids(row.open)).toEqual(['later', 'undated', 'theirs']);
+    expect(ids(row.blocked)).toEqual(['soon']);
   });
 
   it('breaks a tie of dates by priority, then title', () => {
@@ -155,7 +160,10 @@ describe('liveScrumRows', () => {
   it('spreads open work across the row, keeps done apart, and marks new and added-to work', () => {
     const [row] = liveScrumRows([alice], undefined);
     expect(row.leads).toEqual(['Lena', 'Avi']);
-    expect(ids(row.open)).toEqual(['a1', 'a2', 'a3', 'theirs']);
+    expect(row.order).toEqual(['a1', 'a2', 'a3', 'theirs']);
+    expect(ids(row.open)).toEqual(['a1', 'a2', 'theirs']);
+    expect(ids(row.blocked)).toEqual(['a3']);
+    expect(row.blocked[0].blockedOn).toEqual({ note: '', who: null, task: null });
     expect(row.open.find((c) => c.id === 'a2')?.isNew).toBe(true);
     expect(row.open.find((c) => c.id === 'theirs')?.addedTo).toBe(true);
     expect(row.open.find((c) => c.id === 'a1')?.addedTo).toBe(false);
@@ -173,7 +181,8 @@ describe('liveScrumRows', () => {
     };
     const rows = liveScrumRows([alice, ben, cara], order);
     expect(names(rows)).toEqual(['Cara', 'Alice', 'Ben']);
-    expect(ids(rows[1].open)).toEqual(['theirs', 'a3', 'a1', 'a2']);
+    expect(rows[1].order).toEqual(['theirs', 'a3', 'a1', 'a2']);
+    expect(ids(rows[1].open)).toEqual(['theirs', 'a1', 'a2']);
   });
 
   it('copes with a person from before leads were sent', () => {
@@ -274,8 +283,10 @@ describe('savedScrumRows', () => {
     expect(names(rows)).toEqual(['Zed', 'Ann']);
     expect(rows[1].leads).toEqual(['Lena']);
     expect(rows[0].leads).toEqual([]);
-    expect(ids(rows[1].open)).toEqual(['a2', 'a1', 'a3']);
-    expect(rows[1].open[2].addedTo).toBe(true);
+    expect(rows[1].order).toEqual(['a2', 'a1', 'a3']);
+    expect(ids(rows[1].open)).toEqual(['a1', 'a3']);
+    expect(rows[1].open[1].addedTo).toBe(true);
+    expect(ids(rows[1].blocked)).toEqual(['a2']);
     expect(ids(rows[1].done)).toEqual(['done']);
     expect(rows[1].open.every((c) => !c.isNew)).toBe(true);
   });
@@ -310,7 +321,10 @@ describe('savedScrumRows', () => {
     expect(names(rows)).toEqual(['Worker', 'Idle']);
     expect(rows[0].leads).toBeNull();
     expect(rows[0].counts.addedTo).toBe(0);
-    expect(ids(rows[0].open)).toEqual(['stuck', 'undated', 'theirs']);
+    expect(rows[0].order).toEqual(['stuck', 'undated', 'theirs']);
+    expect(ids(rows[0].open)).toEqual(['undated', 'theirs']);
+    // Saved before reasons were kept: blocked, with nothing said about it.
+    expect(rows[0].blocked.map((c) => [c.id, c.blockedOn])).toEqual([['stuck', null]]);
     expect(rows[1].open).toEqual([]);
   });
 
@@ -342,5 +356,66 @@ describe('cellStatus', () => {
     });
     expect(cellStatus({ status: 'in_review' }).label).toBe('In review');
     expect(cellStatus({ status: 'todo' }).label).toBe('Pending');
+  });
+});
+
+describe('blocked on', () => {
+  it('shows a live blocked task with its note, person and task', () => {
+    const [row] = liveScrumRows(
+      [
+        person({
+          userId: 'a',
+          tasks: {
+            ...noTasks,
+            blocked: [
+              task({
+                id: 'b',
+                status: 'blocked',
+                blockedOn: { note: 'Keys', user: { id: 'u', name: 'Lena' }, task: { id: 't', title: 'Vendor' } },
+              }),
+            ],
+          },
+        }),
+      ],
+      undefined
+    );
+    expect(row.open).toEqual([]);
+    expect(row.blocked[0].blockedOn).toEqual({ note: 'Keys', who: 'Lena', task: { id: 't', title: 'Vendor' } });
+  });
+
+  it('keeps a saved reason as words, with no link to the task', () => {
+    const [row] = savedScrumRows({
+      participants: [{ userId: 'a', name: 'Ann', counts: { ...noCounts, blocked: 1 } }],
+      entries: [
+        {
+          userId: 'a',
+          taskId: 'b',
+          title: 'B',
+          status: 'blocked',
+          priority: 'medium',
+          overdue: false,
+          dueDate: null,
+          completedAt: null,
+          blockedOn: { note: '', userName: null, taskTitle: 'Vendor' },
+        },
+      ],
+    });
+    expect(row.blocked[0].blockedOn).toEqual({ note: '', who: null, task: { id: null, title: 'Vendor' } });
+  });
+
+  it('puts blocked tasks back in their places when the rest are moved', () => {
+    // a, [b blocked], c, d: c moved before a.
+    expect(withHiddenKept(['a', 'b', 'c', 'd'], ['c', 'a', 'd'])).toEqual(['c', 'b', 'a', 'd']);
+    expect(withHiddenKept(['b', 'a'], ['a'])).toEqual(['b', 'a']);
+    expect(withHiddenKept(['a'], ['a', 'new'])).toEqual(['a', 'new']);
+  });
+
+  it('records the whole order, blocked tasks included, for a saved scrum', () => {
+    const rows = liveScrumRows(
+      [person({ userId: 'a', tasks: { ...noTasks, pending: [task({ id: 'p' })], blocked: [task({ id: 'b', status: 'blocked' })] } })],
+      { people: [], tasks: { a: ['b', 'p'] } }
+    );
+    expect(orderOf(rows).tasks.a).toEqual(['b', 'p']);
+    expect(taskColumnCount(rows)).toBe(1);
   });
 });

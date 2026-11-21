@@ -203,6 +203,7 @@ func (s *Service) ContributionDetail(ctx context.Context, orgID, callerID, userI
 		if err := rows.Scan(t.scanTargets()...); err != nil {
 			return nil, fmt.Errorf("scan contribution task: %w", err)
 		}
+		t.settle()
 		if t.Status == "done" {
 			out.Completed = append(out.Completed, t)
 		} else {
@@ -228,6 +229,7 @@ func (s *Service) ContributionDetail(ctx context.Context, orgID, callerID, userI
 		if err := involved.Scan(t.scanTargets()...); err != nil {
 			return nil, fmt.Errorf("scan involvement task: %w", err)
 		}
+		t.settle()
 		out.Involved = append(out.Involved, t)
 	}
 	if err := involved.Err(); err != nil {
@@ -247,6 +249,7 @@ func (s *Service) ContributionDetail(ctx context.Context, orgID, callerID, userI
 		if err := added.Scan(t.scanTargets()...); err != nil {
 			return nil, fmt.Errorf("scan added-to task: %w", err)
 		}
+		t.settle()
 		out.AddedTo = append(out.AddedTo, t)
 	}
 	return out, added.Err()

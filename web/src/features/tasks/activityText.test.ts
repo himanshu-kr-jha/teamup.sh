@@ -29,4 +29,19 @@ describe('a line of task history', () => {
     expect(activityLine({ field: 'dueDate', newValue: '2026-11-13T18:29:59Z' }, names).verb).toBe('changed the due date');
     expect(activityLine({ field: 'dueDate', oldValue: '2026-11-13T18:29:59Z', newValue: '' }, names).verb).toBe('removed the due date');
   });
+  it('says what a task was blocked on, when it changed, and when it was cleared', () => {
+    expect(activityLine({ field: 'blockedOn', oldValue: '', newValue: 'Waiting for keys' }, names)).toEqual({
+      verb: 'said it is blocked on',
+      to: 'Waiting for keys',
+    });
+    expect(activityLine({ field: 'blockedOn', oldValue: 'Waiting for keys', newValue: 'Keys Monday' }, names)).toEqual({
+      verb: 'changed what it is blocked on',
+      from: 'Waiting for keys',
+      to: 'Keys Monday',
+    });
+    expect(activityLine({ field: 'blockedOn', oldValue: 'Keys Monday', newValue: '' }, names)).toEqual({
+      verb: 'cleared what it was blocked on',
+      from: 'Keys Monday',
+    });
+  });
 });

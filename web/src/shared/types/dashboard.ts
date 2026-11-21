@@ -34,6 +34,22 @@ export interface TaskSummary {
   dueDate: string | null;
   completedAt: string | null;
   createdAt: string;
+  /** What a blocked task is waiting for. Absent unless it is blocked. */
+  blockedOn?: BlockedOn;
+}
+
+/** What a blocked task is waiting for. An empty note means no reason was given. */
+export interface BlockedOn {
+  note: string;
+  user: PersonRef | null;
+  task: { id: string; title: string; key?: string } | null;
+}
+
+/** A reason as it is sent when a task is marked blocked or its reason changed. */
+export interface BlockedOnInput {
+  note: string;
+  userId: string | null;
+  taskId: string | null;
 }
 
 export interface TaskBuckets {
@@ -102,6 +118,8 @@ export interface ScrumEntry {
   addedTo?: boolean;
   /** Its column in the person's row, from 0. Null for done work and older scrums. */
   position?: number | null;
+  /** What it was blocked on then. Null when it was not blocked, and on older scrums. */
+  blockedOn?: { note: string; userName: string | null; taskTitle: string | null } | null;
 }
 
 /** One viewer's own arrangement of the scrum table: people top to bottom, tasks left to right. */

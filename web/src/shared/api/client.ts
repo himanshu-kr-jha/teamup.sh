@@ -3,6 +3,7 @@ import type {
   ContributionDetail,
   Contributions,
   Dashboard,
+  BlockedOnInput,
   Scrum,
   ScrumOrder,
   ScrumSummary,
@@ -579,7 +580,20 @@ export const tasksApi = {
   get: (id: string) => api.get(`/tasks/${id}`),
   /** Puts a task in a project, where it takes the project's key; its old key still finds it. */
   moveToProject: (id: string, projectId: string) => api.post(`/tasks/${id}/project`, { projectId }),
-  update: (id: string, data: Partial<{ title: string; description: string; status: string; priority: string; assigneeId: string; dueDate: string; storyPoints: number }>) => api.patch(`/tasks/${id}`, data),
+  update: (
+    id: string,
+    data: Partial<{
+      title: string;
+      description: string;
+      status: string;
+      priority: string;
+      assigneeId: string;
+      dueDate: string;
+      storyPoints: number;
+      /** What it is blocked on, when it is or is being made blocked. */
+      blockedOn: BlockedOnInput;
+    }>
+  ) => api.patch(`/tasks/${id}`, data),
   delete: (id: string) => api.delete(`/tasks/${id}`),
   addComment: (id: string, content: string, attachmentIds?: string[]) =>
     api.post(`/tasks/${id}/comments`, { content, attachmentIds }),

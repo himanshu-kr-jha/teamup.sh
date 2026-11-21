@@ -81,10 +81,12 @@ type Task struct {
 	StartDate    *time.Time `json:"startDate,omitempty"`
 	CompletedAt  *time.Time `json:"completedAt,omitempty"`
 	ParentTaskID *uuid.UUID `json:"parentTaskId,omitempty"`
-	Position     int        `json:"position"`
-	Labels       []Label    `json:"labels"`
-	CreatedAt    time.Time  `json:"createdAt"`
-	UpdatedAt    time.Time  `json:"updatedAt"`
+	// BlockedOn says what a blocked task is waiting for. Absent unless blocked.
+	BlockedOn *BlockedOn `json:"blockedOn,omitempty"`
+	Position  int        `json:"position"`
+	Labels    []Label    `json:"labels"`
+	CreatedAt time.Time  `json:"createdAt"`
+	UpdatedAt time.Time  `json:"updatedAt"`
 	// Mine says how the task is the caller's, when they asked for their own:
 	// any of assigned, created and added. Absent otherwise.
 	Mine []string `json:"mine,omitempty"`
@@ -209,7 +211,8 @@ const taskColumns = `
 	       t.assignee_id, COALESCE(asg.name, ''), t.title, COALESCE(t.description, ''),
 	       t.status, t.priority, t.task_type, t.story_points,
 	       t.due_date, t.start_date, t.completed_at, t.parent_task_id,
-	       COALESCE(t.position, 0), t.created_at, t.updated_at
+	       COALESCE(t.position, 0), t.created_at, t.updated_at,
+	       ` + blockedColumns + `
 	FROM tasks t
 	JOIN users rep ON rep.id = t.reporter_id
 	LEFT JOIN users asg ON asg.id = t.assignee_id
@@ -217,11 +220,12 @@ const taskColumns = `
 
 func scanTask(row pgx.Row) (*Task, error) {
 	var t Task
-	err := row.Scan(&t.ID, &t.OrgID, &t.ProjectID, &t.ProjectName, &t.Key, &t.ReporterID, &t.ReporterName,
+	var blocked blockedRaw
+	err := row.Scan(append([]any{&t.ID, &t.OrgID, &t.ProjectID, &t.ProjectName, &t.Key, &t.ReporterID, &t.ReporterName,
 		&t.AssigneeID, &t.AssigneeName, &t.Title, &t.Description,
 		&t.Status, &t.Priority, &t.TaskType, &t.StoryPoints,
 		&t.DueDate, &t.StartDate, &t.CompletedAt, &t.ParentTaskID,
-		&t.Position, &t.CreatedAt, &t.UpdatedAt)
+		&t.Position, &t.CreatedAt, &t.UpdatedAt}, blocked.targets()...)...)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, apperrors.ErrNotFound
@@ -229,6 +233,7 @@ func scanTask(row pgx.Row) (*Task, error) {
 		return nil, err
 	}
 	t.Labels = []Label{}
+	t.BlockedOn = blocked.blockedOn(t.Status)
 	return &t, nil
 }
 
@@ -352,16 +357,11 @@ func (s *Service) ListTasks(ctx context.Context, orgID uuid.UUID, f Filters) ([]
 
 	tasks := []Task{}
 	for rows.Next() {
-		var t Task
-		if err := rows.Scan(&t.ID, &t.OrgID, &t.ProjectID, &t.ProjectName, &t.Key, &t.ReporterID, &t.ReporterName,
-			&t.AssigneeID, &t.AssigneeName, &t.Title, &t.Description,
-			&t.Status, &t.Priority, &t.TaskType, &t.StoryPoints,
-			&t.DueDate, &t.StartDate, &t.CompletedAt, &t.ParentTaskID,
-			&t.Position, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		t, err := scanTask(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan task: %w", err)
 		}
-		t.Labels = []Label{}
-		tasks = append(tasks, t)
+		tasks = append(tasks, *t)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1191,6 +1191,10 @@ func (s *Service) UpdateTask(ctx context.Context, orgID, id, actorID uuid.UUID, 
 	if err := s.validateUpdates(ctx, orgID, actorID, updates, isOrgAdmin); err != nil {
 		return nil, err
 	}
+	blocked, err := s.planBlockedOn(ctx, orgID, before, updates)
+	if err != nil {
+		return nil, err
+	}
 
 	// Handing a task to somebody needs authority over them, which
 	// validateUpdates has just checked. Taking it off whoever currently holds
@@ -1219,6 +1223,7 @@ func (s *Service) UpdateTask(ctx context.Context, orgID, id, actorID uuid.UUID, 
 		args = append(args, value)
 		sets = append(sets, fmt.Sprintf("%s = $%d", column, len(args)))
 	}
+	sets, args = blocked.apply(sets, args)
 	if len(sets) == 0 {
 		// Nothing to write, but the caller still gets the same shape back as
 		// they would from a real change, abilities included.
@@ -1265,6 +1270,23 @@ func (s *Service) UpdateTask(ctx context.Context, orgID, id, actorID uuid.UUID, 
 		changed[key] = true
 		if err := recordActivity(ctx, tx, id, actorID, key, oldValue, newValue); err != nil {
 			return nil, err
+		}
+	}
+
+	// The reason is written to the history in words, so what a task was
+	// blocked on stays readable after it is cleared or its task renamed.
+	var blockedNow string
+	if blocked.set || blocked.clear {
+		after, err := scanTask(tx.QueryRow(ctx, taskColumns+` WHERE t.id = $1 AND t.org_id = $2`, id, orgID))
+		if err != nil {
+			return nil, err
+		}
+		blockedNow = describeBlockedOn(after.BlockedOn)
+		if was := describeBlockedOn(before.BlockedOn); was != blockedNow {
+			changed["blockedOn"] = true
+			if err := recordActivity(ctx, tx, id, actorID, "blockedOn", was, blockedNow); err != nil {
+				return nil, err
+			}
 		}
 	}
 

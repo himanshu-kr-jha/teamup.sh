@@ -109,8 +109,13 @@ test.describe('dragging a task to another column changes its status', () => {
       await touch('touchMove', x0 + ((chip.x + chip.width / 2 - x0) * i) / 10, y0 + ((chip.y + chip.height / 2 - y0) * i) / 10);
     }
     await expect(blocked).toHaveAttribute('data-drop-over', '');
-    const saved = page.waitForResponse((r) => r.request().method() === 'PATCH' && r.url().endsWith(`/api/tasks/${id}`));
     await touch('touchEnd');
+    // Blocked asks what it is blocked on before it moves.
+    const dialog = page.getByRole('dialog', { name: 'Mark blocked' });
+    await expect(dialog).toBeVisible();
+    await dialog.getByLabel('Blocked on', { exact: true }).fill('Waiting for the vendor');
+    const saved = page.waitForResponse((r) => r.request().method() === 'PATCH' && r.url().endsWith(`/api/tasks/${id}`));
+    await dialog.getByRole('button', { name: 'Mark blocked' }).click();
     expect((await saved).ok()).toBe(true);
     await expect(page.getByText('Moved to Blocked.', { exact: true })).toBeVisible();
     expect(await statusOf(id)).toBe('blocked');

@@ -28,6 +28,7 @@ const FIELD_NAMES: Record<string, string> = {
   description: 'the description',
   status: 'status',
   priority: 'priority',
+  blockedOn: 'what it is blocked on',
 };
 
 const STATUS_WORDS: Record<string, string> = {
@@ -66,6 +67,11 @@ export function activityLine(a: ActivityFacts, nameOf: (userId: string) => strin
   // Stored as the old key and "Photon as PHO-31".
   if (a.field === 'project') {
     return { verb: `moved it to ${a.newValue || 'a project'}${a.oldValue ? `, was ${a.oldValue}` : ''}` };
+  }
+  // Written in words when it changed, so it still reads after it was cleared.
+  if (a.field === 'blockedOn') {
+    if (!a.newValue) return { verb: 'cleared what it was blocked on', from: a.oldValue || undefined };
+    if (!a.oldValue) return { verb: 'said it is blocked on', to: a.newValue };
   }
   if (a.field === 'assigneeId' && !a.newValue) return { verb: 'unassigned it', from: value(a.oldValue) };
   if ((a.field === 'dueDate' || a.field === 'startDate') && !a.newValue) {
