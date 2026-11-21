@@ -42,12 +42,14 @@ async function instrument(session: Session) {
       gl: number;
       /** The widest video layer going out, at the last look. */
       width: number;
+      /** Frames sent of the widest layer, at the last look. */
+      sent: number;
     };
     // Room for every download of a long session, for downloads() to read.
     performance.setResourceTimingBufferSize(5000);
     w.__pcs = [];
     w.__raw = new WeakSet();
-    w.__media = { rawSent: 0, rawFrames: 0, framesAt: [], busy: 0, longest: 0, gl: 0, width: 0 };
+    w.__media = { rawSent: 0, rawFrames: 0, framesAt: [], busy: 0, longest: 0, gl: 0, width: 0, sent: 0 };
     // The processor draws on an OffscreenCanvas of its own, through WebGL, and
     // MediaPipe asks the same canvas again; only a new context is counted. (The
     // check for whether the browser can, on a plain canvas, is not.)
@@ -106,6 +108,7 @@ async function instrument(session: Session) {
     const last = new Map<string, number>();
     const look = async () => {
       let widest = 0;
+      let most = 0;
       for (const pc of w.__pcs) {
         if (pc.connectionState === 'closed') continue;
         for (const sender of pc.getSenders()) {
@@ -123,6 +126,7 @@ async function instrument(session: Session) {
             if (s.kind === 'video') {
               const sent = (s.framesSent as number) ?? 0;
               widest = Math.max(widest, (s.frameWidth as number) ?? 0);
+              most = Math.max(most, sent);
               const before = last.get(key) ?? 0;
               if (sent > before) {
                 if (w.__media.video === undefined) {
@@ -142,6 +146,7 @@ async function instrument(session: Session) {
         }
       }
       if (widest) w.__media.width = widest;
+      w.__media.sent = most;
       setTimeout(look, 30);
     };
     void look();
@@ -162,6 +167,7 @@ interface Media {
   busyAtVideo?: number;
   gl: number;
   width: number;
+  sent: number;
 }
 const media = (page: Page) => page.evaluate(() => (window as unknown as { __media: Media }).__media);
 const resetMedia = (page: Page) =>
@@ -245,6 +251,8 @@ interface Timing {
   gumVideo: number;
   gumAudio: number;
   connected: number;
+  /** Frames a second sent, over the 4 s after joining. */
+  fps: number;
   /** How many times the background was set up, from the screen before the call opening until joined. */
   setups: number;
   /** How long, between Join and the first video frame, the page was too busy for anything else. */
@@ -302,8 +310,10 @@ async function measureJoin(
     await expect(micMenu(page)).toHaveAttribute('data-noise-cancellation', 'on', { timeout: 30_000 });
     noise = Math.round((await clock(page)) - pressed);
   }
-  // A moment longer, for any room frame that would go out late.
-  await page.waitForTimeout(1_500);
+  // A moment longer, for any room frame that would go out late, and to see the pace.
+  const sentBefore = (await media(page)).sent;
+  await page.waitForTimeout(4_000);
+  const fps = ((await media(page)).sent - sentBefore) / 4;
   const after = await heard(listener);
   const gap = after.total > before.total ? (after.concealed - before.concealed) / (after.total - before.total) : null;
   const m = await media(page);
@@ -317,6 +327,7 @@ async function measureJoin(
     noise,
     rawFrames: m.rawFrames,
     setups: m.gl - glBefore,
+    fps: Math.round(fps * 10) / 10,
     gap: gap === null ? null : Math.round(gap * 1000) / 1000,
     gumVideo: Math.round((m.gumVideo ?? NaN) - pressed),
     gumAudio: Math.round((m.gumAudio ?? NaN) - pressed),
