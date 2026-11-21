@@ -84,7 +84,7 @@ test.describe('the scrum table', () => {
     await openTasks(page, '?tab=scrum');
     const headers = await table(page).locator('thead th').allTextContents();
     expect(headers.slice(0, 4)).toEqual(['Move', 'Name', 'My Lead', 'Task 1']);
-    expect(headers).toContain('Done');
+    expect(headers.slice(-3)).toEqual(['Done', 'Blocked on', '']);
 
     // As many task columns as the busiest person has open work.
     const rows = table(page).locator('tbody tr');
@@ -97,11 +97,11 @@ test.describe('the scrum table', () => {
     await expect(alice.getByTestId('scrum-leads')).toHaveText(PEOPLE.mia.name);
     // Platform has no manager of its own.
     await expect(row(page, PEOPLE.pat.name).getByTestId('scrum-leads')).toHaveText('No lead');
-    const blocked = alice.locator('td[data-task]', {
-      hasText: TASKS.aliceBlocked,
-    });
-    await expect(blocked).toContainText('Blocked');
-    await expect(blocked.getByText('Blocked', { exact: true })).toHaveClass(/text-red-600/);
+    // Blocked work is in its own last column, in red, with what it is blocked on.
+    await expect(alice.locator('td[data-task]', { hasText: TASKS.aliceBlocked })).toHaveCount(0);
+    const blocked = alice.getByTestId('scrum-blocked').locator('li', { hasText: TASKS.aliceBlocked });
+    await expect(blocked.getByRole('link', { name: TASKS.aliceBlocked })).toHaveClass(/text-red-600/);
+    await expect(blocked).toContainText('No reason given');
     await expect(
       row(page, PEOPLE.pat.name).locator('td[data-task]', {
         hasText: TASKS.patCerts,
