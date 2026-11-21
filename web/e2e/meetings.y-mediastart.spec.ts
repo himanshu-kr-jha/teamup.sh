@@ -40,12 +40,14 @@ async function instrument(session: Session) {
       busyAtVideo?: number;
       /** WebGL contexts made on an OffscreenCanvas: each setting up of the background makes one, and nothing else does. */
       gl: number;
+      /** The widest video layer going out, at the last look. */
+      width: number;
     };
     // Room for every download of a long session, for downloads() to read.
     performance.setResourceTimingBufferSize(5000);
     w.__pcs = [];
     w.__raw = new WeakSet();
-    w.__media = { rawSent: 0, rawFrames: 0, framesAt: [], busy: 0, longest: 0, gl: 0 };
+    w.__media = { rawSent: 0, rawFrames: 0, framesAt: [], busy: 0, longest: 0, gl: 0, width: 0 };
     // The processor draws on an OffscreenCanvas of its own, through WebGL, and
     // MediaPipe asks the same canvas again; only a new context is counted. (The
     // check for whether the browser can, on a plain canvas, is not.)
@@ -103,6 +105,7 @@ async function instrument(session: Session) {
     // track is on that sender is the room going out as it is.
     const last = new Map<string, number>();
     const look = async () => {
+      let widest = 0;
       for (const pc of w.__pcs) {
         if (pc.connectionState === 'closed') continue;
         for (const sender of pc.getSenders()) {
@@ -119,6 +122,7 @@ async function instrument(session: Session) {
             const key = `${s.id}`;
             if (s.kind === 'video') {
               const sent = (s.framesSent as number) ?? 0;
+              widest = Math.max(widest, (s.frameWidth as number) ?? 0);
               const before = last.get(key) ?? 0;
               if (sent > before) {
                 if (w.__media.video === undefined) {
@@ -137,6 +141,7 @@ async function instrument(session: Session) {
           });
         }
       }
+      if (widest) w.__media.width = widest;
       setTimeout(look, 30);
     };
     void look();
@@ -156,6 +161,7 @@ interface Media {
   longest: number;
   busyAtVideo?: number;
   gl: number;
+  width: number;
 }
 const media = (page: Page) => page.evaluate(() => (window as unknown as { __media: Media }).__media);
 const resetMedia = (page: Page) =>
@@ -381,4 +387,43 @@ test.describe('starting the camera and microphone in a call', () => {
       }
     });
   }
+
+  // Every camera in a call opens with an idle stand-in on it, so that a
+  // background chosen while it is off is on before its first frame. Choosing one
+  // while the camera is on replaces the stand-in, as before (#147: the camera
+  // goes on as it is while the background gets ready, then switches in one go).
+  test('a background chosen during the call stays on: no frame of the room after the switch', async ({ as }) => {
+    const owner = await apiAs('owner');
+    const call = await createCall(owner, `Blur in the call ${Date.now()}`, [idOf('alice')]);
+    const alice = await as('alice');
+    const olivia = await as('owner');
+    await instrument(olivia);
+    await olivia.page.reload();
+    await rememberChoices(olivia.page, false, false);
+    await joinCall(alice.page, call.id);
+    await joinCall(olivia.page, call.id);
+    await expect(olivia.page.getByRole('button', { name: 'Turn your camera off' })).toBeVisible({ timeout: 30_000 });
+    await expect.poll(async () => (await media(olivia.page)).video ?? null, { timeout: 30_000 }).not.toBeNull();
+    // The camera at its full size first, as it is sent.
+    await expect.poll(async () => (await media(olivia.page)).width, { timeout: 30_000 }).toBeGreaterThanOrEqual(1280);
+
+    await olivia.page.getByTestId('background-effects').click();
+    const menu = olivia.page.getByRole('menu', { name: 'Background effects' });
+    await menu.getByRole('menuitemradio', { name: 'Blur', exact: true }).click();
+    await expect(menu.getByRole('menuitemradio', { name: 'Blur', exact: true })).toHaveAttribute('aria-checked', 'true');
+    await expect(olivia.page.getByTestId('background-effects').locator('.animate-spin')).toHaveCount(0, { timeout: 30_000 });
+    // From the switch on, only blurred frames go out, for as long as it is chosen.
+    await olivia.page.waitForTimeout(1_000);
+    await resetMedia(olivia.page);
+    await olivia.page.waitForTimeout(6_000);
+    const m = await media(olivia.page);
+    console.log(`blur chosen in the call: ${m.rawFrames} frames of the room sent in the 6 s after the switch, sent ${m.width} wide`);
+    // (The width is only logged: on a machine without a graphics card the
+    // browser sends a smaller picture once encoding has the background's frames
+    // to keep up with, on main as well.)
+    expect(m.rawFrames, 'the room was sent again after the background went on').toBe(0);
+    await olivia.page.keyboard.press('Escape');
+    await owner.post(`/calls/${call.id}/end`).catch(() => undefined);
+    await owner.dispose();
+  });
 });
