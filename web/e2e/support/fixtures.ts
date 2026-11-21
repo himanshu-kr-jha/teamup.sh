@@ -39,6 +39,10 @@ const PHONE_AGENTS = {
 // caused them on purpose (aborted or faked requests).
 const EXPECTED_NOISE = [
   /Failed to load resource: net::ERR_FAILED/,
+  // Chrome fails whatever is in flight when the machine's network interfaces
+  // change, as they do when another test run on the machine starts or stops its
+  // containers (each has a Docker network). Nothing the page did; the app asks again.
+  /Failed to load resource: net::ERR_NETWORK_CHANGED/,
   // Opening the calendar of somebody you do not manage is refused on purpose (decision 64).
   /status of 403 .*\/api\/calendar\?/,
   // Test 39 makes the send fail with a 500 on purpose.
