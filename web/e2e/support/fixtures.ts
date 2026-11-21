@@ -152,7 +152,9 @@ export async function signIn(page: Page, who: PersonKey | { email: string; passw
   await page.getByLabel('Email').fill(person.email);
   await page.getByLabel('Password').fill(person.password);
   await page.getByRole('button', { name: /^sign in$/i }).click();
-  await expect(page).toHaveURL(/\/chat/);
+  // Signing in loads the whole app, which on a test machine busy with other runs
+  // took more than the usual ten seconds.
+  await expect(page).toHaveURL(/\/chat/, { timeout: 30_000 });
 }
 
 /**
