@@ -1,6 +1,6 @@
 import { useRef, useState, type ComponentType, type ReactNode } from 'react';
-import { MediaDeviceMenu, useIsSpeaking, useLocalParticipant, useRoomContext, useTrackToggle } from '@livekit/components-react';
-import { Track } from 'livekit-client';
+import { MediaDeviceMenu, useConnectionState, useIsSpeaking, useLocalParticipant, useRoomContext, useTrackToggle } from '@livekit/components-react';
+import { ConnectionState, Track } from 'livekit-client';
 import { Mic, MicOff, MonitorOff, MonitorUp, Video, VideoOff } from 'lucide-react';
 import { useToast } from '@/shared/hooks/useToast';
 import { BackgroundPicker } from './BackgroundPicker';
@@ -59,14 +59,27 @@ function useToggle(source: ToggleSource) {
   });
 }
 
+/**
+ * Whether the call has connected, so the camera, microphone and screen can be
+ * turned on and off. Until then LiveKit is still to turn them on or off as you
+ * joined, once it is signed in to the room: anything pressed before that was
+ * undone a moment later, a camera turned on going off again by itself.
+ */
+function useCanToggle(): boolean {
+  const room = useRoomContext();
+  return useConnectionState(room) === ConnectionState.Connected;
+}
+
 function Toggle({ source, compact }: { source: ToggleSource; compact?: boolean }) {
   const { buttonProps, enabled } = useToggle(source);
+  const ready = useCanToggle();
   const { on, off, IconOn, IconOff, shortcut } = CONTROLS[source];
   const Icon = enabled ? IconOn : IconOff;
   const label = enabled ? on : off;
   return (
     <button
       {...buttonProps}
+      disabled={buttonProps.disabled || !ready}
       type="button"
       aria-label={label}
       {...shortcutHint(shortcut, label)}
@@ -173,17 +186,21 @@ export function CallShortcuts() {
 
   const micFailed = (error: unknown) => deviceFailed(toast.error, error, 'microphone');
   const me = () => room.localParticipant;
+  // As the buttons: not until the call has connected (useCanToggle).
+  const ready = useCanToggle();
 
   useShortcut('call.mic', () => {
+    if (!ready) return false;
     void me().setMicrophoneEnabled(!me().isMicrophoneEnabled).catch(micFailed);
   });
   useShortcut('call.camera', () => {
+    if (!ready) return false;
     void me()
       .setCameraEnabled(!me().isCameraEnabled)
       .catch((error: unknown) => deviceFailed(toast.error, error, 'camera'));
   });
   useShortcut('call.share', () => {
-    if (!canShareScreen()) return false;
+    if (!ready || !canShareScreen()) return false;
     void me()
       .setScreenShareEnabled(!me().isScreenShareEnabled)
       .catch((error: Error) => {
@@ -202,7 +219,7 @@ export function CallShortcuts() {
   useShortcut(
     'call.talk',
     () => {
-      if (me().isMicrophoneEnabled) return false;
+      if (!ready || me().isMicrophoneEnabled) return false;
       talking.current = true;
       void me().setMicrophoneEnabled(true).catch(micFailed);
     },
