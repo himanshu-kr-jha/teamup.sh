@@ -26,6 +26,24 @@ export interface Release {
 
 export const RELEASES: Release[] = [
   {
+    id: '2026-11-20-b',
+    date: '2026-11-20',
+    title: 'Calls on your calendar show when you were really there',
+    changes: [
+      {
+        area: 'calendar',
+        title: 'Looking into a call again no longer fills your day',
+        body: 'If you were in a stand-up in the morning and looked into its room again in the evening, your calendar showed one block from the morning to the evening. Now it shows a block for each time you were really there. A quick reload or a dropped connection that comes back within ten minutes still counts as one, and being in from your laptop and your phone at once is one block.',
+        link: '/calendar',
+      },
+      {
+        area: 'meetings',
+        title: 'The call log lists each time somebody was in',
+        body: 'Who was there in a call’s log now gives each time a person was in, such as 8:30 AM to 9:35 AM and 8:17 PM to 8:18 PM, instead of their first join to their last leave.',
+      },
+    ],
+  },
+  {
     id: '2026-11-20',
     date: '2026-11-20',
     title: 'The scrum is a table you arrange yourself',

@@ -142,6 +142,7 @@ func (h *wsHarness) dial(t *testing.T, name string, orgID, userID uuid.UUID) *ws
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	before := h.hub.ConnectionCount()
 	url := "ws" + strings.TrimPrefix(h.server.URL, "http") + "/ws"
 	conn, _, err := nhooyr.Dial(ctx, url, &nhooyr.DialOptions{
 		HTTPHeader: http.Header{"Authorization": []string{"Bearer " + h.auth.issue(orgID, userID)}},
@@ -150,6 +151,16 @@ func (h *wsHarness) dial(t *testing.T, name string, orgID, userID uuid.UUID) *ws
 		t.Fatalf("dial as %s: %v", name, err)
 	}
 	t.Cleanup(func() { _ = conn.Close(nhooyr.StatusNormalClosure, "") })
+
+	// The handshake finishes before the server registers the socket with the
+	// hub, so a frame sent to them straight away could miss them. On a busy
+	// machine that gap was long enough to fail the typing test now and then.
+	for h.hub.ConnectionCount() <= before {
+		if ctx.Err() != nil {
+			t.Fatalf("%s connected but the hub never registered the socket", name)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 
 	return &wsClient{name: name, conn: conn}
 }

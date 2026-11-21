@@ -449,9 +449,16 @@ func (s *Service) loadGoogle(ctx context.Context, orgID uuid.UUID, people []uuid
 
 // loadCalls adds meetings and calls. It returns which standing meeting days each
 // person really attended, because those replace the scheduled slot.
+//
+// What somebody really did is one block per stretch they were in the call, from
+// call_sessions (see stretchesOf). call_participants has one row per person per
+// call, with their first join and last leave, and those can be hours apart with
+// them gone in between; it is only the fallback for a call with no sessions.
 func (s *Service) loadCalls(ctx context.Context, orgID uuid.UUID, people []uuid.UUID, from, to time.Time, out map[uuid.UUID][]Item) (map[uuid.UUID]map[string]bool, error) {
 	// The range here is padded, and the exact overlap is decided below once it is
-	// known which times apply to the person.
+	// known which times apply to the person. A call still open runs to this
+	// service's now, which is the database's except in tests.
+	now := s.clock()
 	rows, err := s.db.Query(ctx, `
 		SELECT p.user_id, c.id, COALESCE(c.title, ''), c.status, c.created_by, c.standing_meeting_id,
 		       c.occurrence_date::text, c.scheduled_start, c.scheduled_end, c.started_at, c.ended_at,
@@ -461,92 +468,161 @@ func (s *Service) loadCalls(ctx context.Context, orgID uuid.UUID, people []uuid.
 		JOIN calls c ON c.id = p.call_id
 		WHERE c.org_id = $1 AND p.user_id = ANY($2) AND c.status <> 'cancelled'
 		  AND COALESCE(p.joined_at, c.scheduled_start, c.started_at, c.created_at) < $4::timestamptz + interval '1 day'
-		  AND COALESCE(p.left_at, c.ended_at, c.scheduled_end, NOW()) > $3::timestamptz - interval '1 day'
-	`, orgID, people, from, to)
+		  AND COALESCE(p.left_at, c.ended_at, c.scheduled_end, $5::timestamptz) > $3::timestamptz - interval '1 day'
+	`, orgID, people, from, to, now)
 	if err != nil {
 		return nil, fmt.Errorf("load calls: %w", err)
 	}
-	defer rows.Close()
-
-	now := s.clock()
-	attended := map[uuid.UUID]map[string]bool{}
+	type callRow struct {
+		user, callID, organizer            uuid.UUID
+		title, status                      string
+		standingID                         *uuid.UUID
+		occurrence                         *string
+		scheduledStart, scheduledEnd       *time.Time
+		startedAt, endedAt, joined, leftAt *time.Time
+		invitees                           []string
+	}
+	var found []callRow
+	var callIDs []uuid.UUID
 	for rows.Next() {
-		var (
-			user, callID, organizer            uuid.UUID
-			title, status                      string
-			standingID                         *uuid.UUID
-			occurrence                         *string
-			scheduledStart, scheduledEnd       *time.Time
-			startedAt, endedAt, joined, leftAt *time.Time
-			invitees                           []string
-		)
-		if err := rows.Scan(&user, &callID, &title, &status, &organizer, &standingID, &occurrence,
-			&scheduledStart, &scheduledEnd, &startedAt, &endedAt, &joined, &leftAt, &invitees); err != nil {
+		var r callRow
+		if err := rows.Scan(&r.user, &r.callID, &r.title, &r.status, &r.organizer, &r.standingID, &r.occurrence,
+			&r.scheduledStart, &r.scheduledEnd, &r.startedAt, &r.endedAt, &r.joined, &r.leftAt, &r.invitees); err != nil {
+			rows.Close()
 			return nil, fmt.Errorf("scan call: %w", err)
 		}
+		found = append(found, r)
+		if r.joined != nil {
+			callIDs = append(callIDs, r.callID)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("load calls: %w", err)
+	}
+	sessions, err := s.loadSessions(ctx, callIDs, people)
+	if err != nil {
+		return nil, err
+	}
 
-		item := Item{ID: callID.String(), Kind: "busy", Title: title, CallID: &callID,
-			StandingMeetingID: standingID, OrganizerID: &organizer, InviteeIDs: invitees, Status: status}
+	attended := map[uuid.UUID]map[string]bool{}
+	for _, r := range found {
+		base := Item{ID: r.callID.String(), Kind: "busy", Title: r.title, CallID: &r.callID,
+			StandingMeetingID: r.standingID, OrganizerID: &r.organizer, InviteeIDs: r.invitees, Status: r.status}
+
+		// When they were really there, if they ever were.
+		var present []stretch
+		if own := sessions[sessionKey{r.callID, r.user}]; len(own) > 0 {
+			present = stretchesOf(own, r.status == "active", r.endedAt, now)
+		} else if r.joined != nil {
+			var planned time.Duration
+			if r.scheduledStart != nil && r.scheduledEnd != nil {
+				planned = r.scheduledEnd.Sub(*r.scheduledStart)
+			}
+			present = []stretch{fallbackStretch(*r.joined, r.leftAt, r.status == "active", r.endedAt, planned, now)}
+		}
+
+		var items []Item
 		switch {
-		case standingID != nil:
+		case r.standingID != nil:
 			// Only somebody who came has a row here. Their real time replaces the slot.
-			if joined == nil || occurrence == nil {
+			if len(present) == 0 || r.occurrence == nil {
 				continue
 			}
 			// That list of rows is who came, which is attendance's to tell (decisions
 			// 15 and 27), and whoever pressed Join first organized nothing.
-			item.present = textIDs(invitees)
-			item.InviteeIDs, item.OrganizerID = nil, nil
-			if attended[user] == nil {
-				attended[user] = map[string]bool{}
+			base.present = textIDs(r.invitees)
+			base.InviteeIDs, base.OrganizerID = nil, nil
+			if attended[r.user] == nil {
+				attended[r.user] = map[string]bool{}
 			}
-			attended[user][standingKey(*standingID, *occurrence)] = true
-			item.Source = "standing"
-			item.StartsAt, item.EndsAt = *joined, firstTime(now, leftAt, endedAt)
-		case scheduledStart != nil:
+			attended[r.user][standingKey(*r.standingID, *r.occurrence)] = true
+			base.Source = "standing"
+			items = stretchItems(base, present, nil)
+		case r.scheduledStart != nil:
 			// A meeting stands at its scheduled time until that is over, and then
 			// shows what really happened to whoever was really there. Its room
 			// emptying earlier does not make it over: it comes back until its end
 			// (decision 23), and somebody who looked in at 09:40 is still expected at
 			// 10:00.
-			item.Source = "meeting"
-			item.StartsAt, item.EndsAt = *scheduledStart, *scheduledEnd
-			if joined != nil && !now.Before(*scheduledEnd) {
-				// Over, or running on past its end: what really happened to somebody
-				// who was there. Still in it means until now, and it keeps growing.
-				stillIn := status == "active" && leftAt == nil
-				switch {
-				case stillIn:
-					item.StartsAt, item.EndsAt, item.Running = *joined, now, true
-				case status == "ended" || leftAt != nil:
-					item.StartsAt, item.EndsAt = *joined, firstTime(now, leftAt, endedAt)
-				}
-				if item.EndsAt.After(*scheduledEnd) {
-					planned := *scheduledEnd
-					item.ScheduledEndsAt = &planned
-				}
+			base.Source = "meeting"
+			base.StartsAt, base.EndsAt = *r.scheduledStart, *r.scheduledEnd
+			items = []Item{base}
+			// Over, or running on past its end: what really happened to somebody
+			// who was there, each stretch of it, the one they are still in growing.
+			over := r.status == "active" || r.status == "ended" || r.leftAt != nil
+			if len(present) > 0 && over && !now.Before(*r.scheduledEnd) {
+				items = stretchItems(base, present, r.scheduledEnd)
 			}
 		default:
-			item.Source = "call"
+			base.Source = "call"
 			switch {
-			case joined != nil:
-				item.StartsAt, item.EndsAt = *joined, firstTime(now, leftAt, endedAt)
-			case startedAt != nil:
+			case len(present) > 0:
+				items = stretchItems(base, present, nil)
+			case r.startedAt != nil:
 				// Somebody who never came was only ever being rung. A call nobody
 				// closed must not make them busy from then until now.
-				item.StartsAt, item.EndsAt = *startedAt, firstTime(now, endedAt)
-				if rang := startedAt.Add(ringWindow); endedAt == nil && item.EndsAt.After(rang) {
-					item.EndsAt = rang
+				base.StartsAt, base.EndsAt = *r.startedAt, firstTime(now, r.endedAt)
+				if rang := r.startedAt.Add(ringWindow); r.endedAt == nil && base.EndsAt.After(rang) {
+					base.EndsAt = rang
 				}
-			default:
-				continue
+				items = []Item{base}
 			}
 		}
-		if overlaps(item.StartsAt, item.EndsAt, from, to) {
-			out[user] = append(out[user], item)
+		for _, item := range items {
+			if overlaps(item.StartsAt, item.EndsAt, from, to) {
+				out[r.user] = append(out[r.user], item)
+			}
 		}
 	}
-	return attended, rows.Err()
+	return attended, nil
+}
+
+type sessionKey struct{ call, user uuid.UUID }
+
+// loadSessions is every connection these people made to these calls.
+func (s *Service) loadSessions(ctx context.Context, callIDs, people []uuid.UUID) (map[sessionKey][]session, error) {
+	out := map[sessionKey][]session{}
+	if len(callIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT call_id, user_id, joined_at, left_at FROM call_sessions
+		WHERE call_id = ANY($1) AND user_id = ANY($2) AND joined_at IS NOT NULL
+	`, callIDs, people)
+	if err != nil {
+		return nil, fmt.Errorf("load call sessions: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k sessionKey
+		var cs session
+		if err := rows.Scan(&k.call, &k.user, &cs.joined, &cs.left); err != nil {
+			return nil, fmt.Errorf("scan call session: %w", err)
+		}
+		out[k] = append(out[k], cs)
+	}
+	return out, rows.Err()
+}
+
+// stretchItems is one item per stretch somebody was in a call. The first keeps
+// the call's id, and each later one adds its start, so every item has its own.
+// scheduledEnd, for a meeting, marks a stretch that ran past it as extended.
+func stretchItems(base Item, present []stretch, scheduledEnd *time.Time) []Item {
+	items := make([]Item, 0, len(present))
+	for i, p := range present {
+		item := base
+		if i > 0 {
+			item.ID = base.ID + "@" + p.start.UTC().Format(time.RFC3339)
+		}
+		item.StartsAt, item.EndsAt, item.Running = p.start, p.end, p.open
+		if scheduledEnd != nil && item.EndsAt.After(*scheduledEnd) {
+			planned := *scheduledEnd
+			item.ScheduledEndsAt = &planned
+		}
+		items = append(items, item)
+	}
+	return items
 }
 
 // textIDs reads ids that came out of the database as text.

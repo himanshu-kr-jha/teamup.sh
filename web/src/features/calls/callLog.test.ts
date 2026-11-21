@@ -74,6 +74,23 @@ describe('peopleFromSessions', () => {
     expect(ann).toMatchObject({ minutes: 10, stillHere: true, lastLeaveAt: null });
   });
 
+  it('tells apart the times somebody was there, not first join to last leave', () => {
+    const [ann] = peopleFromSessions(
+      [
+        session('a', 'Ann', '2026-11-07T08:30:00Z', '2026-11-07T09:00:00Z'),
+        // A reload: back three minutes later, so the same stretch.
+        session('a', 'Ann', '2026-11-07T09:03:00Z', '2026-11-07T09:35:00Z'),
+        // Back much later, and still there.
+        session('a', 'Ann', '2026-11-07T09:50:00Z', null),
+      ],
+      NOW
+    );
+    expect(ann.stretches).toEqual([
+      { from: '2026-11-07T08:30:00.000Z', to: '2026-11-07T09:35:00.000Z' },
+      { from: '2026-11-07T09:50:00.000Z', to: null },
+    ]);
+  });
+
   it('skips a session whose join never arrived from the time sums', () => {
     const [ann] = peopleFromSessions([session('a', 'Ann', null, '2026-11-07T09:50:00Z')], NOW);
     expect(ann).toMatchObject({ minutes: 0, firstJoinAt: null });
