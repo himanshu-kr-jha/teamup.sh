@@ -176,7 +176,6 @@ test.describe('putting a background on in a call', () => {
   test('the others never see the video stand still while a background goes on, changes, or comes off', async ({ as, playwright, launchOptions }) => {
     const { alice, olivia } = await inACall(as, () => playwright.chromium.launch(launchOptions));
     const sharp = (await detail(alice.page, REMOTE))!;
-    const sharpHere = (await detail(olivia.page, 'video[data-lk-local-participant="true"]'))!;
     const button = olivia.page.getByTestId('background-effects');
     const menu = olivia.page.getByRole('menu', { name: 'Background effects' });
 
@@ -185,6 +184,12 @@ test.describe('putting a background on in a call', () => {
     await button.click();
     const preview = menu.getByTestId('background-preview');
     await expect(preview).toBeVisible();
+    // The preview's own picture before the blur, to compare it with after: the
+    // tile in the call is cropped and scaled otherwise, and measured against it
+    // a blurred preview could read as sharper than the tile.
+    const inPreview = '[data-testid="background-preview"] video';
+    await expect.poll(async () => (await detail(olivia.page, inPreview)) ?? 0, { timeout: 15_000 }).toBeGreaterThan(0);
+    const sharpHere = (await detail(olivia.page, inPreview))!;
     await menu.getByRole('menuitemradio', { name: 'Blur', exact: true }).click();
     // The menu stays open, and the preview shows the blur.
     await expect(menu.getByRole('menuitemradio', { name: 'Blur', exact: true })).toHaveAttribute('aria-checked', 'true');
@@ -193,7 +198,7 @@ test.describe('putting a background on in a call', () => {
     const on = await gaps(alice.page, from);
     console.log(`blur on: longest ${on.longest} ms, usual ${on.usual} ms, ${on.frames} frames`);
     expect(on.longest, `Olivia's video stood still for ${on.longest} ms while blur went on`).toBeLessThanOrEqual(allowed(on.usual));
-    expect((await detail(olivia.page, '[data-testid="background-preview"] video'))!).toBeLessThan(sharpHere * 0.85);
+    expect((await detail(olivia.page, inPreview))!).toBeLessThan(sharpHere * 0.85);
 
     // Blur to a picture: the same processor, changed in place.
     from = await clock(alice.page);
@@ -283,7 +288,9 @@ test.describe('putting a background on in a call', () => {
     // Long enough for the browser to collect what the preview left, and say so.
     await olivia.page.waitForTimeout(15_000);
     const seen = await gaps(alice.page, (await clock(alice.page)) - 5_000);
-    expect(seen.frames).toBeGreaterThan(10);
+    // Still moving. Without a graphics card the background puts out one to three
+    // frames a second, so ten in five seconds (asked before) failed on main too.
+    expect(seen.frames).toBeGreaterThan(4);
   });
 
   // Also seen in the cross-feature tests: frames reported unclosed 10 to 20
