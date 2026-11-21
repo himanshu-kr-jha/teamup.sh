@@ -93,7 +93,16 @@ export interface CallLogPerson {
   lastLeaveAt: string | null;
   stillHere: boolean;
   minutes: number;
+  /**
+   * When they were really there, in order, the last one with `to` null while they
+   * still are. Devices at once count once, and a gap under STRETCH_GAP_MINUTES,
+   * a reload or a reconnect, is not a leave. The calendar draws the same stretches.
+   */
+  stretches: { from: string; to: string | null }[];
 }
+
+/** As the server's stretchGap: how far apart two sessions can be and still be one stretch. */
+export const STRETCH_GAP_MINUTES = 10;
 
 /**
  * One line per person from however many sessions they had. Time on two devices at
@@ -117,11 +126,19 @@ export function peopleFromSessions(sessions: CallSession[], now: Date = new Date
       .sort((a, b) => a[0] - b[0]);
     let totalMs = 0;
     let coveredTo = -Infinity;
+    const merged: { from: number; to: number }[] = [];
     for (const [start, end] of spans) {
       const from = Math.max(start, coveredTo);
       if (end > from) totalMs += end - from;
       coveredTo = Math.max(coveredTo, end);
+      const last = merged[merged.length - 1];
+      if (last && start <= last.to + STRETCH_GAP_MINUTES * 60_000) last.to = Math.max(last.to, end);
+      else merged.push({ from: start, to: end });
     }
+    const stretches = merged.map((m, i) => ({
+      from: new Date(m.from).toISOString(),
+      to: stillHere && i === merged.length - 1 ? null : new Date(m.to).toISOString(),
+    }));
 
     people.push({
       userId,
@@ -131,6 +148,7 @@ export function peopleFromSessions(sessions: CallSession[], now: Date = new Date
       lastLeaveAt: stillHere ? null : (leaves[leaves.length - 1] ?? null),
       stillHere,
       minutes: Math.round(totalMs / 60_000),
+      stretches,
     });
   }
   return people;

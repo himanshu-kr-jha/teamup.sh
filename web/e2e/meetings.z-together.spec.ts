@@ -230,6 +230,13 @@ test.describe('the new call features together', () => {
     });
 
     await test.step('1. Sam raises his hand, Alice second; the order is right everywhere', async () => {
+      // The fake microphone talks on, in sentences with pauses between, and a new
+      // sentence after a pause lowers a raised hand by itself, as it should, at a
+      // moment that depends on the machine's speed (CI's slower one lowered Sam's
+      // between Olivia seeing it and Alice's going up). Sam has nothing to say
+      // here, so he goes quiet first; Alice talking is what this step is about.
+      await sam.page.getByRole('button', { name: 'Turn your microphone off' }).first().click();
+      await expect(sam.page.getByRole('button', { name: 'Turn your microphone on' }).first()).toBeVisible();
       await sam.page.getByRole('button', { name: 'Raise your hand' }).click();
       await expect(badge(olivia.page, SAM)).toHaveText('1');
       await alice.page.getByRole('button', { name: 'Raise your hand' }).click();
@@ -241,18 +248,14 @@ test.describe('the new call features together', () => {
       // Alice goes on talking with her hand up: a sentence already going does not lower it.
       await alice.page.waitForTimeout(4_000);
       await expect(badge(olivia.page, ALICE)).toHaveText('2');
+      // Her next sentence after a pause would lower it, so she goes quiet too,
+      // straight away, until the hands are lowered for them.
+      await alice.page.getByRole('button', { name: 'Turn your microphone off' }).first().click();
+      await expect(alice.page.getByRole('button', { name: 'Turn your microphone on' }).first()).toBeVisible();
       await still(olivia.page);
       await olivia.page.screenshot({ path: `${SHOTS}/1-hands-olivia-light.png` });
       await sam.page.screenshot({ path: `${SHOTS}/1-hands-sam-phone-dark.png` });
       expect(await scrollsSideways(sam.page)).toBe(false);
-      // Alice's fake microphone talks on, in sentences with pauses between: a new
-      // one after a pause lowers her hand by itself, as it should, at a moment
-      // that depends on the machine's speed (CI's slower one lowered it while
-      // Zoe was being rung). Both go quiet until the hands are lowered for them.
-      for (const page of [alice.page, sam.page]) {
-        await page.getByRole('button', { name: 'Turn your microphone off' }).first().click();
-        await expect(page.getByRole('button', { name: 'Turn your microphone on' }).first()).toBeVisible();
-      }
       await expect(badge(olivia.page, SAM)).toHaveText('1');
       await expect(badge(olivia.page, ALICE)).toHaveText('2');
     });

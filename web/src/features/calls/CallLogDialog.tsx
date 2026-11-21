@@ -92,8 +92,7 @@ export function CallLogDialog({
                     <li key={person.userId} className="flex flex-wrap items-baseline justify-between gap-x-3 px-3 py-2 text-sm">
                       <span className="min-w-0 break-anywhere font-medium">{person.name}</span>
                       <span className="text-xs tabular-nums text-muted-foreground">
-                        {person.firstJoinAt ? formatTime(person.firstJoinAt) : 'Unknown'} to{' '}
-                        {person.stillHere ? 'now' : person.lastLeaveAt ? formatTime(person.lastLeaveAt) : 'unknown'}
+                        {stretchesText(person.stretches)}
                         {', '}
                         {formatMinutes(person.minutes)}
                         {person.sessions > 1 && `, ${person.sessions} connections`}
@@ -137,4 +136,12 @@ export function CallLogDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+/** Each time they were there: "08:30 to 09:35 and 20:17 to 20:18". */
+function stretchesText(stretches: { from: string; to: string | null }[]): string {
+  const spans = stretches.map((s) => `${formatTime(s.from)} to ${s.to ? formatTime(s.to) : 'now'}`);
+  if (spans.length === 0) return 'Unknown';
+  if (spans.length === 1) return spans[0];
+  return `${spans.slice(0, -1).join(', ')} and ${spans[spans.length - 1]}`;
 }
