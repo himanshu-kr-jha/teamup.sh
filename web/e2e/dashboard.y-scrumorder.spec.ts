@@ -180,6 +180,15 @@ test.describe('the scrum table', () => {
     );
     expect(overflow, 'the page itself must not scroll sideways').toBeLessThanOrEqual(1);
 
+    // My Lead folds under the name, and Task 1 takes most of the width with Task 2 peeking in.
+    await expect(table(page).getByRole('columnheader', { name: 'My Lead' })).toBeHidden();
+    await expect(row(page, PEOPLE.alice.name).getByTestId('scrum-leads-inline')).toHaveText(`Lead: ${PEOPLE.mia.name}`);
+    const task1 = (await table(page).getByRole('columnheader', { name: 'Task 1', exact: true }).boundingBox())!;
+    expect(task1.width, 'Task 1 is about three quarters of what the names leave').toBeGreaterThan(140);
+    expect(task1.x + task1.width, 'Task 1 is whole on screen').toBeLessThanOrEqual(375);
+    const task2 = await table(page).getByRole('columnheader', { name: 'Task 2', exact: true }).boundingBox();
+    if (task2) expect(task2.x, 'Task 2 peeks in').toBeLessThan(375);
+
     const before = await names(page);
     const nameCell = table(page).getByTestId('scrum-person-name').first();
     const x = (await nameCell.boundingBox())!.x;

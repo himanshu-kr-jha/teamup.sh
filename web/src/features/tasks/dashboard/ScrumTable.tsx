@@ -49,11 +49,16 @@ export interface ScrumTableProps {
 }
 
 const HANDLE_W = 'w-8 min-w-8 max-w-8';
-const NAME_W = 'w-32 min-w-32 max-w-32 sm:w-48 sm:min-w-48 sm:max-w-48';
+// On a phone the name column is narrow and My Lead folds under the name, so a
+// task column takes about three quarters of what is left (page padding, border,
+// handle and name come to 154px) and the next one peeks in from the right.
+const NAME_W = 'w-24 min-w-24 max-w-24 sm:w-48 sm:min-w-48 sm:max-w-48';
 const NAME_LEFT = 'left-8';
-const LEAD_W = 'w-24 min-w-24 sm:w-32 sm:min-w-32';
+const LEAD_W = 'hidden sm:table-cell sm:w-32 sm:min-w-32';
 const CELL = 'border-b border-border px-2.5 py-2 align-top';
-const TASK_W = 'w-52 min-w-52 max-w-52 md:w-60 md:min-w-60 md:max-w-60';
+const PHONE_COL = 'w-[calc((100vw-154px)*0.72)] min-w-[calc((100vw-154px)*0.72)] max-w-[calc((100vw-154px)*0.72)]';
+const TASK_W = cn(PHONE_COL, 'sm:w-52 sm:min-w-52 sm:max-w-52 md:w-60 md:min-w-60 md:max-w-60');
+const DONE_W = cn(PHONE_COL, 'sm:w-56 sm:min-w-56 sm:max-w-56');
 
 const lockX: Modifier = ({ transform }) => ({ ...transform, x: 0 });
 const lockY: Modifier = ({ transform }) => ({ ...transform, y: 0 });
@@ -157,7 +162,7 @@ export function ScrumTable({ rows, caption, onMovePeople, onMoveTasks }: ScrumTa
                   Task {i + 1}
                 </th>
               ))}
-              <th scope="col" className={cn(CELL, 'w-56 min-w-56 border-l bg-muted')}>
+              <th scope="col" className={cn(CELL, DONE_W, 'border-l bg-muted')}>
                 Done
               </th>
               {/* Takes up whatever the columns leave, so they keep their widths. */}
@@ -288,12 +293,22 @@ function PersonRow({
             fallbackClassName="text-[10px]"
             decorative
           />
-          <div className="min-w-0">
-            <p className="break-anywhere font-semibold leading-snug" data-testid="scrum-person-name">
+          <div className="min-w-0 flex-1">
+            <p
+              className="truncate font-semibold leading-snug sm:whitespace-normal sm:break-anywhere"
+              title={row.name}
+              data-testid="scrum-person-name"
+            >
               {row.name}
             </p>
             {row.teams.length > 0 && (
               <p className="break-anywhere text-xs text-muted-foreground">{row.teams.map((t) => t.name).join(', ')}</p>
+            )}
+            {/* My Lead is a column from sm up; on a phone it is a line here instead. */}
+            {!!row.leads?.length && (
+              <p className="break-anywhere text-xs text-muted-foreground sm:hidden" data-testid="scrum-leads-inline">
+                Lead: {row.leads.join(', ')}
+              </p>
             )}
             {(blocked > 0 || overdue > 0) && (
               <p className={cn('text-xs tabular-nums', DANGER_TEXT)}>
@@ -414,7 +429,7 @@ function DoneCell({ done }: { done: ScrumCell[] }) {
   const [all, setAll] = useState(false);
   const shown = all ? done : done.slice(0, DONE_SHOWN);
   return (
-    <td className={cn(CELL, 'w-56 min-w-56 border-l')} data-testid="scrum-done">
+    <td className={cn(CELL, DONE_W, 'border-l')} data-testid="scrum-done">
       {done.length === 0 ? (
         <span className="sr-only">Nothing done</span>
       ) : (

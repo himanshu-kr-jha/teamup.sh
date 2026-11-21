@@ -33,7 +33,7 @@ export const RELEASES: Release[] = [
       {
         area: 'tasks',
         title: 'One row per person, their tasks across',
-        body: 'The Scrum tab now reads like a team sheet: each person, their lead, then their open tasks as Task 1, Task 2, Task 3 and on, each with its due date and status, and what they finished since the last scrum at the end. Blocked and late tasks are marked in red, tasks somebody was added to say so, and any task opens with a click. On a phone the names stay put while the tasks scroll sideways.',
+        body: 'The Scrum tab now reads like a team sheet: each person, their lead, then their open tasks as Task 1, Task 2, Task 3 and on, each with its due date and status, and what they finished since the last scrum at the end. Blocked and late tasks are marked in red, tasks somebody was added to say so, and any task opens with a click. On a phone the names stay put with each person\'s lead under their name, and the tasks scroll sideways one wide column at a time.',
         link: '/tasks?tab=scrum',
       },
       {
