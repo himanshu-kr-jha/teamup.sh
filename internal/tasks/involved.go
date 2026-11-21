@@ -77,7 +77,7 @@ var statusWords = map[string]string{
 // changeOrder is the order a change is described in, most telling first.
 // Position is left out: dragging a card up a column changes nothing anybody
 // needs to hear about.
-var changeOrder = []string{"status", "assigneeId", "dueDate", "priority", "title", "description", "startDate", "storyPoints", "taskType", "parentTaskId"}
+var changeOrder = []string{"status", "blockedOn", "assigneeId", "dueDate", "priority", "title", "description", "startDate", "storyPoints", "taskType", "parentTaskId"}
 
 // describeChanges says in a line what changed on a task, or "" when nothing
 // worth telling anybody did.
@@ -94,6 +94,10 @@ func describeChanges(changed map[string]bool, after *Task) string {
 				word = after.Status
 			}
 			parts = append(parts, "status is now "+word)
+		case "blockedOn":
+			if after.BlockedOn != nil {
+				parts = append(parts, "blocked on: "+describeBlockedOn(after.BlockedOn))
+			}
 		case "assigneeId":
 			if after.AssigneeName != "" {
 				parts = append(parts, "assigned to "+after.AssigneeName)

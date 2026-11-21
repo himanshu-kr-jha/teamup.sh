@@ -64,6 +64,16 @@ type ScrumEntry struct {
 	// Position is the task's column in the person's row, from 0, for open work
 	// on a scrum that kept the order. Null for done work and older scrums.
 	Position *int `json:"position"`
+	// BlockedOn is what a blocked task was blocked on then, in words. Null for
+	// anything not blocked and on scrums saved before it was kept.
+	BlockedOn *SavedBlockedOn `json:"blockedOn"`
+}
+
+// SavedBlockedOn is a blocked task's reason as a saved scrum keeps it.
+type SavedBlockedOn struct {
+	Note      string  `json:"note"`
+	UserName  *string `json:"userName"`
+	TaskTitle *string `json:"taskTitle"`
 }
 
 // Scrum is a saved scrum in full. It never changes once written.
@@ -161,10 +171,13 @@ func insertScrumRows(ctx context.Context, tx pgx.Tx, scrumID uuid.UUID, people [
 		// Overdue is left out: every overdue task is also in one of the others.
 		open := arranged(buckets.open(), func(t TaskSummary) uuid.UUID { return t.ID }, taskOrder[p.ID])
 		for col, t := range open {
-			entries = append(entries, []any{scrumID, p.ID, t.ID, t.Title, t.Status, t.Priority, t.Overdue, t.DueDate, t.CompletedAt, added[t.ID], col})
+			note, who, what := savedBlockedOn(t.BlockedOn)
+			entries = append(entries, []any{scrumID, p.ID, t.ID, t.Title, t.Status, t.Priority, t.Overdue, t.DueDate, t.CompletedAt, added[t.ID], col,
+				note, who, what})
 		}
 		for _, t := range buckets.Completed {
-			entries = append(entries, []any{scrumID, p.ID, t.ID, t.Title, t.Status, t.Priority, t.Overdue, t.DueDate, t.CompletedAt, false, nil})
+			entries = append(entries, []any{scrumID, p.ID, t.ID, t.Title, t.Status, t.Priority, t.Overdue, t.DueDate, t.CompletedAt, false, nil,
+				nil, nil, nil})
 		}
 	}
 	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"scrum_participants"},
@@ -173,7 +186,8 @@ func insertScrumRows(ctx context.Context, tx pgx.Tx, scrumID uuid.UUID, people [
 		return fmt.Errorf("save scrum participants: %w", err)
 	}
 	if _, err := tx.CopyFrom(ctx, pgx.Identifier{"scrum_entries"},
-		[]string{"scrum_id", "user_id", "task_id", "title", "status", "priority", "overdue", "due_date", "completed_at", "added_to", "position"},
+		[]string{"scrum_id", "user_id", "task_id", "title", "status", "priority", "overdue", "due_date", "completed_at", "added_to", "position",
+			"blocked_note", "blocked_by_name", "blocked_by_task_title"},
 		pgx.CopyFromRows(entries)); err != nil {
 		return fmt.Errorf("save scrum entries: %w", err)
 	}
@@ -300,7 +314,8 @@ func (s *Service) loadScrum(ctx context.Context, orgID, id uuid.UUID) (*Scrum, e
 	}
 
 	entries, err := s.db.Query(ctx, `
-		SELECT user_id, task_id, title, status, priority, overdue, due_date, completed_at, added_to, position
+		SELECT user_id, task_id, title, status, priority, overdue, due_date, completed_at, added_to, position,
+		       blocked_note, blocked_by_name, blocked_by_task_title
 		FROM scrum_entries WHERE scrum_id = $1 ORDER BY position NULLS LAST, title, task_id, user_id`, id)
 	if err != nil {
 		return nil, fmt.Errorf("load scrum entries: %w", err)
@@ -308,8 +323,13 @@ func (s *Service) loadScrum(ctx context.Context, orgID, id uuid.UUID) (*Scrum, e
 	defer entries.Close()
 	for entries.Next() {
 		var e ScrumEntry
-		if err := entries.Scan(&e.UserID, &e.TaskID, &e.Title, &e.Status, &e.Priority, &e.Overdue, &e.DueDate, &e.CompletedAt, &e.AddedTo, &e.Position); err != nil {
+		var blockedNote, blockedBy, blockedTask *string
+		if err := entries.Scan(&e.UserID, &e.TaskID, &e.Title, &e.Status, &e.Priority, &e.Overdue, &e.DueDate, &e.CompletedAt, &e.AddedTo, &e.Position,
+			&blockedNote, &blockedBy, &blockedTask); err != nil {
 			return nil, fmt.Errorf("scan scrum entry: %w", err)
+		}
+		if blockedNote != nil {
+			e.BlockedOn = &SavedBlockedOn{Note: *blockedNote, UserName: blockedBy, TaskTitle: blockedTask}
 		}
 		out.Entries = append(out.Entries, e)
 	}
@@ -394,4 +414,20 @@ func (h *Handler) GetScrum(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, scrum)
+}
+
+// savedBlockedOn is a blocked task's reason as the three text columns a saved
+// scrum keeps, or three NULLs for a task that is not blocked.
+func savedBlockedOn(b *BlockedOn) (any, any, any) {
+	if b == nil {
+		return nil, nil, nil
+	}
+	var who, what any
+	if b.User != nil {
+		who = b.User.Name
+	}
+	if b.Task != nil {
+		what = b.Task.Title
+	}
+	return b.Note, who, what
 }

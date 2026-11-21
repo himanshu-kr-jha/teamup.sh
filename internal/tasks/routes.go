@@ -217,10 +217,28 @@ func (h *Handler) CreateTask(c *gin.Context) {
 		DueDate     *string  `json:"dueDate"`
 		StartDate   *string  `json:"startDate"`
 		Labels      []string `json:"labels"`
+		// What a task created as blocked is blocked on. Optional.
+		BlockedOn map[string]any `json:"blockedOn"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+	var blocked blockedInput
+	if req.BlockedOn != nil {
+		if req.Status != "blocked" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "only a blocked task is blocked on something"})
+			return
+		}
+		var err error
+		if blocked, err = parseBlockedOn(req.BlockedOn); err != nil {
+			httpx.Error(c, err, "invalid blockedOn")
+			return
+		}
+		if err := h.service.checkBlockedOn(c.Request.Context(), cl.OrgID, uuid.Nil, blocked); err != nil {
+			httpx.Error(c, err, "invalid blockedOn")
+			return
+		}
 	}
 
 	projectID, err := optionalUUID(req.ProjectID)
@@ -251,6 +269,17 @@ func (h *Handler) CreateTask(c *gin.Context) {
 	if err != nil {
 		httpx.Error(c, err, "failed to create task")
 		return
+	}
+	if task.Status == "blocked" {
+		if err := h.service.setBlockedOn(c.Request.Context(), cl.OrgID, task.ID, blocked); err != nil {
+			httpx.Error(c, err, "failed to create task")
+			return
+		}
+		if task, err = h.service.GetTaskFor(c.Request.Context(), cl.OrgID, task.ID, cl.UserID,
+			auth.GetUserFromContext(c).Can(auth.PermTasksAll)); err != nil {
+			httpx.Error(c, err, "failed to create task")
+			return
+		}
 	}
 	c.JSON(http.StatusCreated, task)
 }

@@ -273,15 +273,25 @@ type TaskSummary struct {
 	DueDate     *time.Time `json:"dueDate"`
 	CompletedAt *time.Time `json:"completedAt"`
 	CreatedAt   time.Time  `json:"createdAt"`
+	// BlockedOn says what a blocked task is waiting for. Absent unless blocked.
+	BlockedOn *BlockedOn `json:"blockedOn,omitempty"`
+
+	blocked blockedRaw
 }
 
-// summaryColumns selects what scanSummary reads, from a tasks table aliased t.
+// summaryColumns selects what scanTargets reads, from a tasks table aliased t.
 const summaryColumns = `t.id, t.title, t.status, t.priority,
 	t.status <> 'done' AND t.due_date IS NOT NULL AND t.due_date < NOW(),
-	t.due_date, t.completed_at, t.created_at`
+	t.due_date, t.completed_at, t.created_at, ` + blockedColumns
 
+// scanTargets is where a row of summaryColumns goes; settle finishes it after.
 func (t *TaskSummary) scanTargets() []any {
-	return []any{&t.ID, &t.Title, &t.Status, &t.Priority, &t.Overdue, &t.DueDate, &t.CompletedAt, &t.CreatedAt}
+	return append([]any{&t.ID, &t.Title, &t.Status, &t.Priority, &t.Overdue, &t.DueDate, &t.CompletedAt, &t.CreatedAt},
+		t.blocked.targets()...)
+}
+
+func (t *TaskSummary) settle() {
+	t.BlockedOn = t.blocked.blockedOn(t.Status)
 }
 
 // TaskCounts is how much work is in each bucket.
@@ -414,6 +424,7 @@ func loadWork(ctx context.Context, q querier, orgID uuid.UUID, people []uuid.UUI
 		if err := rows.Scan(append([]any{&assignee}, t.scanTargets()...)...); err != nil {
 			return nil, fmt.Errorf("scan work: %w", err)
 		}
+		t.settle()
 		work[assignee].file(t)
 	}
 	if err := rows.Err(); err != nil {
@@ -439,6 +450,7 @@ func loadWork(ctx context.Context, q querier, orgID uuid.UUID, people []uuid.UUI
 		if err := added.Scan(append([]any{&watcher}, t.scanTargets()...)...); err != nil {
 			return nil, fmt.Errorf("scan added-to work: %w", err)
 		}
+		t.settle()
 		work[watcher].AddedTo = append(work[watcher].AddedTo, t)
 	}
 	return work, added.Err()
