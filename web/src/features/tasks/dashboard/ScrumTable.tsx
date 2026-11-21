@@ -20,14 +20,15 @@ import {
   useSortable,
   verticalListSortingStrategy,
 } from '@dnd-kit/sortable';
-import { Check, GripVertical } from 'lucide-react';
+import { Ban, Check, GripVertical } from 'lucide-react';
 import { UnreadTaskDot } from '@/features/notifications/UnreadTaskDot';
 import { Badge } from '@/shared/components/ui/badge';
 import { PersonAvatar } from '@/shared/components/UserAvatar';
 import { cn } from '@/shared/utils/cn';
 import { hiddenSides } from '@/shared/utils/hiddenSides';
 import { DANGER_TEXT, taskDateLabel } from '../dueDate';
-import { cellStatus, moved, taskColumnCount, type ScrumCell, type ScrumTableRow } from './scrumTable';
+import { blockedOnWords } from '../BlockedOnDialog';
+import { cellStatus, moved, taskColumnCount, withHiddenKept, type ScrumCell, type ScrumTableRow } from './scrumTable';
 
 /**
  * The scrum as a table: a row per person with their lead and their open work
@@ -164,6 +165,9 @@ export function ScrumTable({ rows, caption, onMovePeople, onMoveTasks }: ScrumTa
               ))}
               <th scope="col" className={cn(CELL, DONE_W, 'border-l bg-muted')}>
                 Done
+              </th>
+              <th scope="col" className={cn(CELL, DONE_W, 'border-l bg-muted')}>
+                Blocked on
               </th>
               {/* Takes up whatever the columns leave, so they keep their widths. */}
               <th aria-hidden className={cn(CELL, 'w-full bg-muted p-0')} />
@@ -343,7 +347,8 @@ function PersonRow({
           }}
           onDragEnd={(event) => {
             const next = dropped(taskIds, event);
-            if (next) onMoveTasks?.(row.userId, next);
+            // Blocked tasks are not in Task 1..N but keep their places in the order.
+            if (next) onMoveTasks?.(row.userId, withHiddenKept(row.order, next));
           }}
         >
           <SortableContext items={taskIds} strategy={horizontalListSortingStrategy}>
@@ -355,6 +360,7 @@ function PersonRow({
       )}
       {blanks}
       <DoneCell done={row.done} />
+      <BlockedCell blocked={row.blocked} />
       <td aria-hidden className={cn(CELL, 'p-0')} />
     </tr>
   );
@@ -461,5 +467,77 @@ function DoneCell({ done }: { done: ScrumCell[] }) {
         </>
       )}
     </td>
+  );
+}
+
+/**
+ * What is blocked and on what, the way Done lists what was finished: the first
+ * few, then the rest on asking. Blocked is a danger, so it reads in red.
+ */
+function BlockedCell({ blocked }: { blocked: ScrumCell[] }) {
+  const [all, setAll] = useState(false);
+  const shown = all ? blocked : blocked.slice(0, DONE_SHOWN);
+  return (
+    <td className={cn(CELL, DONE_W, 'border-l')} data-testid="scrum-blocked">
+      {blocked.length === 0 ? (
+        <span className="sr-only">Nothing blocked</span>
+      ) : (
+        <>
+          <ul className="space-y-2">
+            {shown.map((c) => (
+              <li key={c.id} className="flex items-start gap-1.5" data-task-blocked={c.id}>
+                <Ban className={cn('mt-0.5 h-3.5 w-3.5 shrink-0', DANGER_TEXT)} aria-hidden />
+                <div className="min-w-0">
+                  <Link
+                    to={`/tasks/${c.id}`}
+                    title={c.title}
+                    className={cn('line-clamp-2 break-anywhere font-medium hover:underline', DANGER_TEXT)}
+                  >
+                    {c.title}
+                  </Link>
+                  <BlockedReason cell={c} />
+                </div>
+              </li>
+            ))}
+          </ul>
+          {blocked.length > DONE_SHOWN && (
+            <button
+              type="button"
+              className="mt-1 text-xs font-medium text-muted-foreground hover:text-foreground hover:underline"
+              aria-expanded={all}
+              onClick={() => setAll((v) => !v)}
+            >
+              {all ? 'Show fewer' : `Show ${blocked.length - DONE_SHOWN} more`}
+            </button>
+          )}
+        </>
+      )}
+    </td>
+  );
+}
+
+/** The reason under a blocked task: the note, and the person and task it waits on. */
+function BlockedReason({ cell }: { cell: ScrumCell }) {
+  const b = cell.blockedOn;
+  // A saved scrum from before reasons were kept has nothing to say.
+  if (!b) return null;
+  // Only the task said: no "No reason given" in front of it.
+  const words = b.task && !b.note.trim() && !b.who ? '' : blockedOnWords({ note: b.note, who: b.who });
+  return (
+    <p className="break-anywhere text-xs text-muted-foreground" data-testid="scrum-blocked-reason">
+      {words}
+      {b.task && (
+        <>
+          {words ? '; waiting for ' : 'Waiting for '}
+          {b.task.id ? (
+            <Link to={`/tasks/${b.task.id}`} className="underline-offset-2 hover:underline">
+              {b.task.title}
+            </Link>
+          ) : (
+            b.task.title
+          )}
+        </>
+      )}
+    </p>
   );
 }

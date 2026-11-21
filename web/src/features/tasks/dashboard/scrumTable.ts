@@ -4,7 +4,10 @@ import { orderPeople } from './logic';
 /**
  * The scrum as a table, the way a team keeps it in a spreadsheet: one row per
  * person, their lead, and their open work across as Task 1, 2, 3, with what they
- * finished since the last scrum at the end.
+ * finished since the last scrum and what is blocked, and on what, at the end.
+ *
+ * A blocked task leaves Task 1, 2, 3 for the Blocked on column but keeps its
+ * place in the viewer's order, so it comes back where it was once unblocked.
  *
  * Whoever looks at it arranges it by hand. Their order wins wherever it says
  * something; anybody or anything it does not mention yet goes after, in the
@@ -24,6 +27,15 @@ export interface ScrumCell {
   isNew: boolean;
   /** Somebody else's task they were added to, not their own. */
   addedTo: boolean;
+  /** What a blocked task is blocked on, in words. Null when not blocked or not recorded. */
+  blockedOn: ScrumBlockedOn | null;
+}
+
+export interface ScrumBlockedOn {
+  /** Empty when no reason was given. */
+  note: string;
+  who: string | null;
+  task: { id: string | null; title: string } | null;
 }
 
 export interface ScrumTableRow {
@@ -33,10 +45,14 @@ export interface ScrumTableRow {
   /** Their leads' names. Null when a saved scrum did not record them. */
   leads: string[] | null;
   counts: TaskCounts;
-  /** Task 1, 2, 3 and on. */
+  /** Task 1, 2, 3 and on: open work that is not blocked. */
   open: ScrumCell[];
   /** Finished since the last scrum, latest first. */
   done: ScrumCell[];
+  /** Blocked work, in the person's order. */
+  blocked: ScrumCell[];
+  /** Every open task in the person's order, blocked ones included, as the order is kept. */
+  order: string[];
 }
 
 const PRIORITY_RANK: Record<string, number> = {
@@ -87,7 +103,9 @@ function latestFinishedFirst(cells: ScrumCell[]): ScrumCell[] {
   return [...cells].sort((a, b) => at(b) - at(a));
 }
 
-function cell(task: Omit<TaskSummary, 'createdAt'>, extra: Pick<ScrumCell, 'isNew' | 'addedTo'>): ScrumCell {
+type CellFacts = Pick<TaskSummary, 'id' | 'title' | 'status' | 'priority' | 'overdue' | 'dueDate' | 'completedAt'>;
+
+function cell(task: CellFacts, extra: Pick<ScrumCell, 'isNew' | 'addedTo' | 'blockedOn'>): ScrumCell {
   return {
     id: task.id,
     title: task.title,
@@ -100,22 +118,43 @@ function cell(task: Omit<TaskSummary, 'createdAt'>, extra: Pick<ScrumCell, 'isNe
   };
 }
 
+function liveBlockedOn(t: TaskSummary): ScrumBlockedOn | null {
+  if (t.status !== 'blocked') return null;
+  const b = t.blockedOn;
+  return {
+    note: b?.note ?? '',
+    who: b?.user?.name ?? null,
+    task: b?.task ? { id: b.task.id, title: b.task.title } : null,
+  };
+}
+
+/** One person's open work, in their order, split into Task 1..N and Blocked on. */
+function split(all: ScrumCell[]): Pick<ScrumTableRow, 'open' | 'blocked' | 'order'> {
+  return {
+    open: all.filter((c) => c.status !== 'blocked'),
+    blocked: all.filter((c) => c.status === 'blocked'),
+    order: all.map((c) => c.id),
+  };
+}
+
 /** The live table, in the viewer's own order. */
 export function liveScrumRows(people: DashboardPerson[], order: ScrumOrder | undefined): ScrumTableRow[] {
   const rows = people.map((person): ScrumTableRow => {
     const isNew = new Set(person.newSinceLastScrum);
-    const own = [...person.tasks.pending, ...person.tasks.ongoing, ...person.tasks.blocked].map((t) =>
-      cell(t, { isNew: isNew.has(t.id), addedTo: false })
-    );
-    const added = (person.tasks.addedTo ?? []).map((t) => cell(t, { isNew: isNew.has(t.id), addedTo: true }));
+    const mark = (t: TaskSummary, addedTo: boolean) =>
+      cell(t, { isNew: isNew.has(t.id), addedTo, blockedOn: liveBlockedOn(t) });
+    const own = [...person.tasks.pending, ...person.tasks.ongoing, ...person.tasks.blocked].map((t) => mark(t, false));
+    const added = (person.tasks.addedTo ?? []).map((t) => mark(t, true));
     return {
       userId: person.userId,
       name: person.name,
       teams: person.teams,
       leads: (person.leads ?? []).map((l) => l.name),
       counts: { ...person.counts, addedTo: person.counts.addedTo ?? 0 },
-      open: arrange([...own, ...added], (c) => c.id, order?.tasks[person.userId], defaultTaskOrder),
-      done: latestFinishedFirst(person.tasks.completed.map((t) => cell(t, { isNew: false, addedTo: false }))),
+      ...split(arrange([...own, ...added], (c) => c.id, order?.tasks[person.userId], defaultTaskOrder)),
+      done: latestFinishedFirst(
+        person.tasks.completed.map((t) => cell(t, { isNew: false, addedTo: false, blockedOn: null }))
+      ),
     };
   });
   return arrange(rows, (r) => r.userId, order?.people, orderPeople);
@@ -131,7 +170,22 @@ const byPosition = <T extends { position?: number | null }>(items: T[]) =>
 export function savedScrumRows(scrum: Pick<Scrum, 'participants' | 'entries'>): ScrumTableRow[] {
   const rows = scrum.participants.map((participant): ScrumTableRow & { position?: number | null } => {
     const mine = scrum.entries.filter((e) => e.userId === participant.userId);
-    const toCell = (e: (typeof mine)[number]) => cell({ ...e, id: e.taskId }, { isNew: false, addedTo: !!e.addedTo });
+    const toCell = (e: (typeof mine)[number]) =>
+      cell(
+        { ...e, id: e.taskId },
+        {
+          isNew: false,
+          addedTo: !!e.addedTo,
+          // Kept as words when it was saved; a scrum from before that has none.
+          blockedOn: e.blockedOn
+            ? {
+                note: e.blockedOn.note,
+                who: e.blockedOn.userName,
+                task: e.blockedOn.taskTitle ? { id: null, title: e.blockedOn.taskTitle } : null,
+              }
+            : null,
+        }
+      );
     const open = mine.filter((e) => e.addedTo || e.status !== 'done');
     const kept = open.some((e) => e.position != null);
     return {
@@ -144,7 +198,7 @@ export function savedScrumRows(scrum: Pick<Scrum, 'participants' | 'entries'>): 
         ...participant.counts,
         addedTo: participant.counts.addedTo ?? 0,
       },
-      open: kept ? byPosition(open).map(toCell) : defaultTaskOrder(open.map(toCell)),
+      ...split(kept ? byPosition(open).map(toCell) : defaultTaskOrder(open.map(toCell))),
       done: latestFinishedFirst(mine.filter((e) => !e.addedTo && e.status === 'done').map(toCell)),
       position: participant.position,
     };
@@ -162,8 +216,21 @@ export function taskColumnCount(rows: ScrumTableRow[]): number {
 export function orderOf(rows: ScrumTableRow[]): ScrumOrder {
   return {
     people: rows.map((r) => r.userId),
-    tasks: Object.fromEntries(rows.map((r) => [r.userId, r.open.map((c) => c.id)])),
+    tasks: Object.fromEntries(rows.map((r) => [r.userId, r.order])),
   };
+}
+
+/**
+ * A person's whole order after their Task 1..N were rearranged to `shown`: the
+ * blocked tasks, which are not among them, stay in the places they had, and the
+ * rest fill the other places in their new order.
+ */
+export function withHiddenKept(order: readonly string[], shown: readonly string[]): string[] {
+  const visible = new Set(shown);
+  const next = [...shown];
+  const out = order.map((id) => (visible.has(id) ? next.shift()! : id));
+  // Anything shown that the old order did not have yet goes at the end.
+  return [...out, ...next];
 }
 
 /** The list with the item at `from` moved to `to`. */
